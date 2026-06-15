@@ -97,7 +97,7 @@ export default function DashboardHomePage() {
         />
 
         <Box sx={{ position: 'relative', p: { xs: 3, md: 5 } }}>
-          <Grid container spacing={4} alignItems="center">
+          <Grid container spacing={4} sx={{ alignItems: 'center' }}>
 
             {/* Left: greeting + context */}
             <Grid size={{ xs: 12, md: 7 }}>
@@ -326,7 +326,7 @@ export default function DashboardHomePage() {
       </Typography>
 
       {/* ── MIDDLE ROW ────────────────────────────────────────────────────────── */}
-      <Grid container spacing={2.5} alignItems="flex-start" sx={{ mb: 5 }}>
+      <Grid container spacing={2.5} sx={{ mb: 5, alignItems: 'flex-start' }}>
 
         {/* Project progress */}
         <Grid size={{ xs: 12, md: 7 }}>

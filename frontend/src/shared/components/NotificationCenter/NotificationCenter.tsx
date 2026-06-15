@@ -1,0 +1,114 @@
+import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Box, Typography, IconButton, Popover, Badge } from '@mui/material';
+import { NotificationsRounded, CameraAltRounded, CheckCircleRounded, ViewInArRounded, BugReportRounded, UploadFileRounded, CloseRounded, DoneAllRounded } from '@mui/icons-material';
+import { colors, motion } from '@theme/tokens';
+import { mockNotifications, type MockNotification, type NotifType } from '@/data/mockData';
+
+const notifIcon: Record<NotifType, React.ReactNode> = {
+  capture_uploaded:    <CameraAltRounded sx={{ fontSize: 15 }} />,
+  review_requested:    <CheckCircleRounded sx={{ fontSize: 15 }} />,
+  tour_published:      <ViewInArRounded sx={{ fontSize: 15 }} />,
+  defect_assigned:     <BugReportRounded sx={{ fontSize: 15 }} />,
+  floor_plan_uploaded: <UploadFileRounded sx={{ fontSize: 15 }} />,
+  review_approved:     <CheckCircleRounded sx={{ fontSize: 15 }} />,
+  review_rejected:     <CloseRounded sx={{ fontSize: 15 }} />,
+};
+const notifColor: Record<NotifType, string> = {
+  capture_uploaded:    '#2563eb',
+  review_requested:    '#d97706',
+  tour_published:      '#16a34a',
+  defect_assigned:     '#dc2626',
+  floor_plan_uploaded: '#0891b2',
+  review_approved:     '#16a34a',
+  review_rejected:     '#dc2626',
+};
+
+export default function NotificationCenter() {
+  const [notifs, setNotifs] = useState<MockNotification[]>([...mockNotifications]);
+  const [anchor, setAnchor] = useState<null | HTMLElement>(null);
+  const unread = notifs.filter(n => !n.read).length;
+
+  function markAllRead() {
+    setNotifs(prev => prev.map(n => ({ ...n, read: true })));
+  }
+  function markRead(id: string) {
+    setNotifs(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+  }
+
+  return (
+    <>
+      <IconButton
+        size="small"
+        onClick={e => setAnchor(e.currentTarget)}
+        sx={{ position: 'relative', color: colors.textMuted, '&:hover': { color: colors.textStrong, backgroundColor: colors.bgDeep } }}
+      >
+        <Badge badgeContent={unread} color="error" max={9} sx={{ '& .MuiBadge-badge': { fontSize: '0.5625rem', minWidth: 16, height: 16 } }}>
+          <NotificationsRounded sx={{ fontSize: 20 }} />
+        </Badge>
+      </IconButton>
+
+      <Popover
+        open={Boolean(anchor)}
+        anchorEl={anchor}
+        onClose={() => setAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        slotProps={{ paper: { sx: { width: 380, maxHeight: 520, borderRadius: '16px', boxShadow: '0 20px 48px rgba(15,23,42,0.12)', overflow: 'hidden', mt: 1 } } }}
+      >
+        {/* Header */}
+        <Box sx={{ px: 2.5, py: 2, borderBottom: `1px solid ${colors.borderLight}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', backgroundColor: colors.card }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong }}>Notifications</Typography>
+            {unread > 0 && (
+              <Box sx={{ px: 1, py: 0.125, borderRadius: '20px', backgroundColor: colors.primary, color: '#fff', fontSize: '0.625rem', fontWeight: 700 }}>{unread}</Box>
+            )}
+          </Box>
+          {unread > 0 && (
+            <Box onClick={markAllRead} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: colors.primary, fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', '&:hover': { textDecoration: 'underline' } }}>
+              <DoneAllRounded sx={{ fontSize: 14 }} /> Mark all read
+            </Box>
+          )}
+        </Box>
+
+        {/* Notification list */}
+        <Box sx={{ overflowY: 'auto', maxHeight: 420 }}>
+          {notifs.length === 0 ? (
+            <Box sx={{ py: 6, textAlign: 'center', color: colors.textMuted }}>
+              <NotificationsRounded sx={{ fontSize: 36, color: colors.border, mb: 1 }} />
+              <Typography sx={{ fontSize: '0.875rem' }}>No notifications</Typography>
+            </Box>
+          ) : notifs.map((n, i) => {
+            const ic = notifIcon[n.type];
+            const col = notifColor[n.type];
+            return (
+              <Box
+                key={n.id}
+                component={Link}
+                to={n.link}
+                onClick={() => { markRead(n.id); setAnchor(null); }}
+                sx={{
+                  display: 'flex', gap: 1.5, px: 2.5, py: 1.75, textDecoration: 'none',
+                  borderBottom: i < notifs.length - 1 ? `1px solid ${colors.borderLight}` : 'none',
+                  backgroundColor: n.read ? 'transparent' : `${col}06`,
+                  transition: `background ${motion.durationFast}`,
+                  '&:hover': { backgroundColor: colors.bg },
+                }}
+              >
+                <Box sx={{ width: 32, height: 32, borderRadius: '8px', backgroundColor: `${col}15`, color: col, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, mt: 0.25 }}>{ic}</Box>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1 }}>
+                    <Typography sx={{ fontSize: '0.8125rem', fontWeight: n.read ? 400 : 600, color: colors.textStrong, lineHeight: 1.35 }}>{n.title}</Typography>
+                    {!n.read && <Box sx={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: colors.primary, flexShrink: 0, mt: 0.375 }} />}
+                  </Box>
+                  <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.25, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{n.body}</Typography>
+                  <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, mt: 0.5 }}>{n.createdAt}</Typography>
+                </Box>
+              </Box>
+            );
+          })}
+        </Box>
+      </Popover>
+    </>
+  );
+}
