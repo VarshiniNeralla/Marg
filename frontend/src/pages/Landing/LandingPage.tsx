@@ -464,9 +464,6 @@ function CTABanner() {
           <Box component={Link} to="/register" sx={{ display: 'inline-flex', alignItems: 'center', gap: 1, px: 3, py: 1.5, borderRadius: '10px', backgroundColor: '#fff', color: colors.primary, fontWeight: 700, fontSize: '1rem', textDecoration: 'none', boxShadow: '0 4px 14px rgba(0,0,0,0.15)', '&:hover': { transform: 'translateY(-1px)' }, transition: `all ${motion.durationFast}` }}>
             Register <ArrowForwardRounded sx={{ fontSize: 16 }} />
           </Box>
-          <Box component={Link} to="/contact" sx={{ display: 'inline-flex', alignItems: 'center', gap: 1, px: 3, py: 1.5, borderRadius: '10px', border: '1.5px solid rgba(255,255,255,0.4)', color: '#fff', fontWeight: 600, fontSize: '0.9375rem', textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(255,255,255,0.1)' }, transition: `all ${motion.durationFast}` }}>
-            Request a demo
-          </Box>
         </Box>
       </Box>
     </Box>
