@@ -1,0 +1,87 @@
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from loguru import logger
+
+from app.api.v1.router import api_router
+from app.core.config import get_settings
+from app.core.exceptions import (
+    AppException,
+    app_exception_handler,
+    generic_exception_handler,
+    validation_exception_handler,
+)
+from app.db.indexes import create_indexes
+from app.db.mongodb import close_db, connect_db, get_database
+from app.middleware.cors import get_cors_kwargs
+from app.middleware.logging import RequestLoggingMiddleware
+
+settings = get_settings()
+
+
+# ── Lifespan (startup + shutdown) ─────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    FastAPI lifespan context manager.
+    Code before `yield` runs at startup; code after runs at shutdown.
+    This is the recommended replacement for @app.on_event("startup").
+    """
+    # ── Startup ───────────────────────────────────────────────────────────────
+    logger.info(f"Starting {settings.APP_NAME} — env: {settings.APP_ENV}")
+
+    await connect_db()
+
+    db = get_database()
+    await create_indexes(db)
+
+    logger.info("Application startup complete.")
+    yield
+
+    # ── Shutdown ──────────────────────────────────────────────────────────────
+    await close_db()
+    logger.info("Application shutdown complete.")
+
+
+# ── App factory ───────────────────────────────────────────────────────────────
+
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title=settings.APP_NAME,
+        description=(
+            "Production-grade Marg API. "
+            "Used for construction monitoring and immersive room tours."
+        ),
+        version="1.0.0",
+        docs_url="/docs" if not settings.is_production else None,
+        redoc_url="/redoc" if not settings.is_production else None,
+        openapi_url="/openapi.json" if not settings.is_production else None,
+        lifespan=lifespan,
+    )
+
+    # ── Middleware — order matters: added last, executes first ─────────────────
+    # 1. CORS must be outermost to handle preflight OPTIONS before any auth check
+    app.add_middleware(CORSMiddleware, **get_cors_kwargs())
+    # 2. Request logging wraps the full request/response lifecycle
+    app.add_middleware(RequestLoggingMiddleware)
+
+    # ── Exception handlers ────────────────────────────────────────────────────
+    app.add_exception_handler(AppException, app_exception_handler)
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(Exception, generic_exception_handler)
+
+    # ── Routers ───────────────────────────────────────────────────────────────
+    app.include_router(api_router, prefix="/api/v1")
+
+    # ── Health check ──────────────────────────────────────────────────────────
+    @app.get("/health", tags=["Health"], include_in_schema=False)
+    async def health_check():
+        return {"status": "ok", "app": settings.APP_NAME, "env": settings.APP_ENV}
+
+    return app
+
+
+app = create_app()
