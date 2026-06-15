@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { Box, Typography, TextField, Chip, Grid } from '@mui/material';
 import { CameraAltRounded, CheckCircleRounded, AccessTimeRounded, ViewInArRounded } from '@mui/icons-material';
-import { colors, motion } from '@theme/tokens';
-import { mockCaptures, mockTours } from '@/data/mockData';
+import { colors } from '@theme/tokens';
+import { mockCaptures, mockTours, mockAuditLogs } from '@/data/mockData';
+import ActivityFeed from '@shared/components/ActivityFeed/ActivityFeed';
 
 const fieldSx = {
   '& .MuiOutlinedInput-root': {
@@ -12,25 +13,6 @@ const fieldSx = {
     '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#cbd5e1' },
     '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: colors.primary, borderWidth: 1.5 },
   },
-};
-
-const recentActivity = [
-  { type: 'capture',  text: 'Uploaded capture for Living Room A',    project: 'My Home Udyan',       time: '2 hours ago' },
-  { type: 'review',   text: 'Approved capture for Master Bedroom',   project: 'My Home Apas',        time: '5 hours ago' },
-  { type: 'tour',     text: 'Published virtual tour for Floor 3',    project: 'My Home Grava',       time: 'Yesterday' },
-  { type: 'capture',  text: 'Uploaded 4 captures for Utility Room',  project: 'My Home Vyoma',       time: '2 days ago' },
-  { type: 'review',   text: 'Requested re-upload for Bathroom 2B',   project: 'My Home Udyan',       time: '3 days ago' },
-];
-
-const activityIcon: Record<string, React.ReactNode> = {
-  capture: <CameraAltRounded sx={{ fontSize: 14 }} />,
-  review:  <CheckCircleRounded sx={{ fontSize: 14 }} />,
-  tour:    <ViewInArRounded sx={{ fontSize: 14 }} />,
-};
-const activityColor: Record<string, string> = {
-  capture: '#2563eb',
-  review:  '#16a34a',
-  tour:    '#7c3aed',
 };
 
 export default function UserProfilePage() {
@@ -134,23 +116,10 @@ export default function UserProfilePage() {
             </Box>
           </Box>
 
-          {/* Recent activity */}
+          {/* Activity feed — driven by mockAuditLogs */}
           <Box sx={{ borderRadius: '20px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', p: 3 }}>
             <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600, color: colors.textStrong, mb: 2.5 }}>Recent Activity</Typography>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-              {recentActivity.map((a, i) => (
-                <Box key={i} sx={{ display: 'flex', gap: 2, py: 1.75, borderBottom: i < recentActivity.length - 1 ? `1px solid ${colors.borderLight}` : 'none', alignItems: 'flex-start' }}>
-                  <Box sx={{ width: 28, height: 28, borderRadius: '8px', backgroundColor: `${activityColor[a.type]}15`, color: activityColor[a.type], display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, mt: 0.125 }}>
-                    {activityIcon[a.type]}
-                  </Box>
-                  <Box sx={{ flex: 1 }}>
-                    <Typography sx={{ fontSize: '0.875rem', color: colors.textStrong, fontWeight: 500 }}>{a.text}</Typography>
-                    <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{a.project}</Typography>
-                  </Box>
-                  <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, flexShrink: 0, mt: 0.25 }}>{a.time}</Typography>
-                </Box>
-              ))}
-            </Box>
+            <ActivityFeed logs={mockAuditLogs} maxItems={8} />
           </Box>
         </Grid>
       </Grid>

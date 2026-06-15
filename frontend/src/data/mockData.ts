@@ -506,3 +506,48 @@ export const permissionMatrix: PermissionMatrix[] = [
     },
   },
 ];
+
+// ── Audit Logs ────────────────────────────────────────────────────────────────
+
+export type AuditEventType =
+  | 'capture_uploaded'
+  | 'capture_approved'
+  | 'capture_rejected'
+  | 'tour_published'
+  | 'tour_draft'
+  | 'defect_created'
+  | 'defect_resolved'
+  | 'floor_plan_uploaded'
+  | 'user_invited'
+  | 'user_role_changed'
+  | 'review_assigned'
+  | 'project_created'
+  | 'project_updated';
+
+export interface MockAuditLog {
+  id: string;
+  actorId: string;
+  actorName: string;
+  eventType: AuditEventType;
+  entityType: 'capture' | 'tour' | 'defect' | 'floor_plan' | 'user' | 'project';
+  entityId: string;
+  entityName: string;
+  projectId: string | null;
+  description: string;
+  createdAt: string;
+}
+
+export const mockAuditLogs: MockAuditLog[] = [
+  { id: 'al1',  actorId: 'u5', actorName: 'Arjun Mehta',   eventType: 'capture_approved',     entityType: 'capture',    entityId: 'c1',    entityName: 'A-F14-Room 1401',      projectId: '1', description: 'Approved capture c1 — all 12 images pass QC',                      createdAt: '2 hours ago' },
+  { id: 'al2',  actorId: 'u1', actorName: 'Priya Sharma',  eventType: 'tour_published',        entityType: 'tour',       entityId: 'tour2', entityName: 'A-F14-Room 1402',      projectId: '1', description: 'Published virtual tour for Room 1402, Tower A, Floor 14',         createdAt: '1 day ago' },
+  { id: 'al3',  actorId: 'u2', actorName: 'Ravi Kumar',    eventType: 'capture_uploaded',      entityType: 'capture',    entityId: 'c7',    entityName: 'A-F11-Room 1104',      projectId: '1', description: 'Uploaded 8 panoramic images (32 MB) for Room 1104, Floor 11',     createdAt: '1 day ago' },
+  { id: 'al4',  actorId: 'u5', actorName: 'Arjun Mehta',   eventType: 'capture_rejected',      entityType: 'capture',    entityId: 'c5',    entityName: 'B-F22-Room 2207',      projectId: '1', description: 'Requested re-upload — insufficient coverage in rooms 3 and 4',     createdAt: '2 days ago' },
+  { id: 'al5',  actorId: 'u7', actorName: 'Kiran Desai',   eventType: 'floor_plan_uploaded',   entityType: 'floor_plan', entityId: 'fp-t1-f11', entityName: 'Tower A — Floor 11', projectId: '1', description: 'Uploaded floor plan (PDF, 1.8 MB) for Tower A, Floor 11',       createdAt: '1 week ago' },
+  { id: 'al6',  actorId: 'u1', actorName: 'Priya Sharma',  eventType: 'review_assigned',       entityType: 'capture',    entityId: 'c6',    entityName: 'B-F18-Room 1803',      projectId: '1', description: 'Assigned capture c6 to Arjun Mehta for review',                   createdAt: '5 hours ago' },
+  { id: 'al7',  actorId: 'u3', actorName: 'Anil Prakash',  eventType: 'capture_uploaded',      entityType: 'capture',    entityId: 'c3',    entityName: 'T1-F05-Room 0512',     projectId: '3', description: 'Uploaded 6 panoramic images (24 MB) for Room 0512, Floor 5',     createdAt: '3 hours ago' },
+  { id: 'al8',  actorId: 'u1', actorName: 'Priya Sharma',  eventType: 'defect_created',        entityType: 'defect',     entityId: 'd5',    entityName: 'Floor plan dimensions mismatch', projectId: '1', description: 'Logged critical defect — Floor 11 floor plan scale is off by ~8%', createdAt: '4 hours ago' },
+  { id: 'al9',  actorId: 'u5', actorName: 'Arjun Mehta',   eventType: 'defect_resolved',       entityType: 'defect',     entityId: 'd4',    entityName: 'Blurry panorama at east wall', projectId: '2', description: 'Marked defect d4 as resolved — panorama re-stitched',           createdAt: '5 days ago' },
+  { id: 'al10', actorId: 'u6', actorName: 'Meena Reddy',   eventType: 'capture_uploaded',      entityType: 'capture',    entityId: 'c9',    entityName: 'V1-F02-Room 0201',     projectId: '4', description: 'Uploaded 7 panoramic images (28 MB) for Room 0201, Floor 2',     createdAt: '1 week ago' },
+  { id: 'al11', actorId: 'u1', actorName: 'Priya Sharma',  eventType: 'project_updated',       entityType: 'project',    entityId: '1',     entityName: 'My Home Udyan',        projectId: '1', description: 'Updated project progress to 68%',                                 createdAt: '2 hours ago' },
+  { id: 'al12', actorId: 'u4', actorName: 'Sunita Rao',    eventType: 'tour_published',        entityType: 'tour',       entityId: 'tour4', entityName: 'A-F03-Room 0301',      projectId: '2', description: 'Published virtual tour for Room 0301, Tower A, Floor 3',         createdAt: '1 week ago' },
+];

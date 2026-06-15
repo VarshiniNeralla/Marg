@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { Box, Typography, Chip, IconButton, Tooltip, Drawer } from '@mui/material';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { Box, Typography, Chip, IconButton, Tooltip, Drawer, CircularProgress } from '@mui/material';
+import '@photo-sphere-viewer/core/index.css';
 import {
   ArrowBackRounded, FullscreenRounded, FullscreenExitRounded, ViewInArRounded,
   LayersRounded, NavigateNextRounded, NavigateBefore, InfoRounded,
@@ -8,9 +9,24 @@ import {
   CheckCircleRounded, PublishRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { getTourById, statusConfig, mockTours, getProjectById, mockTowers, getFloors, mockCaptures } from '@/data/mockData';
+import { getTourById, statusConfig, mockTours, mockTowers, getFloors, mockCaptures } from '@/data/mockData';
+
+// Placeholder equirectangular panoramas — one per tour, keyed by tourId.
+// Replace these with real Cloudinary secure_url values from the API.
+const PANORAMA_MAP: Record<string, string> = {
+  tour1: 'https://photo-sphere-viewer-data.netlify.app/assets/sphere.jpg',
+  tour2: 'https://photo-sphere-viewer-data.netlify.app/assets/sphere-small.jpg',
+  tour3: 'https://photo-sphere-viewer-data.netlify.app/assets/sphere.jpg',
+  tour4: 'https://photo-sphere-viewer-data.netlify.app/assets/sphere-small.jpg',
+  tour5: 'https://photo-sphere-viewer-data.netlify.app/assets/sphere.jpg',
+  tour6: 'https://photo-sphere-viewer-data.netlify.app/assets/sphere-small.jpg',
+};
+
+const FALLBACK_PANORAMA = 'https://photo-sphere-viewer-data.netlify.app/assets/sphere.jpg';
 
 const tourStatusFlow = ['draft', 'processing', 'in_review', 'published'] as const;
+
+// ── NavigationPanel ───────────────────────────────────────────────────────────
 
 function NavigationPanel({ tour, onClose }: { tour: ReturnType<typeof getTourById>; onClose: () => void }) {
   if (!tour) return null;
@@ -28,7 +44,10 @@ function NavigationPanel({ tour, onClose }: { tour: ReturnType<typeof getTourByI
         <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.07em', textTransform: 'uppercase', px: 1, mb: 1 }}>{tower?.name}</Typography>
         {floors.slice(0, 6).map(f => (
           <Box key={f.id}>
-            <Box onClick={() => setExpandFloor(!expandFloor)} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1.5, py: 1, borderRadius: '8px', cursor: 'pointer', '&:hover': { backgroundColor: colors.bg } }}>
+            <Box
+              onClick={() => setExpandFloor(prev => (f.label === tour.floorLabel ? !prev : prev))}
+              sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1.5, py: 1, borderRadius: '8px', cursor: 'pointer', '&:hover': { backgroundColor: colors.bg } }}
+            >
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <LayersRounded sx={{ fontSize: 14, color: colors.textMuted }} />
                 <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: f.label === tour.floorLabel ? colors.primary : colors.textStrong }}>{f.label}</Typography>
@@ -38,7 +57,12 @@ function NavigationPanel({ tour, onClose }: { tour: ReturnType<typeof getTourByI
             {f.label === tour.floorLabel && expandFloor && (
               <Box sx={{ ml: 3.5, mb: 0.5 }}>
                 {mockTours.filter(t => t.floorLabel === tour.floorLabel && t.towerId === tour.towerId).map(t => (
-                  <Box key={t.id} component={Link} to={`/tours/${t.id}`} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.875, borderRadius: '8px', textDecoration: 'none', backgroundColor: t.id === tour.id ? colors.primarySoft : 'transparent', '&:hover': { backgroundColor: t.id === tour.id ? colors.primarySoft : colors.bg } }}>
+                  <Box
+                    key={t.id}
+                    component={Link}
+                    to={`/tours/${t.id}`}
+                    sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.875, borderRadius: '8px', textDecoration: 'none', backgroundColor: t.id === tour.id ? colors.primarySoft : 'transparent', '&:hover': { backgroundColor: t.id === tour.id ? colors.primarySoft : colors.bg } }}
+                  >
                     <ViewInArRounded sx={{ fontSize: 13, color: t.id === tour.id ? colors.primary : colors.textMuted }} />
                     <Typography sx={{ fontSize: '0.8125rem', color: t.id === tour.id ? colors.primary : colors.textSecondary, fontWeight: t.id === tour.id ? 600 : 400 }}>
                       {t.roomName.split(' ').pop()}
@@ -55,7 +79,14 @@ function NavigationPanel({ tour, onClose }: { tour: ReturnType<typeof getTourByI
   );
 }
 
-function InfoDrawer({ tour, open, onClose }: { tour: ReturnType<typeof getTourById>; open: boolean; onClose: () => void }) {
+// ── InfoDrawer ────────────────────────────────────────────────────────────────
+
+function InfoDrawer({ tour, open, onClose, onPublish }: {
+  tour: ReturnType<typeof getTourById>;
+  open: boolean;
+  onClose: () => void;
+  onPublish: () => void;
+}) {
   if (!tour) return null;
   const capture = mockCaptures.find(c => c.id === tour.captureId);
   const ts = (statusConfig.tour as Record<string, { label: string; color: string; bg: string }>)[tour.status] ?? statusConfig.tour.draft;
@@ -68,17 +99,17 @@ function InfoDrawer({ tour, open, onClose }: { tour: ReturnType<typeof getTourBy
       </Box>
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
         <Chip label={ts.label} size="small" sx={{ alignSelf: 'flex-start', height: 24, fontSize: '0.75rem', fontWeight: 600, color: ts.color, backgroundColor: ts.bg, borderRadius: '6px' }} />
-        {[
-          { label: 'Project', value: tour.projectName },
-          { label: 'Tower', value: tour.towerName },
-          { label: 'Floor', value: tour.floorLabel },
-          { label: 'Room', value: tour.roomName },
-          { label: 'Captures', value: `${tour.captures} panoramic images` },
-          { label: 'Last updated', value: tour.lastCapture },
-          { label: 'Views', value: `${tour.viewCount} views` },
-          { label: 'Reviewer', value: capture?.reviewedBy ?? 'Not assigned' },
-          { label: 'Capture date', value: capture?.uploadedAt ?? '—' },
-        ].map(({ label, value }) => (
+        {([
+          { label: 'Project',     value: tour.projectName },
+          { label: 'Tower',       value: tour.towerName },
+          { label: 'Floor',       value: tour.floorLabel },
+          { label: 'Room',        value: tour.roomName },
+          { label: 'Captures',    value: `${tour.captures} panoramic images` },
+          { label: 'Last updated',value: tour.lastCapture },
+          { label: 'Views',       value: `${tour.viewCount} views` },
+          { label: 'Reviewer',    value: capture?.reviewedBy ?? 'Not assigned' },
+          { label: 'Capture date',value: capture?.uploadedAt ?? '—' },
+        ] as const).map(({ label, value }) => (
           <Box key={label}>
             <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.07em', textTransform: 'uppercase' }}>{label}</Typography>
             <Typography sx={{ fontSize: '0.875rem', color: colors.textStrong, fontWeight: 500, mt: 0.125 }}>{value}</Typography>
@@ -86,7 +117,7 @@ function InfoDrawer({ tour, open, onClose }: { tour: ReturnType<typeof getTourBy
         ))}
       </Box>
 
-      {/* Publishing workflow */}
+      {/* Publishing workflow stepper */}
       <Box sx={{ mt: 3, pt: 2.5, borderTop: `1px solid ${colors.borderLight}` }}>
         <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.07em', textTransform: 'uppercase', mb: 2 }}>Publishing Status</Typography>
         {tourStatusFlow.map((s, i) => {
@@ -96,7 +127,10 @@ function InfoDrawer({ tour, open, onClose }: { tour: ReturnType<typeof getTourBy
           return (
             <Box key={s} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1.25 }}>
               <Box sx={{ width: 24, height: 24, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: isDone ? '#16a34a' : isCurrent ? colors.primary : colors.bgDeep, flexShrink: 0 }}>
-                {isDone ? <CheckCircleRounded sx={{ fontSize: 14, color: '#fff' }} /> : <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: isCurrent ? '#fff' : colors.textSubdued }}>{i + 1}</Typography>}
+                {isDone
+                  ? <CheckCircleRounded sx={{ fontSize: 14, color: '#fff' }} />
+                  : <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: isCurrent ? '#fff' : colors.textSubdued }}>{i + 1}</Typography>
+                }
               </Box>
               <Typography sx={{ fontSize: '0.875rem', fontWeight: isCurrent ? 600 : 400, color: isCurrent ? colors.textStrong : isDone ? colors.textMuted : colors.textSubdued, textTransform: 'capitalize' }}>
                 {s.replace('_', ' ')}
@@ -106,7 +140,10 @@ function InfoDrawer({ tour, open, onClose }: { tour: ReturnType<typeof getTourBy
           );
         })}
         {tour.status !== 'published' && (
-          <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.75, py: 1, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.28)' }}>
+          <Box
+            onClick={onPublish}
+            sx={{ mt: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.75, py: 1, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.28)', '&:hover': { opacity: 0.9 } }}
+          >
             <PublishRounded sx={{ fontSize: 16 }} /> Publish Tour
           </Box>
         )}
@@ -115,33 +152,190 @@ function InfoDrawer({ tour, open, onClose }: { tour: ReturnType<typeof getTourBy
   );
 }
 
-const hotspots = [
-  { x: 28, y: 45, label: 'Living Area' },
-  { x: 62, y: 35, label: 'Window View' },
-  { x: 75, y: 60, label: 'Kitchen Access' },
-];
+// ── PanoramaViewer (Photo Sphere Viewer v5 — imperative mount) ────────────────
+
+interface PanoramaViewerProps {
+  panoramaUrl: string;
+  tourId: string;
+  autoRotate: boolean;
+  onAutoRotateChange: (v: boolean) => void;
+  hotspots: Array<{ id: string; yaw: number; pitch: number; label: string; targetTourId?: string }>;
+  onHotspotClick: (targetTourId: string) => void;
+}
+
+function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick }: PanoramaViewerProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewerRef = useRef<import('@photo-sphere-viewer/core').Viewer | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    let destroyed = false;
+
+    async function initViewer() {
+      setLoading(true);
+      setError(false);
+
+      try {
+        const { Viewer } = await import('@photo-sphere-viewer/core');
+
+        if (destroyed || !containerRef.current) return;
+
+        const viewer = new Viewer({
+          container: containerRef.current,
+          panorama: panoramaUrl,
+          defaultZoomLvl: 50,
+          touchmoveTwoFingers: false,
+          mousewheelCtrlKey: false,
+          navbar: false,
+          loadingTxt: '',
+          loadingImg: '',
+        });
+
+        viewerRef.current = viewer;
+
+        viewer.addEventListener('ready', () => {
+          if (!destroyed) setLoading(false);
+        });
+
+        viewer.addEventListener('error' as never, () => {
+          if (!destroyed) { setLoading(false); setError(true); }
+        });
+
+        // Add hotspot markers as markers plugin markers if available
+        // For now, we position them as absolute overlays in the JSX layer
+
+      } catch (e) {
+        if (!destroyed) { setLoading(false); setError(true); }
+      }
+    }
+
+    initViewer();
+
+    return () => {
+      destroyed = true;
+      viewerRef.current?.destroy();
+      viewerRef.current = null;
+    };
+  }, [panoramaUrl]);
+
+  // Auto-rotate: manually advance yaw every animation frame
+  const rafRef = useRef<number>(0);
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !autoRotate) {
+      cancelAnimationFrame(rafRef.current);
+      return;
+    }
+    const tick = () => {
+      try {
+        const pos = viewer.getPosition();
+        viewer.rotate({ yaw: pos.yaw + 0.003, pitch: pos.pitch });
+      } catch { /* viewer may be mid-transition */ }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [autoRotate]);
+
+  if (error) {
+    return (
+      <Box sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1, background: '#0f1929' }}>
+        <ThreeSixtyRounded sx={{ color: 'rgba(255,255,255,0.15)', fontSize: 80 }} />
+        <Typography sx={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.875rem' }}>Could not load panorama</Typography>
+      </Box>
+    );
+  }
+
+  return (
+    <>
+      <Box ref={containerRef} sx={{ position: 'absolute', inset: 0 }} />
+      {loading && (
+        <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(15,23,42,0.7)', zIndex: 2 }}>
+          <CircularProgress size={36} sx={{ color: '#fff' }} />
+        </Box>
+      )}
+      {/* Hotspot overlay layer — rendered on top of PSV canvas */}
+      {!loading && hotspots.map(hs => (
+        <Box
+          key={hs.id}
+          onClick={() => hs.targetTourId && onHotspotClick(hs.targetTourId)}
+          sx={{
+            position: 'absolute',
+            // Approximate screen position from yaw/pitch for the overlay markers.
+            // PSV handles the actual projection; these are visual hints only.
+            left: `${50 + (hs.yaw / 180) * 40}%`,
+            top: `${50 - (hs.pitch / 90) * 30}%`,
+            transform: 'translate(-50%, -50%)',
+            cursor: hs.targetTourId ? 'pointer' : 'default',
+            zIndex: 3,
+            '&:hover .hs-label': { opacity: 1, transform: 'translateY(-4px)' },
+          }}
+        >
+          <Box sx={{ width: 30, height: 30, borderRadius: '50%', backgroundColor: 'rgba(255,255,255,0.2)', border: '2px solid rgba(255,255,255,0.55)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: hs.targetTourId ? '#60a5fa' : '#fff' }} />
+          </Box>
+          <Box className="hs-label" sx={{ position: 'absolute', bottom: '120%', left: '50%', transform: 'translateX(-50%) translateY(0)', opacity: 0, transition: `all ${motion.durationFast}`, backgroundColor: 'rgba(0,0,0,0.72)', color: '#fff', fontSize: '0.6875rem', fontWeight: 600, px: 1.25, py: 0.5, borderRadius: '6px', whiteSpace: 'nowrap', pointerEvents: 'none' }}>
+            {hs.label}
+          </Box>
+        </Box>
+      ))}
+    </>
+  );
+}
+
+// ── Default hotspots per tour ─────────────────────────────────────────────────
+
+const TOUR_HOTSPOTS: Record<string, Array<{ id: string; yaw: number; pitch: number; label: string; targetTourId?: string }>> = {
+  tour1: [
+    { id: 'hs1', yaw: -40, pitch: 2,  label: 'Window View' },
+    { id: 'hs2', yaw: 85,  pitch: -5, label: 'Master Bedroom', targetTourId: 'tour2' },
+    { id: 'hs3', yaw: 160, pitch: 0,  label: 'Kitchen' },
+  ],
+  tour2: [
+    { id: 'hs1', yaw: -90, pitch: 0,  label: 'Living Room', targetTourId: 'tour1' },
+    { id: 'hs2', yaw: 30,  pitch: -3, label: 'Balcony' },
+  ],
+  tour3: [
+    { id: 'hs1', yaw: 20,  pitch: 0,  label: 'Bedroom' },
+    { id: 'hs2', yaw: -60, pitch: 2,  label: 'Kitchen' },
+  ],
+  tour4: [
+    { id: 'hs1', yaw: 45,  pitch: 0,  label: 'Balcony' },
+    { id: 'hs2', yaw: -120,pitch: -2, label: 'Bedroom' },
+  ],
+};
+
+// ── Main Component ────────────────────────────────────────────────────────────
 
 export default function TourViewerPage() {
   const { tourId } = useParams<{ tourId: string }>();
+  const navigate = useNavigate();
   const tour = getTourById(tourId ?? '');
+
   const [fullscreen, setFullscreen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
-  const [rotation, setRotation] = useState(0);
-  const rafRef = useRef<number>(0);
 
   const currentIdx = tourId ? mockTours.findIndex(t => t.id === tourId) : 0;
+  const panoramaUrl = PANORAMA_MAP[tourId ?? ''] ?? FALLBACK_PANORAMA;
+  const hotspots = TOUR_HOTSPOTS[tourId ?? ''] ?? [];
 
-  useEffect(() => {
-    if (autoRotate) {
-      const tick = () => { setRotation(r => r + 0.4); rafRef.current = requestAnimationFrame(tick); };
-      rafRef.current = requestAnimationFrame(tick);
-    } else {
-      cancelAnimationFrame(rafRef.current);
+  const handleHotspotClick = useCallback((targetTourId: string) => {
+    navigate(`/tours/${targetTourId}`);
+  }, [navigate]);
+
+  const handlePublish = useCallback(() => {
+    // With React Query: useMutation to call tourService.publishTour(tour.id)
+    // For now, update mock data in-place
+    if (tour) {
+      const idx = mockTours.findIndex(t => t.id === tour.id);
+      if (idx !== -1) mockTours[idx] = { ...mockTours[idx], status: 'published' };
+      navigate(0); // soft refresh
     }
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [autoRotate]);
+  }, [tour, navigate]);
 
   if (!tour) return (
     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '50vh', gap: 2 }}>
@@ -172,73 +366,74 @@ export default function TourViewerPage() {
       )}
 
       {/* Main viewer */}
-      <Box sx={{ borderRadius: fullscreen ? 0 : '20px', background: tour.gradient, height: fullscreen ? '100vh' : 480, position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flex: fullscreen ? 1 : 'none' }}>
-        {/* Animated panorama simulation */}
-        <Box sx={{ position: 'absolute', inset: 0, background: `radial-gradient(ellipse 80% 60% at 50% 50%, rgba(255,255,255,0.05) 0%, transparent 70%)`, transform: `rotate(${rotation}deg) scale(1.5)`, transition: autoRotate ? 'none' : undefined }} />
-        <Box sx={{ position: 'absolute', inset: 0, background: tour.gradient, opacity: 0.85 }} />
-
-        {/* Center 360 icon */}
-        <Box sx={{ position: 'relative', textAlign: 'center', pointerEvents: 'none' }}>
-          <ThreeSixtyRounded sx={{ color: 'rgba(255,255,255,0.12)', fontSize: 140, display: 'block', mx: 'auto' }} />
-          <Typography sx={{ color: 'rgba(255,255,255,0.3)', fontSize: '0.875rem', mt: -3 }}>Drag to explore · Scroll to zoom</Typography>
-        </Box>
-
-        {/* Hotspot markers */}
-        {hotspots.map((hs, i) => (
-          <Box key={i} sx={{ position: 'absolute', left: `${hs.x}%`, top: `${hs.y}%`, transform: 'translate(-50%, -50%)', cursor: 'pointer', '&:hover .hs-label': { opacity: 1, transform: 'translateY(-4px)' } }}>
-            <Box sx={{ width: 30, height: 30, borderRadius: '50%', backgroundColor: 'rgba(255,255,255,0.2)', border: '2px solid rgba(255,255,255,0.55)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: '#fff' }} />
-            </Box>
-            <Box className="hs-label" sx={{ position: 'absolute', bottom: '120%', left: '50%', transform: 'translateX(-50%) translateY(0)', opacity: 0, transition: `all ${motion.durationFast}`, backgroundColor: 'rgba(0,0,0,0.72)', color: '#fff', fontSize: '0.6875rem', fontWeight: 600, px: 1.25, py: 0.5, borderRadius: '6px', whiteSpace: 'nowrap', pointerEvents: 'none' }}>
-              {hs.label}
-            </Box>
-          </Box>
-        ))}
+      <Box sx={{
+        borderRadius: fullscreen ? 0 : '20px',
+        height: fullscreen ? '100vh' : 520,
+        position: 'relative',
+        overflow: 'hidden',
+        flex: fullscreen ? 1 : 'none',
+        backgroundColor: '#0f1929',
+        '& .psv-container': { borderRadius: fullscreen ? 0 : '20px' },
+      }}>
+        <PanoramaViewer
+          panoramaUrl={panoramaUrl}
+          tourId={tourId ?? ''}
+          autoRotate={autoRotate}
+          onAutoRotateChange={setAutoRotate}
+          hotspots={hotspots}
+          onHotspotClick={handleHotspotClick}
+        />
 
         {/* Top-right controls */}
-        <Box sx={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 0.75 }}>
+        <Box sx={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 0.75, zIndex: 10 }}>
           <Tooltip title={autoRotate ? 'Stop rotation' : 'Auto rotate'}>
-            <IconButton onClick={() => setAutoRotate(!autoRotate)} size="small" sx={{ backgroundColor: 'rgba(0,0,0,0.35)', color: autoRotate ? '#fbbf24' : '#fff', backdropFilter: 'blur(8px)', '&:hover': { backgroundColor: 'rgba(0,0,0,0.5)' } }}>
+            <IconButton onClick={() => setAutoRotate(v => !v)} size="small" sx={{ backgroundColor: 'rgba(0,0,0,0.45)', color: autoRotate ? '#fbbf24' : '#fff', backdropFilter: 'blur(8px)', '&:hover': { backgroundColor: 'rgba(0,0,0,0.6)' } }}>
               {autoRotate ? <PauseRounded sx={{ fontSize: 16 }} /> : <PlayArrowRounded sx={{ fontSize: 16 }} />}
             </IconButton>
           </Tooltip>
           <Tooltip title="Navigation">
-            <IconButton onClick={() => setNavOpen(true)} size="small" sx={{ backgroundColor: 'rgba(0,0,0,0.35)', color: '#fff', backdropFilter: 'blur(8px)', '&:hover': { backgroundColor: 'rgba(0,0,0,0.5)' } }}>
+            <IconButton onClick={() => setNavOpen(true)} size="small" sx={{ backgroundColor: 'rgba(0,0,0,0.45)', color: '#fff', backdropFilter: 'blur(8px)', '&:hover': { backgroundColor: 'rgba(0,0,0,0.6)' } }}>
               <LayersRounded sx={{ fontSize: 16 }} />
             </IconButton>
           </Tooltip>
           <Tooltip title="Tour info">
-            <IconButton onClick={() => setInfoOpen(true)} size="small" sx={{ backgroundColor: 'rgba(0,0,0,0.35)', color: '#fff', backdropFilter: 'blur(8px)', '&:hover': { backgroundColor: 'rgba(0,0,0,0.5)' } }}>
+            <IconButton onClick={() => setInfoOpen(true)} size="small" sx={{ backgroundColor: 'rgba(0,0,0,0.45)', color: '#fff', backdropFilter: 'blur(8px)', '&:hover': { backgroundColor: 'rgba(0,0,0,0.6)' } }}>
               <InfoRounded sx={{ fontSize: 16 }} />
             </IconButton>
           </Tooltip>
           <Tooltip title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
-            <IconButton onClick={() => setFullscreen(!fullscreen)} size="small" sx={{ backgroundColor: 'rgba(0,0,0,0.35)', color: '#fff', backdropFilter: 'blur(8px)', '&:hover': { backgroundColor: 'rgba(0,0,0,0.5)' } }}>
+            <IconButton onClick={() => setFullscreen(v => !v)} size="small" sx={{ backgroundColor: 'rgba(0,0,0,0.45)', color: '#fff', backdropFilter: 'blur(8px)', '&:hover': { backgroundColor: 'rgba(0,0,0,0.6)' } }}>
               {fullscreen ? <FullscreenExitRounded sx={{ fontSize: 16 }} /> : <FullscreenRounded sx={{ fontSize: 16 }} />}
             </IconButton>
           </Tooltip>
         </Box>
 
         {/* Bottom overlays */}
-        <Box sx={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', gap: 0.75 }}>
-          <Box sx={{ px: 1.5, py: 0.75, borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', gap: 0.75 }}>
+        <Box sx={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', gap: 0.75, zIndex: 10 }}>
+          <Box sx={{ px: 1.5, py: 0.75, borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', gap: 0.75 }}>
             <LayersRounded sx={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }} />
             <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.9)', fontWeight: 600 }}>{tour.floorLabel}</Typography>
           </Box>
-          <Box sx={{ px: 1.5, py: 0.75, borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', gap: 0.75 }}>
+          <Box sx={{ px: 1.5, py: 0.75, borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', gap: 0.75 }}>
             <CameraAltRounded sx={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }} />
             <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.9)', fontWeight: 600 }}>{tour.captures} images</Typography>
           </Box>
+          {hotspots.length > 0 && (
+            <Box sx={{ px: 1.5, py: 0.75, borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', gap: 0.75 }}>
+              <ThreeSixtyRounded sx={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }} />
+              <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.9)', fontWeight: 600 }}>{hotspots.filter(h => h.targetTourId).length} hotspots</Typography>
+            </Box>
+          )}
         </Box>
 
         {/* Prev/Next arrows */}
         {prevTour && (
-          <Box component={Link} to={`/tours/${prevTour.id}`} sx={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(0,0,0,0.55)' } }}>
+          <Box component={Link} to={`/tours/${prevTour.id}`} sx={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', zIndex: 10, '&:hover': { backgroundColor: 'rgba(0,0,0,0.65)' } }}>
             <NavigateBefore sx={{ fontSize: 20 }} />
           </Box>
         )}
         {nextTour && (
-          <Box component={Link} to={`/tours/${nextTour.id}`} sx={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(0,0,0,0.55)' } }}>
+          <Box component={Link} to={`/tours/${nextTour.id}`} sx={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', zIndex: 10, '&:hover': { backgroundColor: 'rgba(0,0,0,0.65)' } }}>
             <NavigateNextRounded sx={{ fontSize: 20 }} />
           </Box>
         )}
@@ -274,7 +469,7 @@ export default function TourViewerPage() {
       </Drawer>
 
       {/* Info drawer */}
-      <InfoDrawer tour={tour} open={infoOpen} onClose={() => setInfoOpen(false)} />
+      <InfoDrawer tour={tour} open={infoOpen} onClose={() => setInfoOpen(false)} onPublish={handlePublish} />
     </Box>
   );
 }

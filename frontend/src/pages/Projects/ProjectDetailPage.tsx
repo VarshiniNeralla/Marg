@@ -9,8 +9,9 @@ import {
 import { colors, motion } from '@theme/tokens';
 import {
   getProjectById, getTowersByProject, getCapturesByProject,
-  getToursByProject, mockUsers, statusConfig,
+  getToursByProject, mockUsers, statusConfig, mockAuditLogs,
 } from '@/data/mockData';
+import ActivityFeed from '@shared/components/ActivityFeed/ActivityFeed';
 
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -107,6 +108,7 @@ export default function ProjectDetailPage() {
         <Tab label="Captures" />
         <Tab label="Tours" />
         <Tab label="Team" />
+        <Tab label="Activity" />
       </Tabs>
 
       {/* Towers tab */}
@@ -191,7 +193,7 @@ export default function ProjectDetailPage() {
       {tab === 2 && (
         <Grid container spacing={2}>
           {tours.map(tour => {
-            const ts = statusConfig.tour[tour.status];
+            const ts = (statusConfig.tour as Record<string, { label: string; color: string; bg: string }>)[tour.status] ?? statusConfig.tour.draft;
             return (
               <Grid key={tour.id} size={{ xs: 12, sm: 6, md: 4 }}>
                 <Box component={Link} to={`/tours/${tour.id}`} sx={{ display: 'block', borderRadius: '16px', backgroundColor: colors.card, overflow: 'hidden', boxShadow: '0 2px 8px rgba(15,23,42,0.05)', textDecoration: 'none', transition: `all ${motion.durationNormal}`, '&:hover': { boxShadow: '0 8px 32px rgba(15,23,42,0.10)', transform: 'translateY(-2px)' } }}>
@@ -225,6 +227,13 @@ export default function ProjectDetailPage() {
               <Chip label={user.role} size="small" sx={{ height: 20, fontSize: '0.625rem', fontWeight: 600, color: colors.primary, backgroundColor: colors.primarySoft, borderRadius: '5px' }} />
             </Box>
           ))}
+        </Box>
+      )}
+
+      {/* Activity tab */}
+      {tab === 4 && (
+        <Box sx={{ borderRadius: '20px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', p: 3 }}>
+          <ActivityFeed logs={mockAuditLogs.filter(l => l.projectId === projectId)} />
         </Box>
       )}
     </Box>

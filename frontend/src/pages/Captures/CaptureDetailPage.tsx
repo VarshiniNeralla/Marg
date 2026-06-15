@@ -3,7 +3,8 @@ import { useParams, Link } from 'react-router-dom';
 import { Box, Typography, Chip, Grid, TextField, Alert } from '@mui/material';
 import { ArrowBackRounded, CheckRounded, CloseRounded, ReplayRounded, AccessTimeRounded, CameraAltRounded, FolderRounded, LayersRounded, PersonRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { getCaptureById, statusConfig, mockCaptures } from '@/data/mockData';
+import { getCaptureById, statusConfig, mockCaptures, mockAuditLogs } from '@/data/mockData';
+import ActivityFeed from '@shared/components/ActivityFeed/ActivityFeed';
 
 export default function CaptureDetailPage() {
   const { captureId } = useParams<{ captureId: string }>();
@@ -128,6 +129,15 @@ export default function CaptureDetailPage() {
                 <Typography sx={{ fontSize: '0.875rem', color: colors.textSecondary, lineHeight: 1.6 }}>{capture.reviewNotes}</Typography>
               </Box>
             )}
+
+            {/* Audit history for this capture */}
+            <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, p: 2.5, boxShadow: '0 2px 8px rgba(15,23,42,0.05)' }}>
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.07em', textTransform: 'uppercase', mb: 2 }}>Activity History</Typography>
+              <ActivityFeed
+                logs={mockAuditLogs.filter(l => l.entityId === captureId || (l.entityType === 'capture' && l.projectId === capture.projectId)).slice(0, 5)}
+                compact
+              />
+            </Box>
           </Box>
         </Grid>
       </Grid>
