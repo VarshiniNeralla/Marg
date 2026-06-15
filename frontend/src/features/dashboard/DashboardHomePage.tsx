@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Box, Typography, Grid, Chip, LinearProgress, Divider } from '@mui/material';
 import {
   FolderRounded,
@@ -20,6 +20,7 @@ import {
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import { useAuthStore } from '@store/authStore';
+import OnboardingWizard, { isOnboarded } from '@shared/components/OnboardingWizard/OnboardingWizard';
 
 // ── Mock data ──────────────────────────────────────────────────────────────────
 
@@ -71,9 +72,11 @@ export default function DashboardHomePage() {
   const user = useAuthStore((s) => s.user);
   const firstName = user?.name?.split(' ')[0] ?? 'there';
   const greeting = getGreeting();
+  const [showOnboarding, setShowOnboarding] = useState(() => !isOnboarded());
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+      <OnboardingWizard open={showOnboarding} onClose={() => setShowOnboarding(false)} />
 
       {/* ── HERO ──────────────────────────────────────────────────────────────── */}
       <Box

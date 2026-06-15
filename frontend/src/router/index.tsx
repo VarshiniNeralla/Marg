@@ -1,16 +1,17 @@
 import React, { lazy, Suspense } from 'react';
-import { createBrowserRouter, RouterProvider, Outlet, Navigate } from 'react-router-dom';
+import { createBrowserRouter, RouterProvider, Outlet } from 'react-router-dom';
 
 import { ProtectedRoute, AdminRoute, GuestRoute } from './guards';
 import PublicLayout from '@layouts/PublicLayout';
+import LandingLayout from '@layouts/LandingLayout';
 import DashboardLayout from '@layouts/DashboardLayout';
 import LoadingScreen from '@shared/components/LoadingScreen/LoadingScreen';
-import { useAuthStore } from '@store/authStore';
 
-function RootRedirect() {
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  return <Navigate to={isAuthenticated ? '/dashboard' : '/login'} replace />;
-}
+// ── Landing ───────────────────────────────────────────────────────────────────
+const LandingPage  = lazy(() => import('@/pages/Landing/LandingPage'));
+const FeaturesPage = lazy(() => import('@/pages/Landing/FeaturesPage'));
+const PricingPage  = lazy(() => import('@/pages/Landing/PricingPage'));
+const ContactPage  = lazy(() => import('@/pages/Landing/ContactPage'));
 
 function PageSuspense({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<LoadingScreen />}>{children}</Suspense>;
@@ -59,7 +60,18 @@ const OrganizationsPage  = lazy(() => import('@/pages/Organizations/Organization
 const AccessPage         = lazy(() => import('@/pages/Access/AccessPage'));
 
 const router = createBrowserRouter([
-  // Public routes
+  // Landing routes (public, no auth required, no GuestRoute)
+  {
+    element: <LandingLayout />,
+    children: [
+      { path: '/',          element: <PageSuspense><LandingPage /></PageSuspense> },
+      { path: '/features',  element: <PageSuspense><FeaturesPage /></PageSuspense> },
+      { path: '/pricing',   element: <PageSuspense><PricingPage /></PageSuspense> },
+      { path: '/contact',   element: <PageSuspense><ContactPage /></PageSuspense> },
+    ],
+  },
+
+  // Auth routes
   {
     element: <PublicLayout />,
     children: [
@@ -120,15 +132,19 @@ const router = createBrowserRouter([
     ],
   },
 
-  { path: '/', element: <RootRedirect /> },
-
   {
     path: '*',
     element: (
       <PublicLayout>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', flexDirection: 'column', gap: 16, color: '#64748b' }}>
-          <span style={{ fontSize: '3rem', fontWeight: 700, color: '#e2e8f0' }}>404</span>
-          <p style={{ fontSize: '1rem' }}>Page not found.</p>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '80vh', flexDirection: 'column', gap: 16, color: '#64748b', textAlign: 'center', padding: '0 24px' }}>
+          <div style={{ fontSize: '5rem', fontWeight: 800, color: '#e2e8f0', lineHeight: 1, letterSpacing: '-0.05em', fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif' }}>404</div>
+          <div>
+            <p style={{ fontSize: '1.25rem', fontWeight: 700, color: '#0f172a', margin: '0 0 8px', letterSpacing: '-0.03em' }}>Page not found</p>
+            <p style={{ fontSize: '0.9375rem', color: '#64748b', margin: 0 }}>The page you're looking for doesn't exist or has been moved.</p>
+          </div>
+          <a href="/" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 24px', borderRadius: '10px', background: 'linear-gradient(135deg, #2563eb 0%, #1a56db 100%)', color: '#fff', fontWeight: 600, fontSize: '0.9375rem', textDecoration: 'none', boxShadow: '0 4px 14px rgba(37,99,235,0.28)' }}>
+            ← Back to homepage
+          </a>
         </div>
       </PublicLayout>
     ),

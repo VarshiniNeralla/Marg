@@ -5,6 +5,16 @@ import { ArrowBackRounded, CheckRounded, CloseRounded, ReplayRounded, AccessTime
 import { colors, motion } from '@theme/tokens';
 import { getCaptureById, statusConfig, mockCaptures, mockAuditLogs } from '@/data/mockData';
 import ActivityFeed from '@shared/components/ActivityFeed/ActivityFeed';
+import ProcessingPipeline, { type PipelineStage } from '@shared/components/ProcessingPipeline/ProcessingPipeline';
+
+const reviewStatusToPipeline: Record<string, PipelineStage> = {
+  uploaded: 'uploaded',
+  assigned: 'queued',
+  reviewing: 'processing',
+  changes_requested: 'processing',
+  approved: 'reviewed',
+  published: 'published',
+};
 
 export default function CaptureDetailPage() {
   const { captureId } = useParams<{ captureId: string }>();
@@ -100,6 +110,12 @@ export default function CaptureDetailPage() {
                   </Box>
                 </Box>
               ))}
+            </Box>
+
+            {/* Processing pipeline */}
+            <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, p: 2.5, boxShadow: '0 2px 8px rgba(15,23,42,0.05)' }}>
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.07em', textTransform: 'uppercase', mb: 2 }}>Processing Pipeline</Typography>
+              <ProcessingPipeline currentStage={reviewStatusToPipeline[capture.reviewStatus] ?? 'uploaded'} />
             </Box>
 
             {/* Review panel */}

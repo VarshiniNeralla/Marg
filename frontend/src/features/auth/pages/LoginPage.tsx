@@ -22,6 +22,28 @@ const labelSx = {
   mb: '6px',
 };
 
+// Calm, enterprise-grade field — taller, soft border, subtle focus
+const inputSx = {
+  '& .MuiOutlinedInput-root': {
+    borderRadius: '12px',
+    height: '52px',
+    backgroundColor: '#fff',
+    fontSize: '0.9375rem',
+    fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
+    transition: 'border-color 140ms, box-shadow 140ms',
+    '& .MuiOutlinedInput-notchedOutline': { borderColor: '#e5e7eb' },
+    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#d1d5db' },
+    '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#9ca3af', borderWidth: '1px' },
+    '&.Mui-focused': { boxShadow: '0 0 0 4px rgba(15,23,42,0.05)' },
+  },
+  '& .MuiInputLabel-root': { display: 'none' },
+  '& .MuiInputBase-input': {
+    fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
+    py: 0,
+    '&::placeholder': { color: '#9ca3af', opacity: 1 },
+  },
+};
+
 export default function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -57,8 +79,8 @@ export default function LoginPage() {
 
   return (
     <AuthCard
-      title="Marg"
-      subtitle="Construction Visibility, Reimagined."
+      title="Welcome back"
+      subtitle="Sign in to your Horizon workspace"
       footer={
         <Typography
           sx={{
@@ -67,7 +89,7 @@ export default function LoginPage() {
             color: '#6b7280',
           }}
         >
-          New to this platform?{' '}
+          Don't have an account?{' '}
           <Link to="/register" style={{ color: colors.primary, fontWeight: 600, textDecoration: 'none' }}>
             Register
           </Link>
@@ -87,7 +109,7 @@ export default function LoginPage() {
         )}
 
         {/* Email field */}
-        <Box sx={{ mb: '16px' }}>
+        <Box sx={{ mb: '20px' }}>
           <Typography component="label" htmlFor="login-email" sx={labelSx}>
             Email
           </Typography>
@@ -100,33 +122,20 @@ export default function LoginPage() {
             error={!!errors.email}
             helperText={errors.email?.message}
             {...register('email')}
-            sx={{
-              '& .MuiOutlinedInput-root': {
-                borderRadius: '10px',
-                height: '48px',
-                backgroundColor: '#fff',
-                fontSize: '0.9375rem',
-                fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
-                '& .MuiOutlinedInput-notchedOutline': { borderColor: '#e5e7eb' },
-                '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#d1d5db' },
-                '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: colors.primary, borderWidth: '1.5px' },
-                '&.Mui-focused': { boxShadow: `0 0 0 3px ${colors.primaryRing}` },
-              },
-              '& .MuiInputLabel-root': { display: 'none' },
-              '& .MuiInputBase-input': {
-                fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
-                py: 0,
-                '&::placeholder': { color: '#9ca3af', opacity: 1 },
-              },
-            }}
+            sx={inputSx}
           />
         </Box>
 
         {/* Password field */}
         <Box sx={{ mb: '24px' }}>
-          <Typography component="label" htmlFor="login-password" sx={labelSx}>
-            Password
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: '6px' }}>
+            <Typography component="label" htmlFor="login-password" sx={{ ...labelSx, mb: 0 }}>
+              Password
+            </Typography>
+            <Link to="/forgot-password" style={{ fontSize: '0.8125rem', color: colors.primary, fontWeight: 500, textDecoration: 'none' }}>
+              Forgot password?
+            </Link>
+          </Box>
           <Input
             id="login-password"
             isPassword
@@ -135,25 +144,7 @@ export default function LoginPage() {
             error={!!errors.password}
             helperText={errors.password?.message}
             {...register('password')}
-            sx={{
-              '& .MuiOutlinedInput-root': {
-                borderRadius: '10px',
-                height: '48px',
-                backgroundColor: '#fff',
-                fontSize: '0.9375rem',
-                fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
-                '& .MuiOutlinedInput-notchedOutline': { borderColor: '#e5e7eb' },
-                '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#d1d5db' },
-                '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: colors.primary, borderWidth: '1.5px' },
-                '&.Mui-focused': { boxShadow: `0 0 0 3px ${colors.primaryRing}` },
-              },
-              '& .MuiInputLabel-root': { display: 'none' },
-              '& .MuiInputBase-input': {
-                fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
-                py: 0,
-                '&::placeholder': { color: '#9ca3af', opacity: 1 },
-              },
-            }}
+            sx={inputSx}
           />
         </Box>
 
@@ -164,18 +155,21 @@ export default function LoginPage() {
           loading={isLoading}
           fullWidth
           sx={{
-            height: '48px',
-            borderRadius: '10px',
+            height: '52px',
+            borderRadius: '12px',
             fontSize: '1rem',
             fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
             fontWeight: 600,
             letterSpacing: '-0.01em',
-            background: '#2563eb',
-            boxShadow: 'none',
+            background: '#111827',
+            boxShadow: '0 1px 2px rgba(15,23,42,0.12)',
+            transition: 'transform 140ms, box-shadow 140ms, background-color 140ms',
             '&:hover': {
-              background: '#1d4ed8',
-              boxShadow: '0 4px 14px rgba(37,99,235,0.28)',
+              background: '#000',
+              boxShadow: '0 6px 18px rgba(15,23,42,0.18)',
+              transform: 'translateY(-1px)',
             },
+            '&:active': { transform: 'translateY(0)' },
           }}
         >
           Sign in

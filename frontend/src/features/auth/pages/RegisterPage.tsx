@@ -1,12 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Box, Alert } from '@mui/material';
-import {
-  PersonOutlined,
-  EmailOutlined,
-  LockOutlined,
-  BusinessOutlined,
-} from '@mui/icons-material';
+import { Box, Alert, Typography } from '@mui/material';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { registerSchema, type RegisterFormValues } from '../schemas/authSchemas';
@@ -16,6 +10,36 @@ import AuthCard from '../components/AuthCard';
 import Input from '@shared/components/Input/Input';
 import Button from '@shared/components/Button/Button';
 import { colors } from '@theme/tokens';
+
+const labelSx = {
+  display: 'block',
+  fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
+  fontSize: '0.875rem',
+  fontWeight: 500,
+  color: '#374151',
+  mb: '6px',
+};
+
+const inputSx = {
+  '& .MuiOutlinedInput-root': {
+    borderRadius: '12px',
+    height: '52px',
+    backgroundColor: '#fff',
+    fontSize: '0.9375rem',
+    fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
+    transition: 'border-color 140ms, box-shadow 140ms',
+    '& .MuiOutlinedInput-notchedOutline': { borderColor: '#e5e7eb' },
+    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#d1d5db' },
+    '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#9ca3af', borderWidth: '1px' },
+    '&.Mui-focused': { boxShadow: '0 0 0 4px rgba(15,23,42,0.05)' },
+  },
+  '& .MuiInputLabel-root': { display: 'none' },
+  '& .MuiInputBase-input': {
+    fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
+    py: 0,
+    '&::placeholder': { color: '#9ca3af', opacity: 1 },
+  },
+};
 
 export default function RegisterPage() {
   const navigate = useNavigate();
@@ -36,7 +60,6 @@ export default function RegisterPage() {
     setIsLoading(true);
     try {
       await authService.register(values);
-      // Registration successful — redirect to login with a success state
       navigate('/login', {
         state: { registered: true, email: values.email },
         replace: true,
@@ -51,77 +74,118 @@ export default function RegisterPage() {
   return (
     <AuthCard
       title="Create your account"
-      subtitle="Join your organization's workspace"
+      // subtitle="Start your free trial — no credit card required"
       footer={
-        <>
+        <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: '0.875rem', color: '#6b7280' }}>
           Already have an account?{' '}
-          <Link to="/login" style={{ color: colors.primary, fontWeight: 500 }}>
+          <Link to="/login" style={{ color: colors.primary, fontWeight: 600, textDecoration: 'none' }}>
             Sign in
           </Link>
-        </>
+        </Typography>
       }
     >
-      <Box
-        component="form"
-        onSubmit={handleSubmit(onSubmit)}
-        noValidate
-        sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}
-      >
+      <Box component="form" onSubmit={handleSubmit(onSubmit)} noValidate sx={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
         {serverError && (
-          <Alert severity="error" sx={{ borderRadius: '8px', fontSize: '0.875rem' }}>
+          <Alert severity="error" sx={{ borderRadius: '8px', fontSize: '0.875rem', mb: '16px' }}>
             {serverError}
           </Alert>
         )}
 
-        <Input
-          label="Full name"
-          autoComplete="name"
-          autoFocus
-          startIcon={<PersonOutlined fontSize="small" />}
-          error={!!errors.name}
-          helperText={errors.name?.message}
-          {...register('name')}
-        />
+        {/* Full name */}
+        <Box sx={{ mb: '16px' }}>
+          <Typography component="label" htmlFor="reg-name" sx={labelSx}>Full name</Typography>
+          <Input
+            id="reg-name"
+            placeholder="Jane Smith"
+            autoComplete="name"
+            autoFocus
+            error={!!errors.name}
+            helperText={errors.name?.message}
+            {...register('name')}
+            sx={inputSx}
+          />
+        </Box>
 
-        <Input
-          label="Email address"
-          type="email"
-          autoComplete="email"
-          startIcon={<EmailOutlined fontSize="small" />}
-          error={!!errors.email}
-          helperText={errors.email?.message}
-          {...register('email')}
-        />
+        {/* Email */}
+        <Box sx={{ mb: '16px' }}>
+          <Typography component="label" htmlFor="reg-email" sx={labelSx}>Work email</Typography>
+          <Input
+            id="reg-email"
+            type="email"
+            placeholder="jane@company.com"
+            autoComplete="email"
+            error={!!errors.email}
+            helperText={errors.email?.message}
+            {...register('email')}
+            sx={inputSx}
+          />
+        </Box>
 
-        <Input
-          label="Password"
-          isPassword
-          autoComplete="new-password"
-          startIcon={<LockOutlined fontSize="small" />}
-          error={!!errors.password}
-          helperText={errors.password?.message ?? 'Min 8 chars, 1 uppercase, 1 number, 1 special'}
-          {...register('password')}
-        />
+        {/* Password */}
+        <Box sx={{ mb: '16px' }}>
+          <Typography component="label" htmlFor="reg-password" sx={labelSx}>Password</Typography>
+          <Input
+            id="reg-password"
+            isPassword
+            placeholder="Min 8 chars, 1 uppercase, 1 number"
+            autoComplete="new-password"
+            error={!!errors.password}
+            helperText={errors.password?.message}
+            {...register('password')}
+            sx={inputSx}
+          />
+        </Box>
 
-        <Input
-          label="Organization slug"
-          autoComplete="off"
-          startIcon={<BusinessOutlined fontSize="small" />}
-          error={!!errors.org_slug}
-          helperText={errors.org_slug?.message ?? 'Use "demo" for the default organization'}
-          {...register('org_slug')}
-        />
+        {/* Org slug */}
+        <Box sx={{ mb: '22px' }}>
+          <Typography component="label" htmlFor="reg-org" sx={labelSx}>Organization slug</Typography>
+          <Input
+            id="reg-org"
+            placeholder="your-company"
+            autoComplete="off"
+            error={!!errors.org_slug}
+            helperText={errors.org_slug?.message ?? 'Lowercase, hyphens only — use "demo" for default'}
+            {...register('org_slug')}
+            sx={inputSx}
+          />
+        </Box>
 
         <Button
           variant="primary"
           type="submit"
           loading={isLoading}
           fullWidth
-          size="large"
-          sx={{ mt: 0.5 }}
+          sx={{
+            height: '52px',
+            borderRadius: '12px',
+            fontSize: '1rem',
+            fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
+            fontWeight: 600,
+            letterSpacing: '-0.01em',
+            background: '#111827',
+            boxShadow: '0 1px 2px rgba(15,23,42,0.12)',
+            transition: 'transform 140ms, box-shadow 140ms, background-color 140ms',
+            '&:hover': {
+              background: '#000',
+              boxShadow: '0 6px 18px rgba(15,23,42,0.18)',
+              transform: 'translateY(-1px)',
+            },
+            '&:active': { transform: 'translateY(0)' },
+          }}
         >
           Create account
         </Button>
+
+        <Typography sx={{ fontSize: '0.75rem', color: '#9ca3af', textAlign: 'center', mt: 1.5 }}>
+          By creating an account you agree to our{' '}
+          <Box component="span" sx={{ '& a': { color: '#6b7280', textDecoration: 'none', '&:hover': { color: colors.textStrong } } }}>
+            <a href="/">Terms of Service</a>
+          </Box>{' '}
+          and{' '}
+          <Box component="span" sx={{ '& a': { color: '#6b7280', textDecoration: 'none', '&:hover': { color: colors.textStrong } } }}>
+            <a href="/">Privacy Policy</a>
+          </Box>
+        </Typography>
       </Box>
     </AuthCard>
   );

@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     )
 
     # ── Application ───────────────────────────────────────────────────────────
-    APP_NAME: str = "Marg"
+    APP_NAME: str = "Horizon"
     APP_ENV: str = "development"
     DEBUG: bool = True
     FRONTEND_URL: str = "http://localhost:5173"
@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     EMAIL_FROM: str = "noreply@yourdomain.com"
-    EMAIL_FROM_NAME: str = "Marg"
+    EMAIL_FROM_NAME: str = "Horizon"
 
     # ── CORS ──────────────────────────────────────────────────────────────────
     # Stored as a comma-separated string in .env; parsed into a list below.

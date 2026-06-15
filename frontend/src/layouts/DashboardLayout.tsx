@@ -174,7 +174,11 @@ export default function DashboardLayout() {
         </Box>
 
         {/* Page content */}
-        <Box component="main" sx={{ flex: 1, width: '100%', maxWidth: 1280, mx: 'auto', px: { xs: 2, md: 4, lg: 5 }, py: { xs: 3, md: 5 } }}>
+        <Box component="main" key={location.pathname} sx={{
+          flex: 1, width: '100%', maxWidth: 1280, mx: 'auto', px: { xs: 2, md: 4, lg: 5 }, py: { xs: 3, md: 5 },
+          animation: 'pageFadeIn 200ms ease-out',
+          '@keyframes pageFadeIn': { from: { opacity: 0, transform: 'translateY(6px)' }, to: { opacity: 1, transform: 'translateY(0)' } },
+        }}>
           <Outlet />
         </Box>
       </Box>

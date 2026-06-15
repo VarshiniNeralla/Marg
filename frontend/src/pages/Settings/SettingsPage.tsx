@@ -1,10 +1,29 @@
 import React, { useState } from 'react';
-import { Box, Typography, TextField, Switch, Divider, Select, MenuItem } from '@mui/material';
+import { Box, Typography, TextField, Switch, Select, MenuItem, Snackbar, Alert } from '@mui/material';
 import {
   PersonRounded, BusinessRounded, PeopleRounded, NotificationsRounded,
-  LockRounded, PaletteRounded,
+  LockRounded, PaletteRounded, CheckRounded, WarningAmberRounded,
 } from '@mui/icons-material';
-import { colors } from '@theme/tokens';
+import { colors, motion } from '@theme/tokens';
+import { useAuthStore } from '@store/authStore';
+
+// ── Storage helpers ───────────────────────────────────────────────────────────
+
+const STORAGE_KEY = 'sitesurelabs_settings';
+
+function loadSettings(): Record<string, unknown> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function saveSettings(updates: Record<string, unknown>) {
+  const current = loadSettings();
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, ...updates }));
+}
+
+// ── Shared primitives ─────────────────────────────────────────────────────────
 
 const tabs = [
   { key: 'account',       label: 'Account',        icon: <PersonRounded sx={{ fontSize: 16 }} /> },
@@ -48,73 +67,148 @@ function FieldRow({ label, helper, children }: { label: string; helper?: string;
   );
 }
 
-function SaveButton({ onClick }: { onClick?: () => void }) {
-  const [saved, setSaved] = useState(false);
-  function handleClick() {
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-    onClick?.();
-  }
+interface FormActionsProps {
+  isDirty: boolean;
+  onSave: () => void;
+  onDiscard: () => void;
+}
+
+function FormActions({ isDirty, onSave, onDiscard }: FormActionsProps) {
   return (
-    <Box onClick={handleClick} sx={{ display: 'inline-flex', alignItems: 'center', px: 2.5, py: 1, borderRadius: '8px', background: saved ? 'rgba(22,163,74,0.12)' : colors.primaryGradient, color: saved ? '#16a34a' : '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s', boxShadow: saved ? 'none' : '0 4px 14px rgba(37,99,235,0.28)' }}>
-      {saved ? '✓ Saved' : 'Save changes'}
+    <Box sx={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 1.5 }}>
+      {isDirty && (
+        <>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 1.5, py: 0.5, borderRadius: '8px', backgroundColor: 'rgba(217,119,6,0.08)', fontSize: '0.8125rem', color: '#d97706', fontWeight: 500 }}>
+            <WarningAmberRounded sx={{ fontSize: 14 }} /> Unsaved changes
+          </Box>
+          <Box onClick={onDiscard} sx={{ px: 2, py: 0.875, borderRadius: '8px', border: `1px solid ${colors.border}`, color: colors.textSecondary, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', '&:hover': { color: colors.textStrong, borderColor: colors.textSubdued }, transition: `all ${motion.durationFast}` }}>
+            Discard
+          </Box>
+        </>
+      )}
+      <Box onClick={onSave} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.5, py: 1, borderRadius: '8px', background: isDirty ? colors.primaryGradient : 'rgba(22,163,74,0.12)', color: isDirty ? '#fff' : '#16a34a', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', boxShadow: isDirty ? '0 4px 14px rgba(37,99,235,0.28)' : 'none', transition: `all ${motion.durationFast}` }}>
+        {isDirty ? 'Save changes' : <><CheckRounded sx={{ fontSize: 14 }} /> Saved</>}
+      </Box>
     </Box>
   );
 }
 
-function AccountTab() {
+// ── Account Tab ───────────────────────────────────────────────────────────────
+
+function AccountTab({ onSaved }: { onSaved: () => void }) {
+  const user = useAuthStore(s => s.user);
+  const updateUser = useAuthStore(s => s.updateUser);
+
+  const stored = loadSettings();
+  const initial = {
+    name:        (stored.account_name as string) ?? user?.name ?? 'Ravi Kumar',
+    email:       (stored.account_email as string) ?? user?.email ?? 'admin@demo.com',
+    phone:       (stored.account_phone as string) ?? '+91 98765 43210',
+    designation: (stored.account_designation as string) ?? 'Site Manager',
+  };
+
+  const [form, setForm] = useState(initial);
+  const [saved, setSaved] = useState(initial);
+  const isDirty = JSON.stringify(form) !== JSON.stringify(saved);
+
+  function handleSave() {
+    saveSettings({
+      account_name: form.name, account_email: form.email,
+      account_phone: form.phone, account_designation: form.designation,
+    });
+    setSaved(form);
+    updateUser({ name: form.name });
+    onSaved();
+  }
+
+  function handleDiscard() { setForm(saved); }
+
   return (
     <>
       <SectionCard title="Personal Information">
         <FieldRow label="Full name" helper="Your display name across the platform">
-          <TextField fullWidth defaultValue="Ravi Kumar" size="small" sx={fieldSx} />
+          <TextField fullWidth value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} size="small" sx={fieldSx} />
         </FieldRow>
         <FieldRow label="Email address" helper="Used for login and notifications">
-          <TextField fullWidth defaultValue="admin@demo.com" size="small" sx={fieldSx} />
+          <TextField fullWidth value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} size="small" sx={fieldSx} />
         </FieldRow>
         <FieldRow label="Phone" helper="Optional — for SMS notifications">
-          <TextField fullWidth defaultValue="+91 98765 43210" size="small" sx={fieldSx} />
+          <TextField fullWidth value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} size="small" sx={fieldSx} />
         </FieldRow>
         <FieldRow label="Job title">
-          <TextField fullWidth defaultValue="Site Manager" size="small" sx={fieldSx} />
+          <TextField fullWidth value={form.designation} onChange={e => setForm(f => ({ ...f, designation: e.target.value }))} size="small" sx={fieldSx} />
         </FieldRow>
       </SectionCard>
-      <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}><SaveButton /></Box>
+      <FormActions isDirty={isDirty} onSave={handleSave} onDiscard={handleDiscard} />
     </>
   );
 }
 
-function OrganizationTab() {
+// ── Organization Tab ──────────────────────────────────────────────────────────
+
+function OrganizationTab({ onSaved }: { onSaved: () => void }) {
+  const stored = loadSettings();
+  const initial = {
+    name:    (stored.org_name as string) ?? 'My Home Constructions',
+    website: (stored.org_website as string) ?? 'https://myhomeconstructions.com',
+    address: (stored.org_address as string) ?? 'Hyderabad, Telangana, India',
+  };
+
+  const [form, setForm] = useState(initial);
+  const [saved, setSaved] = useState(initial);
+  const isDirty = JSON.stringify(form) !== JSON.stringify(saved);
+
+  function handleSave() {
+    saveSettings({ org_name: form.name, org_website: form.website, org_address: form.address });
+    setSaved(form);
+    onSaved();
+  }
+
   return (
     <>
       <SectionCard title="Organization Details">
         <FieldRow label="Organization name">
-          <TextField fullWidth defaultValue="My Home Constructions" size="small" sx={fieldSx} />
+          <TextField fullWidth value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} size="small" sx={fieldSx} />
         </FieldRow>
         <FieldRow label="Slug" helper="Used in URLs — cannot be changed after creation">
           <TextField fullWidth defaultValue="demo" size="small" disabled sx={{ ...fieldSx, opacity: 0.6 }} />
         </FieldRow>
         <FieldRow label="Website">
-          <TextField fullWidth defaultValue="https://myhomeconstructions.com" size="small" sx={fieldSx} />
+          <TextField fullWidth value={form.website} onChange={e => setForm(f => ({ ...f, website: e.target.value }))} size="small" sx={fieldSx} />
         </FieldRow>
         <FieldRow label="Address">
-          <TextField fullWidth defaultValue="Hyderabad, Telangana, India" size="small" sx={fieldSx} />
+          <TextField fullWidth value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} size="small" sx={fieldSx} />
         </FieldRow>
       </SectionCard>
-      <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}><SaveButton /></Box>
+      <FormActions isDirty={isDirty} onSave={handleSave} onDiscard={() => setForm(saved)} />
     </>
   );
 }
 
+// ── Team Tab ──────────────────────────────────────────────────────────────────
+
 function TeamTab() {
-  const members = [
+  const [members, setMembers] = useState([
     { name: 'Ravi Kumar',  email: 'ravi@demo.com',  role: 'Admin',    status: 'Active' },
     { name: 'Anil P',      email: 'anil@demo.com',  role: 'Reviewer', status: 'Active' },
     { name: 'Kiran Desai', email: 'kiran@demo.com', role: 'Member',   status: 'Active' },
     { name: 'Meena R',     email: 'meena@demo.com', role: 'Member',   status: 'Invited' },
-  ];
+  ]);
   const [showInvite, setShowInvite] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState('Member');
+
+  function handleInvite() {
+    if (!inviteEmail) return;
+    setMembers(m => [...m, { name: inviteEmail.split('@')[0], email: inviteEmail, role: inviteRole, status: 'Invited' }]);
+    setShowInvite(false);
+    setInviteEmail('');
+    setInviteRole('Member');
+  }
+
+  function handleRemove(email: string) {
+    setMembers(m => m.filter(x => x.email !== email));
+  }
 
   return (
     <>
@@ -126,20 +220,23 @@ function TeamTab() {
       </Box>
 
       {showInvite && (
-        <Box sx={{ p: 2.5, borderRadius: '12px', border: `1px solid ${colors.borderLight}`, mb: 3, display: 'flex', gap: 2, alignItems: 'center' }}>
-          <TextField placeholder="Email address" size="small" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} sx={{ flex: 1, ...fieldSx }} />
-          <Select defaultValue="Member" size="small" sx={{ minWidth: 120, borderRadius: '10px', fontSize: '0.875rem' }}>
+        <Box sx={{ p: 2.5, borderRadius: '12px', border: `1px solid ${colors.borderLight}`, mb: 3, display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+          <TextField placeholder="Email address" size="small" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} sx={{ flex: 1, minWidth: 200, ...fieldSx }} />
+          <Select value={inviteRole} onChange={e => setInviteRole(e.target.value as string)} size="small" sx={{ minWidth: 120, borderRadius: '10px', fontSize: '0.875rem' }}>
             {['Admin', 'Reviewer', 'Member'].map(r => <MenuItem key={r} value={r}>{r}</MenuItem>)}
           </Select>
-          <Box onClick={() => { setShowInvite(false); setInviteEmail(''); }} sx={{ px: 2, py: 0.875, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer' }}>
-            Send
+          <Box onClick={handleInvite} sx={{ px: 2, py: 0.875, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer' }}>
+            Send invitation
+          </Box>
+          <Box onClick={() => setShowInvite(false)} sx={{ px: 2, py: 0.875, borderRadius: '8px', border: `1px solid ${colors.border}`, color: colors.textMuted, fontSize: '0.875rem', cursor: 'pointer' }}>
+            Cancel
           </Box>
         </Box>
       )}
 
       <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', overflow: 'hidden' }}>
         {members.map((m, i) => (
-          <Box key={i} sx={{ display: 'flex', alignItems: 'center', gap: 2, px: 3, py: 2, borderBottom: i < members.length - 1 ? `1px solid ${colors.borderLight}` : 'none' }}>
+          <Box key={m.email} sx={{ display: 'flex', alignItems: 'center', gap: 2, px: 3, py: 2, borderBottom: i < members.length - 1 ? `1px solid ${colors.borderLight}` : 'none' }}>
             <Box sx={{ width: 36, height: 36, borderRadius: '50%', background: colors.primaryGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
               <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: '#fff' }}>{m.name[0]}</Typography>
             </Box>
@@ -153,6 +250,11 @@ function TeamTab() {
             <Box sx={{ px: 1.25, py: 0.25, borderRadius: '6px', fontSize: '0.6875rem', fontWeight: 600, color: m.status === 'Active' ? '#16a34a' : '#d97706', backgroundColor: m.status === 'Active' ? 'rgba(22,163,74,0.08)' : 'rgba(217,119,6,0.08)' }}>
               {m.status}
             </Box>
+            {m.role !== 'Admin' && (
+              <Box onClick={() => handleRemove(m.email)} sx={{ px: 1.5, py: 0.25, borderRadius: '6px', fontSize: '0.75rem', color: colors.danger, cursor: 'pointer', '&:hover': { backgroundColor: colors.dangerBg } }}>
+                Remove
+              </Box>
+            )}
           </Box>
         ))}
       </Box>
@@ -160,45 +262,80 @@ function TeamTab() {
   );
 }
 
-function NotificationsTab() {
-  const prefs = [
-    { key: 'capture_upload', label: 'Capture uploaded', sub: 'When a new capture is uploaded to any project', default: true },
-    { key: 'capture_review', label: 'Review required',  sub: 'When a capture is marked for your review',    default: true },
-    { key: 'tour_published', label: 'Tour published',   sub: 'When a virtual tour is published',            default: false },
-    { key: 'project_update', label: 'Project updates',  sub: 'Progress milestones and status changes',      default: true },
-    { key: 'team_invite',    label: 'Team invitations', sub: 'When someone invites you to a project',       default: true },
-    { key: 'weekly_digest',  label: 'Weekly digest',    sub: 'Summary of activity every Monday morning',    default: false },
-  ];
-  const [state, setState] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(prefs.map(p => [p.key, p.default]))
+// ── Notifications Tab ─────────────────────────────────────────────────────────
+
+const NOTIF_PREFS = [
+  { key: 'capture_upload', label: 'Capture uploaded',  sub: 'When a new capture is uploaded to any project', default: true },
+  { key: 'capture_review', label: 'Review required',   sub: 'When a capture is marked for your review',      default: true },
+  { key: 'tour_published', label: 'Tour published',    sub: 'When a virtual tour is published',              default: false },
+  { key: 'project_update', label: 'Project updates',   sub: 'Progress milestones and status changes',        default: true },
+  { key: 'team_invite',    label: 'Team invitations',  sub: 'When someone invites you to a project',         default: true },
+  { key: 'weekly_digest',  label: 'Weekly digest',     sub: 'Summary of activity every Monday morning',      default: false },
+];
+
+function NotificationsTab({ onSaved }: { onSaved: () => void }) {
+  const stored = loadSettings();
+  const initial: Record<string, boolean> = Object.fromEntries(
+    NOTIF_PREFS.map(p => [p.key, stored[`notif_${p.key}`] !== undefined ? stored[`notif_${p.key}`] as boolean : p.default])
   );
+  const [state, setState] = useState(initial);
+  const [saved, setSaved] = useState(initial);
+  const isDirty = JSON.stringify(state) !== JSON.stringify(saved);
+
+  function handleSave() {
+    const updates: Record<string, unknown> = {};
+    NOTIF_PREFS.forEach(p => { updates[`notif_${p.key}`] = state[p.key]; });
+    saveSettings(updates);
+    setSaved(state);
+    onSaved();
+  }
+
   return (
-    <SectionCard title="Email Notifications">
-      {prefs.map((p, i) => (
-        <Box key={p.key} sx={{ display: 'flex', alignItems: 'center', py: 1.75, borderBottom: i < prefs.length - 1 ? `1px solid ${colors.borderLight}` : 'none' }}>
-          <Box sx={{ flex: 1 }}>
-            <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong }}>{p.label}</Typography>
-            <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{p.sub}</Typography>
+    <>
+      <SectionCard title="Email Notifications">
+        {NOTIF_PREFS.map((p, i) => (
+          <Box key={p.key} sx={{ display: 'flex', alignItems: 'center', py: 1.75, borderBottom: i < NOTIF_PREFS.length - 1 ? `1px solid ${colors.borderLight}` : 'none' }}>
+            <Box sx={{ flex: 1 }}>
+              <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong }}>{p.label}</Typography>
+              <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{p.sub}</Typography>
+            </Box>
+            <Switch checked={state[p.key]} onChange={() => setState(s => ({ ...s, [p.key]: !s[p.key] }))} size="small" />
           </Box>
-          <Switch checked={state[p.key]} onChange={() => setState(s => ({ ...s, [p.key]: !s[p.key] }))} size="small" />
-        </Box>
-      ))}
-    </SectionCard>
+        ))}
+      </SectionCard>
+      <FormActions isDirty={isDirty} onSave={handleSave} onDiscard={() => setState(saved)} />
+    </>
   );
 }
 
-function SecurityTab() {
+// ── Security Tab ──────────────────────────────────────────────────────────────
+
+function SecurityTab({ onSaved }: { onSaved: () => void }) {
+  const [form, setForm] = useState({ current: '', newPw: '', confirm: '' });
+  const [error, setError] = useState('');
+  const isDirty = !!(form.current || form.newPw || form.confirm);
+
+  function handleSave() {
+    if (!form.current || !form.newPw || !form.confirm) { setError('Please fill in all password fields.'); return; }
+    if (form.newPw !== form.confirm) { setError('New passwords do not match.'); return; }
+    if (form.newPw.length < 8) { setError('New password must be at least 8 characters.'); return; }
+    setError('');
+    setForm({ current: '', newPw: '', confirm: '' });
+    onSaved();
+  }
+
   return (
     <>
+      {error && <Alert severity="error" sx={{ mb: 2, borderRadius: '10px' }}>{error}</Alert>}
       <SectionCard title="Change Password">
         <FieldRow label="Current password">
-          <TextField fullWidth type="password" placeholder="••••••••" size="small" sx={fieldSx} />
+          <TextField fullWidth type="password" placeholder="••••••••" size="small" value={form.current} onChange={e => setForm(f => ({ ...f, current: e.target.value }))} sx={fieldSx} />
         </FieldRow>
         <FieldRow label="New password">
-          <TextField fullWidth type="password" placeholder="••••••••" size="small" sx={fieldSx} />
+          <TextField fullWidth type="password" placeholder="••••••••" size="small" value={form.newPw} onChange={e => setForm(f => ({ ...f, newPw: e.target.value }))} sx={fieldSx} />
         </FieldRow>
         <FieldRow label="Confirm new password">
-          <TextField fullWidth type="password" placeholder="••••••••" size="small" sx={fieldSx} />
+          <TextField fullWidth type="password" placeholder="••••••••" size="small" value={form.confirm} onChange={e => setForm(f => ({ ...f, confirm: e.target.value }))} sx={fieldSx} />
         </FieldRow>
       </SectionCard>
       <SectionCard title="Two-Factor Authentication">
@@ -207,54 +344,77 @@ function SecurityTab() {
             <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong }}>Authenticator app</Typography>
             <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>Use Google Authenticator or similar</Typography>
           </Box>
-          <Box sx={{ px: 2, py: 0.75, borderRadius: '8px', border: `1px solid ${colors.borderLight}`, color: colors.textSecondary, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', '&:hover': { borderColor: colors.primary, color: colors.primary } }}>
+          <Box sx={{ px: 2, py: 0.75, borderRadius: '8px', border: `1px solid ${colors.borderLight}`, color: colors.textSecondary, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', '&:hover': { borderColor: colors.primary, color: colors.primary }, transition: `all ${motion.durationFast}` }}>
             Enable 2FA
           </Box>
         </Box>
       </SectionCard>
-      <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}><SaveButton /></Box>
+      <FormActions isDirty={isDirty} onSave={handleSave} onDiscard={() => { setForm({ current: '', newPw: '', confirm: '' }); setError(''); }} />
     </>
   );
 }
 
-function AppearanceTab() {
-  const [theme, setTheme] = useState<'light' | 'system'>('light');
-  const [density, setDensity] = useState<'comfortable' | 'compact'>('comfortable');
+// ── Appearance Tab ────────────────────────────────────────────────────────────
+
+function AppearanceTab({ onSaved }: { onSaved: () => void }) {
+  const stored = loadSettings();
+  const initial = {
+    theme:   (stored.appearance_theme as string) ?? 'light',
+    density: (stored.appearance_density as string) ?? 'comfortable',
+  };
+  const [form, setForm] = useState(initial);
+  const [saved, setSaved] = useState(initial);
+  const isDirty = JSON.stringify(form) !== JSON.stringify(saved);
+
+  function handleSave() {
+    saveSettings({ appearance_theme: form.theme, appearance_density: form.density });
+    setSaved(form);
+    onSaved();
+  }
+
   return (
-    <SectionCard title="Display Preferences">
-      <FieldRow label="Theme" helper="Light mode is currently the only supported mode">
-        <Box sx={{ display: 'flex', gap: 1.5 }}>
-          {(['light', 'system'] as const).map(t => (
-            <Box key={t} onClick={() => setTheme(t)} sx={{ px: 2.5, py: 1, borderRadius: '8px', border: `1.5px solid ${theme === t ? colors.primary : colors.borderLight}`, color: theme === t ? colors.primary : colors.textSecondary, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', textTransform: 'capitalize', transition: 'all 0.15s' }}>
-              {t === 'light' ? 'Light' : 'System'}
-            </Box>
-          ))}
-        </Box>
-      </FieldRow>
-      <FieldRow label="Density" helper="Controls spacing throughout the interface">
-        <Box sx={{ display: 'flex', gap: 1.5 }}>
-          {(['comfortable', 'compact'] as const).map(d => (
-            <Box key={d} onClick={() => setDensity(d)} sx={{ px: 2.5, py: 1, borderRadius: '8px', border: `1.5px solid ${density === d ? colors.primary : colors.borderLight}`, color: density === d ? colors.primary : colors.textSecondary, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', textTransform: 'capitalize', transition: 'all 0.15s' }}>
-              {d}
-            </Box>
-          ))}
-        </Box>
-      </FieldRow>
-    </SectionCard>
+    <>
+      <SectionCard title="Display Preferences">
+        <FieldRow label="Theme" helper="Light mode is currently the only supported mode">
+          <Box sx={{ display: 'flex', gap: 1.5 }}>
+            {(['light', 'system'] as const).map(t => (
+              <Box key={t} onClick={() => setForm(f => ({ ...f, theme: t }))} sx={{ px: 2.5, py: 1, borderRadius: '8px', border: `1.5px solid ${form.theme === t ? colors.primary : colors.borderLight}`, color: form.theme === t ? colors.primary : colors.textSecondary, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', textTransform: 'capitalize', transition: `all ${motion.durationFast}`, backgroundColor: form.theme === t ? colors.primarySoft : 'transparent' }}>
+                {t === 'light' ? 'Light' : 'System'}
+              </Box>
+            ))}
+          </Box>
+        </FieldRow>
+        <FieldRow label="Density" helper="Controls spacing throughout the interface">
+          <Box sx={{ display: 'flex', gap: 1.5 }}>
+            {(['comfortable', 'compact'] as const).map(d => (
+              <Box key={d} onClick={() => setForm(f => ({ ...f, density: d }))} sx={{ px: 2.5, py: 1, borderRadius: '8px', border: `1.5px solid ${form.density === d ? colors.primary : colors.borderLight}`, color: form.density === d ? colors.primary : colors.textSecondary, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', textTransform: 'capitalize', transition: `all ${motion.durationFast}`, backgroundColor: form.density === d ? colors.primarySoft : 'transparent' }}>
+                {d}
+              </Box>
+            ))}
+          </Box>
+        </FieldRow>
+      </SectionCard>
+      <FormActions isDirty={isDirty} onSave={handleSave} onDiscard={() => setForm(saved)} />
+    </>
   );
 }
 
-const tabContent: Record<string, React.ReactNode> = {
-  account:       <AccountTab />,
-  organization:  <OrganizationTab />,
-  team:          <TeamTab />,
-  notifications: <NotificationsTab />,
-  security:      <SecurityTab />,
-  appearance:    <AppearanceTab />,
-};
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
   const [active, setActive] = useState('account');
+  const [toastOpen, setToastOpen] = useState(false);
+
+  function handleSaved() { setToastOpen(true); }
+
+  const tabContent: Record<string, React.ReactNode> = {
+    account:       <AccountTab onSaved={handleSaved} />,
+    organization:  <OrganizationTab onSaved={handleSaved} />,
+    team:          <TeamTab />,
+    notifications: <NotificationsTab onSaved={handleSaved} />,
+    security:      <SecurityTab onSaved={handleSaved} />,
+    appearance:    <AppearanceTab onSaved={handleSaved} />,
+  };
 
   return (
     <Box>
@@ -266,31 +426,31 @@ export default function SettingsPage() {
       </Box>
 
       <Box sx={{ display: 'flex', gap: 4, alignItems: 'flex-start' }}>
-        {/* Sidebar */}
         <Box sx={{ width: 200, flexShrink: 0 }}>
           {tabs.map(t => (
-            <Box
-              key={t.key}
-              onClick={() => setActive(t.key)}
-              sx={{
-                display: 'flex', alignItems: 'center', gap: 1.25, px: 1.5, py: 1, borderRadius: '8px', cursor: 'pointer', mb: 0.25,
-                backgroundColor: active === t.key ? colors.primarySoft : 'transparent',
-                color: active === t.key ? colors.primary : colors.textSecondary,
-                fontSize: '0.875rem', fontWeight: active === t.key ? 600 : 400,
-                transition: 'all 0.15s',
-                '&:hover': { backgroundColor: active === t.key ? colors.primarySoft : colors.bg, color: colors.textStrong },
-              }}
-            >
+            <Box key={t.key} onClick={() => setActive(t.key)} sx={{
+              display: 'flex', alignItems: 'center', gap: 1.25, px: 1.5, py: 1, borderRadius: '8px', cursor: 'pointer', mb: 0.25,
+              backgroundColor: active === t.key ? colors.primarySoft : 'transparent',
+              color: active === t.key ? colors.primary : colors.textSecondary,
+              fontSize: '0.875rem', fontWeight: active === t.key ? 600 : 400,
+              transition: `all ${motion.durationFast}`,
+              '&:hover': { backgroundColor: active === t.key ? colors.primarySoft : colors.bg, color: colors.textStrong },
+            }}>
               {t.icon} {t.label}
             </Box>
           ))}
         </Box>
 
-        {/* Content */}
         <Box sx={{ flex: 1, minWidth: 0 }}>
           {tabContent[active]}
         </Box>
       </Box>
+
+      <Snackbar open={toastOpen} autoHideDuration={3000} onClose={() => setToastOpen(false)} anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}>
+        <Alert severity="success" sx={{ borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }} onClose={() => setToastOpen(false)}>
+          Settings saved successfully
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }

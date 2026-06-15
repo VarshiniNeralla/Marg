@@ -9,8 +9,33 @@ const statuses = [
   { key: 'queued',     label: 'Queued',     color: '#64748b', bg: 'rgba(100,116,139,0.08)' },
   { key: 'uploading',  label: 'Uploading',  color: '#2563eb', bg: 'rgba(37,99,235,0.08)' },
   { key: 'processing', label: 'Processing', color: '#d97706', bg: 'rgba(217,119,6,0.08)' },
+  { key: 'converting', label: 'Converting', color: '#7c3aed', bg: 'rgba(124,58,237,0.08)' },
   { key: 'ready',      label: 'Ready',      color: '#16a34a', bg: 'rgba(22,163,74,0.08)' },
 ];
+
+const RAW_EXTENSIONS = ['.dng', '.insp', '.insv'];
+const ACCEPTED_EXTENSIONS = ['.jpg', '.jpeg', '.png', ...RAW_EXTENSIONS];
+
+function getFileExtension(name: string) {
+  return name.slice(name.lastIndexOf('.')).toLowerCase();
+}
+
+function isRawFormat(name: string) {
+  return RAW_EXTENSIONS.includes(getFileExtension(name));
+}
+
+function getFileTypeBadge(name: string) {
+  const ext = getFileExtension(name);
+  const map: Record<string, { label: string; color: string; bg: string }> = {
+    '.jpg':  { label: 'JPEG', color: '#2563eb', bg: 'rgba(37,99,235,0.1)' },
+    '.jpeg': { label: 'JPEG', color: '#2563eb', bg: 'rgba(37,99,235,0.1)' },
+    '.png':  { label: 'PNG',  color: '#0891b2', bg: 'rgba(8,145,178,0.1)' },
+    '.dng':  { label: 'RAW',  color: '#7c3aed', bg: 'rgba(124,58,237,0.1)' },
+    '.insp': { label: 'INSP', color: '#d97706', bg: 'rgba(217,119,6,0.1)' },
+    '.insv': { label: 'INSV', color: '#d97706', bg: 'rgba(217,119,6,0.1)' },
+  };
+  return map[ext] ?? { label: ext.toUpperCase().replace('.', ''), color: '#64748b', bg: 'rgba(100,116,139,0.1)' };
+}
 
 const fieldSx = {
   '& .MuiOutlinedInput-root': {
@@ -40,13 +65,16 @@ export default function CaptureUploadPage() {
 
   function addFiles(fileList: FileList) {
     const newFiles: FileState[] = Array.from(fileList)
-      .filter(f => f.type.startsWith('image/'))
+      .filter(f => {
+        const ext = getFileExtension(f.name);
+        return f.type.startsWith('image/') || ACCEPTED_EXTENSIONS.includes(ext);
+      })
       .map(f => ({
         file: f,
         id: `${f.name}-${f.size}`,
         status: 'queued',
         progress: 0,
-        preview: URL.createObjectURL(f),
+        preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : null,
       }));
     setFiles(prev => [...prev, ...newFiles]);
   }
@@ -77,8 +105,15 @@ export default function CaptureUploadPage() {
 
       setFiles(prev => prev.map((f, i) => {
         const fileStep = Math.floor(step / (totalSteps / files.length));
+        const isRaw = isRawFormat(f.file.name);
         if (i < fileStep) return { ...f, status: 'ready', progress: 100 };
-        if (i === fileStep) return { ...f, status: step % 3 === 0 ? 'processing' : 'uploading', progress: Math.min(100, ((step % 12) / 12) * 100) };
+        if (i === fileStep) {
+          const subStep = step % 12;
+          let status = 'uploading';
+          if (subStep > 8 && isRaw) status = 'converting';
+          else if (subStep > 5) status = 'processing';
+          return { ...f, status, progress: Math.min(100, (subStep / 12) * 100) };
+        }
         return f;
       }));
 
@@ -152,10 +187,15 @@ export default function CaptureUploadPage() {
             onClick={() => inputRef.current?.click()}
             sx={{ borderRadius: '20px', border: `2px dashed ${dragging ? colors.primary : colors.border}`, backgroundColor: dragging ? colors.primarySoft : colors.card, p: 4, textAlign: 'center', cursor: 'pointer', mb: 3, transition: `all ${motion.durationFast}`, '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft } }}
           >
-            <input ref={inputRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => e.target.files && addFiles(e.target.files)} />
+            <input ref={inputRef} type="file" accept=".jpg,.jpeg,.png,.dng,.insp,.insv,image/*" multiple style={{ display: 'none' }} onChange={e => e.target.files && addFiles(e.target.files)} />
             <CloudUploadRounded sx={{ fontSize: 40, color: dragging ? colors.primary : colors.textSubdued, mb: 1 }} />
             <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600, color: colors.textStrong, mb: 0.25 }}>Drop panoramic images here</Typography>
-            <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>or click to browse · JPG, PNG supported</Typography>
+            <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, mb: 1 }}>or click to browse</Typography>
+            <Box sx={{ display: 'flex', gap: 0.75, justifyContent: 'center', flexWrap: 'wrap' }}>
+              {[{ label: 'JPG', c: '#2563eb' }, { label: 'PNG', c: '#0891b2' }, { label: 'DNG', c: '#7c3aed' }, { label: 'INSP', c: '#d97706' }, { label: 'INSV', c: '#d97706' }].map(b => (
+                <Box key={b.label} sx={{ px: 0.875, py: 0.25, borderRadius: '4px', backgroundColor: `${b.c}15`, fontSize: '0.625rem', fontWeight: 700, color: b.c }}>{b.label}</Box>
+              ))}
+            </Box>
           </Box>
 
           {/* File list */}
@@ -185,10 +225,16 @@ export default function CaptureUploadPage() {
                         </Box>
                       )}
                       <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong }}>{f.file.name}</Typography>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.25 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.25 }}>
+                          <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong, flex: 1, minWidth: 0 }}>{f.file.name}</Typography>
+                          {(() => { const badge = getFileTypeBadge(f.file.name); return <Box sx={{ px: 0.875, py: 0.125, borderRadius: '4px', fontSize: '0.5625rem', fontWeight: 700, color: badge.color, backgroundColor: badge.bg, flexShrink: 0 }}>{badge.label}</Box>; })()}
+                        </Box>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0 }}>
                           <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>{(f.file.size / 1024 / 1024).toFixed(1)} MB</Typography>
                           <Box sx={{ px: 1, py: 0.125, borderRadius: '4px', fontSize: '0.625rem', fontWeight: 700, color: st.color, backgroundColor: st.bg }}>{st.label}</Box>
+                          {isRawFormat(f.file.name) && f.status === 'queued' && (
+                            <Box sx={{ px: 1, py: 0.125, borderRadius: '4px', fontSize: '0.5625rem', fontWeight: 600, color: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.08)' }}>Pipeline required</Box>
+                          )}
                         </Box>
                         {f.status === 'uploading' && (
                           <LinearProgress variant="determinate" value={f.progress} sx={{ mt: 0.5, height: 2, borderRadius: '99px', backgroundColor: colors.primarySoft, '& .MuiLinearProgress-bar': { backgroundColor: colors.primary } }} />

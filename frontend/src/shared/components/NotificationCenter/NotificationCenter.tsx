@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Box, Typography, IconButton, Popover, Badge } from '@mui/material';
-import { NotificationsRounded, CameraAltRounded, CheckCircleRounded, ViewInArRounded, BugReportRounded, UploadFileRounded, CloseRounded, DoneAllRounded } from '@mui/icons-material';
+import { useNavigate } from 'react-router-dom';
+import { Box, Typography, IconButton, Popover, Badge, Snackbar, Button } from '@mui/material';
+import { NotificationsRounded, CameraAltRounded, CheckCircleRounded, ViewInArRounded, BugReportRounded, UploadFileRounded, CloseRounded, DoneAllRounded, DeleteOutlineRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { mockNotifications, type MockNotification, type NotifType } from '@/data/mockData';
 
@@ -27,13 +27,45 @@ const notifColor: Record<NotifType, string> = {
 export default function NotificationCenter() {
   const [notifs, setNotifs] = useState<MockNotification[]>([...mockNotifications]);
   const [anchor, setAnchor] = useState<null | HTMLElement>(null);
+  const [deletedNotif, setDeletedNotif] = useState<MockNotification | null>(null);
+  const [undoOpen, setUndoOpen] = useState(false);
+  const navigate = useNavigate();
+
   const unread = notifs.filter(n => !n.read).length;
 
   function markAllRead() {
     setNotifs(prev => prev.map(n => ({ ...n, read: true })));
   }
+
   function markRead(id: string) {
     setNotifs(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+  }
+
+  function handleNotifClick(n: MockNotification) {
+    markRead(n.id);
+    setAnchor(null);
+    navigate(n.link);
+  }
+
+  function handleDelete(e: React.MouseEvent, n: MockNotification) {
+    e.stopPropagation();
+    e.preventDefault();
+    setDeletedNotif(n);
+    setNotifs(prev => prev.filter(x => x.id !== n.id));
+    setUndoOpen(true);
+  }
+
+  function handleUndo() {
+    if (deletedNotif) {
+      setNotifs(prev => {
+        const idx = mockNotifications.findIndex(n => n.id === deletedNotif.id);
+        const newList = [...prev];
+        newList.splice(idx, 0, deletedNotif);
+        return newList;
+      });
+      setDeletedNotif(null);
+    }
+    setUndoOpen(false);
   }
 
   return (
@@ -84,15 +116,16 @@ export default function NotificationCenter() {
             return (
               <Box
                 key={n.id}
-                component={Link}
-                to={n.link}
-                onClick={() => { markRead(n.id); setAnchor(null); }}
+                onClick={() => handleNotifClick(n)}
                 sx={{
-                  display: 'flex', gap: 1.5, px: 2.5, py: 1.75, textDecoration: 'none',
+                  display: 'flex', gap: 1.5, px: 2.5, py: 1.75,
                   borderBottom: i < notifs.length - 1 ? `1px solid ${colors.borderLight}` : 'none',
                   backgroundColor: n.read ? 'transparent' : `${col}06`,
                   transition: `background ${motion.durationFast}`,
+                  cursor: 'pointer',
                   '&:hover': { backgroundColor: colors.bg },
+                  '&:hover .notif-delete': { opacity: 1 },
+                  position: 'relative',
                 }}
               >
                 <Box sx={{ width: 32, height: 32, borderRadius: '8px', backgroundColor: `${col}15`, color: col, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, mt: 0.25 }}>{ic}</Box>
@@ -104,11 +137,34 @@ export default function NotificationCenter() {
                   <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.25, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{n.body}</Typography>
                   <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, mt: 0.5 }}>{n.createdAt}</Typography>
                 </Box>
+                {/* Delete button */}
+                <Box
+                  className="notif-delete"
+                  onClick={e => handleDelete(e, n)}
+                  sx={{ position: 'absolute', top: 10, right: 10, width: 24, height: 24, borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: `opacity ${motion.durationFast}`, '&:hover': { backgroundColor: colors.dangerBg, color: colors.danger }, color: colors.textSubdued }}
+                >
+                  <DeleteOutlineRounded sx={{ fontSize: 14 }} />
+                </Box>
               </Box>
             );
           })}
         </Box>
       </Popover>
+
+      {/* Undo snackbar */}
+      <Snackbar
+        open={undoOpen}
+        autoHideDuration={5000}
+        onClose={() => setUndoOpen(false)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        message="Notification deleted"
+        action={
+          <Button size="small" onClick={handleUndo} sx={{ color: '#60a5fa', fontWeight: 700, fontSize: '0.875rem' }}>
+            UNDO
+          </Button>
+        }
+        sx={{ '& .MuiSnackbarContent-root': { borderRadius: '12px', fontSize: '0.875rem' } }}
+      />
     </>
   );
 }

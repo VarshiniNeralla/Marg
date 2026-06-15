@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import { Box, Typography, Grid, Chip, TextField, Select, MenuItem } from '@mui/material';
 import { Link } from 'react-router-dom';
-import { AddRounded, BugReportRounded, WarningRounded } from '@mui/icons-material';
+import { AddRounded, BugReportRounded, WarningRounded, DeleteOutlineRounded } from '@mui/icons-material';
+import EmptyState from '@shared/components/EmptyState/EmptyState';
+import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { colors, motion } from '@theme/tokens';
 import { mockDefects, statusConfig, mockProjects, mockUsers, type MockDefect } from '@/data/mockData';
 
@@ -82,6 +84,13 @@ export default function DefectsPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [filter, setFilter] = useState<'all' | 'open' | 'in_progress' | 'resolved' | 'closed'>('all');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+
+  function handleDelete() {
+    if (!deleteTarget) return;
+    setDefects(prev => prev.filter(d => d.id !== deleteTarget));
+    setDeleteTarget(null);
+  }
 
   const filtered = defects
     .filter(d => filter === 'all' ? true : d.status === filter)
@@ -169,19 +178,34 @@ export default function DefectsPage() {
                 {d.captureId && (
                   <Box component={Link} to={`/captures/${d.captureId}`} sx={{ fontSize: '0.75rem', color: colors.primary, textDecoration: 'none', fontWeight: 500, '&:hover': { textDecoration: 'underline' } }}>View capture →</Box>
                 )}
+                <Box onClick={() => setDeleteTarget(d.id)} sx={{ display: 'flex', alignItems: 'center', gap: 0.375, color: colors.textSubdued, cursor: 'pointer', '&:hover': { color: colors.danger }, transition: `color ${motion.durationFast}`, fontSize: '0.75rem' }}>
+                  <DeleteOutlineRounded sx={{ fontSize: 14 }} /> Delete
+                </Box>
               </Box>
             </Box>
           );
         })}
         {filtered.length === 0 && (
-          <Box sx={{ py: 8, textAlign: 'center', color: colors.textMuted }}>
-            <BugReportRounded sx={{ fontSize: 40, color: colors.border, mb: 1 }} />
-            <Typography sx={{ fontSize: '0.9375rem', fontWeight: 500 }}>No defects found</Typography>
-          </Box>
+          <EmptyState
+            icon={<BugReportRounded />}
+            title="No defects found"
+            description="No defects match your current filters. Adjust the filters or create a new defect."
+            action={{ label: '+ Create Defect', onClick: () => setShowCreate(true) }}
+          />
         )}
       </Box>
 
       {showCreate && <CreateDefectModal onClose={() => setShowCreate(false)} onSave={d => setDefects(prev => [d, ...prev])} />}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete defect?"
+        description="This defect will be permanently removed. This action cannot be undone."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </Box>
   );
 }
