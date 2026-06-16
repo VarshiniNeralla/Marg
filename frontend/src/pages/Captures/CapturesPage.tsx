@@ -1,26 +1,33 @@
 import React, { useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { Box, Typography, Chip, InputBase } from '@mui/material';
-import {
-  CameraAltRounded, ViewInArRounded, SearchRounded, FolderRounded,
-  HomeRounded, LayersRounded, GridViewRounded, ViewListRounded,
-} from '@mui/icons-material';
+import { Box, Typography, InputBase, Menu, MenuItem } from '@mui/material';
+import { CameraAltRounded, ViewInArRounded, SearchRounded, KeyboardArrowDownRounded, CheckRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import {
   mockCaptures, mockProjects, mockTours, statusConfig,
   getRoomHistory, type MockCapture,
 } from '@/data/mockData';
 
-// 7F — Project-aware capture gallery. Captures are grouped Project → Tower → Floor,
-// thumbnails are prominent, and per-card metadata is intentionally light.
+// Capture gallery — project-wise selection, calm minimal cards.
 
 const STATUS_FILTERS = ['All', 'Processed', 'In Review', 'Rejected'] as const;
 type StatusFilter = typeof STATUS_FILTERS[number];
+
+const STATUS_DOT: Record<string, string> = {
+  processed: colors.success,
+  review: colors.warning,
+  rejected: colors.danger,
+  uploading: colors.info,
+};
+
+// Projects that actually have captures, in data order.
+const PROJECTS_WITH_CAPTURES = mockProjects.filter(p => mockCaptures.some(c => c.projectId === p.id));
 
 function CaptureCard({ capture }: { capture: MockCapture }) {
   const st = statusConfig.capture[capture.status];
   const history = getRoomHistory(capture.id);
   const hasTour = mockTours.some(t => t.captureId === capture.id);
+  const dot = STATUS_DOT[capture.status] ?? colors.textSubdued;
 
   return (
     <Box
@@ -28,179 +35,224 @@ function CaptureCard({ capture }: { capture: MockCapture }) {
       to={`/captures/${capture.id}`}
       sx={{
         display: 'block', textDecoration: 'none',
-        borderRadius: '16px', backgroundColor: colors.card, overflow: 'hidden',
-        boxShadow: '0 2px 8px rgba(15,23,42,0.05)',
-        transition: `box-shadow ${motion.durationNormal} ${motion.easeOut}, transform ${motion.durationNormal} ${motion.easeOut}`,
-        '&:hover': { boxShadow: '0 10px 36px rgba(15,23,42,0.12)', transform: 'translateY(-3px)' },
-        '&:hover .cap-overlay': { opacity: 1 },
+        transition: `transform ${motion.durationNormal} ${motion.easeOut}`,
+        '&:hover': { transform: 'translateY(-3px)' },
+        '&:hover .cap-thumb': { boxShadow: '0 12px 32px rgba(15,23,42,0.14)' },
+        '&:hover .cap-open': { opacity: 1 },
       }}
     >
-      {/* Prominent thumbnail */}
-      <Box sx={{ height: 156, background: capture.gradient, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <CameraAltRounded sx={{ color: 'rgba(255,255,255,0.22)', fontSize: 40 }} />
-
-        {/* hover CTA */}
-        <Box className="cap-overlay" sx={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.32)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, opacity: 0, transition: `opacity ${motion.durationFast}` }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, px: 1.5, py: 0.625, borderRadius: '8px', backgroundColor: 'rgba(255,255,255,0.2)', backdropFilter: 'blur(8px)' }}>
-            <ViewInArRounded sx={{ color: '#fff', fontSize: 15 }} />
-            <Typography sx={{ fontSize: '0.75rem', color: '#fff', fontWeight: 600 }}>{hasTour ? 'View tour' : 'Open capture'}</Typography>
-          </Box>
+      {/* Thumbnail — soft, single subtle tint */}
+      <Box
+        className="cap-thumb"
+        sx={{
+          position: 'relative', aspectRatio: '4 / 3', borderRadius: '14px', overflow: 'hidden',
+          background: capture.gradient,
+          boxShadow: '0 1px 3px rgba(15,23,42,0.08)',
+          transition: `box-shadow ${motion.durationNormal} ${motion.easeOut}`,
+        }}
+      >
+        <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <CameraAltRounded sx={{ color: 'rgba(255,255,255,0.25)', fontSize: 32 }} />
         </Box>
 
-        {/* status + tour badges */}
-        <Box sx={{ position: 'absolute', top: 8, left: 8, right: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          {hasTour
-            ? <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.375, px: 0.875, py: 0.25, borderRadius: '5px', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)' }}><ViewInArRounded sx={{ fontSize: 11, color: '#fff' }} /><Typography sx={{ fontSize: '0.5625rem', fontWeight: 700, color: '#fff' }}>TOUR</Typography></Box>
-            : <Box />}
-          <Chip label={st.label} size="small" sx={{ height: 20, fontSize: '0.5625rem', fontWeight: 700, color: st.color, backgroundColor: st.bg, borderRadius: '5px' }} />
+        {/* hover: single open hint */}
+        <Box className="cap-open" sx={{ position: 'absolute', bottom: 8, left: 8, display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1, py: 0.5, borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', opacity: 0, transition: `opacity ${motion.durationFast}` }}>
+          <ViewInArRounded sx={{ color: '#fff', fontSize: 13 }} />
+          <Typography sx={{ fontSize: '0.6875rem', color: '#fff', fontWeight: 600 }}>{hasTour ? 'View tour' : 'Open'}</Typography>
         </Box>
 
-        {/* capture-count chip (room series) */}
-        {history && history.captureCount > 1 && (
-          <Box sx={{ position: 'absolute', bottom: 8, right: 8, display: 'flex', alignItems: 'center', gap: 0.375, px: 0.875, py: 0.25, borderRadius: '5px', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)' }}>
-            <CameraAltRounded sx={{ fontSize: 11, color: 'rgba(255,255,255,0.85)' }} />
-            <Typography sx={{ fontSize: '0.5625rem', fontWeight: 700, color: '#fff' }}>{history.captureCount}</Typography>
+        {/* tour marker — one quiet glyph */}
+        {hasTour && (
+          <Box sx={{ position: 'absolute', top: 8, right: 8, width: 22, height: 22, borderRadius: '7px', backgroundColor: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <ViewInArRounded sx={{ fontSize: 12, color: '#fff' }} />
           </Box>
         )}
       </Box>
 
-      {/* Light metadata */}
-      <Box sx={{ px: 1.75, pt: 1.25, pb: 1.5 }}>
-        <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.01em' }}>{capture.roomName}</Typography>
-        <Typography noWrap sx={{ fontSize: '0.6875rem', color: colors.textMuted, mt: 0.25 }}>
-          {history ? `Updated ${history.latest.dateLabel}` : capture.uploadedAt}
+      {/* Metadata — name + status dot */}
+      <Box sx={{ pt: 1.25, px: 0.25 }}>
+        <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong, letterSpacing: '-0.01em' }}>
+          {capture.roomName}
         </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 0.375 }}>
+          <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: dot, flexShrink: 0 }} />
+          <Typography noWrap sx={{ fontSize: '0.75rem', color: colors.textMuted }}>
+            {capture.towerName} · {capture.floorLabel}
+          </Typography>
+        </Box>
       </Box>
     </Box>
   );
 }
 
 export default function CapturesPage() {
+  const [projectId, setProjectId] = useState<string>('all');
   const [filter, setFilter] = useState<StatusFilter>('All');
   const [query, setQuery] = useState('');
-  const [grouped, setGrouped] = useState(true);
 
   const filtered = useMemo(() => {
     return mockCaptures.filter(c => {
+      const matchesProject = projectId === 'all' || c.projectId === projectId;
       const matchesStatus = filter === 'All' || statusConfig.capture[c.status]?.label === filter;
       const q = query.trim().toLowerCase();
       const matchesQuery = !q || c.roomName.toLowerCase().includes(q) || c.projectName.toLowerCase().includes(q) || c.towerName.toLowerCase().includes(q) || c.floorLabel.toLowerCase().includes(q);
-      return matchesStatus && matchesQuery;
+      return matchesProject && matchesStatus && matchesQuery;
     });
-  }, [filter, query]);
-
-  // Group: project → tower → floor
-  const groups = useMemo(() => {
-    const byProject = new Map<string, { project: typeof mockProjects[0] | undefined; towers: Map<string, { towerName: string; floors: Map<string, MockCapture[]> }> }>();
-    for (const c of filtered) {
-      if (!byProject.has(c.projectId)) {
-        byProject.set(c.projectId, { project: mockProjects.find(p => p.id === c.projectId), towers: new Map() });
-      }
-      const proj = byProject.get(c.projectId)!;
-      if (!proj.towers.has(c.towerId)) proj.towers.set(c.towerId, { towerName: c.towerName, floors: new Map() });
-      const tower = proj.towers.get(c.towerId)!;
-      if (!tower.floors.has(c.floorLabel)) tower.floors.set(c.floorLabel, []);
-      tower.floors.get(c.floorLabel)!.push(c);
-    }
-    return byProject;
-  }, [filtered]);
+  }, [projectId, filter, query]);
 
   const pendingCount = mockCaptures.filter(c => c.status === 'review').length;
 
+  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
+  const [statusAnchor, setStatusAnchor] = useState<null | HTMLElement>(null);
+  const selectedProject = PROJECTS_WITH_CAPTURES.find(p => p.id === projectId);
+  const selectedCount = projectId === 'all' ? mockCaptures.length : mockCaptures.filter(c => c.projectId === projectId).length;
+
+  // Dot colour for each status filter (All shows neutral).
+  const STATUS_FILTER_DOT: Record<StatusFilter, string> = {
+    All: colors.textSubdued, Processed: colors.success, 'In Review': colors.warning, Rejected: colors.danger,
+  };
+
   return (
-    <Box>
-      {/* Header */}
-      <Box sx={{ mb: 3 }}>
+    <Box sx={{ maxWidth: 1160, mx: 'auto' }}>
+      {/* ── Heading (untouched) ─────────────────────────────────────────────── */}
+      <Box sx={{ mb: 4 }}>
         <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.5rem', md: '2rem' }, fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1, mb: 0.75 }}>
           Capture Gallery
         </Typography>
         <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>
-          {mockCaptures.length} captures across {mockProjects.length} projects · {pendingCount} pending review
+          {mockCaptures.length} captures across {PROJECTS_WITH_CAPTURES.length} projects · {pendingCount} pending review
         </Typography>
       </Box>
 
-      {/* Toolbar: search + filters + layout toggle */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.875, borderRadius: '10px', backgroundColor: colors.card, boxShadow: '0 1px 3px rgba(15,23,42,0.06)', flex: { xs: '1 1 100%', sm: '0 1 320px' } }}>
+      {/* ── Toolbar: project (left) · search + status (right) ───────────────── */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 4, flexWrap: 'wrap' }}>
+        {/* Project dropdown — left */}
+        <Box
+          onClick={(e) => setMenuAnchor(e.currentTarget)}
+          sx={{
+            display: 'inline-flex', alignItems: 'center', gap: 1.25,
+            pl: 1.5, pr: 1.25, py: 1, borderRadius: '999px', cursor: 'pointer',
+            border: `1px solid ${menuAnchor ? colors.textStrong : colors.border}`,
+            backgroundColor: colors.card,
+            boxShadow: menuAnchor ? `0 0 0 3px ${colors.primaryRing}` : '0 1px 2px rgba(15,23,42,0.05)',
+            transition: `all ${motion.durationFast} ${motion.easeOut}`,
+            '&:hover': { borderColor: colors.textSubdued },
+          }}
+        >
+          <Box sx={{ width: 22, height: 22, borderRadius: '7px', background: selectedProject ? selectedProject.gradient : `linear-gradient(135deg, ${colors.textSubdued} 0%, ${colors.textMuted} 100%)`, flexShrink: 0 }} />
+          <Box sx={{ lineHeight: 1.1 }}>
+            <Typography sx={{ fontSize: '0.625rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Project</Typography>
+            <Typography noWrap sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.01em', maxWidth: 180 }}>
+              {selectedProject ? selectedProject.name : 'All projects'}
+            </Typography>
+          </Box>
+          <Box sx={{ px: 0.875, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: colors.bgDeep, color: colors.textMuted, ml: 0.5 }}>
+            {selectedCount}
+          </Box>
+          <KeyboardArrowDownRounded sx={{ fontSize: 20, color: colors.textMuted, transform: menuAnchor ? 'rotate(180deg)' : 'none', transition: `transform ${motion.durationFast}` }} />
+        </Box>
+
+        {/* Spacer pushes search + status to the right */}
+        <Box sx={{ flex: 1 }} />
+
+        {/* Search — right */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: { xs: '100%', sm: 260 }, px: 1.5, py: 1, borderRadius: '999px', backgroundColor: colors.card, border: `1px solid ${colors.border}`, boxShadow: '0 1px 2px rgba(15,23,42,0.04)', '&:focus-within': { borderColor: colors.textSubdued } }}>
           <SearchRounded sx={{ fontSize: 18, color: colors.textSubdued }} />
-          <InputBase placeholder="Search room, project, tower…" value={query} onChange={e => setQuery(e.target.value)} sx={{ flex: 1, fontSize: '0.875rem', '& input::placeholder': { color: colors.textSubdued, opacity: 1 } }} />
+          <InputBase placeholder="Search captures…" value={query} onChange={e => setQuery(e.target.value)} sx={{ flex: 1, fontSize: '0.875rem', '& input::placeholder': { color: colors.textSubdued, opacity: 1 } }} />
         </Box>
 
-        <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
-          {STATUS_FILTERS.map(f => (
-            <Box key={f} onClick={() => setFilter(f)} sx={{ px: 1.5, py: 0.75, borderRadius: '8px', cursor: 'pointer', fontSize: '0.8125rem', fontWeight: filter === f ? 600 : 400, backgroundColor: filter === f ? colors.ink : colors.card, color: filter === f ? colors.white : colors.textSecondary, boxShadow: filter === f ? 'none' : '0 1px 3px rgba(15,23,42,0.06)', transition: `all ${motion.durationFast}`, '&:hover': { color: filter === f ? colors.white : colors.textStrong } }}>
-              {f}
-            </Box>
-          ))}
-        </Box>
-
-        <Box sx={{ display: 'flex', gap: 0.5, p: 0.375, borderRadius: '10px', backgroundColor: colors.bgDeep, ml: { sm: 'auto' } }}>
-          {([['grouped', <GridViewRounded sx={{ fontSize: 16 }} />], ['flat', <ViewListRounded sx={{ fontSize: 16 }} />]] as const).map(([mode, icon]) => (
-            <Box key={mode} onClick={() => setGrouped(mode === 'grouped')} sx={{ display: 'flex', alignItems: 'center', px: 1, py: 0.625, borderRadius: '8px', cursor: 'pointer', color: (grouped ? 'grouped' : 'flat') === mode ? colors.textStrong : colors.textMuted, backgroundColor: (grouped ? 'grouped' : 'flat') === mode ? '#fff' : 'transparent', boxShadow: (grouped ? 'grouped' : 'flat') === mode ? '0 1px 3px rgba(15,23,42,0.10)' : 'none', transition: `all ${motion.durationFast}` }}>
-              {icon}
-            </Box>
-          ))}
+        {/* Status dropdown — right */}
+        <Box
+          onClick={(e) => setStatusAnchor(e.currentTarget)}
+          sx={{
+            display: 'inline-flex', alignItems: 'center', gap: 1, flexShrink: 0,
+            pl: 1.5, pr: 1.25, py: 1.125, borderRadius: '999px', cursor: 'pointer',
+            border: `1px solid ${statusAnchor ? colors.textStrong : colors.border}`,
+            backgroundColor: colors.card,
+            boxShadow: statusAnchor ? `0 0 0 3px ${colors.primaryRing}` : '0 1px 2px rgba(15,23,42,0.05)',
+            transition: `all ${motion.durationFast} ${motion.easeOut}`,
+            '&:hover': { borderColor: colors.textSubdued },
+          }}
+        >
+          <Box sx={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: STATUS_FILTER_DOT[filter], flexShrink: 0 }} />
+          <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong, letterSpacing: '-0.01em' }}>
+            {filter === 'All' ? 'All status' : filter}
+          </Typography>
+          <KeyboardArrowDownRounded sx={{ fontSize: 18, color: colors.textMuted, transform: statusAnchor ? 'rotate(180deg)' : 'none', transition: `transform ${motion.durationFast}` }} />
         </Box>
       </Box>
 
-      {/* Empty state */}
-      {filtered.length === 0 && (
-        <Box sx={{ textAlign: 'center', py: 10 }}>
-          <Box sx={{ width: 64, height: 64, borderRadius: '50%', backgroundColor: colors.bgDeep, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 2 }}>
-            <CameraAltRounded sx={{ fontSize: 28, color: colors.textSubdued }} />
+      {/* Project menu */}
+      <Menu
+        anchorEl={menuAnchor}
+        open={!!menuAnchor}
+        onClose={() => setMenuAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        slotProps={{ paper: { sx: { mt: 1, minWidth: 280, borderRadius: '14px', boxShadow: '0 12px 40px rgba(15,23,42,0.14)', border: `1px solid ${colors.borderLight}`, p: 0.75 } } }}
+      >
+        {[{ id: 'all', name: 'All projects', gradient: `linear-gradient(135deg, ${colors.textSubdued} 0%, ${colors.textMuted} 100%)`, count: mockCaptures.length },
+          ...PROJECTS_WITH_CAPTURES.map(p => ({ id: p.id, name: p.name, gradient: p.gradient, count: mockCaptures.filter(c => c.projectId === p.id).length }))]
+          .map(opt => {
+            const isActive = projectId === opt.id;
+            return (
+              <MenuItem
+                key={opt.id}
+                onClick={() => { setProjectId(opt.id); setMenuAnchor(null); }}
+                sx={{ borderRadius: '10px', py: 1, px: 1, gap: 1.25, '&:hover': { backgroundColor: colors.bg }, backgroundColor: isActive ? colors.primarySoft : 'transparent' }}
+              >
+                <Box sx={{ width: 22, height: 22, borderRadius: '7px', background: opt.gradient, flexShrink: 0 }} />
+                <Typography sx={{ flex: 1, fontSize: '0.875rem', fontWeight: isActive ? 700 : 500, color: isActive ? colors.primary : colors.textStrong, letterSpacing: '-0.01em' }}>
+                  {opt.name}
+                </Typography>
+                <Box sx={{ px: 0.875, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: colors.bgDeep, color: colors.textMuted }}>
+                  {opt.count}
+                </Box>
+                {isActive && <CheckRounded sx={{ fontSize: 17, color: colors.primary }} />}
+              </MenuItem>
+            );
+          })}
+      </Menu>
+
+      {/* Status menu */}
+      <Menu
+        anchorEl={statusAnchor}
+        open={!!statusAnchor}
+        onClose={() => setStatusAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        slotProps={{ paper: { sx: { mt: 1, minWidth: 180, borderRadius: '14px', boxShadow: '0 12px 40px rgba(15,23,42,0.14)', border: `1px solid ${colors.borderLight}`, p: 0.75 } } }}
+      >
+        {STATUS_FILTERS.map(f => {
+          const isActive = filter === f;
+          return (
+            <MenuItem
+              key={f}
+              onClick={() => { setFilter(f); setStatusAnchor(null); }}
+              sx={{ borderRadius: '10px', py: 0.875, px: 1, gap: 1.25, '&:hover': { backgroundColor: colors.bg }, backgroundColor: isActive ? colors.primarySoft : 'transparent' }}
+            >
+              <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: STATUS_FILTER_DOT[f], flexShrink: 0 }} />
+              <Typography sx={{ flex: 1, fontSize: '0.875rem', fontWeight: isActive ? 700 : 500, color: isActive ? colors.primary : colors.textStrong, letterSpacing: '-0.01em' }}>
+                {f === 'All' ? 'All status' : f}
+              </Typography>
+              {isActive && <CheckRounded sx={{ fontSize: 17, color: colors.primary }} />}
+            </MenuItem>
+          );
+        })}
+      </Menu>
+
+      {/* ── Empty state ─────────────────────────────────────────────────────── */}
+      {filtered.length === 0 ? (
+        <Box sx={{ textAlign: 'center', py: 12 }}>
+          <Box sx={{ width: 56, height: 56, borderRadius: '16px', backgroundColor: colors.bgDeep, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 2 }}>
+            <CameraAltRounded sx={{ fontSize: 26, color: colors.textSubdued }} />
           </Box>
-          <Typography sx={{ fontSize: '1rem', fontWeight: 600, color: colors.textSecondary, mb: 0.5 }}>No captures found</Typography>
-          <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted }}>Try a different search or status filter.</Typography>
+          <Typography sx={{ fontSize: '1.0625rem', fontWeight: 600, color: colors.textSecondary, mb: 0.5 }}>No captures found</Typography>
+          <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>Try a different project, search, or filter.</Typography>
         </Box>
-      )}
-
-      {/* Grouped gallery */}
-      {filtered.length > 0 && grouped && (
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {Array.from(groups.values()).map(({ project, towers }) => (
-            <Box key={project?.id}>
-              {/* Project heading */}
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 2 }}>
-                <Box sx={{ width: 36, height: 36, borderRadius: '10px', background: project?.gradient, flexShrink: 0 }} />
-                <Box sx={{ flex: 1 }}>
-                  <Box component={Link} to={`/projects/${project?.id}`} sx={{ display: 'flex', alignItems: 'center', gap: 0.625, textDecoration: 'none' }}>
-                    <FolderRounded sx={{ fontSize: 15, color: colors.textSubdued }} />
-                    <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em', '&:hover': { color: colors.primary } }}>{project?.name}</Typography>
-                  </Box>
-                  <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{project?.location}</Typography>
-                </Box>
-              </Box>
-
-              {/* Towers → floors */}
-              {Array.from(towers.values()).map(({ towerName, floors }) => (
-                <Box key={towerName} sx={{ mb: 2.5, pl: { md: 1.5 } }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.625, mb: 1.5 }}>
-                    <HomeRounded sx={{ fontSize: 13, color: colors.textSubdued }} />
-                    <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: colors.textSecondary }}>{towerName}</Typography>
-                  </Box>
-                  {Array.from(floors.entries()).map(([floorLabel, captures]) => (
-                    <Box key={floorLabel} sx={{ mb: 2 }}>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1.25, pl: { md: 1.5 } }}>
-                        <LayersRounded sx={{ fontSize: 12, color: colors.textSubdued }} />
-                        <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textSubdued, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{floorLabel}</Typography>
-                        <Box sx={{ flex: 1, height: 1, backgroundColor: colors.borderLight, ml: 1 }} />
-                        <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued }}>{captures.length} {captures.length === 1 ? 'room' : 'rooms'}</Typography>
-                      </Box>
-                      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(3, 1fr)', md: 'repeat(4, 1fr)', lg: 'repeat(5, 1fr)' }, gap: 2, pl: { md: 1.5 } }}>
-                        {captures.map(c => <CaptureCard key={c.id} capture={c} />)}
-                      </Box>
-                    </Box>
-                  ))}
-                </Box>
-              ))}
-            </Box>
-          ))}
-        </Box>
-      )}
-
-      {/* Flat gallery */}
-      {filtered.length > 0 && !grouped && (
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(3, 1fr)', md: 'repeat(4, 1fr)', lg: 'repeat(5, 1fr)' }, gap: 2 }}>
+      ) : (
+        /* ── Clean flat grid ──────────────────────────────────────────────── */
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(3, 1fr)', md: 'repeat(4, 1fr)', lg: 'repeat(5, 1fr)' }, gap: 2.5 }}>
           {filtered.map(c => <CaptureCard key={c.id} capture={c} />)}
         </Box>
       )}

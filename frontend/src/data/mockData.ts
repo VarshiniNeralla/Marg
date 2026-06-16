@@ -21,6 +21,7 @@ export interface MockProject {
   progress: number;
   towers: number;
   floors: number;
+  flats?: number;
   rooms: number;
   captures: number;
   totalRooms: number;

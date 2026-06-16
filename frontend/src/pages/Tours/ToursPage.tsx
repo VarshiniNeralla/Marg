@@ -1,23 +1,38 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { Box, Typography, Grid, Chip } from '@mui/material';
+import { Box, Typography, Grid, Chip, Menu, MenuItem } from '@mui/material';
 import {
   ViewInArRounded,
   PlayArrowRounded,
   CameraAltRounded,
   AccessTimeRounded,
+  KeyboardArrowDownRounded,
+  CheckRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { mockTours, mockProjects, statusConfig } from '@/data/mockData';
 
+// Projects that actually have tours.
+const PROJECTS_WITH_TOURS = mockProjects.filter(p => mockTours.some(t => t.projectId === p.id));
+
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export default function ToursPage() {
-  const projectCount = new Set(mockTours.map(t => t.projectId)).size;
+  const [projectId, setProjectId] = useState<string>('all');
+  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
+
+  const tours = useMemo(
+    () => (projectId === 'all' ? mockTours : mockTours.filter(t => t.projectId === projectId)),
+    [projectId],
+  );
+
+  const selectedProject = PROJECTS_WITH_TOURS.find(p => p.id === projectId);
+  const selectedCount = projectId === 'all' ? mockTours.length : tours.length;
 
   return (
     <Box>
-      <Box sx={{ mb: 5 }}>
+      {/* Heading */}
+      <Box sx={{ mb: 3 }}>
         <Typography
           sx={{
             fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
@@ -32,12 +47,80 @@ export default function ToursPage() {
           Virtual Tours
         </Typography>
         <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>
-          {mockTours.length} tours · across {projectCount} {projectCount === 1 ? 'project' : 'projects'}
+          {mockTours.length} tours · across {PROJECTS_WITH_TOURS.length} {PROJECTS_WITH_TOURS.length === 1 ? 'project' : 'projects'}
         </Typography>
       </Box>
 
+      {/* ── Project selector — single pill dropdown ─────────────────────────── */}
+      <Box sx={{ mb: 4 }}>
+        <Box
+          onClick={(e) => setMenuAnchor(e.currentTarget)}
+          sx={{
+            display: 'inline-flex', alignItems: 'center', gap: 1.25,
+            pl: 1.5, pr: 1.25, py: 1, borderRadius: '999px', cursor: 'pointer',
+            border: `1px solid ${menuAnchor ? colors.textStrong : colors.border}`,
+            backgroundColor: colors.card,
+            boxShadow: menuAnchor ? `0 0 0 3px ${colors.primaryRing}` : '0 1px 2px rgba(15,23,42,0.05)',
+            transition: `all ${motion.durationFast} ${motion.easeOut}`,
+            '&:hover': { borderColor: colors.textSubdued },
+          }}
+        >
+          <Box sx={{ width: 22, height: 22, borderRadius: '7px', background: selectedProject ? selectedProject.gradient : `linear-gradient(135deg, ${colors.textSubdued} 0%, ${colors.textMuted} 100%)`, flexShrink: 0 }} />
+          <Box sx={{ lineHeight: 1.1 }}>
+            <Typography sx={{ fontSize: '0.625rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Project</Typography>
+            <Typography noWrap sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.01em', maxWidth: 200 }}>
+              {selectedProject ? selectedProject.name : 'All projects'}
+            </Typography>
+          </Box>
+          <Box sx={{ px: 0.875, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: colors.bgDeep, color: colors.textMuted, ml: 0.5 }}>
+            {selectedCount}
+          </Box>
+          <KeyboardArrowDownRounded sx={{ fontSize: 20, color: colors.textMuted, transform: menuAnchor ? 'rotate(180deg)' : 'none', transition: `transform ${motion.durationFast}` }} />
+        </Box>
+
+        <Menu
+          anchorEl={menuAnchor}
+          open={!!menuAnchor}
+          onClose={() => setMenuAnchor(null)}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+          slotProps={{ paper: { sx: { mt: 1, minWidth: 280, borderRadius: '14px', boxShadow: '0 12px 40px rgba(15,23,42,0.14)', border: `1px solid ${colors.borderLight}`, p: 0.75 } } }}
+        >
+          {[{ id: 'all', name: 'All projects', gradient: `linear-gradient(135deg, ${colors.textSubdued} 0%, ${colors.textMuted} 100%)`, count: mockTours.length },
+            ...PROJECTS_WITH_TOURS.map(p => ({ id: p.id, name: p.name, gradient: p.gradient, count: mockTours.filter(t => t.projectId === p.id).length }))]
+            .map(opt => {
+              const isActive = projectId === opt.id;
+              return (
+                <MenuItem
+                  key={opt.id}
+                  onClick={() => { setProjectId(opt.id); setMenuAnchor(null); }}
+                  sx={{ borderRadius: '10px', py: 1, px: 1, gap: 1.25, '&:hover': { backgroundColor: colors.bg }, backgroundColor: isActive ? colors.primarySoft : 'transparent' }}
+                >
+                  <Box sx={{ width: 22, height: 22, borderRadius: '7px', background: opt.gradient, flexShrink: 0 }} />
+                  <Typography sx={{ flex: 1, fontSize: '0.875rem', fontWeight: isActive ? 700 : 500, color: isActive ? colors.primary : colors.textStrong, letterSpacing: '-0.01em' }}>
+                    {opt.name}
+                  </Typography>
+                  <Box sx={{ px: 0.875, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: colors.bgDeep, color: colors.textMuted }}>
+                    {opt.count}
+                  </Box>
+                  {isActive && <CheckRounded sx={{ fontSize: 17, color: colors.primary }} />}
+                </MenuItem>
+              );
+            })}
+        </Menu>
+      </Box>
+
+      {tours.length === 0 ? (
+        <Box sx={{ textAlign: 'center', py: 12 }}>
+          <Box sx={{ width: 56, height: 56, borderRadius: '16px', backgroundColor: colors.bgDeep, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 2 }}>
+            <ViewInArRounded sx={{ fontSize: 26, color: colors.textSubdued }} />
+          </Box>
+          <Typography sx={{ fontSize: '1.0625rem', fontWeight: 600, color: colors.textSecondary, mb: 0.5 }}>No tours in this project yet</Typography>
+          <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>Pick another project to view its virtual tours.</Typography>
+        </Box>
+      ) : (
       <Grid container spacing={2}>
-        {mockTours.map((tour) => {
+        {tours.map((tour) => {
           const st = (statusConfig.tour as Record<string, { label: string; color: string; bg: string }>)[tour.status] ?? statusConfig.tour.draft;
           const project = mockProjects.find(p => p.id === tour.projectId);
           return (
@@ -155,6 +238,7 @@ export default function ToursPage() {
           );
         })}
       </Grid>
+      )}
     </Box>
   );
 }

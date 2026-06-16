@@ -29,6 +29,7 @@ const DashboardHomePage  = lazy(() => import('@features/dashboard/DashboardHomeP
 // ── Projects ──────────────────────────────────────────────────────────────────
 const ProjectsPage       = lazy(() => import('@/pages/Projects/ProjectsPage'));
 const NewProjectPage     = lazy(() => import('@/pages/Projects/NewProjectPage'));
+const EditProjectPage    = lazy(() => import('@/pages/Projects/EditProjectPage'));
 const ProjectDetailPage  = lazy(() => import('@/pages/Projects/ProjectDetailPage'));
 const TowersPage         = lazy(() => import('@/pages/Projects/TowersPage'));
 const FloorListPage      = lazy(() => import('@/pages/Projects/FloorListPage'));
@@ -95,6 +96,7 @@ const router = createBrowserRouter([
       // Projects
       { path: '/projects',                                                         element: <PageSuspense><ProjectsPage /></PageSuspense> },
       { path: '/projects/new',                                                     element: <PageSuspense><NewProjectPage /></PageSuspense> },
+      { path: '/projects/:projectId/edit',                                         element: <PageSuspense><EditProjectPage /></PageSuspense> },
       { path: '/projects/:projectId',                                              element: <PageSuspense><ProjectDetailPage /></PageSuspense> },
       { path: '/projects/:projectId/towers',                                       element: <PageSuspense><TowersPage /></PageSuspense> },
       { path: '/projects/:projectId/towers/:towerId',                              element: <PageSuspense><FloorListPage /></PageSuspense> },

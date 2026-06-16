@@ -3,8 +3,8 @@ import { useParams, Link } from 'react-router-dom';
 import { Box, Typography, Chip, Grid, TextField, Alert } from '@mui/material';
 import {
   ArrowBackRounded, CheckRounded, CloseRounded, ReplayRounded, AccessTimeRounded,
-  CameraAltRounded, FolderRounded, LayersRounded, PersonRounded, NavigateNextRounded,
-  ViewInArRounded, BugReportRounded, CompareArrowsRounded, TimelineRounded, HomeRounded,
+  CameraAltRounded, NavigateNextRounded,
+  ViewInArRounded, BugReportRounded, CompareArrowsRounded, TimelineRounded,
   MapRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
@@ -83,6 +83,7 @@ export default function CaptureDetailPage() {
   const [action, setAction] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
   const [done, setDone] = useState(false);
+  const [tab, setTab] = useState<'overview' | 'files' | 'history' | 'activity'>('overview');
 
   if (!capture) return (
     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '50vh', gap: 2 }}>
@@ -160,16 +161,15 @@ export default function CaptureDetailPage() {
       {done && <Alert severity="success" sx={{ mb: 3, borderRadius: '10px' }}>Review submitted successfully.</Alert>}
 
       <Grid container spacing={3}>
-        {/* ── LEFT: preview + timeline + comparison ──────────────────────────── */}
+        {/* ── LEFT: preview + timeline (always visible) ──────────────────────── */}
         <Grid size={{ xs: 12, md: 8 }}>
-          {/* Big preview OR comparison */}
           {compareMode && compareA && compareB ? (
-            <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, p: 2.5, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', mb: 2.5 }}>
+            <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, p: 2.5, border: `1px solid ${colors.borderLight}`, mb: 2.5 }}>
               <CompareView a={compareA} b={compareB} />
             </Box>
           ) : (
-            <Box sx={{ borderRadius: '16px', overflow: 'hidden', boxShadow: '0 2px 8px rgba(15,23,42,0.05)', mb: 2.5, position: 'relative' }}>
-              <Box sx={{ height: 380, background: current?.gradient ?? capture.gradient, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
+            <Box sx={{ borderRadius: '16px', overflow: 'hidden', border: `1px solid ${colors.borderLight}`, mb: 2.5, position: 'relative' }}>
+              <Box sx={{ height: 400, background: current?.gradient ?? capture.gradient, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
                 <Box sx={{ textAlign: 'center' }}>
                   <CameraAltRounded sx={{ color: 'rgba(255,255,255,0.25)', fontSize: 72, display: 'block', mx: 'auto', mb: 1 }} />
                   <Typography sx={{ color: 'rgba(255,255,255,0.45)', fontSize: '0.875rem' }}>360° Panorama Preview</Typography>
@@ -179,7 +179,6 @@ export default function CaptureDetailPage() {
                     </Box>
                   )}
                 </Box>
-                {/* Active snapshot date badge */}
                 {current && (
                   <Box sx={{ position: 'absolute', top: 14, left: 14, px: 1.5, py: 0.75, borderRadius: '10px', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', gap: 0.875 }}>
                     <AccessTimeRounded sx={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }} />
@@ -193,7 +192,7 @@ export default function CaptureDetailPage() {
           )}
 
           {/* Timeline + comparison toggle */}
-          <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, p: 2.5, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', mb: 2.5 }}>
+          <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, p: 2.5, border: `1px solid ${colors.borderLight}` }}>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', mb: 1 }}>
               <Box
                 onClick={() => setCompareMode(v => !v)}
@@ -214,37 +213,19 @@ export default function CaptureDetailPage() {
               </Typography>
             )}
           </Box>
-
-          {/* Uploaded files for the active snapshot */}
-          {current && !compareMode && (
-            <Panel title={`Uploaded Files (${current.fileCount})`} icon={<CameraAltRounded sx={{ fontSize: 16 }} />}>
-              <Grid container spacing={1}>
-                {Array.from({ length: Math.min(current.fileCount, 8) }).map((_, i) => (
-                  <Grid key={i} size={{ xs: 3 }}>
-                    <Box sx={{ aspectRatio: '1', borderRadius: '8px', background: current.gradient, opacity: 0.55 + (i * 0.05), display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <CameraAltRounded sx={{ color: 'rgba(255,255,255,0.4)', fontSize: 16 }} />
-                    </Box>
-                  </Grid>
-                ))}
-              </Grid>
-            </Panel>
-          )}
         </Grid>
 
-        {/* ── RIGHT: context, room progress, review, defects, activity ───────── */}
+        {/* ── RIGHT: location + review (compact, always visible) ─────────────── */}
         <Grid size={{ xs: 12, md: 4 }}>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
-
-            {/* Project context */}
             <Panel title="Location" icon={<MapRounded sx={{ fontSize: 16 }} />}>
               {[
-                { icon: <FolderRounded sx={{ fontSize: 15 }} />, label: 'Project', value: capture.projectName, to: `/projects/${capture.projectId}` },
-                { icon: <HomeRounded sx={{ fontSize: 15 }} />, label: 'Tower', value: capture.towerName, to: `/projects/${capture.projectId}/towers/${capture.towerId}` },
-                { icon: <LayersRounded sx={{ fontSize: 15 }} />, label: 'Floor', value: capture.floorLabel },
-                { icon: <CameraAltRounded sx={{ fontSize: 15 }} />, label: 'Room', value: capture.roomName },
-              ].map(({ icon, label, value, to }) => (
+                { label: 'Project', value: capture.projectName, to: `/projects/${capture.projectId}` },
+                { label: 'Tower', value: capture.towerName, to: `/projects/${capture.projectId}/towers/${capture.towerId}` },
+                { label: 'Floor', value: capture.floorLabel },
+                { label: 'Room', value: capture.roomName },
+              ].map(({ label, value, to }) => (
                 <Box key={label} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 0.875, borderBottom: `1px solid ${colors.borderLight}`, '&:last-child': { borderBottom: 'none' } }}>
-                  <Box sx={{ color: colors.textSubdued, flexShrink: 0, display: 'flex' }}>{icon}</Box>
                   <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, textTransform: 'uppercase', letterSpacing: '0.06em', width: 56, flexShrink: 0 }}>{label}</Typography>
                   {to ? (
                     <Box component={Link} to={to} sx={{ fontSize: '0.8125rem', color: colors.textStrong, fontWeight: 600, textDecoration: 'none', '&:hover': { color: colors.primary } }}>{value}</Box>
@@ -255,15 +236,7 @@ export default function CaptureDetailPage() {
               ))}
             </Panel>
 
-            {/* Room History (7E) */}
-            {roomHistory && <RoomHistoryPanel history={roomHistory} />}
-
-            {/* Processing pipeline */}
-            <Panel title="Processing Pipeline" icon={<TimelineRounded sx={{ fontSize: 16 }} />}>
-              <ProcessingPipeline currentStage={reviewStatusToPipeline[capture.reviewStatus] ?? 'uploaded'} />
-            </Panel>
-
-            {/* Review */}
+            {/* Review — only when pending, kept beside the preview for quick action */}
             {capture.status === 'review' && !done && (
               <Panel title="Review" icon={<CheckRounded sx={{ fontSize: 16 }} />} accent={colors.warning}>
                 <TextField fullWidth multiline rows={3} placeholder="Add review notes (optional)…" value={notes} onChange={e => setNotes(e.target.value)}
@@ -288,47 +261,95 @@ export default function CaptureDetailPage() {
                 <Typography sx={{ fontSize: '0.875rem', color: colors.textSecondary, lineHeight: 1.6 }}>{capture.reviewNotes}</Typography>
               </Box>
             )}
-
-            {/* Defects */}
-            <Panel
-              title={`Defects (${roomDefects.length})`}
-              icon={<BugReportRounded sx={{ fontSize: 16 }} />}
-              accent={roomDefects.length ? colors.danger : colors.textMuted}
-              action={<Box component={Link} to="/defects" sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.primary, textDecoration: 'none' }}>View all</Box>}
-            >
-              {roomDefects.length === 0 ? (
-                <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>No defects logged for this room. 🎉</Typography>
-              ) : (
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
-                  {roomDefects.slice(0, 3).map(d => {
-                    const sev = statusConfig.severity[d.severity];
-                    return (
-                      <Box key={d.id} sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.25 }}>
-                        <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: sev.color, mt: 0.625, flexShrink: 0 }} />
-                        <Box sx={{ flex: 1 }}>
-                          <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong, lineHeight: 1.4 }}>{d.title}</Typography>
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 0.375 }}>
-                            <Chip label={sev.label} size="small" sx={{ height: 18, fontSize: '0.625rem', fontWeight: 700, color: sev.color, backgroundColor: sev.bg, borderRadius: '4px' }} />
-                            <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued }}>{statusConfig.defect[d.status].label}</Typography>
-                          </Box>
-                        </Box>
-                      </Box>
-                    );
-                  })}
-                </Box>
-              )}
-            </Panel>
-
-            {/* Activity history */}
-            <Panel title="Activity History" icon={<AccessTimeRounded sx={{ fontSize: 16 }} />}>
-              <ActivityFeed
-                logs={mockAuditLogs.filter(l => l.entityId === captureId || (l.entityType === 'capture' && l.projectId === capture.projectId)).slice(0, 5)}
-                compact
-              />
-            </Panel>
           </Box>
         </Grid>
       </Grid>
+
+      {/* ── Detail tabs — progressive disclosure of the heavy panels ─────────── */}
+      <Box sx={{ mt: 4 }}>
+        <Box sx={{ display: 'flex', gap: 3, borderBottom: `1px solid ${colors.borderLight}`, mb: 3 }}>
+          {([
+            ['overview', 'Overview'],
+            ['files', `Files (${current?.fileCount ?? capture.fileCount})`],
+            ['history', 'Room History'],
+            ['activity', 'Activity'],
+          ] as const).map(([key, label]) => {
+            const isActive = tab === key;
+            return (
+              <Box key={key} onClick={() => setTab(key)} sx={{ position: 'relative', pb: 1.5, cursor: 'pointer', fontSize: '0.9375rem', fontWeight: isActive ? 600 : 500, color: isActive ? colors.textStrong : colors.textSubdued, letterSpacing: '-0.01em', transition: `color ${motion.durationFast}`, '&:hover': { color: colors.textStrong }, '&::after': { content: '""', position: 'absolute', left: 0, right: 0, bottom: -1, height: 2, borderRadius: '2px', backgroundColor: colors.textStrong, transform: isActive ? 'scaleX(1)' : 'scaleX(0)', transformOrigin: 'center', transition: `transform ${motion.durationNormal} ${motion.easeOut}` } }}>
+                {label}
+              </Box>
+            );
+          })}
+        </Box>
+
+        <Box key={tab} sx={{ animation: `cdFade ${motion.durationNormal} ${motion.easeOut}`, '@keyframes cdFade': { from: { opacity: 0, transform: 'translateY(6px)' }, to: { opacity: 1, transform: 'translateY(0)' } } }}>
+          {tab === 'overview' && (
+            <Grid container spacing={3}>
+              <Grid size={{ xs: 12, md: 7 }}>
+                <Panel title="Processing Pipeline" icon={<TimelineRounded sx={{ fontSize: 16 }} />}>
+                  <ProcessingPipeline currentStage={reviewStatusToPipeline[capture.reviewStatus] ?? 'uploaded'} />
+                </Panel>
+              </Grid>
+              <Grid size={{ xs: 12, md: 5 }}>
+                <Panel
+                  title={`Defects (${roomDefects.length})`}
+                  icon={<BugReportRounded sx={{ fontSize: 16 }} />}
+                  accent={roomDefects.length ? colors.danger : colors.textMuted}
+                  action={<Box component={Link} to="/defects" sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.primary, textDecoration: 'none' }}>View all</Box>}
+                >
+                  {roomDefects.length === 0 ? (
+                    <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>No defects logged for this room.</Typography>
+                  ) : (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                      {roomDefects.slice(0, 4).map(d => {
+                        const sev = statusConfig.severity[d.severity];
+                        return (
+                          <Box key={d.id} sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.25 }}>
+                            <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: sev.color, mt: 0.625, flexShrink: 0 }} />
+                            <Box sx={{ flex: 1 }}>
+                              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong, lineHeight: 1.4 }}>{d.title}</Typography>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 0.25 }}>
+                                <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: sev.color }}>{sev.label}</Typography>
+                                <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued }}>· {statusConfig.defect[d.status].label}</Typography>
+                              </Box>
+                            </Box>
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                  )}
+                </Panel>
+              </Grid>
+            </Grid>
+          )}
+
+          {tab === 'files' && current && (
+            <Panel title={`Uploaded Files (${current.fileCount})`} icon={<CameraAltRounded sx={{ fontSize: 16 }} />}>
+              <Grid container spacing={1.5}>
+                {Array.from({ length: current.fileCount }).map((_, i) => (
+                  <Grid key={i} size={{ xs: 6, sm: 4, md: 3, lg: 2 }}>
+                    <Box sx={{ aspectRatio: '1', borderRadius: '10px', background: current.gradient, opacity: 0.55 + (i % 6) * 0.06, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <CameraAltRounded sx={{ color: 'rgba(255,255,255,0.4)', fontSize: 18 }} />
+                    </Box>
+                  </Grid>
+                ))}
+              </Grid>
+            </Panel>
+          )}
+
+          {tab === 'history' && roomHistory && <RoomHistoryPanel history={roomHistory} />}
+
+          {tab === 'activity' && (
+            <Panel title="Activity History" icon={<AccessTimeRounded sx={{ fontSize: 16 }} />}>
+              <ActivityFeed
+                logs={mockAuditLogs.filter(l => l.entityId === captureId || (l.entityType === 'capture' && l.projectId === capture.projectId)).slice(0, 8)}
+                compact
+              />
+            </Panel>
+          )}
+        </Box>
+      </Box>
     </Box>
   );
 }
