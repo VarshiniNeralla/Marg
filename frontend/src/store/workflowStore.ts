@@ -1,8 +1,13 @@
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import {
   mockProjects, mockTowers, mockCaptures, mockTours, getFloors, getRooms,
+  mockFloorPlans, mockDefects, mockNotifications, mockAuditLogs, mockUsers,
   type MockProject, type MockTower, type MockCapture, type MockTour,
+  type MockFloorPlan, type MockDefect, type MockNotification, type MockAuditLog,
+  type MockUser, type NotifType, type AuditEventType,
 } from '@/data/mockData';
+import { STORE_VERSION, WORKFLOW_STORE_KEY } from './persistence';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction Workflow Store
@@ -37,12 +42,10 @@ export interface WfRoom {
 
 export type ProjectArchived = MockProject & { archived?: boolean };
 
-function uid(prefix: string): string {
-  // No Math.random in some sandboxes; derive from a monotonic counter + len.
-  counter += 1;
-  return `${prefix}${counter}`;
-}
-let counter = Date.now() % 100000;
+export type WorkflowDataState = Pick<WorkflowState,
+  'projects' | 'towers' | 'floors' | 'rooms' | 'captures' | 'tours' |
+  'floorPlans' | 'defects' | 'notifications' | 'auditLogs' | 'users' | 'uidCounter'
+>;
 
 // ── Seed from mockData ──────────────────────────────────────────────────────────
 function seedFloors(): WfFloor[] {
@@ -75,6 +78,15 @@ interface WorkflowState {
   rooms: WfRoom[];
   captures: MockCapture[];
   tours: MockTour[];
+  floorPlans: MockFloorPlan[];
+  defects: MockDefect[];
+  notifications: MockNotification[];
+  auditLogs: MockAuditLog[];
+  users: MockUser[];
+  uidCounter: number;
+
+  nextId: (prefix: string) => string;
+  resetToSeed: () => void;
 
   // ── Projects ──
   createProject: (p: Partial<MockProject> & { name: string }) => string;
@@ -82,7 +94,7 @@ interface WorkflowState {
   archiveProject: (id: string) => void;
 
   // ── Towers ──
-  createTower: (projectId: string, name: string) => string;
+  createTower: (projectId: string, name: string, floors?: number) => string;
   updateTower: (id: string, patch: Partial<MockTower>) => void;
   deleteTower: (id: string) => void;
 
@@ -96,6 +108,9 @@ interface WorkflowState {
   updateRoom: (id: string, patch: Partial<WfRoom>) => void;
   deleteRoom: (id: string) => void;
   assignFloorPlan: (roomId: string, floorPlanId: string) => void;
+
+  // ── Floor Plans ──
+  uploadFloorPlan: (payload: Omit<MockFloorPlan, 'id' | 'uploadedAt' | 'uploadedBy'> & { uploadedBy?: string }) => string;
 
   // ── Captures ──
   uploadCapture: (roomId: string, fileCount: number) => string;
@@ -114,6 +129,16 @@ interface WorkflowState {
   generateTour: (captureId: string) => string;
   publishTour: (id: string) => void;
   updateTour: (id: string, patch: Partial<MockTour>) => void;
+
+  // ── Defects ──
+  createDefect: (d: Omit<MockDefect, 'id' | 'createdAt' | 'updatedAt'>) => string;
+  updateDefect: (id: string, patch: Partial<MockDefect>) => void;
+
+  // ── Notifications ──
+  markNotificationRead: (id: string) => void;
+  markAllNotificationsRead: () => void;
+  deleteNotification: (id: string) => void;
+  restoreNotification: (n: MockNotification, index: number) => void;
 }
 
 const GRADIENTS = [
@@ -123,20 +148,80 @@ const GRADIENTS = [
   'linear-gradient(135deg, #3a1f1a 0%, #221008 100%)',
 ];
 
-const initialFloors = seedFloors();
-const initialRooms = seedRooms(initialFloors);
+export function buildInitialWorkflowData(): WorkflowDataState {
+  const initialFloors = seedFloors();
+  const initialRooms = seedRooms(initialFloors);
+  return {
+    projects: mockProjects.map(p => ({ ...p })),
+    towers: mockTowers.map(t => ({ ...t })),
+    floors: initialFloors,
+    rooms: initialRooms,
+    captures: mockCaptures.map(c => ({ ...c })),
+    tours: mockTours.map(t => ({ ...t })),
+    floorPlans: mockFloorPlans.map(fp => ({ ...fp, rooms: fp.rooms.map(r => ({ ...r })) })),
+    defects: mockDefects.map(d => ({ ...d })),
+    notifications: mockNotifications.map(n => ({ ...n })),
+    auditLogs: mockAuditLogs.map(a => ({ ...a })),
+    users: mockUsers.map(u => ({ ...u })),
+    uidCounter: Date.now() % 100000,
+  };
+}
 
-export const useWorkflowStore = create<WorkflowState>((set, get) => ({
-  projects: mockProjects.map(p => ({ ...p })),
-  towers: mockTowers.map(t => ({ ...t })),
-  floors: initialFloors,
-  rooms: initialRooms,
-  captures: mockCaptures.map(c => ({ ...c })),
-  tours: mockTours.map(t => ({ ...t })),
+function isValidWorkflowData(data: unknown): data is WorkflowDataState {
+  if (!data || typeof data !== 'object') return false;
+  const d = data as WorkflowDataState;
+  return Array.isArray(d.projects) && Array.isArray(d.captures) && Array.isArray(d.tours);
+}
+
+function pushNotif(
+  set: (fn: (s: WorkflowState) => Partial<WorkflowState>) => void,
+  type: NotifType,
+  title: string,
+  body: string,
+  link: string,
+) {
+  const id = `n${Date.now()}`;
+  set(s => ({
+    notifications: [{ id, type, title, body, link, read: false, createdAt: 'Just now' }, ...s.notifications],
+  }));
+}
+
+function pushAudit(
+  set: (fn: (s: WorkflowState) => Partial<WorkflowState>) => void,
+  eventType: AuditEventType,
+  entityType: MockAuditLog['entityType'],
+  entityId: string,
+  entityName: string,
+  projectId: string | null,
+  description: string,
+) {
+  const id = `al${Date.now()}`;
+  set(s => ({
+    auditLogs: [{
+      id, actorId: 'u1', actorName: 'You', eventType, entityType,
+      entityId, entityName, projectId, description, createdAt: 'Just now',
+    }, ...s.auditLogs],
+  }));
+}
+
+export const useWorkflowStore = create<WorkflowState>()(
+  persist(
+    (set, get) => ({
+      ...buildInitialWorkflowData(),
+
+      nextId(prefix) {
+        const uidCounter = get().uidCounter + 1;
+        set({ uidCounter });
+        return `${prefix}${uidCounter}`;
+      },
+
+      resetToSeed() {
+        set(buildInitialWorkflowData());
+      },
 
   // ── Projects ──────────────────────────────────────────────────────────────
   createProject(p) {
-    const id = uid('p');
+    const id = get().nextId('p');
     const project: ProjectArchived = {
       id, name: p.name,
       location: p.location ?? `${p.city ?? 'Hyderabad'}, ${p.state ?? 'Telangana'}`,
@@ -149,20 +234,23 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       lastUpdated: 'Just now', thumbnail: null, teamSize: 1,
     };
     set(s => ({ projects: [...s.projects, project] }));
+    pushAudit(set, 'project_created', 'project', id, p.name, id, `Created project "${p.name}"`);
     return id;
   },
   updateProject(id, patch) {
+    const proj = get().projects.find(p => p.id === id);
     set(s => ({ projects: s.projects.map(p => p.id === id ? { ...p, ...patch, lastUpdated: 'Just now' } : p) }));
+    if (proj) pushAudit(set, 'project_updated', 'project', id, proj.name, id, `Updated project "${proj.name}"`);
   },
   archiveProject(id) {
     set(s => ({ projects: s.projects.map(p => p.id === id ? { ...p, archived: !p.archived, status: p.archived ? 'active' : 'draft' } : p) }));
   },
 
   // ── Towers ────────────────────────────────────────────────────────────────
-  createTower(projectId, name) {
-    const id = uid('t');
+  createTower(projectId, name, floorCount = 0) {
+    const id = get().nextId('t');
     set(s => ({
-      towers: [...s.towers, { id, projectId, name, floors: 0, rooms: 0, captures: 0, progress: 0, description: '', status: 'pending' }],
+      towers: [...s.towers, { id, projectId, name, floors: floorCount, rooms: 0, captures: 0, progress: 0, description: '', status: 'pending' }],
       projects: s.projects.map(p => p.id === projectId ? { ...p, towers: p.towers + 1, lastUpdated: 'Just now' } : p),
     }));
     return id;
@@ -184,7 +272,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   // ── Floors ────────────────────────────────────────────────────────────────
   createFloor(towerId, number) {
-    const id = uid('f');
+    const id = get().nextId('f');
     const floor: WfFloor = { id: `${towerId}-f${number}-${id}`, towerId, number, label: `Floor ${number}` };
     const tower = get().towers.find(t => t.id === towerId);
     set(s => ({
@@ -208,7 +296,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   // ── Rooms ─────────────────────────────────────────────────────────────────
   createRoom(floorId, name, type) {
-    const id = uid('r');
+    const id = get().nextId('r');
     const floor = get().floors.find(f => f.id === floorId);
     if (!floor) return id;
     const room: WfRoom = { id: `${floorId}-${id}`, floorId, towerId: floor.towerId, projectId: get().towers.find(t => t.id === floor.towerId)?.projectId ?? '', name, type };
@@ -237,7 +325,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   // ── Captures ────────────────────────────────────────────────────────────────
   uploadCapture(roomId, fileCount) {
-    const id = uid('c');
+    const id = get().nextId('c');
     const room = get().rooms.find(r => r.id === roomId);
     if (!room) return id;
     const project = get().projects.find(p => p.id === room.projectId);
@@ -259,6 +347,8 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       towers: s.towers.map(t => t.id === room.towerId ? { ...t, captures: t.captures + 1 } : t),
       projects: project ? s.projects.map(p => p.id === project.id ? { ...p, captures: p.captures + 1, lastUpdated: 'Just now' } : p) : s.projects,
     }));
+    pushNotif(set, 'capture_uploaded', 'New capture uploaded', `Uploaded ${fileCount} files for ${room.name}`, `/captures/${id}`);
+    pushAudit(set, 'capture_uploaded', 'capture', id, capture.roomName, room.projectId, `Uploaded ${fileCount} images for ${capture.roomName}`);
     return id;
   },
   deleteCapture(id) {
@@ -275,6 +365,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   // ── Review ──────────────────────────────────────────────────────────────────
   reviewCapture(id, action, notes) {
+    const cap = get().captures.find(c => c.id === id);
     set(s => ({
       captures: s.captures.map(c => {
         if (c.id !== id) return c;
@@ -283,9 +374,23 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         return { ...c, status: 'review', reviewStatus: 'reviewing', reviewNotes: notes ?? 'Changes requested' };
       }),
     }));
+    if (cap) {
+      if (action === 'approve') {
+        pushNotif(set, 'review_approved', 'Capture approved', `${cap.roomName} was approved`, `/captures/${id}`);
+        pushAudit(set, 'capture_approved', 'capture', id, cap.roomName, cap.projectId, `Approved capture for ${cap.roomName}`);
+      } else if (action === 'reject') {
+        pushNotif(set, 'review_rejected', 'Re-upload requested', notes ?? `Changes requested for ${cap.roomName}`, `/captures/${id}`);
+        pushAudit(set, 'capture_rejected', 'capture', id, cap.roomName, cap.projectId, notes ?? 'Rejected capture');
+      }
+    }
   },
   assignReviewer(id, reviewerName) {
+    const cap = get().captures.find(c => c.id === id);
     set(s => ({ captures: s.captures.map(c => c.id === id ? { ...c, assignedTo: reviewerName, reviewStatus: c.reviewStatus === 'uploaded' ? 'assigned' : c.reviewStatus } : c) }));
+    if (cap) {
+      pushNotif(set, 'review_requested', 'Review requested', `${cap.roomName} assigned to ${reviewerName}`, `/captures/${id}`);
+      pushAudit(set, 'review_assigned', 'capture', id, cap.roomName, cap.projectId, `Assigned to ${reviewerName}`);
+    }
   },
 
   // ── Publish ───────────────────────────────────────────────────────────────
@@ -298,7 +403,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   // ── Tours ─────────────────────────────────────────────────────────────────
   generateTour(captureId) {
-    const id = uid('tour');
+    const id = get().nextId('tour');
     const cap = get().captures.find(c => c.id === captureId);
     if (!cap) return id;
     const existing = get().tours.find(t => t.captureId === captureId);
@@ -314,9 +419,95 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     return id;
   },
   publishTour(id) {
+    const tour = get().tours.find(t => t.id === id);
     set(s => ({ tours: s.tours.map(t => t.id === id ? { ...t, status: 'published' } : t) }));
+    if (tour) {
+      pushNotif(set, 'tour_published', 'Tour published', `Virtual tour for ${tour.roomName} is live`, `/tours/${id}`);
+      pushAudit(set, 'tour_published', 'tour', id, tour.roomName, tour.projectId, `Published tour for ${tour.roomName}`);
+    }
   },
   updateTour(id, patch) {
     set(s => ({ tours: s.tours.map(t => t.id === id ? { ...t, ...patch } : t) }));
   },
-}));
+
+  uploadFloorPlan(payload) {
+    const id = get().nextId('fp');
+    const plan: MockFloorPlan = {
+      ...payload,
+      id,
+      uploadedAt: 'Just now',
+      uploadedBy: payload.uploadedBy ?? 'You',
+    };
+    set(s => ({
+      floorPlans: [...s.floorPlans.filter(fp => !(fp.towerId === payload.towerId && fp.floorId === payload.floorId)), plan],
+      floors: s.floors.map(f => f.id === payload.floorId ? { ...f, floorPlanId: id } : f),
+    }));
+    const project = get().projects.find(p => p.id === payload.projectId);
+    pushNotif(set, 'floor_plan_uploaded', 'Floor plan uploaded', `${payload.floorLabel} uploaded for ${project?.name ?? 'project'}`, `/floor-plans/${payload.projectId}/${payload.towerId}/${payload.floorId}`);
+    pushAudit(set, 'floor_plan_uploaded', 'floor_plan', id, payload.floorLabel, payload.projectId, `Uploaded floor plan for ${payload.floorLabel}`);
+    return id;
+  },
+
+  createDefect(d) {
+    const id = get().nextId('d');
+    const defect: MockDefect = { ...d, id, createdAt: 'Just now', updatedAt: 'Just now' };
+    set(s => ({ defects: [defect, ...s.defects] }));
+    pushNotif(set, 'defect_assigned', 'Defect assigned', `"${d.title}" assigned to ${d.assignedTo}`, '/defects');
+    pushAudit(set, 'defect_created', 'defect', id, d.title, d.projectId, `Created defect "${d.title}"`);
+    return id;
+  },
+
+  updateDefect(id, patch) {
+    const defect = get().defects.find(d => d.id === id);
+    set(s => ({
+      defects: s.defects.map(d => d.id === id ? { ...d, ...patch, updatedAt: 'Just now' } : d),
+    }));
+    if (defect && patch.status === 'resolved') {
+      pushAudit(set, 'defect_resolved', 'defect', id, defect.title, defect.projectId, `Resolved defect "${defect.title}"`);
+    }
+  },
+
+  markNotificationRead(id) {
+    set(s => ({ notifications: s.notifications.map(n => n.id === id ? { ...n, read: true } : n) }));
+  },
+  markAllNotificationsRead() {
+    set(s => ({ notifications: s.notifications.map(n => ({ ...n, read: true })) }));
+  },
+  deleteNotification(id) {
+    set(s => ({ notifications: s.notifications.filter(n => n.id !== id) }));
+  },
+  restoreNotification(n, index) {
+    set(s => {
+      const list = [...s.notifications];
+      list.splice(Math.min(index, list.length), 0, n);
+      return { notifications: list };
+    });
+  },
+    }),
+    {
+      name: WORKFLOW_STORE_KEY,
+      version: STORE_VERSION.workflow,
+      storage: createJSONStorage(() => localStorage),
+      partialize: (s): WorkflowDataState => ({
+        projects: s.projects,
+        towers: s.towers,
+        floors: s.floors,
+        rooms: s.rooms,
+        captures: s.captures,
+        tours: s.tours,
+        floorPlans: s.floorPlans,
+        defects: s.defects,
+        notifications: s.notifications,
+        auditLogs: s.auditLogs,
+        users: s.users,
+        uidCounter: s.uidCounter,
+      }),
+      migrate: (persisted, version) => {
+        if (!isValidWorkflowData(persisted) || version === 0) {
+          return { ...buildInitialWorkflowData(), ...(isValidWorkflowData(persisted) ? persisted : {}) };
+        }
+        return persisted as WorkflowDataState;
+      },
+    },
+  ),
+);

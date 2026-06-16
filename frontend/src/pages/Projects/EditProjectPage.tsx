@@ -3,7 +3,8 @@ import { useNavigate, useParams, Link } from 'react-router-dom';
 import { Box, Typography, Grid, TextField, MenuItem, Alert, InputAdornment } from '@mui/material';
 import { ArrowBackRounded, ApartmentRounded, LayersRounded, MeetingRoomRounded, HomeWorkRounded, GridViewRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { getProjectById, mockProjects } from '@/data/mockData';
+import { useWorkflowStore } from '@store/workflowStore';
+import { getProjectById } from '@store/workflowSelectors';
 
 const STATES = ['Telangana', 'Andhra Pradesh', 'Karnataka', 'Maharashtra', 'Tamil Nadu', 'Gujarat', 'Rajasthan', 'Delhi'];
 const STATUSES = [
@@ -40,7 +41,9 @@ type StructureKey = typeof STRUCTURE_FIELDS[number]['key'];
 export default function EditProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
-  const project = getProjectById(projectId ?? '');
+  const projects = useWorkflowStore(s => s.projects);
+  const updateProject = useWorkflowStore(s => s.updateProject);
+  const project = getProjectById(projects, projectId ?? '');
 
   const [saved, setSaved] = useState(false);
   const [form, setForm] = useState(() => ({
@@ -81,30 +84,25 @@ export default function EditProjectPage() {
     e.preventDefault();
     if (!form.name.trim() || !project) return;
 
-    const idx = mockProjects.findIndex(p => p.id === project.id);
-    if (idx !== -1) {
-      // Derive progress from captured rooms vs planned total.
-      const progress = form.totalRooms > 0 ? Math.min(100, Math.round((form.rooms / form.totalRooms) * 100)) : project.progress;
-      mockProjects[idx] = {
-        ...mockProjects[idx],
-        name: form.name,
-        client: form.client,
-        description: form.description,
-        city: form.city,
-        state: form.state,
-        location: `${form.city}, ${form.state}`,
-        status: form.status as typeof project.status,
-        startDate: form.startDate,
-        endDate: form.endDate,
-        towers: form.towers,
-        floors: form.floors,
-        flats: form.flats,
-        rooms: form.rooms,
-        totalRooms: form.totalRooms,
-        progress,
-        lastUpdated: 'Just now',
-      };
-    }
+    const progress = form.totalRooms > 0 ? Math.min(100, Math.round((form.rooms / form.totalRooms) * 100)) : project.progress;
+    updateProject(project.id, {
+      name: form.name,
+      client: form.client,
+      description: form.description,
+      city: form.city,
+      state: form.state,
+      location: `${form.city}, ${form.state}`,
+      status: form.status as typeof project.status,
+      startDate: form.startDate,
+      endDate: form.endDate,
+      towers: form.towers,
+      floors: form.floors,
+      flats: form.flats,
+      rooms: form.rooms,
+      totalRooms: form.totalRooms,
+      progress,
+      lastUpdated: 'Just now',
+    });
     setSaved(true);
     setTimeout(() => navigate(`/projects/${project.id}`), 1000);
   }

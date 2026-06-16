@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import { AUTH_STORE_KEY, STORE_VERSION, safeParseJson } from './persistence';
 
 export interface AuthUser {
   id: string;
@@ -15,15 +16,22 @@ export interface AuthUser {
 interface AuthState {
   // Access token lives in memory only — never persisted to localStorage.
   accessToken: string | null;
-  // User profile is persisted so the UI can render instantly on page load.
   user: AuthUser | null;
   isAuthenticated: boolean;
 
-  // Actions
   setAuth: (token: string, user: AuthUser) => void;
   setAccessToken: (token: string) => void;
   updateUser: (partial: Partial<AuthUser>) => void;
   clearAuth: () => void;
+}
+
+type PersistedAuth = Pick<AuthState, 'user' | 'isAuthenticated'>;
+
+function migrateLegacyAuth(persisted: PersistedAuth | null): PersistedAuth | null {
+  if (persisted?.user) return persisted;
+  const legacy = safeParseJson<{ state?: PersistedAuth }>(localStorage.getItem('auth'));
+  if (legacy?.state?.user) return legacy.state;
+  return persisted;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -50,9 +58,17 @@ export const useAuthStore = create<AuthState>()(
       },
     }),
     {
-      name: 'auth',
-      // Only persist the user profile — never persist the access token.
-      partialize: (s) => ({ user: s.user, isAuthenticated: s.isAuthenticated }),
-    }
-  )
+      name: AUTH_STORE_KEY,
+      version: STORE_VERSION.auth,
+      storage: createJSONStorage(() => localStorage),
+      partialize: (s): PersistedAuth => ({ user: s.user, isAuthenticated: s.isAuthenticated }),
+      migrate: (persisted) => {
+        const migrated = migrateLegacyAuth(persisted as PersistedAuth | null);
+        if (!migrated?.user || typeof migrated.isAuthenticated !== 'boolean') {
+          return { user: null, isAuthenticated: false };
+        }
+        return migrated;
+      },
+    },
+  ),
 );

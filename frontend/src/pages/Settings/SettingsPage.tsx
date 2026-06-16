@@ -2,26 +2,13 @@ import React, { useState } from 'react';
 import { Box, Typography, TextField, Switch, Select, MenuItem, Snackbar, Alert } from '@mui/material';
 import {
   PersonRounded, BusinessRounded, PeopleRounded, NotificationsRounded,
-  LockRounded, PaletteRounded, CheckRounded, WarningAmberRounded,
+  LockRounded, PaletteRounded, CheckRounded, WarningAmberRounded, StorageRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useAuthStore } from '@store/authStore';
-
-// ── Storage helpers ───────────────────────────────────────────────────────────
-
-const STORAGE_KEY = 'sitesurelabs_settings';
-
-function loadSettings(): Record<string, unknown> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
-}
-
-function saveSettings(updates: Record<string, unknown>) {
-  const current = loadSettings();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, ...updates }));
-}
+import { useSettingsStore, NOTIF_PREF_KEYS, NOTIF_PREF_DEFAULTS } from '@store/settingsStore';
+import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
+import { resetApplicationData } from '@store/resetApplicationData';
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
 
@@ -32,6 +19,7 @@ const tabs = [
   { key: 'notifications', label: 'Notifications',  icon: <NotificationsRounded sx={{ fontSize: 16 }} /> },
   { key: 'security',      label: 'Security',       icon: <LockRounded sx={{ fontSize: 16 }} /> },
   { key: 'appearance',    label: 'Appearance',     icon: <PaletteRounded sx={{ fontSize: 16 }} /> },
+  { key: 'advanced',      label: 'Advanced',       icon: <StorageRounded sx={{ fontSize: 16 }} /> },
 ];
 
 const fieldSx = {
@@ -98,13 +86,14 @@ function FormActions({ isDirty, onSave, onDiscard }: FormActionsProps) {
 function AccountTab({ onSaved }: { onSaved: () => void }) {
   const user = useAuthStore(s => s.user);
   const updateUser = useAuthStore(s => s.updateUser);
+  const account = useSettingsStore(s => s.account);
+  const patchAccount = useSettingsStore(s => s.patchAccount);
 
-  const stored = loadSettings();
   const initial = {
-    name:        (stored.account_name as string) ?? user?.name ?? 'Ravi Kumar',
-    email:       (stored.account_email as string) ?? user?.email ?? 'admin@demo.com',
-    phone:       (stored.account_phone as string) ?? '+91 98765 43210',
-    designation: (stored.account_designation as string) ?? 'Site Manager',
+    name: account.name || user?.name || 'Ravi Kumar',
+    email: account.email || user?.email || 'admin@demo.com',
+    phone: account.phone,
+    designation: account.designation,
   };
 
   const [form, setForm] = useState(initial);
@@ -112,10 +101,7 @@ function AccountTab({ onSaved }: { onSaved: () => void }) {
   const isDirty = JSON.stringify(form) !== JSON.stringify(saved);
 
   function handleSave() {
-    saveSettings({
-      account_name: form.name, account_email: form.email,
-      account_phone: form.phone, account_designation: form.designation,
-    });
+    patchAccount({ name: form.name, email: form.email, phone: form.phone, designation: form.designation });
     setSaved(form);
     updateUser({ name: form.name });
     onSaved();
@@ -147,11 +133,13 @@ function AccountTab({ onSaved }: { onSaved: () => void }) {
 // ── Organization Tab ──────────────────────────────────────────────────────────
 
 function OrganizationTab({ onSaved }: { onSaved: () => void }) {
-  const stored = loadSettings();
+  const organization = useSettingsStore(s => s.organization);
+  const patchOrganization = useSettingsStore(s => s.patchOrganization);
+
   const initial = {
-    name:    (stored.org_name as string) ?? 'My Home Constructions',
-    website: (stored.org_website as string) ?? 'https://myhomeconstructions.com',
-    address: (stored.org_address as string) ?? 'Hyderabad, Telangana, India',
+    name: organization.name,
+    website: organization.website,
+    address: organization.address,
   };
 
   const [form, setForm] = useState(initial);
@@ -159,7 +147,7 @@ function OrganizationTab({ onSaved }: { onSaved: () => void }) {
   const isDirty = JSON.stringify(form) !== JSON.stringify(saved);
 
   function handleSave() {
-    saveSettings({ org_name: form.name, org_website: form.website, org_address: form.address });
+    patchOrganization({ name: form.name, website: form.website, address: form.address });
     setSaved(form);
     onSaved();
   }
@@ -188,26 +176,22 @@ function OrganizationTab({ onSaved }: { onSaved: () => void }) {
 // ── Team Tab ──────────────────────────────────────────────────────────────────
 
 function TeamTab() {
-  const [members, setMembers] = useState([
-    { name: 'Ravi Kumar',  email: 'ravi@demo.com',  role: 'Admin',    status: 'Active' },
-    { name: 'Anil P',      email: 'anil@demo.com',  role: 'Reviewer', status: 'Active' },
-    { name: 'Kiran Desai', email: 'kiran@demo.com', role: 'Member',   status: 'Active' },
-    { name: 'Meena R',     email: 'meena@demo.com', role: 'Member',   status: 'Invited' },
-  ]);
+  const members = useSettingsStore(s => s.teamMembers);
+  const setTeamMembers = useSettingsStore(s => s.setTeamMembers);
   const [showInvite, setShowInvite] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('Member');
 
   function handleInvite() {
     if (!inviteEmail) return;
-    setMembers(m => [...m, { name: inviteEmail.split('@')[0], email: inviteEmail, role: inviteRole, status: 'Invited' }]);
+    setTeamMembers([...members, { name: inviteEmail.split('@')[0], email: inviteEmail, role: inviteRole, status: 'Invited' }]);
     setShowInvite(false);
     setInviteEmail('');
     setInviteRole('Member');
   }
 
   function handleRemove(email: string) {
-    setMembers(m => m.filter(x => x.email !== email));
+    setTeamMembers(members.filter(x => x.email !== email));
   }
 
   return (
@@ -264,28 +248,35 @@ function TeamTab() {
 
 // ── Notifications Tab ─────────────────────────────────────────────────────────
 
-const NOTIF_PREFS = [
-  { key: 'capture_upload', label: 'Capture uploaded',  sub: 'When a new capture is uploaded to any project', default: true },
-  { key: 'capture_review', label: 'Review required',   sub: 'When a capture is marked for your review',      default: true },
-  { key: 'tour_published', label: 'Tour published',    sub: 'When a virtual tour is published',              default: false },
-  { key: 'project_update', label: 'Project updates',   sub: 'Progress milestones and status changes',        default: true },
-  { key: 'team_invite',    label: 'Team invitations',  sub: 'When someone invites you to a project',         default: true },
-  { key: 'weekly_digest',  label: 'Weekly digest',     sub: 'Summary of activity every Monday morning',      default: false },
-];
+const NOTIF_PREFS = NOTIF_PREF_KEYS.map(key => ({
+  key,
+  label: key === 'capture_upload' ? 'Capture uploaded'
+    : key === 'capture_review' ? 'Review required'
+    : key === 'tour_published' ? 'Tour published'
+    : key === 'project_update' ? 'Project updates'
+    : key === 'team_invite' ? 'Team invitations'
+    : 'Weekly digest',
+  sub: key === 'capture_upload' ? 'When a new capture is uploaded to any project'
+    : key === 'capture_review' ? 'When a capture is marked for your review'
+    : key === 'tour_published' ? 'When a virtual tour is published'
+    : key === 'project_update' ? 'Progress milestones and status changes'
+    : key === 'team_invite' ? 'When someone invites you to a project'
+    : 'Summary of activity every Monday morning',
+  default: NOTIF_PREF_DEFAULTS[key],
+}));
 
 function NotificationsTab({ onSaved }: { onSaved: () => void }) {
-  const stored = loadSettings();
+  const storedNotifs = useSettingsStore(s => s.notifications);
+  const patchNotifications = useSettingsStore(s => s.patchNotifications);
   const initial: Record<string, boolean> = Object.fromEntries(
-    NOTIF_PREFS.map(p => [p.key, stored[`notif_${p.key}`] !== undefined ? stored[`notif_${p.key}`] as boolean : p.default])
+    NOTIF_PREF_KEYS.map(k => [k, storedNotifs[k] ?? NOTIF_PREF_DEFAULTS[k]]),
   );
   const [state, setState] = useState(initial);
   const [saved, setSaved] = useState(initial);
   const isDirty = JSON.stringify(state) !== JSON.stringify(saved);
 
   function handleSave() {
-    const updates: Record<string, unknown> = {};
-    NOTIF_PREFS.forEach(p => { updates[`notif_${p.key}`] = state[p.key]; });
-    saveSettings(updates);
+    patchNotifications(state);
     setSaved(state);
     onSaved();
   }
@@ -311,6 +302,8 @@ function NotificationsTab({ onSaved }: { onSaved: () => void }) {
 // ── Security Tab ──────────────────────────────────────────────────────────────
 
 function SecurityTab({ onSaved }: { onSaved: () => void }) {
+  const security = useSettingsStore(s => s.security);
+  const patchSecurity = useSettingsStore(s => s.patchSecurity);
   const [form, setForm] = useState({ current: '', newPw: '', confirm: '' });
   const [error, setError] = useState('');
   const isDirty = !!(form.current || form.newPw || form.confirm);
@@ -344,8 +337,9 @@ function SecurityTab({ onSaved }: { onSaved: () => void }) {
             <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong }}>Authenticator app</Typography>
             <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>Use Google Authenticator or similar</Typography>
           </Box>
-          <Box sx={{ px: 2, py: 0.75, borderRadius: '8px', border: `1px solid ${colors.borderLight}`, color: colors.textSecondary, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', '&:hover': { borderColor: colors.primary, color: colors.primary }, transition: `all ${motion.durationFast}` }}>
-            Enable 2FA
+          <Box sx={{ px: 2, py: 0.75, borderRadius: '8px', border: `1px solid ${colors.borderLight}`, color: security.twoFactorEnabled ? colors.success : colors.textSecondary, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', '&:hover': { borderColor: colors.primary, color: colors.primary }, transition: `all ${motion.durationFast}` }}
+            onClick={() => { patchSecurity({ twoFactorEnabled: !security.twoFactorEnabled }); onSaved(); }}>
+            {security.twoFactorEnabled ? '2FA Enabled' : 'Enable 2FA'}
           </Box>
         </Box>
       </SectionCard>
@@ -357,17 +351,16 @@ function SecurityTab({ onSaved }: { onSaved: () => void }) {
 // ── Appearance Tab ────────────────────────────────────────────────────────────
 
 function AppearanceTab({ onSaved }: { onSaved: () => void }) {
-  const stored = loadSettings();
-  const initial = {
-    theme:   (stored.appearance_theme as string) ?? 'light',
-    density: (stored.appearance_density as string) ?? 'comfortable',
-  };
+  const appearance = useSettingsStore(s => s.appearance);
+  const patchAppearance = useSettingsStore(s => s.patchAppearance);
+
+  const initial = { theme: appearance.theme, density: appearance.density };
   const [form, setForm] = useState(initial);
   const [saved, setSaved] = useState(initial);
   const isDirty = JSON.stringify(form) !== JSON.stringify(saved);
 
   function handleSave() {
-    saveSettings({ appearance_theme: form.theme, appearance_density: form.density });
+    patchAppearance({ theme: form.theme, density: form.density });
     setSaved(form);
     onSaved();
   }
@@ -399,6 +392,45 @@ function AppearanceTab({ onSaved }: { onSaved: () => void }) {
   );
 }
 
+// ── Advanced Tab ──────────────────────────────────────────────────────────────
+
+function AdvancedTab() {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  return (
+    <>
+      <SectionCard title="Application Data">
+        <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted, mb: 2, lineHeight: 1.6 }}>
+          Reset all locally stored application data including projects, captures, tours, settings, and session state.
+          This returns the app to its initial seeded state. This action cannot be undone.
+        </Typography>
+        <Box
+          onClick={() => setConfirmOpen(true)}
+          sx={{
+            display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.5, py: 1,
+            borderRadius: '8px', border: `1.5px solid ${colors.danger}`, color: colors.danger,
+            fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer',
+            '&:hover': { backgroundColor: colors.dangerBg },
+            transition: `all ${motion.durationFast}`,
+          }}
+        >
+          Reset Application Data
+        </Box>
+      </SectionCard>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Reset application data?"
+        description="All projects, captures, tours, notifications, settings, and your login session will be cleared. The page will reload with fresh seed data."
+        confirmLabel="Reset everything"
+        destructive
+        onConfirm={() => { setConfirmOpen(false); resetApplicationData(); }}
+        onCancel={() => setConfirmOpen(false)}
+      />
+    </>
+  );
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
@@ -414,6 +446,7 @@ export default function SettingsPage() {
     notifications: <NotificationsTab onSaved={handleSaved} />,
     security:      <SecurityTab onSaved={handleSaved} />,
     appearance:    <AppearanceTab onSaved={handleSaved} />,
+    advanced:      <AdvancedTab />,
   };
 
   return (

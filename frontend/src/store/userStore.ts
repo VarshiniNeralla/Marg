@@ -1,4 +1,6 @@
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import { STORE_VERSION, USER_STORE_KEY } from './persistence';
 
 export interface UserListItem {
   id: string;
@@ -24,31 +26,50 @@ interface UserState {
   clear: () => void;
 }
 
-export const useUserStore = create<UserState>((set) => ({
-  users: [],
-  total: 0,
-  isLoading: false,
-  error: null,
+type PersistedUser = Pick<UserState, 'users' | 'total'>;
 
-  setUsers(users, total) {
-    set({ users, total, error: null });
-  },
+export const useUserStore = create<UserState>()(
+  persist(
+    (set) => ({
+      users: [],
+      total: 0,
+      isLoading: false,
+      error: null,
 
-  setLoading(v) {
-    set({ isLoading: v });
-  },
+      setUsers(users, total) {
+        set({ users, total, error: null });
+      },
 
-  setError(msg) {
-    set({ error: msg, isLoading: false });
-  },
+      setLoading(v) {
+        set({ isLoading: v });
+      },
 
-  updateUserInList(id, patch) {
-    set((s) => ({
-      users: s.users.map((u) => (u.id === id ? { ...u, ...patch } : u)),
-    }));
-  },
+      setError(msg) {
+        set({ error: msg, isLoading: false });
+      },
 
-  clear() {
-    set({ users: [], total: 0, isLoading: false, error: null });
-  },
-}));
+      updateUserInList(id, patch) {
+        set((s) => ({
+          users: s.users.map((u) => (u.id === id ? { ...u, ...patch } : u)),
+        }));
+      },
+
+      clear() {
+        set({ users: [], total: 0, isLoading: false, error: null });
+      },
+    }),
+    {
+      name: USER_STORE_KEY,
+      version: STORE_VERSION.user,
+      storage: createJSONStorage(() => localStorage),
+      partialize: (s): PersistedUser => ({ users: s.users, total: s.total }),
+      migrate: (persisted) => {
+        const p = persisted as PersistedUser | null;
+        if (!p || !Array.isArray(p.users)) {
+          return { users: [], total: 0 };
+        }
+        return p;
+      },
+    },
+  ),
+);

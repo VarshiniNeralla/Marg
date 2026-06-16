@@ -2,7 +2,8 @@ import React, { useState, useRef } from 'react';
 import { Box, Typography, TextField, Chip, Grid, Snackbar, Alert } from '@mui/material';
 import { CameraAltRounded, CheckCircleRounded, AccessTimeRounded, ViewInArRounded, WarningAmberRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { mockCaptures, mockTours, mockAuditLogs } from '@/data/mockData';
+import { useWorkflowStore } from '@store/workflowStore';
+import { useSettingsStore } from '@store/settingsStore';
 import ActivityFeed from '@shared/components/ActivityFeed/ActivityFeed';
 import { useAuthStore } from '@store/authStore';
 
@@ -16,28 +17,20 @@ const fieldSx = {
   },
 };
 
-const PROFILE_KEY = 'sitesurelabs_profile';
-
-function loadProfile(): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(PROFILE_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
-}
 
 export default function UserProfilePage() {
   const user = useAuthStore(s => s.user);
   const updateUser = useAuthStore(s => s.updateUser);
+  const profile = useSettingsStore(s => s.profile);
+  const patchProfile = useSettingsStore(s => s.patchProfile);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const stored = loadProfile();
-
   const initial = {
-    name:        stored.name ?? user?.name ?? 'Ravi Kumar',
-    designation: stored.designation ?? 'Site Manager',
-    phone:       stored.phone ?? '+91 98765 43210',
-    bio:         stored.bio ?? 'Site manager at My Home Constructions with 8+ years of experience in residential construction documentation.',
-    avatarUrl:   stored.avatarUrl ?? '',
+    name: profile.name || user?.name || 'Ravi Kumar',
+    designation: profile.designation,
+    phone: profile.phone,
+    bio: profile.bio,
+    avatarUrl: profile.avatarUrl,
   };
 
   const [form, setForm] = useState(initial);
@@ -45,18 +38,27 @@ export default function UserProfilePage() {
   const [toastOpen, setToastOpen] = useState(false);
   const isDirty = JSON.stringify(form) !== JSON.stringify(saved);
 
-  const myCaptures = mockCaptures.filter(c => c.uploadedBy === 'Ravi Kumar').length;
-  const myTours = mockTours.filter(t => t.status === 'published').length;
-  const pending = mockCaptures.filter(c => c.status === 'review').length;
+  const captures = useWorkflowStore(s => s.captures);
+  const tours = useWorkflowStore(s => s.tours);
+  const auditLogs = useWorkflowStore(s => s.auditLogs);
 
   const displayName = form.name || user?.name || 'Ravi Kumar';
+  const myCaptures = captures.filter(c => c.uploadedBy === displayName || c.uploadedBy === user?.name).length;
+  const myTours = tours.filter(t => t.status === 'published').length;
+  const pending = captures.filter(c => c.status === 'review').length;
+
   const initials = displayName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
 
   function handleSave() {
-    const updated = { ...form };
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(updated));
-    setSaved(updated);
-    updateUser({ name: updated.name, avatar_url: updated.avatarUrl || null });
+    patchProfile({
+      name: form.name,
+      designation: form.designation,
+      phone: form.phone,
+      bio: form.bio,
+      avatarUrl: form.avatarUrl,
+    });
+    setSaved(form);
+    updateUser({ name: form.name, avatar_url: form.avatarUrl || null });
     setToastOpen(true);
   }
 
@@ -75,6 +77,9 @@ export default function UserProfilePage() {
     reader.onloadend = () => {
       const dataUrl = reader.result as string;
       setForm(f => ({ ...f, avatarUrl: dataUrl }));
+      setSaved(s => ({ ...s, avatarUrl: dataUrl }));
+      patchProfile({ avatarUrl: dataUrl });
+      updateUser({ avatar_url: dataUrl });
     };
     reader.readAsDataURL(file);
     e.target.value = '';
@@ -190,7 +195,7 @@ export default function UserProfilePage() {
           {/* Activity feed */}
           <Box sx={{ borderRadius: '20px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', p: 3 }}>
             <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600, color: colors.textStrong, mb: 2.5 }}>Recent Activity</Typography>
-            <ActivityFeed logs={mockAuditLogs} maxItems={8} />
+            <ActivityFeed logs={auditLogs} maxItems={8} />
           </Box>
         </Grid>
       </Grid>

@@ -5,8 +5,8 @@ import {
   AccessTimeRounded, PeopleRounded, BugReportRounded, MapRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { mockDefects, mockUsers } from '@/data/mockData';
 import { useWorkflowStore } from '@store/workflowStore';
+import { computeDashboardStats } from '@store/workflowSelectors';
 
 const captureWeeks = [
   { week: 'Apr W1', count: 8 }, { week: 'Apr W2', count: 14 }, { week: 'Apr W3', count: 11 },
@@ -182,13 +182,19 @@ export default function AnalyticsPage() {
   const mockCaptures = useWorkflowStore(s => s.captures);
   const mockTours = useWorkflowStore(s => s.tours);
   const mockProjects = useWorkflowStore(s => s.projects).filter(p => !p.archived);
+  const defects = useWorkflowStore(s => s.defects);
+  const users = useWorkflowStore(s => s.users);
+  const floorPlans = useWorkflowStore(s => s.floorPlans);
 
   const totalCaptures = mockCaptures.length;
   const approved = mockCaptures.filter(c => c.status === 'processed').length;
   const pending  = mockCaptures.filter(c => c.status === 'review').length;
   const tours    = mockTours.filter(t => t.status === 'published').length;
   const avgProgress = Math.round(mockProjects.reduce((a, p) => a + p.progress, 0) / mockProjects.length);
-  const openDefects = mockDefects.filter(d => d.status === 'open' || d.status === 'in_progress').length;
+  const openDefects = defects.filter(d => d.status === 'open' || d.status === 'in_progress').length;
+  const criticalDefects = defects.filter(d => d.severity === 'critical').length;
+  const reviewerCount = users.filter(u => u.role === 'reviewer' || u.role === 'admin').length;
+  const uniquePlanProjects = new Set(floorPlans.map(fp => fp.projectId)).size;
 
   const ALL_KPIS = [
     { key: 'captures', icon: <CameraAltRounded />,  label: 'Total Captures',  value: totalCaptures, sub: '31 this week', color: '#2563eb', bg: 'rgba(37,99,235,0.08)' },
@@ -196,9 +202,9 @@ export default function AnalyticsPage() {
     { key: 'pending',  icon: <AccessTimeRounded />,  label: 'Pending Review',  value: pending,        sub: 'Avg 4.2h', color: '#d97706', bg: 'rgba(217,119,6,0.08)' },
     { key: 'tours',    icon: <ViewInArRounded />,    label: 'Published Tours', value: tours,          sub: `${mockTours.reduce((a,t) => a+t.viewCount,0)} views`, color: '#7c3aed', bg: 'rgba(124,58,237,0.08)' },
     { key: 'progress', icon: <TrendingUpRounded />,  label: 'Avg Completion',  value: `${avgProgress}%`, sub: 'Across 4 projects', color: '#059669', bg: 'rgba(5,150,105,0.08)' },
-    { key: 'defects',  icon: <BugReportRounded />,   label: 'Open Defects',    value: openDefects,    sub: `${mockDefects.filter(d=>d.severity==='critical').length} critical`, color: '#dc2626', bg: 'rgba(220,38,38,0.08)' },
-    { key: 'team',     icon: <PeopleRounded />,      label: 'Team Members',    value: mockUsers.length, sub: '3 reviewers', color: '#0891b2', bg: 'rgba(8,145,178,0.08)' },
-    { key: 'plans',    icon: <MapRounded />,         label: 'Floor Plans',     value: 3,              sub: '2 projects', color: '#64748b', bg: 'rgba(100,116,139,0.08)' },
+    { key: 'defects',  icon: <BugReportRounded />,   label: 'Open Defects',    value: openDefects,    sub: `${criticalDefects} critical`, color: '#dc2626', bg: 'rgba(220,38,38,0.08)' },
+    { key: 'team',     icon: <PeopleRounded />,      label: 'Team Members',    value: users.length, sub: `${reviewerCount} reviewers`, color: '#0891b2', bg: 'rgba(8,145,178,0.08)' },
+    { key: 'plans',    icon: <MapRounded />,         label: 'Floor Plans',     value: floorPlans.length, sub: `${uniquePlanProjects} projects`, color: '#64748b', bg: 'rgba(100,116,139,0.08)' },
   ];
 
   // Each tab shows only its relevant KPIs — focused, not the whole wall.

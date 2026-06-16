@@ -7,15 +7,22 @@ import {
   EditRounded, ArchiveRounded, AccessTimeRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
+import { statusConfig } from '@store/workflowSelectors';
 import {
-  getProjectById, getTowersByProject, getCapturesByProject,
-  getToursByProject, mockUsers, statusConfig, mockAuditLogs,
-} from '@/data/mockData';
+  getProjectById, getTowersByProject, getCapturesByProject, getToursByProject,
+} from '@store/workflowSelectors';
+import { useWorkflowStore } from '@store/workflowStore';
 import ActivityFeed from '@shared/components/ActivityFeed/ActivityFeed';
 
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>();
-  const project = getProjectById(projectId ?? '');
+  const projects = useWorkflowStore(s => s.projects);
+  const towers = useWorkflowStore(s => s.towers);
+  const captures = useWorkflowStore(s => s.captures);
+  const tours = useWorkflowStore(s => s.tours);
+  const users = useWorkflowStore(s => s.users);
+  const auditLogs = useWorkflowStore(s => s.auditLogs);
+  const project = getProjectById(projects, projectId ?? '');
   const [tab, setTab] = useState(0);
 
   if (!project) {
@@ -28,12 +35,12 @@ export default function ProjectDetailPage() {
     );
   }
 
-  const towers = getTowersByProject(project.id);
-  const captures = getCapturesByProject(project.id);
-  const tours = getToursByProject(project.id);
-  const teamMembers = mockUsers.filter(u => u.projectIds.includes(project.id));
+  const projectTowers = getTowersByProject(towers, project.id);
+  const projectCaptures = getCapturesByProject(captures, project.id);
+  const projectTours = getToursByProject(tours, project.id);
+  const teamMembers = users.filter(u => u.projectIds.includes(project.id));
   const st = statusConfig.project[project.status];
-  const pendingReviews = captures.filter(c => c.status === 'review');
+  const pendingReviews = projectCaptures.filter(c => c.status === 'review');
 
   return (
     <Box>
@@ -89,7 +96,7 @@ export default function ProjectDetailPage() {
           { icon: <LayersRounded sx={{ fontSize: 18 }} />, label: 'Floors', value: project.floors, color: '#0891b2' },
           { icon: <MeetingRoomRounded sx={{ fontSize: 18 }} />, label: 'Rooms', value: project.rooms, color: '#7c3aed' },
           { icon: <CameraAltRounded sx={{ fontSize: 18 }} />, label: 'Captures', value: project.captures, color: '#059669' },
-          { icon: <ViewInArRounded sx={{ fontSize: 18 }} />, label: 'Tours', value: tours.length, color: '#d97706' },
+          { icon: <ViewInArRounded sx={{ fontSize: 18 }} />, label: 'Tours', value: projectTours.length, color: '#d97706' },
           { icon: <PeopleRounded sx={{ fontSize: 18 }} />, label: 'Team', value: teamMembers.length, color: '#64748b' },
         ].map(({ icon, label, value, color }) => (
           <Grid key={label} size={{ xs: 6, sm: 4, md: 2 }}>
@@ -120,7 +127,7 @@ export default function ProjectDetailPage() {
             </Box>
           </Box>
           <Grid container spacing={2}>
-            {towers.map(tower => (
+            {projectTowers.map(tower => (
               <Grid key={tower.id} size={{ xs: 12, sm: 6, md: 4 }}>
                 <Box
                   component={Link}
@@ -164,7 +171,7 @@ export default function ProjectDetailPage() {
             </Box>
           </Box>
           <Grid container spacing={2}>
-            {captures.map(c => {
+            {projectCaptures.map(c => {
               const cs = statusConfig.capture[c.status];
               return (
                 <Grid key={c.id} size={{ xs: 12, sm: 6, md: 4 }}>
@@ -192,7 +199,7 @@ export default function ProjectDetailPage() {
       {/* Tours tab */}
       {tab === 2 && (
         <Grid container spacing={2}>
-          {tours.map(tour => {
+          {projectTours.map(tour => {
             const ts = (statusConfig.tour as Record<string, { label: string; color: string; bg: string }>)[tour.status] ?? statusConfig.tour.draft;
             return (
               <Grid key={tour.id} size={{ xs: 12, sm: 6, md: 4 }}>
@@ -233,7 +240,7 @@ export default function ProjectDetailPage() {
       {/* Activity tab */}
       {tab === 4 && (
         <Box sx={{ borderRadius: '20px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', p: 3 }}>
-          <ActivityFeed logs={mockAuditLogs.filter(l => l.projectId === projectId)} />
+          <ActivityFeed logs={auditLogs.filter(l => l.projectId === projectId)} />
         </Box>
       )}
     </Box>

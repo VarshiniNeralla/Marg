@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import { Box, Typography, InputBase, Menu, MenuItem } from '@mui/material';
 import { CameraAltRounded, ViewInArRounded, SearchRounded, KeyboardArrowDownRounded, CheckRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { statusConfig, getRoomHistory, type MockCapture } from '@/data/mockData';
+import { statusConfig, getRoomHistory } from '@store/workflowSelectors';
+import type { MockCapture } from '@/data/mockData';
 import { useWorkflowStore } from '@store/workflowStore';
 
 // Capture gallery — project-wise selection, calm minimal cards.
@@ -20,7 +21,7 @@ const STATUS_DOT: Record<string, string> = {
 
 function CaptureCard({ capture, hasTour }: { capture: MockCapture; hasTour: boolean }) {
   const st = statusConfig.capture[capture.status];
-  const history = getRoomHistory(capture.id);
+  const history = getRoomHistory(capture);
   const dot = STATUS_DOT[capture.status] ?? colors.textSubdued;
 
   return (

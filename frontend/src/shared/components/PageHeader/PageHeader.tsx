@@ -1,5 +1,6 @@
 import React from 'react';
-import { Box, Breadcrumbs, Link, Typography } from '@mui/material';
+import { Box, Breadcrumbs, Typography } from '@mui/material';
+import { Link as RouterLink } from 'react-router-dom';
 import { NavigateNext } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
 
@@ -49,18 +50,19 @@ export default function PageHeader({
                   {crumb.label}
                 </Typography>
               ) : (
-                <Link
+                <Box
                   key={i}
-                  href={crumb.href ?? '#'}
-                  underline="hover"
+                  component={RouterLink}
+                  to={crumb.href ?? '/'}
                   sx={{
                     fontSize: '0.8125rem',
                     color: colors.textMuted,
+                    textDecoration: 'none',
                     '&:hover': { color: colors.primary },
                   }}
                 >
                   {crumb.label}
-                </Link>
+                </Box>
               );
             })}
           </Breadcrumbs>

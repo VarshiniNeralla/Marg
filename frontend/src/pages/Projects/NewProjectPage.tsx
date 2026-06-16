@@ -4,7 +4,7 @@ import { Box, Typography, Grid, TextField, MenuItem, Alert } from '@mui/material
 import { ArrowBackRounded, AddRounded } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
-import { mockProjects } from '@/data/mockData';
+import { useWorkflowStore } from '@store/workflowStore';
 
 const STATES = ['Telangana','Andhra Pradesh','Karnataka','Maharashtra','Tamil Nadu','Gujarat','Rajasthan','Delhi'];
 const STATUSES = [
@@ -27,6 +27,7 @@ const fieldSx = {
 
 export default function NewProjectPage() {
   const navigate = useNavigate();
+  const createProject = useWorkflowStore(s => s.createProject);
   const [saved, setSaved] = useState(false);
   const [form, setForm] = useState({
     name: '', client: 'My Home Constructions', address: '',
@@ -41,32 +42,16 @@ export default function NewProjectPage() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.name.trim()) return;
-    // Add to mock data in memory (in-memory only — no persistence)
-    const newId = String(mockProjects.length + 1 + Date.now()).slice(-4);
-    const gradients = [
-      'linear-gradient(135deg, #1e3a5f 0%, #0f2340 100%)',
-      'linear-gradient(135deg, #1a3a2a 0%, #0f2318 100%)',
-      'linear-gradient(135deg, #2d1b4e 0%, #1a0f2e 100%)',
-      'linear-gradient(135deg, #3a1f1a 0%, #221008 100%)',
-    ];
-    mockProjects.push({
-      id: newId,
+    const newId = createProject({
       name: form.name,
-      location: `${form.city}, ${form.state}`,
+      location: form.address ? `${form.address}, ${form.city}` : `${form.city}, ${form.state}`,
       city: form.city,
       state: form.state,
       client: form.client,
       description: form.description,
-      status: form.status as any,
-      progress: 0,
-      towers: 0, floors: 0, rooms: 0, captures: 0, totalRooms: 0,
+      status: form.status as 'active' | 'draft',
       startDate: form.startDate,
       endDate: form.endDate,
-      gradient: gradients[mockProjects.length % gradients.length],
-      accent: colors.primary,
-      lastUpdated: 'Just now',
-      thumbnail: null,
-      teamSize: 1,
     });
     setSaved(true);
     setTimeout(() => navigate(`/projects/${newId}`), 1200);

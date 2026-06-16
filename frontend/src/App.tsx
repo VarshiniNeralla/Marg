@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import theme from '@theme/index';
 import AppRouter from '@router/index';
 import { ErrorBoundary } from '@shared/components/ErrorBoundary/ErrorBoundary';
+import StoreHydrationGate from '@store/StoreHydrationGate';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,7 +30,9 @@ export default function App() {
             },
             '*:focus:not(:focus-visible)': { outline: 'none' },
           }} />
-          <AppRouter />
+          <StoreHydrationGate>
+            <AppRouter />
+          </StoreHydrationGate>
         </ThemeProvider>
       </QueryClientProvider>
     </ErrorBoundary>

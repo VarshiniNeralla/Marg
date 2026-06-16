@@ -20,38 +20,9 @@ import {
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import { useAuthStore } from '@store/authStore';
+import { useWorkflowStore } from '@store/workflowStore';
+import { computeDashboardStats } from '@store/workflowSelectors';
 import OnboardingWizard, { isOnboarded } from '@shared/components/OnboardingWizard/OnboardingWizard';
-
-// ── Mock data ──────────────────────────────────────────────────────────────────
-
-const stats = [
-  { label: 'Projects',        value: '4',   sub: '2 active',          color: colors.primary },
-  { label: 'Towers',          value: '10',  sub: 'across 4 projects',  color: '#0891b2' },
-  { label: 'Rooms',           value: '482', sub: '126 mapped',         color: '#7c3aed' },
-  { label: 'Captures',        value: '210', sub: '48 this week',       color: '#059669' },
-  { label: 'Pending Reviews', value: '7',   sub: 'needs attention',    color: '#d97706' },
-];
-
-const projectProgress = [
-  { name: 'My Home Udyan',            towers: 3, progress: 68, captures: 89, total: 131, status: 'active',  color: colors.primary,       gradient: colors.projectA },
-  { name: 'My Home Apas',             towers: 1, progress: 100,captures: 48, total: 48,  status: 'done',    color: '#059669',            gradient: colors.projectB },
-  { name: 'My Home Grava Residences', towers: 2, progress: 72, captures: 61, total: 84,  status: 'review',  color: '#d97706',            gradient: colors.projectC },
-  { name: 'My Home Vyoma',            towers: 4, progress: 5,  captures: 12, total: 224, status: 'draft',   color: colors.textSubdued,   gradient: colors.projectD },
-];
-
-const recentUploads = [
-  { name: 'B2-F14-Room 1402',  project: 'My Home Udyan',            time: '12 min ago', status: 'processed' },
-  { name: 'A1-F08-Room 0803',  project: 'My Home Udyan',            time: '1h ago',     status: 'processed' },
-  { name: 'T1-F05-Room 0512',  project: 'My Home Grava Residences', time: '3h ago',     status: 'review' },
-  { name: 'A2-F03-Room 0301',  project: 'My Home Apas',             time: '1d ago',     status: 'processed' },
-  { name: 'B3-F22-Room 2207',  project: 'My Home Udyan',            time: '2d ago',     status: 'rejected' },
-];
-
-const pendingReviews = [
-  { room: 'T1-F05-Room 0512', project: 'My Home Grava Residences', uploaded: '3h ago' },
-  { room: 'B4-F18-Room 1803', project: 'My Home Udyan',            uploaded: '5h ago' },
-  { room: 'A1-F11-Room 1104', project: 'My Home Udyan',            uploaded: '1d ago' },
-];
 
 const uploadStatusConfig: Record<string, { label: string; color: string }> = {
   processed: { label: 'Processed', color: colors.success },
@@ -70,6 +41,46 @@ const progressStatusConfig: Record<string, { label: string; color: string; bg: s
 
 export default function DashboardHomePage() {
   const user = useAuthStore((s) => s.user);
+  const projects = useWorkflowStore(s => s.projects);
+  const captures = useWorkflowStore(s => s.captures);
+  const tours = useWorkflowStore(s => s.tours);
+  const towers = useWorkflowStore(s => s.towers);
+  const floors = useWorkflowStore(s => s.floors);
+  const rooms = useWorkflowStore(s => s.rooms);
+  const floorPlans = useWorkflowStore(s => s.floorPlans);
+  const defects = useWorkflowStore(s => s.defects);
+  const notifications = useWorkflowStore(s => s.notifications);
+  const users = useWorkflowStore(s => s.users);
+  const auditLogs = useWorkflowStore(s => s.auditLogs);
+
+  const stats = computeDashboardStats({ projects, towers, floors, rooms, captures, tours, floorPlans, defects, notifications, auditLogs, users });
+  const activeProjects = projects.filter(p => !p.archived);
+  const lastProject = activeProjects[0];
+  const lastCapture = captures[0];
+  const lastTour = tours.find(t => t.status === 'published');
+
+  const dashboardStats = [
+    { label: 'Projects', value: String(stats.projectCount), sub: `${stats.activeProjectCount} active`, color: colors.primary },
+    { label: 'Towers', value: String(stats.towerCount), sub: `across ${stats.projectCount} projects`, color: '#0891b2' },
+    { label: 'Rooms', value: String(stats.roomCount), sub: `${stats.mappedRoomCount} mapped`, color: '#7c3aed' },
+    { label: 'Captures', value: String(stats.captureCount), sub: `${stats.pendingReviews} pending`, color: '#059669' },
+    { label: 'Pending Reviews', value: String(stats.pendingReviews), sub: 'needs attention', color: '#d97706' },
+  ];
+
+  const projectProgress = activeProjects.map(p => ({
+    id: p.id, name: p.name, towers: p.towers, progress: p.progress,
+    captures: p.captures, total: p.totalRooms, status: p.status,
+    color: p.accent, gradient: p.gradient,
+  }));
+
+  const recentUploads = captures.slice(0, 5).map(c => ({
+    id: c.id, name: c.roomName, project: c.projectName, time: c.uploadedAt, status: c.status,
+  }));
+
+  const pendingReviews = captures.filter(c => c.status === 'review').slice(0, 5).map(c => ({
+    id: c.id, room: c.roomName, project: c.projectName, uploaded: c.uploadedAt,
+  }));
+
   const firstName = user?.name?.split(' ')[0] ?? 'there';
   const greeting = getGreeting();
   const [showOnboarding, setShowOnboarding] = useState(() => !isOnboarded());
@@ -164,16 +175,16 @@ export default function DashboardHomePage() {
                     Last visited project
                   </Typography>
                   <Typography noWrap sx={{ fontSize: '0.9375rem', fontWeight: 600, color: colors.white, lineHeight: 1.2 }}>
-                    My Home Udyan
+                    {lastProject?.name ?? 'No project'}
                   </Typography>
                   <Typography sx={{ fontSize: '0.75rem', color: colors.inkMuted, mt: 0.25 }}>
-                    68% captured · B2-F14-Room 1402
+                    {lastProject ? `${lastProject.progress}% captured` : 'No projects'} · {lastCapture?.roomName ?? '—'}
                   </Typography>
                 </Box>
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75, flexShrink: 0 }}>
                   <Box
                     component={Link}
-                    to="/tours"
+                    to={lastTour ? `/tours/${lastTour.id}` : '/tours'}
                     sx={{
                       display: 'flex',
                       alignItems: 'center',
@@ -196,7 +207,7 @@ export default function DashboardHomePage() {
                   </Box>
                   <Box
                     component={Link}
-                    to="/projects/1"
+                    to={lastProject ? `/projects/${lastProject.id}` : '/projects'}
                     sx={{
                       display: 'flex',
                       alignItems: 'center',
@@ -235,7 +246,7 @@ export default function DashboardHomePage() {
                   gap: 1.5,
                 }}
               >
-                {stats.slice(0, 4).map(({ label, value, sub, color }) => (
+                {dashboardStats.slice(0, 4).map(({ label, value, sub, color }) => (
                   <Box
                     key={label}
                     sx={{
@@ -278,7 +289,7 @@ export default function DashboardHomePage() {
               </Box>
 
               {/* Pending reviews callout */}
-              {stats[4].value !== '0' && (
+              {dashboardStats[4].value !== '0' && (
                 <Box
                   component={Link}
                   to="/captures"
@@ -299,7 +310,7 @@ export default function DashboardHomePage() {
                   <WarningAmberRounded sx={{ color: '#d97706', fontSize: 18, flexShrink: 0 }} />
                   <Box sx={{ flex: 1 }}>
                     <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: '#fbbf24' }}>
-                      {stats[4].value} captures pending review
+                      {dashboardStats[4].value} captures pending review
                     </Typography>
                     <Typography sx={{ fontSize: '0.6875rem', color: colors.inkMuted }}>
                       Assigned to you · tap to review
@@ -338,15 +349,12 @@ export default function DashboardHomePage() {
               const st = progressStatusConfig[proj.status];
               const isLast = i === projectProgress.length - 1;
               return (
-                <Box key={proj.name}>
-                  <Box
-                    sx={{
-                      py: 2,
+                <Box key={proj.id}>
+                  <Box component={Link} to={`/projects/${proj.id}`} sx={{
+                      display: 'flex', alignItems: 'center', gap: 2, py: 2, textDecoration: 'none',
                       '&:hover .proj-arrow': { opacity: 1, transform: 'translateX(3px)' },
-                      cursor: 'pointer',
                     }}
                   >
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                       {/* Color swatch */}
                       <Box
                         sx={{
@@ -414,7 +422,6 @@ export default function DashboardHomePage() {
                           flexShrink: 0,
                         }}
                       />
-                    </Box>
                   </Box>
                   {!isLast && <Divider sx={{ borderColor: colors.borderLight }} />}
                 </Box>
@@ -458,8 +465,8 @@ export default function DashboardHomePage() {
               </Typography>
             </Box>
             {[
-              { icon: <AddRounded />,          label: 'Create Project',   desc: 'Start a new project',    href: '/projects', color: colors.primary },
-              { icon: <CloudUploadRounded />,   label: 'Upload Captures',  desc: 'Add 360° images',        href: '/captures', color: '#0891b2' },
+              { icon: <AddRounded />,          label: 'Create Project',   desc: 'Start a new project',    href: '/projects/new', color: colors.primary },
+              { icon: <CloudUploadRounded />,   label: 'Upload Captures',  desc: 'Add 360° images',        href: '/captures/upload', color: '#0891b2' },
               { icon: <ViewInArRounded />,      label: 'Open Viewer',      desc: 'Browse virtual tours',   href: '/tours',    color: '#7c3aed' },
             ].map((action, i, arr) => (
               <React.Fragment key={action.label}>
@@ -548,13 +555,9 @@ export default function DashboardHomePage() {
                 const st = uploadStatusConfig[item.status];
                 const isLast = i === recentUploads.length - 1;
                 return (
-                  <Box key={i}>
-                    <Box
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 2,
-                        py: 1.5,
+                  <Box key={item.id}>
+                    <Box component={Link} to={`/captures/${item.id}`} sx={{
+                        display: 'flex', alignItems: 'center', gap: 2, py: 1.5, textDecoration: 'none',
                         '&:hover': { backgroundColor: colors.bgDeep, borderRadius: '10px', px: 1.25, mx: -1.25 },
                         transition: `background ${motion.durationFast}`,
                       }}
@@ -639,11 +642,9 @@ export default function DashboardHomePage() {
               {pendingReviews.map((item, i) => {
                 const isLast = i === pendingReviews.length - 1;
                 return (
-                  <Box key={i}>
-                    <Box
-                      sx={{
-                        py: 1.5,
-                        cursor: 'pointer',
+                  <Box key={item.id}>
+                    <Box component={Link} to={`/captures/${item.id}`} sx={{
+                        display: 'block', py: 1.5, textDecoration: 'none',
                         '&:hover': { backgroundColor: colors.bgDeep, borderRadius: '10px', px: 1.25, mx: -1.25 },
                         transition: `background ${motion.durationFast}`,
                       }}

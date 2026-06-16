@@ -1,14 +1,18 @@
 import React, { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Box, Typography, Grid, Chip, LinearProgress, Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button } from '@mui/material';
-import { ArrowBackRounded, AddRounded, DomainRounded, ArrowForwardRounded, EditRounded, DeleteRounded } from '@mui/icons-material';
+import { ArrowBackRounded, AddRounded, DomainRounded, ArrowForwardRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { getProjectById, getTowersByProject, mockTowers } from '@/data/mockData';
+import { useWorkflowStore } from '@store/workflowStore';
+import { getProjectById, getTowersByProject } from '@store/workflowSelectors';
 
 export default function TowersPage() {
   const { projectId } = useParams<{ projectId: string }>();
-  const project = getProjectById(projectId ?? '');
-  const towers = getTowersByProject(projectId ?? '');
+  const projects = useWorkflowStore(s => s.projects);
+  const towers = useWorkflowStore(s => s.towers);
+  const createTower = useWorkflowStore(s => s.createTower);
+  const project = getProjectById(projects, projectId ?? '');
+  const projectTowers = getTowersByProject(towers, projectId ?? '');
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ name: '', floors: '14', description: '' });
 
@@ -16,11 +20,7 @@ export default function TowersPage() {
 
   function handleAdd() {
     if (!form.name.trim()) return;
-    mockTowers.push({
-      id: `t${Date.now()}`, projectId: project!.id,
-      name: form.name, floors: Number(form.floors), rooms: Number(form.floors) * 3,
-      captures: 0, progress: 0, description: form.description, status: 'pending',
-    });
+    createTower(project!.id, form.name, Number(form.floors));
     setForm({ name: '', floors: '14', description: '' });
     setOpen(false);
   }
@@ -41,7 +41,7 @@ export default function TowersPage() {
       </Box>
 
       <Grid container spacing={2.5}>
-        {towers.map(tower => (
+        {projectTowers.map(tower => (
           <Grid key={tower.id} size={{ xs: 12, sm: 6, md: 4 }}>
             <Box sx={{ borderRadius: '18px', backgroundColor: colors.card, overflow: 'hidden', boxShadow: '0 2px 8px rgba(15,23,42,0.05)', transition: `all ${motion.durationNormal}`, '&:hover': { boxShadow: '0 8px 32px rgba(15,23,42,0.10)', transform: 'translateY(-2px)' } }}>
               <Box sx={{ height: 80, background: project.gradient, display: 'flex', alignItems: 'center', px: 2.5, justifyContent: 'space-between' }}>
@@ -83,7 +83,6 @@ export default function TowersPage() {
         ))}
       </Grid>
 
-      {/* Add Tower dialog */}
       <Dialog open={open} onClose={() => setOpen(false)} slotProps={{ paper: { sx: { borderRadius: '16px', minWidth: 380 } } }}>
         <DialogTitle sx={{ fontSize: '1rem', fontWeight: 700, color: colors.textStrong }}>Add Tower</DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: '8px !important' }}>

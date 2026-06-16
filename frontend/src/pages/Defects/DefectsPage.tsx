@@ -5,7 +5,9 @@ import { AddRounded, BugReportRounded, WarningRounded, DeleteOutlineRounded, Key
 import EmptyState from '@shared/components/EmptyState/EmptyState';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { colors, motion } from '@theme/tokens';
-import { mockDefects, statusConfig, mockProjects, mockUsers, type MockDefect } from '@/data/mockData';
+import { statusConfig } from '@store/workflowSelectors';
+import { useWorkflowStore } from '@store/workflowStore';
+import type { MockDefect } from '@/data/mockData';
 
 const severityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -37,23 +39,23 @@ const fieldSx = {
   '& .MuiOutlinedInput-root': { borderRadius: '10px', fontSize: '0.875rem', '& .MuiOutlinedInput-notchedOutline': { borderColor: '#e5e7eb' }, '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#cbd5e1' } },
 };
 
-function CreateDefectModal({ onClose, onSave }: { onClose: () => void; onSave: (d: MockDefect) => void }) {
+function CreateDefectModal({ onClose, onSave }: { onClose: () => void; onSave: (d: Omit<MockDefect, 'id' | 'createdAt' | 'updatedAt'>) => void }) {
+  const projects = useWorkflowStore(s => s.projects);
+  const users = useWorkflowStore(s => s.users);
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
   const [severity, setSeverity] = useState<'low' | 'medium' | 'high' | 'critical'>('medium');
-  const [projectId, setProjectId] = useState('1');
-  const [assignee, setAssignee] = useState('u2');
+  const [projectId, setProjectId] = useState(projects[0]?.id ?? '1');
+  const [assignee, setAssignee] = useState(users[1]?.id ?? 'u2');
 
   function handleSave() {
     if (!title.trim()) return;
-    const project = mockProjects.find(p => p.id === projectId);
-    const user = mockUsers.find(u => u.id === assignee);
-    const newDefect: MockDefect = {
-      id: `d${Date.now()}`, title, description: desc, severity, status: 'open',
-      projectId, projectName: project?.name ?? '', assignedTo: user?.name ?? '', createdBy: 'Ravi Kumar', createdAt: 'Just now', updatedAt: 'Just now',
-    };
-    mockDefects.push(newDefect);
-    onSave(newDefect);
+    const project = projects.find(p => p.id === projectId);
+    const user = users.find(u => u.id === assignee);
+    onSave({
+      title, description: desc, severity, status: 'open',
+      projectId, projectName: project?.name ?? '', assignedTo: user?.name ?? '', createdBy: 'You',
+    });
     onClose();
   }
 
@@ -83,14 +85,14 @@ function CreateDefectModal({ onClose, onSave }: { onClose: () => void; onSave: (
             <Grid size={{ xs: 12, sm: 6 }}>
               <Typography component="label" sx={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Assignee</Typography>
               <Select fullWidth size="small" value={assignee} onChange={e => setAssignee(e.target.value)} sx={{ borderRadius: '10px', fontSize: '0.875rem' }}>
-                {mockUsers.map(u => <MenuItem key={u.id} value={u.id}>{u.name}</MenuItem>)}
+                {users.map(u => <MenuItem key={u.id} value={u.id}>{u.name}</MenuItem>)}
               </Select>
             </Grid>
           </Grid>
           <Box>
             <Typography component="label" sx={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Project</Typography>
             <Select fullWidth size="small" value={projectId} onChange={e => setProjectId(e.target.value)} sx={{ borderRadius: '10px', fontSize: '0.875rem' }}>
-              {mockProjects.map(p => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
+              {projects.filter(p => !p.archived).map(p => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
             </Select>
           </Box>
         </Box>
@@ -104,7 +106,9 @@ function CreateDefectModal({ onClose, onSave }: { onClose: () => void; onSave: (
 }
 
 export default function DefectsPage() {
-  const [defects, setDefects] = useState([...mockDefects]);
+  const defects = useWorkflowStore(s => s.defects);
+  const createDefect = useWorkflowStore(s => s.createDefect);
+  const updateDefect = useWorkflowStore(s => s.updateDefect);
   const [showCreate, setShowCreate] = useState(false);
   const [filter, setFilter] = useState<StatusValue>('all');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
@@ -117,7 +121,7 @@ export default function DefectsPage() {
 
   function handleDelete() {
     if (!deleteTarget) return;
-    setDefects(prev => prev.filter(d => d.id !== deleteTarget));
+    updateDefect(deleteTarget, { status: 'closed' });
     setDeleteTarget(null);
   }
 
@@ -271,7 +275,7 @@ export default function DefectsPage() {
         )}
       </Box>
 
-      {showCreate && <CreateDefectModal onClose={() => setShowCreate(false)} onSave={d => setDefects(prev => [d, ...prev])} />}
+      {showCreate && <CreateDefectModal onClose={() => setShowCreate(false)} onSave={d => createDefect(d)} />}
 
       <ConfirmDialog
         open={deleteTarget !== null}

@@ -9,9 +9,11 @@ import {
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import {
-  getCaptureById, statusConfig, mockCaptures, mockAuditLogs, mockDefects, mockTours,
-  getCaptureSeriesForCapture, getRoomHistory, type CaptureSnapshot,
-} from '@/data/mockData';
+  statusConfig, getCaptureSeriesForCapture, getRoomHistory,
+  getCaptureById, getTourForCapture,
+} from '@store/workflowSelectors';
+import type { CaptureSnapshot } from '@/data/mockData';
+import { useWorkflowStore } from '@store/workflowStore';
 import ActivityFeed from '@shared/components/ActivityFeed/ActivityFeed';
 import ProcessingPipeline, { type PipelineStage } from '@shared/components/ProcessingPipeline/ProcessingPipeline';
 import CaptureTimeline from '@shared/components/CaptureTimeline/CaptureTimeline';
@@ -67,10 +69,18 @@ function Breadcrumb({ items }: { items: { label: string; to?: string }[] }) {
 
 export default function CaptureDetailPage() {
   const { captureId } = useParams<{ captureId: string }>();
-  const capture = getCaptureById(captureId ?? '');
+  const captures = useWorkflowStore(s => s.captures);
+  const tours = useWorkflowStore(s => s.tours);
+  const defects = useWorkflowStore(s => s.defects);
+  const auditLogs = useWorkflowStore(s => s.auditLogs);
+  const reviewCapture = useWorkflowStore(s => s.reviewCapture);
+  const publishCapture = useWorkflowStore(s => s.publishCapture);
+  const generateTour = useWorkflowStore(s => s.generateTour);
 
-  const series = useMemo(() => (captureId ? getCaptureSeriesForCapture(captureId) : []), [captureId]);
-  const roomHistory = useMemo(() => (captureId ? getRoomHistory(captureId) : null), [captureId]);
+  const capture = getCaptureById(captures, captureId ?? '');
+
+  const series = useMemo(() => getCaptureSeriesForCapture(capture), [capture]);
+  const roomHistory = useMemo(() => getRoomHistory(capture), [capture]);
 
   // The active snapshot drives the preview. Default to the latest.
   const [activeSnap, setActiveSnap] = useState<CaptureSnapshot | null>(series[series.length - 1] ?? null);
@@ -99,14 +109,13 @@ export default function CaptureDetailPage() {
     ? activeSnap
     : series[series.length - 1];
   const st = statusConfig.capture[capture.status];
-  const linkedTour = mockTours.find(t => t.captureId === capture.id);
-  const roomDefects = mockDefects.filter(d => d.captureId === capture.id || d.roomName === capture.roomName);
+  const linkedTour = getTourForCapture(tours, capture.id);
+  const roomDefects = defects.filter(d => d.captureId === capture.id || d.roomName === capture.roomName);
 
   function handleAction(a: 'approved' | 'rejected' | 'reupload') {
-    const idx = mockCaptures.findIndex(c => c.id === capture!.id);
-    if (idx !== -1) {
-      mockCaptures[idx] = { ...mockCaptures[idx], status: a === 'approved' ? 'processed' : a === 'rejected' ? 'rejected' : 'review', reviewNotes: notes || null };
-    }
+    if (a === 'approved') reviewCapture(capture.id, 'approve', notes || undefined);
+    else if (a === 'rejected') reviewCapture(capture.id, 'reject', notes || undefined);
+    else reviewCapture(capture.id, 'request_changes', notes || undefined);
     setAction(a);
     setDone(true);
   }
@@ -343,7 +352,7 @@ export default function CaptureDetailPage() {
           {tab === 'activity' && (
             <Panel title="Activity History" icon={<AccessTimeRounded sx={{ fontSize: 16 }} />}>
               <ActivityFeed
-                logs={mockAuditLogs.filter(l => l.entityId === captureId || (l.entityType === 'capture' && l.projectId === capture.projectId)).slice(0, 8)}
+                logs={auditLogs.filter(l => l.entityId === captureId || (l.entityType === 'capture' && l.projectId === capture.projectId)).slice(0, 8)}
                 compact
               />
             </Panel>

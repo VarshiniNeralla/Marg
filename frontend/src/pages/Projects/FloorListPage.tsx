@@ -3,13 +3,23 @@ import { useParams, Link } from 'react-router-dom';
 import { Box, Typography, Chip, LinearProgress } from '@mui/material';
 import { ArrowBackRounded, LayersRounded, MeetingRoomRounded, ViewInArRounded, ArrowForwardRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { getProjectById, mockTowers, getFloors } from '@/data/mockData';
+import { useWorkflowStore } from '@store/workflowStore';
+import { getProjectById, getFloorsByTower, enrichFloorStats } from '@store/workflowSelectors';
 
 export default function FloorListPage() {
   const { projectId, towerId } = useParams<{ projectId: string; towerId: string }>();
-  const project = getProjectById(projectId ?? '');
-  const tower = mockTowers.find(t => t.id === towerId);
-  const floors = getFloors(towerId ?? '');
+  const projects = useWorkflowStore(s => s.projects);
+  const towers = useWorkflowStore(s => s.towers);
+  const floors = useWorkflowStore(s => s.floors);
+  const rooms = useWorkflowStore(s => s.rooms);
+  const captures = useWorkflowStore(s => s.captures);
+  const tours = useWorkflowStore(s => s.tours);
+  const floorPlans = useWorkflowStore(s => s.floorPlans);
+
+  const project = getProjectById(projects, projectId ?? '');
+  const tower = towers.find(t => t.id === towerId);
+  const towerFloors = getFloorsByTower(floors, towerId ?? '');
+  const dataSlice = { rooms, captures, tours, floorPlans };
 
   if (!project || !tower) return <Box sx={{ p: 4, color: colors.textMuted }}>Tower not found.</Box>;
 
@@ -30,12 +40,13 @@ export default function FloorListPage() {
       <Box sx={{ borderRadius: '20px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', overflow: 'hidden' }}>
         <Box sx={{ px: 3, pt: 2.5, pb: 2, borderBottom: `1px solid ${colors.borderLight}` }}>
           <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong }}>{tower.name}</Typography>
-          <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{floors.length} floors · {tower.rooms} total rooms</Typography>
+          <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{towerFloors.length} floors · {tower.rooms} total rooms</Typography>
         </Box>
         <Box sx={{ p: 1.5, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-          {floors.map(floor => {
-            const pct = Math.round((floor.mapped / Math.max(floor.rooms, 1)) * 100);
-            const complete = floor.mapped === floor.rooms;
+          {towerFloors.map(floor => {
+            const stats = enrichFloorStats(floor, dataSlice);
+            const pct = stats.roomCount > 0 ? Math.round((stats.mapped / stats.roomCount) * 100) : 0;
+            const complete = stats.mapped === stats.roomCount && stats.roomCount > 0;
             return (
               <Box
                 key={floor.id}
@@ -48,8 +59,7 @@ export default function FloorListPage() {
                   transition: `background ${motion.durationFast}`,
                 }}
               >
-                {/* Thumbnail */}
-                <Box sx={{ width: 64, height: 48, borderRadius: '8px', background: project.gradient, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: floor.mapped > 0 ? 1 : 0.3 }}>
+                <Box sx={{ width: 64, height: 48, borderRadius: '8px', background: project.gradient, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: stats.mapped > 0 ? 1 : 0.3 }}>
                   <LayersRounded sx={{ color: 'rgba(255,255,255,0.6)', fontSize: 20 }} />
                 </Box>
                 <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -62,12 +72,12 @@ export default function FloorListPage() {
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.375, color: colors.textMuted }}>
                       <MeetingRoomRounded sx={{ fontSize: 12 }} />
-                      <Typography sx={{ fontSize: '0.75rem', color: 'inherit' }}>{floor.mapped}/{floor.rooms} rooms</Typography>
+                      <Typography sx={{ fontSize: '0.75rem', color: 'inherit' }}>{stats.mapped}/{stats.roomCount} rooms</Typography>
                     </Box>
-                    {floor.mapped > 0 && (
+                    {stats.tourCount > 0 && (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.375, color: colors.textMuted }}>
                         <ViewInArRounded sx={{ fontSize: 12 }} />
-                        <Typography sx={{ fontSize: '0.75rem', color: 'inherit' }}>{floor.mapped} tours</Typography>
+                        <Typography sx={{ fontSize: '0.75rem', color: 'inherit' }}>{stats.tourCount} tours</Typography>
                       </Box>
                     )}
                   </Box>
