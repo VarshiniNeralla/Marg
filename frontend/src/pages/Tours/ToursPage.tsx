@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { Box, Typography, Grid, Chip } from '@mui/material';
 import {
   ViewInArRounded,
@@ -7,81 +8,13 @@ import {
   AccessTimeRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-
-// ── Mock data ──────────────────────────────────────────────────────────────────
-
-const mockTours = [
-  {
-    id: '1',
-    room: 'B2-F14-Room 1402',
-    project: 'My Home Udyan',
-    floor: 'Floor 14',
-    lastCapture: '2 hours ago',
-    captures: 12,
-    status: 'published',
-    gradient: colors.projectA,
-  },
-  {
-    id: '2',
-    room: 'A1-F08-Room 0803',
-    project: 'My Home Udyan',
-    floor: 'Floor 8',
-    lastCapture: '1 day ago',
-    captures: 8,
-    status: 'published',
-    gradient: colors.projectA,
-  },
-  {
-    id: '3',
-    room: 'T1-F05-Room 0512',
-    project: 'My Home Grava Residences',
-    floor: 'Floor 5',
-    lastCapture: '3 days ago',
-    captures: 6,
-    status: 'review',
-    gradient: colors.projectC,
-  },
-  {
-    id: '4',
-    room: 'A2-F03-Room 0301',
-    project: 'My Home Apas',
-    floor: 'Floor 3',
-    lastCapture: '1 week ago',
-    captures: 14,
-    status: 'published',
-    gradient: colors.projectB,
-  },
-  {
-    id: '5',
-    room: 'B4-F18-Room 1803',
-    project: 'My Home Udyan',
-    floor: 'Floor 18',
-    lastCapture: '5 hours ago',
-    captures: 9,
-    status: 'processing',
-    gradient: colors.projectA,
-  },
-  {
-    id: '6',
-    room: 'P1-F12-Room 1207',
-    project: 'My Home Grava Residences',
-    floor: 'Floor 12',
-    lastCapture: '2 days ago',
-    captures: 18,
-    status: 'published',
-    gradient: colors.projectC,
-  },
-];
-
-const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
-  published:  { label: 'Published',  color: colors.success, bg: colors.successBg },
-  review:     { label: 'In Review',  color: colors.warning, bg: colors.warningBg },
-  processing: { label: 'Processing', color: colors.info,    bg: colors.infoBg },
-};
+import { mockTours, mockProjects, statusConfig } from '@/data/mockData';
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export default function ToursPage() {
+  const projectCount = new Set(mockTours.map(t => t.projectId)).size;
+
   return (
     <Box>
       <Box sx={{ mb: 5 }}>
@@ -99,17 +32,22 @@ export default function ToursPage() {
           Virtual Tours
         </Typography>
         <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>
-          {mockTours.length} tours · across 3 projects
+          {mockTours.length} tours · across {projectCount} {projectCount === 1 ? 'project' : 'projects'}
         </Typography>
       </Box>
 
       <Grid container spacing={2}>
         {mockTours.map((tour) => {
-          const st = statusConfig[tour.status] ?? statusConfig.processing;
+          const st = (statusConfig.tour as Record<string, { label: string; color: string; bg: string }>)[tour.status] ?? statusConfig.tour.draft;
+          const project = mockProjects.find(p => p.id === tour.projectId);
           return (
             <Grid key={tour.id} size={{ xs: 12, sm: 6, md: 4 }}>
               <Box
+                component={Link}
+                to={`/tours/${tour.id}`}
                 sx={{
+                  display: 'block',
+                  textDecoration: 'none',
                   borderRadius: '18px',
                   backgroundColor: colors.card,
                   overflow: 'hidden',
@@ -196,10 +134,10 @@ export default function ToursPage() {
                 {/* Body */}
                 <Box sx={{ px: 2, pt: 2, pb: 2 }}>
                   <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600, color: colors.textStrong, mb: 0.25 }}>
-                    {tour.room}
+                    {tour.roomName}
                   </Typography>
                   <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, mb: 1.5 }}>
-                    {tour.project}
+                    {project?.name ?? tour.projectName} · {tour.floorLabel}
                   </Typography>
                   <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: colors.textSubdued }}>

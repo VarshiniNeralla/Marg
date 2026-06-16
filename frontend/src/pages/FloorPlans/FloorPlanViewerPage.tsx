@@ -4,10 +4,11 @@ import { Box, Typography, Chip, IconButton, Tooltip } from '@mui/material';
 import {
   ArrowBackRounded, ZoomInRounded, ZoomOutRounded, FullscreenRounded,
   FullscreenExitRounded, CenterFocusStrongRounded, UploadFileRounded,
-  LayersRounded, RoomRounded,
+  LayersRounded, RoomRounded, CameraAltRounded, ViewInArRounded,
+  ArrowForwardRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { getProjectById, mockTowers, getFloorPlanByFloor, getFloors, statusConfig } from '@/data/mockData';
+import { getProjectById, mockTowers, getFloorPlanByFloor, getFloors, getRoomHistory } from '@/data/mockData';
 import type { MockRoomMarker } from '@/data/mockData';
 
 const roomStatusColor: Record<string, { fill: string; stroke: string; label: string }> = {
@@ -17,10 +18,14 @@ const roomStatusColor: Record<string, { fill: string; stroke: string; label: str
   published:   { fill: 'rgba(22,163,74,0.15)',    stroke: '#16a34a', label: 'Published' },
 };
 
-function RoomActionPanel({ room, onClose }: { room: MockRoomMarker; onClose: () => void }) {
+function RoomActionPanel({ room, onClose, uploadHref }: { room: MockRoomMarker; onClose: () => void; uploadHref: string }) {
   const sc = roomStatusColor[room.status];
+  // 7D/7E — when the room has a capture, surface its room-history mini-summary so
+  // the floor plan acts as a true digital-twin entry point (plan → room → capture → tour).
+  const history = room.captureId ? getRoomHistory(room.captureId) : null;
+
   return (
-    <Box sx={{ position: 'absolute', top: 16, right: 16, width: 260, borderRadius: '16px', backgroundColor: colors.card, boxShadow: '0 12px 40px rgba(15,23,42,0.14)', zIndex: 10, overflow: 'hidden' }}>
+    <Box sx={{ position: 'absolute', top: 16, right: 16, width: 272, borderRadius: '16px', backgroundColor: colors.card, boxShadow: '0 12px 40px rgba(15,23,42,0.16)', zIndex: 10, overflow: 'hidden' }}>
       <Box sx={{ px: 2.5, py: 2, borderBottom: `1px solid ${colors.borderLight}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <Box>
           <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong }}>Room {room.number}</Typography>
@@ -33,19 +38,38 @@ function RoomActionPanel({ room, onClose }: { room: MockRoomMarker; onClose: () 
           <Chip label={sc.label} size="small" sx={{ height: 22, fontSize: '0.6875rem', fontWeight: 600, color: sc.stroke, backgroundColor: sc.fill, borderRadius: '6px' }} />
           <Chip label={room.type} size="small" sx={{ height: 22, fontSize: '0.6875rem', fontWeight: 500, color: colors.textSecondary, backgroundColor: colors.bgDeep, borderRadius: '6px', textTransform: 'capitalize' }} />
         </Box>
+
+        {/* Room-history mini-summary */}
+        {history && (
+          <Box sx={{ display: 'flex', gap: 0.75, mb: 2 }}>
+            {[
+              { label: 'Captures', value: String(history.captureCount) },
+              { label: 'Latest', value: history.latest.dateLabel },
+              { label: 'Done', value: `${history.latest.progress}%` },
+            ].map(s => (
+              <Box key={s.label} sx={{ flex: 1, textAlign: 'center', py: 0.875, borderRadius: '8px', backgroundColor: colors.bgDeep }}>
+                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 800, color: colors.textStrong, lineHeight: 1 }}>{s.value}</Typography>
+                <Typography sx={{ fontSize: '0.5625rem', color: colors.textSubdued, textTransform: 'uppercase', letterSpacing: '0.05em', mt: 0.375 }}>{s.label}</Typography>
+              </Box>
+            ))}
+          </Box>
+        )}
+
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
           {room.captureId && (
             <Box component={Link} to={`/captures/${room.captureId}`} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderRadius: '8px', backgroundColor: colors.primarySoft, color: colors.primary, fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none', '&:hover': { backgroundColor: colors.primaryRing } }}>
-              📷 Open Capture
+              <CameraAltRounded sx={{ fontSize: 15 }} /> View Capture
+              <ArrowForwardRounded sx={{ fontSize: 14, ml: 'auto' }} />
             </Box>
           )}
           {room.tourId && (
             <Box component={Link} to={`/tours/${room.tourId}`} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderRadius: '8px', backgroundColor: 'rgba(124,58,237,0.08)', color: '#7c3aed', fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(124,58,237,0.14)' } }}>
-              🔮 Open Tour
+              <ViewInArRounded sx={{ fontSize: 15 }} /> Open Tour
+              <ArrowForwardRounded sx={{ fontSize: 14, ml: 'auto' }} />
             </Box>
           )}
-          <Box component={Link} to="/captures" sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderRadius: '8px', border: `1px dashed ${colors.border}`, color: colors.textMuted, fontSize: '0.8125rem', fontWeight: 500, textDecoration: 'none', '&:hover': { borderColor: colors.primary, color: colors.primary } }}>
-            ⬆ Upload Capture
+          <Box component={Link} to={uploadHref} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderRadius: '8px', border: `1px dashed ${colors.border}`, color: colors.textMuted, fontSize: '0.8125rem', fontWeight: 500, textDecoration: 'none', '&:hover': { borderColor: colors.primary, color: colors.primary } }}>
+            <UploadFileRounded sx={{ fontSize: 15 }} /> Upload Capture
           </Box>
         </Box>
       </Box>
@@ -226,7 +250,7 @@ export default function FloorPlanViewerPage() {
         </Box>
 
         {/* Room action panel */}
-        {selectedRoom && <RoomActionPanel room={selectedRoom} onClose={() => setSelectedRoom(null)} />}
+        {selectedRoom && <RoomActionPanel room={selectedRoom} onClose={() => setSelectedRoom(null)} uploadHref="/captures/upload" />}
       </Box>
 
       {/* Floor selector */}

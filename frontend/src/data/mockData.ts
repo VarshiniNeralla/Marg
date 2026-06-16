@@ -452,6 +452,132 @@ export const statusConfig = {
   },
 };
 
+// ── Capture Series (timeline / history / before-after) ─────────────────────────
+// The backend models one capture per upload; over a construction project a single
+// room is captured repeatedly as work progresses. We synthesise that dated series
+// here (deterministic, seeded by roomId) so the timeline, before/after comparison
+// and room-history panels all read from one consistent source.
+
+export interface CaptureSnapshot {
+  id: string;            // synthetic id, e.g. "c1__2"
+  baseCaptureId: string; // the room's canonical capture id (links to mockCaptures)
+  roomId: string;
+  date: string;          // ISO date, e.g. "2025-05-01"
+  dateLabel: string;     // "May 01"
+  monthLabel: string;    // "May"
+  reviewStatus: ReviewStatus;
+  progress: number;      // construction completeness 0–100 at this snapshot
+  fileCount: number;
+  capturedBy: string;
+  note: string | null;
+  gradient: string;      // distinct per snapshot so before/after is visually different
+  isLatest: boolean;
+}
+
+// A small palette of evolving "construction stage" gradients — earliest (bare) to
+// latest (finished). Index by stage so later snapshots look more complete.
+const STAGE_GRADIENTS = [
+  'linear-gradient(135deg, #475569 0%, #1e293b 100%)', // structure / grey
+  'linear-gradient(135deg, #57534e 0%, #292524 100%)', // plaster
+  'linear-gradient(135deg, #525b6b 0%, #2a3344 100%)', // services
+  'linear-gradient(135deg, #3f5e7a 0%, #1e3a52 100%)', // finishing
+  'linear-gradient(135deg, #1e3a5f 0%, #0f2340 100%)', // handover-ready
+  'linear-gradient(135deg, #1a3a2a 0%, #0f2318 100%)', // snag-free
+];
+
+const SERIES_STATUS_FLOW: ReviewStatus[] = ['uploaded', 'assigned', 'reviewing', 'approved', 'published'];
+
+function hashSeed(str: string): number {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+const SERIES_CAPTURERS = ['Ravi Kumar', 'Anil Prakash', 'Kiran Desai', 'Meena Reddy', 'Sunita Rao'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+const SNAPSHOT_NOTES = [
+  'Structural shell complete — bare concrete capture.',
+  'Plastering and internal walls finished.',
+  'Electrical and plumbing rough-in documented.',
+  'Flooring and finishes in progress.',
+  'Final handover-ready capture — all snags cleared.',
+];
+
+/**
+ * Build the dated capture series for a room. Deterministic per roomId.
+ * Captures land on the 1st and 15th of consecutive months starting in May 2025.
+ */
+export function getCaptureSeries(roomId: string, baseCaptureId: string, baseGradient: string): CaptureSnapshot[] {
+  const seed = hashSeed(roomId);
+  const count = 4 + (seed % 3); // 4–6 snapshots
+  const startMonth = 4; // May (0-indexed)
+
+  return Array.from({ length: count }, (_, i) => {
+    const monthOffset = Math.floor(i / 2);
+    const day = i % 2 === 0 ? 1 : 15;
+    const monthIdx = (startMonth + monthOffset) % 12;
+    const mm = String(monthIdx + 1).padStart(2, '0');
+    const dd = String(day).padStart(2, '0');
+    const isLatest = i === count - 1;
+    // Status climbs toward published as snapshots get newer.
+    const statusIdx = Math.min(SERIES_STATUS_FLOW.length - 1, Math.floor((i / (count - 1)) * SERIES_STATUS_FLOW.length));
+    const progress = Math.round(((i + 1) / count) * 100);
+    const stageIdx = Math.min(STAGE_GRADIENTS.length - 1, Math.floor((i / (count - 1)) * (STAGE_GRADIENTS.length - 1)));
+
+    return {
+      id: `${baseCaptureId}__${i + 1}`,
+      baseCaptureId,
+      roomId,
+      date: `2025-${mm}-${dd}`,
+      dateLabel: `${MONTHS[monthIdx]} ${dd}`,
+      monthLabel: MONTHS[monthIdx],
+      reviewStatus: SERIES_STATUS_FLOW[statusIdx],
+      progress,
+      fileCount: 6 + ((seed >> i) % 8),
+      capturedBy: SERIES_CAPTURERS[(seed + i) % SERIES_CAPTURERS.length],
+      note: SNAPSHOT_NOTES[Math.min(SNAPSHOT_NOTES.length - 1, i)] ?? null,
+      // Latest snapshot uses the room's real gradient; earlier ones use stage gradients.
+      gradient: isLatest ? baseGradient : STAGE_GRADIENTS[stageIdx],
+      isLatest,
+    };
+  });
+}
+
+/** Convenience: the series for a given canonical capture. */
+export function getCaptureSeriesForCapture(captureId: string): CaptureSnapshot[] {
+  const cap = getCaptureById(captureId);
+  if (!cap) return [];
+  return getCaptureSeries(cap.roomId, cap.id, cap.gradient);
+}
+
+export interface RoomHistory {
+  roomId: string;
+  captureCount: number;
+  latest: CaptureSnapshot;
+  first: CaptureSnapshot;
+  series: CaptureSnapshot[];
+  progressDelta: number;                       // latest.progress - first.progress
+  reviewHistory: { status: ReviewStatus; dateLabel: string }[];
+}
+
+/** Aggregate room-history summary used by the Room History panel (7E). */
+export function getRoomHistory(captureId: string): RoomHistory | null {
+  const series = getCaptureSeriesForCapture(captureId);
+  if (!series.length) return null;
+  const latest = series[series.length - 1];
+  const first = series[0];
+  return {
+    roomId: latest.roomId,
+    captureCount: series.length,
+    latest,
+    first,
+    series,
+    progressDelta: latest.progress - first.progress,
+    reviewHistory: series.map(s => ({ status: s.reviewStatus, dateLabel: s.dateLabel })),
+  };
+}
+
 // ── Permissions ───────────────────────────────────────────────────────────────
 export type PermissionAction = 'view' | 'create' | 'edit' | 'delete' | 'approve' | 'publish';
 
