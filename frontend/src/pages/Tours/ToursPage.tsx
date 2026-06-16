@@ -10,10 +10,8 @@ import {
   CheckRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { mockTours, mockProjects, statusConfig } from '@/data/mockData';
-
-// Projects that actually have tours.
-const PROJECTS_WITH_TOURS = mockProjects.filter(p => mockTours.some(t => t.projectId === p.id));
+import { statusConfig } from '@/data/mockData';
+import { useWorkflowStore } from '@store/workflowStore';
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
@@ -21,9 +19,17 @@ export default function ToursPage() {
   const [projectId, setProjectId] = useState<string>('all');
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
 
+  // Reactive: live data from the workflow store.
+  const mockTours = useWorkflowStore(s => s.tours);
+  const mockProjects = useWorkflowStore(s => s.projects);
+  const PROJECTS_WITH_TOURS = useMemo(
+    () => mockProjects.filter(p => !p.archived && mockTours.some(t => t.projectId === p.id)),
+    [mockProjects, mockTours],
+  );
+
   const tours = useMemo(
     () => (projectId === 'all' ? mockTours : mockTours.filter(t => t.projectId === projectId)),
-    [projectId],
+    [mockTours, projectId],
   );
 
   const selectedProject = PROJECTS_WITH_TOURS.find(p => p.id === projectId);

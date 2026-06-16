@@ -5,7 +5,8 @@ import {
   AccessTimeRounded, PeopleRounded, BugReportRounded, MapRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { mockProjects, mockCaptures, mockTours, mockDefects, mockUsers } from '@/data/mockData';
+import { mockDefects, mockUsers } from '@/data/mockData';
+import { useWorkflowStore } from '@store/workflowStore';
 
 const captureWeeks = [
   { week: 'Apr W1', count: 8 }, { week: 'Apr W2', count: 14 }, { week: 'Apr W3', count: 11 },
@@ -112,6 +113,7 @@ function ReviewMetrics() {
 }
 
 function ProjectCompletion() {
+  const mockProjects = useWorkflowStore(s => s.projects).filter(p => !p.archived);
   return (
     <Card title="Project Completion" subtitle="Mapping progress per project">
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -175,6 +177,11 @@ function TeamTable() {
 export default function AnalyticsPage() {
   const [activeTab, setActiveTab] = useState<Tab>('Overview');
   const [range, setRange] = useState('30d');
+
+  // Reactive: live data from the workflow store.
+  const mockCaptures = useWorkflowStore(s => s.captures);
+  const mockTours = useWorkflowStore(s => s.tours);
+  const mockProjects = useWorkflowStore(s => s.projects).filter(p => !p.archived);
 
   const totalCaptures = mockCaptures.length;
   const approved = mockCaptures.filter(c => c.status === 'processed').length;

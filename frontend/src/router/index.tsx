@@ -26,6 +26,9 @@ const ResetPasswordPage  = lazy(() => import('@features/auth/pages/ResetPassword
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 const DashboardHomePage  = lazy(() => import('@features/dashboard/DashboardHomePage'));
 
+// ── Construction Workflow ───────────────────────────────────────────────────────
+const WorkflowPage       = lazy(() => import('@/pages/Workflow/WorkflowPage'));
+
 // ── Projects ──────────────────────────────────────────────────────────────────
 const ProjectsPage       = lazy(() => import('@/pages/Projects/ProjectsPage'));
 const NewProjectPage     = lazy(() => import('@/pages/Projects/NewProjectPage'));
@@ -92,6 +95,7 @@ const router = createBrowserRouter([
     ),
     children: [
       { path: '/dashboard', element: <PageSuspense><DashboardHomePage /></PageSuspense> },
+      { path: '/workflow',  element: <PageSuspense><WorkflowPage /></PageSuspense> },
 
       // Projects
       { path: '/projects',                                                         element: <PageSuspense><ProjectsPage /></PageSuspense> },

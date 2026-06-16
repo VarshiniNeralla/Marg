@@ -7,6 +7,7 @@ import {
   GridViewRounded, FolderOpenRounded, CameraAltRounded, ViewInArRounded,
   MapRounded, BarChartRounded, PeopleRounded, TuneRounded, BusinessRounded,
   VpnKeyRounded, LogoutRounded, PersonRounded, MenuRounded, BugReportRounded, CloudUploadRounded,
+  AccountTreeRounded,
 } from '@mui/icons-material';
 import { useTheme } from '@mui/material/styles';
 import { colors, motion, zIndex } from '@theme/tokens';
@@ -21,7 +22,8 @@ const NAV_H = 56;
 interface NavItem { label: string; path: string; icon: React.ReactNode; adminOnly?: boolean; }
 
 const NAV: NavItem[] = [
-  { label: 'Overview',      path: '/dashboard',   icon: <GridViewRounded /> },
+  { label: 'Overview',             path: '/dashboard', icon: <GridViewRounded /> },
+  { label: 'Construction Workflow', path: '/workflow', icon: <AccountTreeRounded /> },
   { label: 'Projects',      path: '/projects',    icon: <FolderOpenRounded /> },
   { label: 'Captures',      path: '/captures',    icon: <CameraAltRounded /> },
   { label: 'Virtual Tours', path: '/tours',       icon: <ViewInArRounded /> },

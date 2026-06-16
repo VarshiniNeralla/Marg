@@ -3,10 +3,8 @@ import { Link } from 'react-router-dom';
 import { Box, Typography, InputBase, Menu, MenuItem } from '@mui/material';
 import { CameraAltRounded, ViewInArRounded, SearchRounded, KeyboardArrowDownRounded, CheckRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import {
-  mockCaptures, mockProjects, mockTours, statusConfig,
-  getRoomHistory, type MockCapture,
-} from '@/data/mockData';
+import { statusConfig, getRoomHistory, type MockCapture } from '@/data/mockData';
+import { useWorkflowStore } from '@store/workflowStore';
 
 // Capture gallery — project-wise selection, calm minimal cards.
 
@@ -20,13 +18,9 @@ const STATUS_DOT: Record<string, string> = {
   uploading: colors.info,
 };
 
-// Projects that actually have captures, in data order.
-const PROJECTS_WITH_CAPTURES = mockProjects.filter(p => mockCaptures.some(c => c.projectId === p.id));
-
-function CaptureCard({ capture }: { capture: MockCapture }) {
+function CaptureCard({ capture, hasTour }: { capture: MockCapture; hasTour: boolean }) {
   const st = statusConfig.capture[capture.status];
   const history = getRoomHistory(capture.id);
-  const hasTour = mockTours.some(t => t.captureId === capture.id);
   const dot = STATUS_DOT[capture.status] ?? colors.textSubdued;
 
   return (
@@ -90,6 +84,16 @@ export default function CapturesPage() {
   const [filter, setFilter] = useState<StatusFilter>('All');
   const [query, setQuery] = useState('');
 
+  // Reactive: read live data from the workflow store.
+  const mockCaptures = useWorkflowStore(s => s.captures);
+  const allProjects = useWorkflowStore(s => s.projects);
+  const tours = useWorkflowStore(s => s.tours);
+  const tourCaptureIds = useMemo(() => new Set(tours.map(t => t.captureId)), [tours]);
+  const PROJECTS_WITH_CAPTURES = useMemo(
+    () => allProjects.filter(p => !p.archived && mockCaptures.some(c => c.projectId === p.id)),
+    [allProjects, mockCaptures],
+  );
+
   const filtered = useMemo(() => {
     return mockCaptures.filter(c => {
       const matchesProject = projectId === 'all' || c.projectId === projectId;
@@ -98,7 +102,7 @@ export default function CapturesPage() {
       const matchesQuery = !q || c.roomName.toLowerCase().includes(q) || c.projectName.toLowerCase().includes(q) || c.towerName.toLowerCase().includes(q) || c.floorLabel.toLowerCase().includes(q);
       return matchesProject && matchesStatus && matchesQuery;
     });
-  }, [projectId, filter, query]);
+  }, [mockCaptures, projectId, filter, query]);
 
   const pendingCount = mockCaptures.filter(c => c.status === 'review').length;
 
@@ -253,7 +257,7 @@ export default function CapturesPage() {
       ) : (
         /* ── Clean flat grid ──────────────────────────────────────────────── */
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(3, 1fr)', md: 'repeat(4, 1fr)', lg: 'repeat(5, 1fr)' }, gap: 2.5 }}>
-          {filtered.map(c => <CaptureCard key={c.id} capture={c} />)}
+          {filtered.map(c => <CaptureCard key={c.id} capture={c} hasTour={tourCaptureIds.has(c.id)} />)}
         </Box>
       )}
     </Box>

@@ -10,82 +10,20 @@ import {
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
-
-// ── Mock data ──────────────────────────────────────────────────────────────────
-
-const mockProjects = [
-  {
-    id: '1',
-    name: 'My Home Udyan',
-    location: 'Hyderabad, Telangana',
-    client: 'My Home Constructions',
-    status: 'active',
-    towers: 3,
-    floors: 42,
-    rooms: 126,
-    captures: 89,
-    progress: 68,
-    lastUpdated: '2 hours ago',
-    gradient: colors.projectA,
-    accent: colors.primary,
-  },
-  {
-    id: '2',
-    name: 'My Home Apas',
-    location: 'Gachibowli, Hyderabad',
-    client: 'My Home Constructions',
-    status: 'done',
-    towers: 1,
-    floors: 12,
-    rooms: 48,
-    captures: 48,
-    progress: 100,
-    lastUpdated: '1 day ago',
-    gradient: colors.projectB,
-    accent: '#059669',
-  },
-  {
-    id: '3',
-    name: 'My Home Grava Residences',
-    location: 'Narsingi, Hyderabad',
-    client: 'My Home Constructions',
-    status: 'review',
-    towers: 2,
-    floors: 28,
-    rooms: 84,
-    captures: 61,
-    progress: 72,
-    lastUpdated: '3 days ago',
-    gradient: colors.projectC,
-    accent: '#d97706',
-  },
-  {
-    id: '4',
-    name: 'My Home Vyoma',
-    location: 'Financial District, Hyderabad',
-    client: 'My Home Constructions',
-    status: 'draft',
-    towers: 4,
-    floors: 56,
-    rooms: 224,
-    captures: 12,
-    progress: 5,
-    lastUpdated: '1 week ago',
-    gradient: colors.projectD,
-    accent: colors.textSubdued,
-  },
-];
+import { useWorkflowStore } from '@store/workflowStore';
 
 const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
-  active:  { label: 'Active',      color: colors.success,  bg: colors.successBg },
-  review:  { label: 'In Review',   color: colors.warning,  bg: colors.warningBg },
+  active:  { label: 'Active',      color: colors.success,   bg: colors.successBg },
+  review:  { label: 'In Review',   color: colors.warning,   bg: colors.warningBg },
   draft:   { label: 'Draft',       color: colors.textMuted, bg: colors.bgDeep },
-  done:    { label: 'Completed',   color: colors.primary,  bg: colors.primarySoft },
+  done:    { label: 'Completed',   color: colors.primary,   bg: colors.primarySoft },
 };
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export default function ProjectsPage() {
+  const allProjects = useWorkflowStore(s => s.projects);
+  const mockProjects = allProjects.filter(p => !p.archived);
   return (
     <Box>
       {/* Page header */}
@@ -105,7 +43,7 @@ export default function ProjectsPage() {
             Projects
           </Typography>
           <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>
-            4 projects · My Home Constructions
+            {mockProjects.length} project{mockProjects.length === 1 ? '' : 's'} · My Home Constructions
           </Typography>
         </Box>
         <Box
