@@ -7,6 +7,8 @@ import {
   type MockFloorPlan, type MockDefect, type MockNotification, type MockAuditLog,
   type MockUser, type NotifType, type AuditEventType,
 } from '@/data/mockData';
+import { workflowApiService } from '@/services/workflowApiService';
+import type { UploadedFileResponse } from '@/services/uploadService';
 import { STORE_VERSION, WORKFLOW_STORE_KEY } from './persistence';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -22,6 +24,8 @@ import { STORE_VERSION, WORKFLOW_STORE_KEY } from './persistence';
 // functions there, so we materialise them into real arrays we can edit).
 // ─────────────────────────────────────────────────────────────────────────────
 
+const PRIMARY_PROJECT_NAME = 'My Home Udyan';
+
 export interface WfFloor {
   id: string;
   towerId: string;
@@ -30,27 +34,45 @@ export interface WfFloor {
   floorPlanId?: string;
 }
 
-export interface WfRoom {
+export type FlatType = '1 BHK' | '2 BHK' | '3 BHK' | '4 BHK';
+
+export interface WfFlat {
   id: string;
   floorId: string;
   towerId: string;
   projectId: string;
+  number: string;
+  type: FlatType;
+}
+
+export interface WfRoom {
+  id: string;
+  flatId: string;
+  floorId: string;
+  towerId: string;
+  projectId: string;
   name: string;
-  type: 'living' | 'bedroom' | 'kitchen' | 'bathroom' | 'balcony' | 'utility';
+  type: 'living' | 'bedroom' | 'kitchen' | 'bathroom' | 'balcony' | 'utility' | 'dining' | 'office' | 'lounge' | 'theatre' | 'prayer' | 'wardrobe' | 'terrace' | 'servant' | 'custom';
   floorPlanId?: string;
 }
 
 export type ProjectArchived = MockProject & { archived?: boolean };
 
 export type WorkflowDataState = Pick<WorkflowState,
-  'projects' | 'towers' | 'floors' | 'rooms' | 'captures' | 'tours' |
+  'projects' | 'towers' | 'floors' | 'flats' | 'rooms' | 'captures' | 'tours' |
   'floorPlans' | 'defects' | 'notifications' | 'auditLogs' | 'users' | 'uidCounter'
 >;
 
 // ── Seed from mockData ──────────────────────────────────────────────────────────
+function primaryProjectIds(projects: Pick<MockProject, 'id' | 'name'>[] = mockProjects) {
+  return new Set(projects.filter(p => p.name === PRIMARY_PROJECT_NAME).map(p => p.id));
+}
+
 function seedFloors(): WfFloor[] {
   const out: WfFloor[] = [];
+  const allowedProjects = primaryProjectIds();
   for (const t of mockTowers) {
+    if (!allowedProjects.has(t.projectId)) continue;
     // Materialise the top 8 generated floors per tower (those with plans/rooms).
     for (const f of getFloors(t.id).slice(0, 8)) {
       out.push({ id: f.id, towerId: t.id, number: f.number, label: f.label, floorPlanId: f.floorPlanId });
@@ -64,17 +86,83 @@ function seedRooms(floors: WfFloor[]): WfRoom[] {
   for (const f of floors) {
     const tower = mockTowers.find(t => t.id === f.towerId);
     if (!tower) continue;
+    const flatId = defaultFlatId(f.id);
     for (const r of getRooms(f.id, f.towerId, tower.projectId)) {
-      out.push({ id: r.id, floorId: f.id, towerId: f.towerId, projectId: tower.projectId, name: r.name, type: r.type });
+      out.push({ id: r.id, flatId, floorId: f.id, towerId: f.towerId, projectId: tower.projectId, name: r.name, type: r.type });
     }
   }
   return out;
 }
 
+function defaultFlatId(floorId: string) {
+  return `${floorId}-flat-a`;
+}
+
+function seedFlats(floors: WfFloor[]): WfFlat[] {
+  return floors.map(f => {
+    const tower = mockTowers.find(t => t.id === f.towerId);
+    return {
+      id: defaultFlatId(f.id),
+      floorId: f.id,
+      towerId: f.towerId,
+      projectId: tower?.projectId ?? '',
+      number: 'Flat A',
+      type: '1 BHK',
+    };
+  });
+}
+
+const ROOM_TEMPLATES: Record<FlatType, Array<{ name: string; type: WfRoom['type'] }>> = {
+  '1 BHK': [
+    { name: 'Living Room', type: 'living' },
+    { name: 'Master Bedroom', type: 'bedroom' },
+    { name: 'Kitchen', type: 'kitchen' },
+    { name: 'Bathroom', type: 'bathroom' },
+    { name: 'Balcony', type: 'balcony' },
+  ],
+  '2 BHK': [
+    { name: 'Living Room', type: 'living' },
+    { name: 'Master Bedroom', type: 'bedroom' },
+    { name: 'Bedroom 1', type: 'bedroom' },
+    { name: 'Kitchen', type: 'kitchen' },
+    { name: 'Dining Area', type: 'dining' },
+    { name: 'Bathroom', type: 'bathroom' },
+    { name: 'Balcony', type: 'balcony' },
+    { name: 'Utility Area', type: 'utility' },
+  ],
+  '3 BHK': [
+    { name: 'Living Room', type: 'living' },
+    { name: 'Master Bedroom', type: 'bedroom' },
+    { name: 'Bedroom 1', type: 'bedroom' },
+    { name: 'Bedroom 2', type: 'bedroom' },
+    { name: 'Kitchen', type: 'kitchen' },
+    { name: 'Dining Area', type: 'dining' },
+    { name: 'Common Bathroom', type: 'bathroom' },
+    { name: 'Attached Bathroom', type: 'bathroom' },
+    { name: 'Balcony', type: 'balcony' },
+    { name: 'Utility Area', type: 'utility' },
+  ],
+  '4 BHK': [
+    { name: 'Living Room', type: 'living' },
+    { name: 'Master Bedroom', type: 'bedroom' },
+    { name: 'Bedroom 1', type: 'bedroom' },
+    { name: 'Bedroom 2', type: 'bedroom' },
+    { name: 'Bedroom 3', type: 'bedroom' },
+    { name: 'Kitchen', type: 'kitchen' },
+    { name: 'Dining Area', type: 'dining' },
+    { name: 'Family Lounge', type: 'lounge' },
+    { name: 'Home Office', type: 'office' },
+    { name: 'Utility Area', type: 'utility' },
+    { name: 'Multiple Bathrooms', type: 'bathroom' },
+    { name: 'Balcony', type: 'balcony' },
+  ],
+};
+
 interface WorkflowState {
   projects: ProjectArchived[];
   towers: MockTower[];
   floors: WfFloor[];
+  flats: WfFlat[];
   rooms: WfRoom[];
   captures: MockCapture[];
   tours: MockTour[];
@@ -87,6 +175,7 @@ interface WorkflowState {
 
   nextId: (prefix: string) => string;
   resetToSeed: () => void;
+  hydrateFromApi: (data: Partial<WorkflowDataState>) => void;
 
   // ── Projects ──
   createProject: (p: Partial<MockProject> & { name: string }) => string;
@@ -103,17 +192,23 @@ interface WorkflowState {
   updateFloor: (id: string, patch: Partial<WfFloor>) => void;
   deleteFloor: (id: string) => void;
 
+  // ── Flats / Units ──
+  createFlat: (floorId: string, number: string, type: FlatType) => string;
+  updateFlat: (id: string, patch: Partial<WfFlat>) => void;
+  deleteFlat: (id: string) => void;
+  generateStandardRooms: (flatId: string) => void;
+
   // ── Rooms ──
-  createRoom: (floorId: string, name: string, type: WfRoom['type']) => string;
+  createRoom: (flatId: string, name: string, type: WfRoom['type']) => string;
   updateRoom: (id: string, patch: Partial<WfRoom>) => void;
   deleteRoom: (id: string) => void;
   assignFloorPlan: (roomId: string, floorPlanId: string) => void;
 
   // ── Floor Plans ──
-  uploadFloorPlan: (payload: Omit<MockFloorPlan, 'id' | 'uploadedAt' | 'uploadedBy'> & { uploadedBy?: string }) => string;
+  uploadFloorPlan: (payload: Omit<MockFloorPlan, 'id' | 'uploadedAt' | 'uploadedBy'> & { uploadedBy?: string; mediaAssets?: UploadedFileResponse[] }) => string;
 
   // ── Captures ──
-  uploadCapture: (roomId: string, fileCount: number) => string;
+  uploadCapture: (roomId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => string;
   deleteCapture: (id: string) => void;
   replaceCapture: (id: string, fileCount: number) => void;
 
@@ -148,13 +243,39 @@ const GRADIENTS = [
   'linear-gradient(135deg, #3a1f1a 0%, #221008 100%)',
 ];
 
+function keepPrimaryProjectData(data: WorkflowDataState): WorkflowDataState {
+  const projectIds = primaryProjectIds(data.projects);
+  const towerIds = new Set(data.towers.filter(t => projectIds.has(t.projectId)).map(t => t.id));
+  const floorIds = new Set(data.floors.filter(f => towerIds.has(f.towerId)).map(f => f.id));
+  const flatIds = new Set(data.flats.filter(f => projectIds.has(f.projectId) && floorIds.has(f.floorId)).map(f => f.id));
+  const roomIds = new Set(data.rooms.filter(r => projectIds.has(r.projectId) && flatIds.has(r.flatId)).map(r => r.id));
+  const captureIds = new Set(data.captures.filter(c => projectIds.has(c.projectId) && roomIds.has(c.roomId)).map(c => c.id));
+
+  return {
+    ...data,
+    projects: data.projects.filter(p => projectIds.has(p.id)),
+    towers: data.towers.filter(t => projectIds.has(t.projectId)),
+    floors: data.floors.filter(f => towerIds.has(f.towerId)),
+    flats: data.flats.filter(f => projectIds.has(f.projectId) && floorIds.has(f.floorId)),
+    rooms: data.rooms.filter(r => projectIds.has(r.projectId) && flatIds.has(r.flatId)),
+    captures: data.captures.filter(c => projectIds.has(c.projectId) && roomIds.has(c.roomId)),
+    tours: data.tours.filter(t => projectIds.has(t.projectId) && roomIds.has(t.roomId) && captureIds.has(t.captureId)),
+    floorPlans: data.floorPlans.filter(fp => projectIds.has(fp.projectId) && towerIds.has(fp.towerId) && floorIds.has(fp.floorId)),
+    defects: data.defects.filter(d => projectIds.has(d.projectId)),
+    auditLogs: data.auditLogs.filter(a => !a.projectId || projectIds.has(a.projectId)),
+  };
+}
+
 export function buildInitialWorkflowData(): WorkflowDataState {
   const initialFloors = seedFloors();
+  const initialFlats = seedFlats(initialFloors);
   const initialRooms = seedRooms(initialFloors);
-  return {
-    projects: mockProjects.map(p => ({ ...p })),
-    towers: mockTowers.map(t => ({ ...t })),
+  const projectIds = primaryProjectIds();
+  return keepPrimaryProjectData({
+    projects: mockProjects.filter(p => projectIds.has(p.id)).map(p => ({ ...p })),
+    towers: mockTowers.filter(t => projectIds.has(t.projectId)).map(t => ({ ...t })),
     floors: initialFloors,
+    flats: initialFlats,
     rooms: initialRooms,
     captures: mockCaptures.map(c => ({ ...c })),
     tours: mockTours.map(t => ({ ...t })),
@@ -164,13 +285,70 @@ export function buildInitialWorkflowData(): WorkflowDataState {
     auditLogs: mockAuditLogs.map(a => ({ ...a })),
     users: mockUsers.map(u => ({ ...u })),
     uidCounter: Date.now() % 100000,
-  };
+  });
 }
 
 function isValidWorkflowData(data: unknown): data is WorkflowDataState {
   if (!data || typeof data !== 'object') return false;
   const d = data as WorkflowDataState;
   return Array.isArray(d.projects) && Array.isArray(d.captures) && Array.isArray(d.tours);
+}
+
+function ensureFlatHierarchy(data: Partial<WorkflowDataState>): WorkflowDataState {
+  const seed = buildInitialWorkflowData();
+  const floors = data.floors ?? seed.floors;
+  const towers = data.towers ?? seed.towers;
+  let flats = data.flats ?? [];
+
+  if (!Array.isArray(flats) || flats.length === 0) {
+    flats = floors.map(f => {
+      const tower = towers.find(t => t.id === f.towerId);
+      return {
+        id: defaultFlatId(f.id),
+        floorId: f.id,
+        towerId: f.towerId,
+        projectId: tower?.projectId ?? '',
+        number: 'Flat A',
+        type: '1 BHK',
+      };
+    });
+  }
+
+  const rooms = (data.rooms ?? seed.rooms).map(room => {
+    const existing = room as WfRoom;
+    if (existing.flatId && flats.some(flat => flat.id === existing.flatId)) return existing;
+    const flat = flats.find(f => f.floorId === existing.floorId);
+    return { ...existing, flatId: flat?.id ?? defaultFlatId(existing.floorId) };
+  });
+
+  return keepPrimaryProjectData({
+    ...seed,
+    ...data,
+    floors,
+    flats,
+    rooms,
+    towers,
+    projects: data.projects ?? seed.projects,
+    captures: data.captures ?? seed.captures,
+    tours: data.tours ?? seed.tours,
+    floorPlans: data.floorPlans ?? seed.floorPlans,
+    defects: data.defects ?? seed.defects,
+    notifications: data.notifications ?? seed.notifications,
+    auditLogs: data.auditLogs ?? seed.auditLogs,
+    users: data.users ?? seed.users,
+    uidCounter: data.uidCounter ?? seed.uidCounter,
+  });
+}
+
+function mirrorApi<T>(job: Promise<T>) {
+  void job.catch(error => {
+    console.error('[workflow-api]', error);
+  });
+}
+
+function firstMediaUrl(mediaAssets: UploadedFileResponse[] = []) {
+  const first = mediaAssets[0];
+  return first?.processed_panorama_url || first?.original_file_url || first?.original_url || null;
 }
 
 function pushNotif(
@@ -181,9 +359,11 @@ function pushNotif(
   link: string,
 ) {
   const id = `n${Date.now()}`;
+  const notification = { id, type, title, body, link, read: false, createdAt: 'Just now' };
   set(s => ({
-    notifications: [{ id, type, title, body, link, read: false, createdAt: 'Just now' }, ...s.notifications],
+    notifications: [notification, ...s.notifications],
   }));
+  mirrorApi(workflowApiService.createNotification(notification));
 }
 
 function pushAudit(
@@ -196,12 +376,14 @@ function pushAudit(
   description: string,
 ) {
   const id = `al${Date.now()}`;
-  set(s => ({
-    auditLogs: [{
+  const auditLog = {
       id, actorId: 'u1', actorName: 'You', eventType, entityType,
       entityId, entityName, projectId, description, createdAt: 'Just now',
-    }, ...s.auditLogs],
+    };
+  set(s => ({
+    auditLogs: [auditLog, ...s.auditLogs],
   }));
+  mirrorApi(workflowApiService.createAuditLog(auditLog));
 }
 
 export const useWorkflowStore = create<WorkflowState>()(
@@ -219,6 +401,27 @@ export const useWorkflowStore = create<WorkflowState>()(
         set(buildInitialWorkflowData());
       },
 
+      hydrateFromApi(data) {
+        const migrated = ensureFlatHierarchy(data);
+        set(s => ({
+          ...s,
+          ...migrated,
+          uidCounter: s.uidCounter,
+          projects: migrated.projects ?? s.projects,
+          towers: migrated.towers ?? s.towers,
+          floors: migrated.floors ?? s.floors,
+          flats: migrated.flats ?? s.flats,
+          rooms: migrated.rooms ?? s.rooms,
+          captures: migrated.captures ?? s.captures,
+          tours: migrated.tours ?? s.tours,
+          floorPlans: migrated.floorPlans ?? s.floorPlans,
+          defects: migrated.defects ?? s.defects,
+          notifications: migrated.notifications ?? s.notifications,
+          auditLogs: migrated.auditLogs ?? s.auditLogs,
+          users: migrated.users ?? s.users,
+        }));
+      },
+
   // ── Projects ──────────────────────────────────────────────────────────────
   createProject(p) {
     const id = get().nextId('p');
@@ -234,16 +437,20 @@ export const useWorkflowStore = create<WorkflowState>()(
       lastUpdated: 'Just now', thumbnail: null, teamSize: 1,
     };
     set(s => ({ projects: [...s.projects, project] }));
+    mirrorApi(workflowApiService.createProject(project));
     pushAudit(set, 'project_created', 'project', id, p.name, id, `Created project "${p.name}"`);
     return id;
   },
   updateProject(id, patch) {
     const proj = get().projects.find(p => p.id === id);
     set(s => ({ projects: s.projects.map(p => p.id === id ? { ...p, ...patch, lastUpdated: 'Just now' } : p) }));
+    mirrorApi(workflowApiService.updateProject(id, { ...patch, lastUpdated: 'Just now' }));
     if (proj) pushAudit(set, 'project_updated', 'project', id, proj.name, id, `Updated project "${proj.name}"`);
   },
   archiveProject(id) {
     set(s => ({ projects: s.projects.map(p => p.id === id ? { ...p, archived: !p.archived, status: p.archived ? 'active' : 'draft' } : p) }));
+    const updated = get().projects.find(p => p.id === id);
+    if (updated) mirrorApi(workflowApiService.updateProject(id, updated));
   },
 
   // ── Towers ────────────────────────────────────────────────────────────────
@@ -253,21 +460,26 @@ export const useWorkflowStore = create<WorkflowState>()(
       towers: [...s.towers, { id, projectId, name, floors: floorCount, rooms: 0, captures: 0, progress: 0, description: '', status: 'pending' }],
       projects: s.projects.map(p => p.id === projectId ? { ...p, towers: p.towers + 1, lastUpdated: 'Just now' } : p),
     }));
+    const tower = get().towers.find(t => t.id === id);
+    if (tower) mirrorApi(workflowApiService.createTower(tower));
     return id;
   },
   updateTower(id, patch) {
     set(s => ({ towers: s.towers.map(t => t.id === id ? { ...t, ...patch } : t) }));
+    mirrorApi(workflowApiService.updateTower(id, patch));
   },
   deleteTower(id) {
     const tower = get().towers.find(t => t.id === id);
     set(s => ({
       towers: s.towers.filter(t => t.id !== id),
       floors: s.floors.filter(f => f.towerId !== id),
+      flats: s.flats.filter(f => f.towerId !== id),
       rooms: s.rooms.filter(r => r.towerId !== id),
       captures: s.captures.filter(c => c.towerId !== id),
       tours: s.tours.filter(t => t.towerId !== id),
       projects: tower ? s.projects.map(p => p.id === tower.projectId ? { ...p, towers: Math.max(0, p.towers - 1) } : p) : s.projects,
     }));
+    mirrorApi(workflowApiService.deleteTower(id));
   },
 
   // ── Floors ────────────────────────────────────────────────────────────────
@@ -280,36 +492,118 @@ export const useWorkflowStore = create<WorkflowState>()(
       towers: s.towers.map(t => t.id === towerId ? { ...t, floors: t.floors + 1 } : t),
       projects: tower ? s.projects.map(p => p.id === tower.projectId ? { ...p, floors: p.floors + 1, lastUpdated: 'Just now' } : p) : s.projects,
     }));
+    mirrorApi(workflowApiService.createFloor(floor));
     return floor.id;
   },
   updateFloor(id, patch) {
     set(s => ({ floors: s.floors.map(f => f.id === id ? { ...f, ...patch } : f) }));
+    mirrorApi(workflowApiService.updateFloor(id, patch));
   },
   deleteFloor(id) {
     const floor = get().floors.find(f => f.id === id);
     set(s => ({
       floors: s.floors.filter(f => f.id !== id),
+      flats: s.flats.filter(f => f.floorId !== id),
       rooms: s.rooms.filter(r => r.floorId !== id),
+      captures: s.captures.filter(c => !s.rooms.some(r => r.floorId === id && r.id === c.roomId)),
+      tours: s.tours.filter(t => !s.rooms.some(r => r.floorId === id && r.id === t.roomId)),
       towers: floor ? s.towers.map(t => t.id === floor.towerId ? { ...t, floors: Math.max(0, t.floors - 1) } : t) : s.towers,
     }));
+    mirrorApi(workflowApiService.deleteFloor(id));
+  },
+
+  // ── Flats / Units ─────────────────────────────────────────────────────────
+  createFlat(floorId, number, type) {
+    const id = get().nextId('flat');
+    const floor = get().floors.find(f => f.id === floorId);
+    if (!floor) return id;
+    const tower = get().towers.find(t => t.id === floor.towerId);
+    const flat: WfFlat = {
+      id,
+      floorId,
+      towerId: floor.towerId,
+      projectId: tower?.projectId ?? '',
+      number: number || `Flat ${get().flats.filter(f => f.floorId === floorId).length + 1}`,
+      type,
+    };
+    set(s => ({ flats: [...s.flats, flat] }));
+    mirrorApi(workflowApiService.createFlat(flat));
+    get().generateStandardRooms(id);
+    pushAudit(set, 'project_updated', 'project', flat.projectId, flat.number, flat.projectId, `Created ${flat.number} (${flat.type})`);
+    return id;
+  },
+  updateFlat(id, patch) {
+    set(s => ({ flats: s.flats.map(f => f.id === id ? { ...f, ...patch } : f) }));
+    mirrorApi(workflowApiService.updateFlat(id, patch));
+  },
+  deleteFlat(id) {
+    const flat = get().flats.find(f => f.id === id);
+    const roomIds = new Set(get().rooms.filter(r => r.flatId === id).map(r => r.id));
+    set(s => ({
+      flats: s.flats.filter(f => f.id !== id),
+      rooms: s.rooms.filter(r => r.flatId !== id),
+      captures: s.captures.filter(c => !roomIds.has(c.roomId)),
+      tours: s.tours.filter(t => !roomIds.has(t.roomId)),
+    }));
+    mirrorApi(workflowApiService.deleteFlat(id));
+    if (flat) pushAudit(set, 'project_updated', 'project', flat.projectId, flat.number, flat.projectId, `Deleted ${flat.number}`);
+  },
+  generateStandardRooms(flatId) {
+    const flat = get().flats.find(f => f.id === flatId);
+    if (!flat) return;
+    const existingNames = new Set(get().rooms.filter(r => r.flatId === flatId).map(r => r.name.toLowerCase()));
+    const templates = ROOM_TEMPLATES[flat.type] ?? [];
+    const newRooms: WfRoom[] = templates
+      .filter(room => !existingNames.has(room.name.toLowerCase()))
+      .map((room, index) => ({
+        id: `${flatId}-r${get().uidCounter + index + 1}`,
+        flatId,
+        floorId: flat.floorId,
+        towerId: flat.towerId,
+        projectId: flat.projectId,
+        name: room.name,
+        type: room.type,
+      }));
+    if (!newRooms.length) return;
+    set(s => ({
+      uidCounter: s.uidCounter + newRooms.length,
+      rooms: [...s.rooms, ...newRooms],
+      towers: s.towers.map(t => t.id === flat.towerId ? { ...t, rooms: t.rooms + newRooms.length } : t),
+      projects: s.projects.map(p => p.id === flat.projectId ? { ...p, rooms: p.rooms + newRooms.length, totalRooms: p.totalRooms + newRooms.length, lastUpdated: 'Just now' } : p),
+    }));
+    newRooms.forEach(room => mirrorApi(workflowApiService.createRoom(room)));
   },
 
   // ── Rooms ─────────────────────────────────────────────────────────────────
-  createRoom(floorId, name, type) {
+  createRoom(flatId, name, type) {
     const id = get().nextId('r');
-    const floor = get().floors.find(f => f.id === floorId);
+    const flat = get().flats.find(f => f.id === flatId) ?? get().flats.find(f => f.floorId === flatId);
+    const floor = flat ? get().floors.find(f => f.id === flat.floorId) : get().floors.find(f => f.id === flatId);
     if (!floor) return id;
-    const room: WfRoom = { id: `${floorId}-${id}`, floorId, towerId: floor.towerId, projectId: get().towers.find(t => t.id === floor.towerId)?.projectId ?? '', name, type };
+    const parentFlat = flat ?? {
+      id: defaultFlatId(floor.id),
+      floorId: floor.id,
+      towerId: floor.towerId,
+      projectId: get().towers.find(t => t.id === floor.towerId)?.projectId ?? '',
+      number: 'Flat A',
+      type: '1 BHK' as FlatType,
+    };
+    if (!get().flats.some(f => f.id === parentFlat.id)) {
+      set(s => ({ flats: [...s.flats, parentFlat] }));
+    }
+    const room: WfRoom = { id: `${parentFlat.id}-${id}`, flatId: parentFlat.id, floorId: parentFlat.floorId, towerId: parentFlat.towerId, projectId: parentFlat.projectId, name, type };
     const tower = get().towers.find(t => t.id === floor.towerId);
     set(s => ({
       rooms: [...s.rooms, room],
       towers: s.towers.map(t => t.id === floor.towerId ? { ...t, rooms: t.rooms + 1 } : t),
       projects: tower ? s.projects.map(p => p.id === tower.projectId ? { ...p, rooms: p.rooms + 1, totalRooms: p.totalRooms + 1, lastUpdated: 'Just now' } : p) : s.projects,
     }));
+    mirrorApi(workflowApiService.createRoom(room));
     return room.id;
   },
   updateRoom(id, patch) {
     set(s => ({ rooms: s.rooms.map(r => r.id === id ? { ...r, ...patch } : r) }));
+    mirrorApi(workflowApiService.updateRoom(id, patch));
   },
   deleteRoom(id) {
     const room = get().rooms.find(r => r.id === id);
@@ -318,37 +612,58 @@ export const useWorkflowStore = create<WorkflowState>()(
       captures: s.captures.filter(c => c.roomId !== id),
       towers: room ? s.towers.map(t => t.id === room.towerId ? { ...t, rooms: Math.max(0, t.rooms - 1) } : t) : s.towers,
     }));
+    mirrorApi(workflowApiService.deleteRoom(id));
   },
   assignFloorPlan(roomId, floorPlanId) {
     set(s => ({ rooms: s.rooms.map(r => r.id === roomId ? { ...r, floorPlanId } : r) }));
+    mirrorApi(workflowApiService.updateRoom(roomId, { floorPlanId }));
   },
 
   // ── Captures ────────────────────────────────────────────────────────────────
-  uploadCapture(roomId, fileCount) {
+  uploadCapture(roomId, fileCount, mediaAssets = []) {
     const id = get().nextId('c');
     const room = get().rooms.find(r => r.id === roomId);
     if (!room) return id;
     const project = get().projects.find(p => p.id === room.projectId);
     const tower = get().towers.find(t => t.id === room.towerId);
     const floor = get().floors.find(f => f.id === room.floorId);
-    const capture: MockCapture = {
+    const flat = get().flats.find(f => f.id === room.flatId);
+    const firstAsset = mediaAssets[0];
+    const capture = {
       id, roomId, roomName: room.name,
+      flatId: room.flatId, flatNumber: flat?.number ?? 'Flat A', flatType: flat?.type ?? '1 BHK',
+      flat_id: room.flatId, flat_number: flat?.number ?? 'Flat A', flat_type: flat?.type ?? '1 BHK',
       projectId: room.projectId, projectName: project?.name ?? '',
       towerId: room.towerId, towerName: tower?.name ?? '',
       floorLabel: floor?.label ?? '',
       status: 'review', reviewStatus: 'uploaded',
       uploadedBy: 'You', uploadedAt: 'Just now',
       reviewedBy: null, reviewNotes: null, assignedTo: null,
-      fileCount, sizeMb: fileCount * 4,
+      fileCount,
+      sizeMb: mediaAssets.length ? +(mediaAssets.reduce((sum, asset) => sum + (asset.size || 0), 0) / 1024 / 1024).toFixed(1) : fileCount * 4,
       gradient: project?.gradient ?? GRADIENTS[0],
-    };
+      mediaAssets,
+      media_assets: mediaAssets,
+      processingStatus: firstAsset?.processing_status ?? 'uploaded',
+      processing_status: firstAsset?.processing_status ?? 'uploaded',
+      original_url: firstAsset?.original_url,
+      thumbnail_url: firstAsset?.thumbnail_url,
+      public_id: firstAsset?.public_id,
+      format: firstAsset?.format,
+      size: firstAsset?.size,
+      originalFileUrl: firstAsset?.original_file_url ?? firstAsset?.original_url,
+      processedPanoramaUrl: firstMediaUrl(mediaAssets),
+      thumbnailUrl: firstAsset?.thumbnail_url,
+      previewUrl: firstAsset?.preview_url ?? firstAsset?.thumbnail_url,
+    } as MockCapture & Record<string, unknown>;
     set(s => ({
       captures: [capture, ...s.captures],
       towers: s.towers.map(t => t.id === room.towerId ? { ...t, captures: t.captures + 1 } : t),
       projects: project ? s.projects.map(p => p.id === project.id ? { ...p, captures: p.captures + 1, lastUpdated: 'Just now' } : p) : s.projects,
     }));
-    pushNotif(set, 'capture_uploaded', 'New capture uploaded', `Uploaded ${fileCount} files for ${room.name}`, `/captures/${id}`);
-    pushAudit(set, 'capture_uploaded', 'capture', id, capture.roomName, room.projectId, `Uploaded ${fileCount} images for ${capture.roomName}`);
+    mirrorApi(workflowApiService.createCapture(capture));
+    pushNotif(set, 'capture_uploaded', 'New capture uploaded', `Uploaded ${fileCount} files for ${flat?.number ?? 'Flat A'} · ${room.name}`, `/captures/${id}`);
+    pushAudit(set, 'capture_uploaded', 'capture', id, capture.roomName, room.projectId, `Uploaded ${fileCount} images for ${flat?.number ?? 'Flat A'} · ${capture.roomName}`);
     return id;
   },
   deleteCapture(id) {
@@ -358,9 +673,12 @@ export const useWorkflowStore = create<WorkflowState>()(
       tours: s.tours.filter(t => t.captureId !== id),
       towers: cap ? s.towers.map(t => t.id === cap.towerId ? { ...t, captures: Math.max(0, t.captures - 1) } : t) : s.towers,
     }));
+    mirrorApi(workflowApiService.deleteCapture(id));
   },
   replaceCapture(id, fileCount) {
-    set(s => ({ captures: s.captures.map(c => c.id === id ? { ...c, fileCount, sizeMb: fileCount * 4, status: 'review', reviewStatus: 'uploaded', uploadedAt: 'Just now', reviewNotes: null } : c) }));
+    const patch = { fileCount, sizeMb: fileCount * 4, status: 'review' as const, reviewStatus: 'uploaded' as const, uploadedAt: 'Just now', reviewNotes: null, processingStatus: 'uploaded', processing_status: 'uploaded' };
+    set(s => ({ captures: s.captures.map(c => c.id === id ? { ...c, ...patch } : c) }));
+    mirrorApi(workflowApiService.updateCaptureReview(id, patch));
   },
 
   // ── Review ──────────────────────────────────────────────────────────────────
@@ -369,11 +687,13 @@ export const useWorkflowStore = create<WorkflowState>()(
     set(s => ({
       captures: s.captures.map(c => {
         if (c.id !== id) return c;
-        if (action === 'approve') return { ...c, status: 'processed', reviewStatus: 'approved', reviewedBy: 'You', reviewNotes: notes ?? c.reviewNotes };
+        if (action === 'approve') return { ...c, status: 'processed', reviewStatus: 'approved', reviewedBy: 'You', reviewNotes: notes ?? c.reviewNotes, processingStatus: 'reviewed', processing_status: 'reviewed' };
         if (action === 'reject') return { ...c, status: 'rejected', reviewStatus: 'changes_requested', reviewedBy: 'You', reviewNotes: notes ?? 'Rejected' };
         return { ...c, status: 'review', reviewStatus: 'reviewing', reviewNotes: notes ?? 'Changes requested' };
       }),
     }));
+    const updated = get().captures.find(c => c.id === id);
+    if (updated) mirrorApi(workflowApiService.updateCaptureReview(id, updated));
     if (cap) {
       if (action === 'approve') {
         pushNotif(set, 'review_approved', 'Capture approved', `${cap.roomName} was approved`, `/captures/${id}`);
@@ -387,6 +707,8 @@ export const useWorkflowStore = create<WorkflowState>()(
   assignReviewer(id, reviewerName) {
     const cap = get().captures.find(c => c.id === id);
     set(s => ({ captures: s.captures.map(c => c.id === id ? { ...c, assignedTo: reviewerName, reviewStatus: c.reviewStatus === 'uploaded' ? 'assigned' : c.reviewStatus } : c) }));
+    const updated = get().captures.find(c => c.id === id);
+    if (updated) mirrorApi(workflowApiService.updateCaptureReview(id, updated));
     if (cap) {
       pushNotif(set, 'review_requested', 'Review requested', `${cap.roomName} assigned to ${reviewerName}`, `/captures/${id}`);
       pushAudit(set, 'review_assigned', 'capture', id, cap.roomName, cap.projectId, `Assigned to ${reviewerName}`);
@@ -395,10 +717,13 @@ export const useWorkflowStore = create<WorkflowState>()(
 
   // ── Publish ───────────────────────────────────────────────────────────────
   publishCapture(id) {
-    set(s => ({ captures: s.captures.map(c => c.id === id ? { ...c, reviewStatus: 'published', status: 'processed' } : c) }));
+    const patch = { reviewStatus: 'published' as const, status: 'processed' as const, processingStatus: 'published', processing_status: 'published' } as Partial<MockCapture> & Record<string, unknown>;
+    set(s => ({ captures: s.captures.map(c => c.id === id ? { ...c, ...patch } : c) }));
+    mirrorApi(workflowApiService.updateCapturePublish(id, patch));
   },
   unpublishCapture(id) {
     set(s => ({ captures: s.captures.map(c => c.id === id ? { ...c, reviewStatus: 'approved' } : c) }));
+    mirrorApi(workflowApiService.updateCapturePublish(id, { reviewStatus: 'approved' }));
   },
 
   // ── Tours ─────────────────────────────────────────────────────────────────
@@ -408,19 +733,32 @@ export const useWorkflowStore = create<WorkflowState>()(
     if (!cap) return id;
     const existing = get().tours.find(t => t.captureId === captureId);
     if (existing) return existing.id;
-    const tour: MockTour = {
+    const capRecord = cap as MockCapture & Record<string, unknown>;
+    const mediaAssets = (capRecord.mediaAssets as UploadedFileResponse[] | undefined) ?? [];
+    const panoramaUrl = firstMediaUrl(mediaAssets) ?? (capRecord.processedPanoramaUrl as string | undefined) ?? null;
+    const tour = {
       id, captureId, roomId: cap.roomId, roomName: cap.roomName,
+      flatId: capRecord.flatId, flatNumber: capRecord.flatNumber, flatType: capRecord.flatType,
+      flat_id: capRecord.flat_id, flat_number: capRecord.flat_number, flat_type: capRecord.flat_type,
       projectId: cap.projectId, projectName: cap.projectName,
       towerId: cap.towerId, towerName: cap.towerName, floorLabel: cap.floorLabel,
       status: 'processing', captures: cap.fileCount, lastCapture: 'Just now',
       gradient: cap.gradient, viewCount: 0,
-    };
+      panoramaUrls: panoramaUrl ? [panoramaUrl] : [],
+      panorama_urls: panoramaUrl ? [panoramaUrl] : [],
+      processedPanoramaUrl: panoramaUrl,
+      processed_panorama_url: panoramaUrl,
+      thumbnailUrl: (mediaAssets[0]?.thumbnail_url ?? capRecord.thumbnailUrl) as string | undefined,
+      thumbnail_url: (mediaAssets[0]?.thumbnail_url ?? capRecord.thumbnailUrl) as string | undefined,
+    } as MockTour & Record<string, unknown>;
     set(s => ({ tours: [tour, ...s.tours] }));
+    mirrorApi(workflowApiService.createTour(tour));
     return id;
   },
   publishTour(id) {
     const tour = get().tours.find(t => t.id === id);
     set(s => ({ tours: s.tours.map(t => t.id === id ? { ...t, status: 'published' } : t) }));
+    mirrorApi(workflowApiService.updateTour(id, { status: 'published' }));
     if (tour) {
       pushNotif(set, 'tour_published', 'Tour published', `Virtual tour for ${tour.roomName} is live`, `/tours/${id}`);
       pushAudit(set, 'tour_published', 'tour', id, tour.roomName, tour.projectId, `Published tour for ${tour.roomName}`);
@@ -428,20 +766,36 @@ export const useWorkflowStore = create<WorkflowState>()(
   },
   updateTour(id, patch) {
     set(s => ({ tours: s.tours.map(t => t.id === id ? { ...t, ...patch } : t) }));
+    mirrorApi(workflowApiService.updateTour(id, patch));
   },
 
   uploadFloorPlan(payload) {
     const id = get().nextId('fp');
-    const plan: MockFloorPlan = {
+    const mediaAssets = payload.mediaAssets ?? [];
+    const firstAsset = mediaAssets[0];
+    const plan = {
       ...payload,
       id,
       uploadedAt: 'Just now',
       uploadedBy: payload.uploadedBy ?? 'You',
-    };
+      mediaAssets,
+      media_assets: mediaAssets,
+      file_url: firstAsset?.original_url,
+      fileUrl: firstAsset?.original_url,
+      thumbnail_url: firstAsset?.thumbnail_url,
+      thumbnailUrl: firstAsset?.thumbnail_url,
+      public_id: firstAsset?.public_id,
+      format: firstAsset?.format,
+      size: firstAsset?.size,
+      page_count: firstAsset?.pages ?? 1,
+      pageCount: firstAsset?.pages ?? 1,
+      dimensions: firstAsset?.width && firstAsset?.height ? { width: firstAsset.width, height: firstAsset.height } : null,
+    } as MockFloorPlan & Record<string, unknown>;
     set(s => ({
       floorPlans: [...s.floorPlans.filter(fp => !(fp.towerId === payload.towerId && fp.floorId === payload.floorId)), plan],
       floors: s.floors.map(f => f.id === payload.floorId ? { ...f, floorPlanId: id } : f),
     }));
+    mirrorApi(workflowApiService.createFloorPlan(plan));
     const project = get().projects.find(p => p.id === payload.projectId);
     pushNotif(set, 'floor_plan_uploaded', 'Floor plan uploaded', `${payload.floorLabel} uploaded for ${project?.name ?? 'project'}`, `/floor-plans/${payload.projectId}/${payload.towerId}/${payload.floorId}`);
     pushAudit(set, 'floor_plan_uploaded', 'floor_plan', id, payload.floorLabel, payload.projectId, `Uploaded floor plan for ${payload.floorLabel}`);
@@ -452,6 +806,7 @@ export const useWorkflowStore = create<WorkflowState>()(
     const id = get().nextId('d');
     const defect: MockDefect = { ...d, id, createdAt: 'Just now', updatedAt: 'Just now' };
     set(s => ({ defects: [defect, ...s.defects] }));
+    mirrorApi(workflowApiService.createDefect(defect));
     pushNotif(set, 'defect_assigned', 'Defect assigned', `"${d.title}" assigned to ${d.assignedTo}`, '/defects');
     pushAudit(set, 'defect_created', 'defect', id, d.title, d.projectId, `Created defect "${d.title}"`);
     return id;
@@ -462,6 +817,7 @@ export const useWorkflowStore = create<WorkflowState>()(
     set(s => ({
       defects: s.defects.map(d => d.id === id ? { ...d, ...patch, updatedAt: 'Just now' } : d),
     }));
+    mirrorApi(workflowApiService.updateDefect(id, { ...patch, updatedAt: 'Just now' }));
     if (defect && patch.status === 'resolved') {
       pushAudit(set, 'defect_resolved', 'defect', id, defect.title, defect.projectId, `Resolved defect "${defect.title}"`);
     }
@@ -469,12 +825,15 @@ export const useWorkflowStore = create<WorkflowState>()(
 
   markNotificationRead(id) {
     set(s => ({ notifications: s.notifications.map(n => n.id === id ? { ...n, read: true } : n) }));
+    mirrorApi(workflowApiService.markNotificationRead(id));
   },
   markAllNotificationsRead() {
     set(s => ({ notifications: s.notifications.map(n => ({ ...n, read: true })) }));
+    mirrorApi(workflowApiService.markAllNotificationsRead());
   },
   deleteNotification(id) {
     set(s => ({ notifications: s.notifications.filter(n => n.id !== id) }));
+    mirrorApi(workflowApiService.deleteNotification(id));
   },
   restoreNotification(n, index) {
     set(s => {
@@ -482,6 +841,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       list.splice(Math.min(index, list.length), 0, n);
       return { notifications: list };
     });
+    mirrorApi(workflowApiService.createNotification(n));
   },
     }),
     {
@@ -492,6 +852,7 @@ export const useWorkflowStore = create<WorkflowState>()(
         projects: s.projects,
         towers: s.towers,
         floors: s.floors,
+        flats: s.flats,
         rooms: s.rooms,
         captures: s.captures,
         tours: s.tours,
@@ -504,9 +865,9 @@ export const useWorkflowStore = create<WorkflowState>()(
       }),
       migrate: (persisted, version) => {
         if (!isValidWorkflowData(persisted) || version === 0) {
-          return { ...buildInitialWorkflowData(), ...(isValidWorkflowData(persisted) ? persisted : {}) };
+          return ensureFlatHierarchy({ ...buildInitialWorkflowData(), ...(isValidWorkflowData(persisted) ? persisted : {}) });
         }
-        return persisted as WorkflowDataState;
+        return ensureFlatHierarchy(persisted as Partial<WorkflowDataState>);
       },
     },
   ),

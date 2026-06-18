@@ -6,6 +6,8 @@ import { useWorkflowStore } from '@store/workflowStore';
 import { useSettingsStore } from '@store/settingsStore';
 import ActivityFeed from '@shared/components/ActivityFeed/ActivityFeed';
 import { useAuthStore } from '@store/authStore';
+import { uploadAvatarFiles } from '@/services/uploadService';
+import { userService } from '@/services/userService';
 
 const fieldSx = {
   '& .MuiOutlinedInput-root': {
@@ -70,18 +72,23 @@ export default function UserProfilePage() {
     fileRef.current?.click();
   }
 
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const dataUrl = reader.result as string;
-      setForm(f => ({ ...f, avatarUrl: dataUrl }));
-      setSaved(s => ({ ...s, avatarUrl: dataUrl }));
-      patchProfile({ avatarUrl: dataUrl });
-      updateUser({ avatar_url: dataUrl });
-    };
-    reader.readAsDataURL(file);
+    try {
+      const result = await uploadAvatarFiles([file]);
+      const url = result.files[0]?.thumbnail_url || result.files[0]?.original_url;
+      if (!url) return;
+      setForm(f => ({ ...f, avatarUrl: url }));
+      setSaved(s => ({ ...s, avatarUrl: url }));
+      patchProfile({ avatarUrl: url });
+      updateUser({ avatar_url: url });
+      if (user?.id) {
+        void userService.updateUser(user.id, { avatar_url: url });
+      }
+    } catch (error) {
+      console.error('[avatar-upload]', error);
+    }
     e.target.value = '';
   }
 
@@ -138,7 +145,7 @@ export default function UserProfilePage() {
           {/* Projects */}
           <Box sx={{ borderRadius: '20px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', p: 2.5 }}>
             <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.08em', textTransform: 'uppercase', mb: 2 }}>Active Projects</Typography>
-            {['My Home Udyan', 'My Home Grava Residences'].map(p => (
+            {['My Home Udyan'].map(p => (
               <Box key={p} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 1, borderBottom: `1px solid ${colors.borderLight}`, '&:last-child': { borderBottom: 'none' } }}>
                 <Box sx={{ width: 28, height: 28, borderRadius: '6px', background: colors.primaryGradient, flexShrink: 0 }} />
                 <Typography sx={{ fontSize: '0.875rem', color: colors.textStrong, fontWeight: 500 }}>{p}</Typography>

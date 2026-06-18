@@ -85,7 +85,7 @@ export default function NewProjectPage() {
                   <Grid size={{ xs: 12 }}>
                     <TextField fullWidth label="Project Name" required value={form.name}
                       onChange={e => handleChange('name', e.target.value)} sx={fieldSx}
-                      placeholder="e.g. My Home Vyoma Phase 2" />
+                      placeholder="e.g. My Home Udyan Phase 2" />
                   </Grid>
                   <Grid size={{ xs: 12 }}>
                     <TextField fullWidth label="Client Name" value={form.client}

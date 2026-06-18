@@ -44,33 +44,6 @@ export const mockProjects: MockProject[] = [
     gradient: 'linear-gradient(135deg, #1e3a5f 0%, #0f2340 100%)', accent: '#2563eb',
     lastUpdated: '2 hours ago', thumbnail: null, teamSize: 6,
   },
-  {
-    id: '2', name: 'My Home Apas', location: 'Gachibowli, Hyderabad', city: 'Hyderabad', state: 'Telangana',
-    client: 'My Home Constructions',
-    description: 'Mid-segment residential project with complete floor-by-floor documentation and digital twin delivery.',
-    status: 'done', progress: 100, towers: 1, floors: 12, rooms: 48, captures: 48, totalRooms: 48,
-    startDate: '2023-06-01', endDate: '2024-03-31',
-    gradient: 'linear-gradient(135deg, #1a3a2a 0%, #0f2318 100%)', accent: '#059669',
-    lastUpdated: '1 day ago', thumbnail: null, teamSize: 4,
-  },
-  {
-    id: '3', name: 'My Home Grava Residences', location: 'Narsingi, Hyderabad', city: 'Hyderabad', state: 'Telangana',
-    client: 'My Home Constructions',
-    description: 'Large-scale township development requiring systematic room capture across multiple towers with review workflow.',
-    status: 'review', progress: 72, towers: 2, floors: 28, rooms: 84, captures: 61, totalRooms: 84,
-    startDate: '2024-03-01', endDate: '2025-09-30',
-    gradient: 'linear-gradient(135deg, #2d1b4e 0%, #1a0f2e 100%)', accent: '#d97706',
-    lastUpdated: '3 days ago', thumbnail: null, teamSize: 5,
-  },
-  {
-    id: '4', name: 'My Home Vyoma', location: 'Financial District, Hyderabad', city: 'Hyderabad', state: 'Telangana',
-    client: 'My Home Constructions',
-    description: 'Ultra-premium high-rise project. Early stage — tower configurations being finalized before capture begins.',
-    status: 'draft', progress: 5, towers: 4, floors: 56, rooms: 224, captures: 12, totalRooms: 224,
-    startDate: '2025-01-01', endDate: '2026-12-31',
-    gradient: 'linear-gradient(135deg, #3a1f1a 0%, #221008 100%)', accent: '#64748b',
-    lastUpdated: '1 week ago', thumbnail: null, teamSize: 3,
-  },
 ];
 
 // ── Towers ────────────────────────────────────────────────────────────────────
@@ -90,13 +63,6 @@ export const mockTowers: MockTower[] = [
   { id: 't1', projectId: '1', name: 'Tower A', floors: 14, rooms: 42, captures: 38, progress: 90, description: 'North-facing premium tower', status: 'active' },
   { id: 't2', projectId: '1', name: 'Tower B', floors: 14, rooms: 42, captures: 31, progress: 74, description: 'South-facing tower with park view', status: 'active' },
   { id: 't3', projectId: '1', name: 'Tower C', floors: 14, rooms: 42, captures: 20, progress: 48, description: 'West-facing tower — in progress', status: 'active' },
-  { id: 't4', projectId: '2', name: 'Tower A', floors: 12, rooms: 48, captures: 48, progress: 100, description: 'Single-tower project — complete', status: 'complete' },
-  { id: 't5', projectId: '3', name: 'Tower T1', floors: 14, rooms: 42, captures: 36, progress: 86, description: 'Primary residential tower', status: 'active' },
-  { id: 't6', projectId: '3', name: 'Tower T2', floors: 14, rooms: 42, captures: 25, progress: 60, description: 'Secondary residential tower', status: 'active' },
-  { id: 't7', projectId: '4', name: 'Tower P1', floors: 14, rooms: 56, captures: 4, progress: 7, description: 'Phase 1 tower', status: 'pending' },
-  { id: 't8', projectId: '4', name: 'Tower P2', floors: 14, rooms: 56, captures: 4, progress: 7, description: 'Phase 2 tower', status: 'pending' },
-  { id: 't9', projectId: '4', name: 'Tower P3', floors: 14, rooms: 56, captures: 2, progress: 4, description: 'Phase 3 tower', status: 'pending' },
-  { id: 't10', projectId: '4', name: 'Tower P4', floors: 14, rooms: 56, captures: 2, progress: 4, description: 'Phase 4 tower', status: 'pending' },
 ];
 
 // ── Floors ────────────────────────────────────────────────────────────────────
@@ -190,13 +156,9 @@ export interface MockCapture {
 export const mockCaptures: MockCapture[] = [
   { id: 'c1', roomId: 't1-f14-r1', roomName: 'A-F14-Room 1401', projectId: '1', projectName: 'My Home Udyan', towerId: 't1', towerName: 'Tower A', floorLabel: 'Floor 14', status: 'processed', reviewStatus: 'approved', uploadedBy: 'Ravi Kumar', uploadedAt: '12 min ago', reviewedBy: 'Priya Sharma', reviewNotes: null, assignedTo: 'Priya Sharma', fileCount: 12, sizeMb: 48, gradient: 'linear-gradient(135deg, #1e3a5f 0%, #0f2340 100%)' },
   { id: 'c2', roomId: 't1-f14-r2', roomName: 'A-F14-Room 1402', projectId: '1', projectName: 'My Home Udyan', towerId: 't1', towerName: 'Tower A', floorLabel: 'Floor 14', status: 'processed', reviewStatus: 'published', uploadedBy: 'Ravi Kumar', uploadedAt: '1h ago', reviewedBy: 'Priya Sharma', reviewNotes: null, assignedTo: 'Priya Sharma', fileCount: 10, sizeMb: 38, gradient: 'linear-gradient(135deg, #1e3a5f 0%, #0f2340 100%)' },
-  { id: 'c3', roomId: 't5-f5-r1', roomName: 'T1-F05-Room 0512', projectId: '3', projectName: 'My Home Grava Residences', towerId: 't5', towerName: 'Tower T1', floorLabel: 'Floor 5', status: 'review', reviewStatus: 'reviewing', uploadedBy: 'Anil Prakash', uploadedAt: '3h ago', reviewedBy: null, reviewNotes: null, assignedTo: 'Arjun Mehta', fileCount: 6, sizeMb: 24, gradient: 'linear-gradient(135deg, #2d1b4e 0%, #1a0f2e 100%)' },
-  { id: 'c4', roomId: 't4-f3-r1', roomName: 'A-F03-Room 0301', projectId: '2', projectName: 'My Home Apas', towerId: 't4', towerName: 'Tower A', floorLabel: 'Floor 3', status: 'processed', reviewStatus: 'approved', uploadedBy: 'Sunita Rao', uploadedAt: '1d ago', reviewedBy: 'Priya Sharma', reviewNotes: null, assignedTo: 'Priya Sharma', fileCount: 14, sizeMb: 55, gradient: 'linear-gradient(135deg, #1a3a2a 0%, #0f2318 100%)' },
   { id: 'c5', roomId: 't2-f22-r1', roomName: 'B-F22-Room 2207', projectId: '1', projectName: 'My Home Udyan', towerId: 't2', towerName: 'Tower B', floorLabel: 'Floor 22', status: 'rejected', reviewStatus: 'changes_requested', uploadedBy: 'Ravi Kumar', uploadedAt: '2d ago', reviewedBy: 'Arjun Mehta', reviewNotes: 'Insufficient coverage — retake rooms 3 and 4', assignedTo: 'Arjun Mehta', fileCount: 5, sizeMb: 18, gradient: 'linear-gradient(135deg, #1e3a5f 0%, #0f2340 100%)' },
   { id: 'c6', roomId: 't2-f18-r1', roomName: 'B-F18-Room 1803', projectId: '1', projectName: 'My Home Udyan', towerId: 't2', towerName: 'Tower B', floorLabel: 'Floor 18', status: 'review', reviewStatus: 'assigned', uploadedBy: 'Kiran Desai', uploadedAt: '5h ago', reviewedBy: null, reviewNotes: null, assignedTo: 'Arjun Mehta', fileCount: 9, sizeMb: 36, gradient: 'linear-gradient(135deg, #1e3a5f 0%, #0f2340 100%)' },
   { id: 'c7', roomId: 't1-f11-r1', roomName: 'A-F11-Room 1104', projectId: '1', projectName: 'My Home Udyan', towerId: 't1', towerName: 'Tower A', floorLabel: 'Floor 11', status: 'review', reviewStatus: 'uploaded', uploadedBy: 'Ravi Kumar', uploadedAt: '1d ago', reviewedBy: null, reviewNotes: null, assignedTo: null, fileCount: 8, sizeMb: 32, gradient: 'linear-gradient(135deg, #1e3a5f 0%, #0f2340 100%)' },
-  { id: 'c8', roomId: 't6-f7-r1', roomName: 'G2-F07-Room 0704', projectId: '3', projectName: 'My Home Grava Residences', towerId: 't6', towerName: 'Tower T2', floorLabel: 'Floor 7', status: 'processed', reviewStatus: 'approved', uploadedBy: 'Anil Prakash', uploadedAt: '4d ago', reviewedBy: 'Arjun Mehta', reviewNotes: null, assignedTo: 'Arjun Mehta', fileCount: 11, sizeMb: 44, gradient: 'linear-gradient(135deg, #2d1b4e 0%, #1a0f2e 100%)' },
-  { id: 'c9', roomId: 't7-f2-r1', roomName: 'V1-F02-Room 0201', projectId: '4', projectName: 'My Home Vyoma', towerId: 't7', towerName: 'Tower P1', floorLabel: 'Floor 2', status: 'processed', reviewStatus: 'published', uploadedBy: 'Meena Reddy', uploadedAt: '1w ago', reviewedBy: 'Priya Sharma', reviewNotes: null, assignedTo: 'Priya Sharma', fileCount: 7, sizeMb: 28, gradient: 'linear-gradient(135deg, #3a1f1a 0%, #221008 100%)' },
 ];
 
 // ── Tours ─────────────────────────────────────────────────────────────────────
@@ -220,10 +182,7 @@ export interface MockTour {
 export const mockTours: MockTour[] = [
   { id: 'tour1', captureId: 'c1', roomId: 't1-f14-r1', roomName: 'A-F14-Room 1401', projectId: '1', projectName: 'My Home Udyan', towerId: 't1', towerName: 'Tower A', floorLabel: 'Floor 14', status: 'published', captures: 12, lastCapture: '2 hours ago', gradient: 'linear-gradient(135deg, #1e3a5f 0%, #0f2340 100%)', viewCount: 34 },
   { id: 'tour2', captureId: 'c2', roomId: 't1-f14-r2', roomName: 'A-F14-Room 1402', projectId: '1', projectName: 'My Home Udyan', towerId: 't1', towerName: 'Tower A', floorLabel: 'Floor 14', status: 'published', captures: 10, lastCapture: '1 day ago', gradient: 'linear-gradient(135deg, #1e3a5f 0%, #0f2340 100%)', viewCount: 27 },
-  { id: 'tour3', captureId: 'c3', roomId: 't5-f5-r1', roomName: 'T1-F05-Room 0512', projectId: '3', projectName: 'My Home Grava Residences', towerId: 't5', towerName: 'Tower T1', floorLabel: 'Floor 5', status: 'in_review', captures: 6, lastCapture: '3 days ago', gradient: 'linear-gradient(135deg, #2d1b4e 0%, #1a0f2e 100%)', viewCount: 0 },
-  { id: 'tour4', captureId: 'c4', roomId: 't4-f3-r1', roomName: 'A-F03-Room 0301', projectId: '2', projectName: 'My Home Apas', towerId: 't4', towerName: 'Tower A', floorLabel: 'Floor 3', status: 'published', captures: 14, lastCapture: '1 week ago', gradient: 'linear-gradient(135deg, #1a3a2a 0%, #0f2318 100%)', viewCount: 89 },
   { id: 'tour5', captureId: 'c6', roomId: 't2-f18-r1', roomName: 'B-F18-Room 1803', projectId: '1', projectName: 'My Home Udyan', towerId: 't2', towerName: 'Tower B', floorLabel: 'Floor 18', status: 'processing', captures: 9, lastCapture: '5 hours ago', gradient: 'linear-gradient(135deg, #1e3a5f 0%, #0f2340 100%)', viewCount: 0 },
-  { id: 'tour6', captureId: 'c8', roomId: 't6-f7-r1', roomName: 'G2-F07-Room 0704', projectId: '3', projectName: 'My Home Grava Residences', towerId: 't6', towerName: 'Tower T2', floorLabel: 'Floor 7', status: 'published', captures: 11, lastCapture: '2 days ago', gradient: 'linear-gradient(135deg, #2d1b4e 0%, #1a0f2e 100%)', viewCount: 15 },
 ];
 
 // ── Floor Plans ───────────────────────────────────────────────────────────────
@@ -293,23 +252,6 @@ export const mockFloorPlans: MockFloorPlan[] = [
       { id: 'rm-1103', name: 'Kitchen', number: '1103', type: 'kitchen', x: 10, y: 46, width: 20, height: 22, status: 'not_started' },
     ],
   },
-  {
-    id: 'fp-t5-f5',
-    projectId: '3',
-    towerId: 't5',
-    floorId: 't5-f5',
-    floorLabel: 'Floor 5',
-    uploadedBy: 'Anil Prakash',
-    uploadedAt: '5 days ago',
-    fileType: 'jpg',
-    fileName: 'T1_Floor_05.jpg',
-    fileSizeMb: 3.1,
-    rooms: [
-      { id: 'rm-0501', name: 'Living Room', number: '0501', type: 'living', x: 8, y: 10, width: 30, height: 35, status: 'reviewed', captureId: 'c3', tourId: 'tour3' },
-      { id: 'rm-0502', name: 'Master Bedroom', number: '0502', type: 'bedroom', x: 42, y: 10, width: 24, height: 28, status: 'in_progress' },
-      { id: 'rm-0503', name: 'Kitchen', number: '0503', type: 'kitchen', x: 8, y: 50, width: 22, height: 24, status: 'not_started' },
-    ],
-  },
 ];
 
 export function getFloorPlanByFloor(towerId: string, floorId: string): MockFloorPlan | undefined {
@@ -339,8 +281,6 @@ export interface MockDefect {
 export const mockDefects: MockDefect[] = [
   { id: 'd1', title: 'Poor lighting in living room capture', description: 'Capture c1 shows significant shadowing in the north corner. Panorama seam is visible.', severity: 'medium', status: 'in_progress', projectId: '1', projectName: 'My Home Udyan', towerId: 't1', towerName: 'Tower A', floorLabel: 'Floor 14', roomName: 'A-F14-Room 1401', captureId: 'c1', assignedTo: 'Ravi Kumar', createdBy: 'Arjun Mehta', createdAt: '2 days ago', updatedAt: '1 day ago' },
   { id: 'd2', title: 'Missing room in floor plan coverage', description: 'Floor 14 map missing Bathroom 1405. No capture scheduled for this room yet.', severity: 'high', status: 'open', projectId: '1', projectName: 'My Home Udyan', towerId: 't1', towerName: 'Tower A', floorLabel: 'Floor 14', roomName: 'Room 1405', captureId: undefined, assignedTo: 'Kiran Desai', createdBy: 'Priya Sharma', createdAt: '3 days ago', updatedAt: '3 days ago' },
-  { id: 'd3', title: 'Hotspot navigation broken on tour3', description: 'Hotspot pointing to Kitchen does not navigate correctly. Link target is wrong.', severity: 'high', status: 'open', projectId: '3', projectName: 'My Home Grava Residences', towerId: 't5', towerName: 'Tower T1', floorLabel: 'Floor 5', roomName: 'T1-F05-Room 0512', captureId: 'c3', assignedTo: 'Anil Prakash', createdBy: 'Priya Sharma', createdAt: '1 day ago', updatedAt: '1 day ago' },
-  { id: 'd4', title: 'Blurry panorama at east wall', description: 'Camera movement detected during scan. East wall stitching is not aligned properly.', severity: 'low', status: 'resolved', projectId: '2', projectName: 'My Home Apas', towerId: 't4', towerName: 'Tower A', floorLabel: 'Floor 3', roomName: 'A-F03-Room 0301', captureId: 'c4', assignedTo: 'Sunita Rao', createdBy: 'Arjun Mehta', createdAt: '1 week ago', updatedAt: '5 days ago' },
   { id: 'd5', title: 'Critical: Floor plan dimensions mismatch', description: 'Uploaded floor plan for Floor 11 does not match structural drawings. Scale is off by ~8%.', severity: 'critical', status: 'open', projectId: '1', projectName: 'My Home Udyan', towerId: 't1', towerName: 'Tower A', floorLabel: 'Floor 11', roomName: undefined, captureId: undefined, assignedTo: 'Priya Sharma', createdBy: 'Ravi Kumar', createdAt: '4 hours ago', updatedAt: '4 hours ago' },
   { id: 'd6', title: 'Upload stuck at 87% — timeout error', description: 'Capture upload for c7 timed out during processing. File integrity unknown.', severity: 'medium', status: 'in_progress', projectId: '1', projectName: 'My Home Udyan', towerId: 't1', towerName: 'Tower A', floorLabel: 'Floor 11', roomName: 'A-F11-Room 1104', captureId: 'c7', assignedTo: 'Kiran Desai', createdBy: 'Ravi Kumar', createdAt: '1 day ago', updatedAt: '12 hours ago' },
 ];
@@ -671,10 +611,6 @@ export const mockAuditLogs: MockAuditLog[] = [
   { id: 'al4',  actorId: 'u5', actorName: 'Arjun Mehta',   eventType: 'capture_rejected',      entityType: 'capture',    entityId: 'c5',    entityName: 'B-F22-Room 2207',      projectId: '1', description: 'Requested re-upload — insufficient coverage in rooms 3 and 4',     createdAt: '2 days ago' },
   { id: 'al5',  actorId: 'u7', actorName: 'Kiran Desai',   eventType: 'floor_plan_uploaded',   entityType: 'floor_plan', entityId: 'fp-t1-f11', entityName: 'Tower A — Floor 11', projectId: '1', description: 'Uploaded floor plan (PDF, 1.8 MB) for Tower A, Floor 11',       createdAt: '1 week ago' },
   { id: 'al6',  actorId: 'u1', actorName: 'Priya Sharma',  eventType: 'review_assigned',       entityType: 'capture',    entityId: 'c6',    entityName: 'B-F18-Room 1803',      projectId: '1', description: 'Assigned capture c6 to Arjun Mehta for review',                   createdAt: '5 hours ago' },
-  { id: 'al7',  actorId: 'u3', actorName: 'Anil Prakash',  eventType: 'capture_uploaded',      entityType: 'capture',    entityId: 'c3',    entityName: 'T1-F05-Room 0512',     projectId: '3', description: 'Uploaded 6 panoramic images (24 MB) for Room 0512, Floor 5',     createdAt: '3 hours ago' },
   { id: 'al8',  actorId: 'u1', actorName: 'Priya Sharma',  eventType: 'defect_created',        entityType: 'defect',     entityId: 'd5',    entityName: 'Floor plan dimensions mismatch', projectId: '1', description: 'Logged critical defect — Floor 11 floor plan scale is off by ~8%', createdAt: '4 hours ago' },
-  { id: 'al9',  actorId: 'u5', actorName: 'Arjun Mehta',   eventType: 'defect_resolved',       entityType: 'defect',     entityId: 'd4',    entityName: 'Blurry panorama at east wall', projectId: '2', description: 'Marked defect d4 as resolved — panorama re-stitched',           createdAt: '5 days ago' },
-  { id: 'al10', actorId: 'u6', actorName: 'Meena Reddy',   eventType: 'capture_uploaded',      entityType: 'capture',    entityId: 'c9',    entityName: 'V1-F02-Room 0201',     projectId: '4', description: 'Uploaded 7 panoramic images (28 MB) for Room 0201, Floor 2',     createdAt: '1 week ago' },
   { id: 'al11', actorId: 'u1', actorName: 'Priya Sharma',  eventType: 'project_updated',       entityType: 'project',    entityId: '1',     entityName: 'My Home Udyan',        projectId: '1', description: 'Updated project progress to 68%',                                 createdAt: '2 hours ago' },
-  { id: 'al12', actorId: 'u4', actorName: 'Sunita Rao',    eventType: 'tour_published',        entityType: 'tour',       entityId: 'tour4', entityName: 'A-F03-Room 0301',      projectId: '2', description: 'Published virtual tour for Room 0301, Tower A, Floor 3',         createdAt: '1 week ago' },
 ];

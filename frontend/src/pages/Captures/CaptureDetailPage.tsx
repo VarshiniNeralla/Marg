@@ -131,6 +131,9 @@ export default function CaptureDetailPage() {
 
   const compareA = series.find(s => s.id === compareIds[0]) ?? series[0];
   const compareB = series.find(s => s.id === compareIds[1]) ?? series[series.length - 1];
+  const captureMeta = capture as typeof capture & { flatNumber?: string; flat_number?: string; flatType?: string; flat_type?: string };
+  const flatLabel = captureMeta.flatNumber || captureMeta.flat_number || 'Flat A';
+  const flatType = captureMeta.flatType || captureMeta.flat_type;
 
   return (
     <Box>
@@ -145,6 +148,7 @@ export default function CaptureDetailPage() {
             { label: capture.projectName, to: `/projects/${capture.projectId}` },
             { label: capture.towerName, to: `/projects/${capture.projectId}/towers/${capture.towerId}` },
             { label: capture.floorLabel },
+            { label: flatType ? `${flatLabel} (${flatType})` : flatLabel },
             { label: capture.roomName },
           ]} />
         </Box>
@@ -232,6 +236,7 @@ export default function CaptureDetailPage() {
                 { label: 'Project', value: capture.projectName, to: `/projects/${capture.projectId}` },
                 { label: 'Tower', value: capture.towerName, to: `/projects/${capture.projectId}/towers/${capture.towerId}` },
                 { label: 'Floor', value: capture.floorLabel },
+                { label: 'Flat', value: flatType ? `${flatLabel} (${flatType})` : flatLabel },
                 { label: 'Room', value: capture.roomName },
               ].map(({ label, value, to }) => (
                 <Box key={label} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 0.875, borderBottom: `1px solid ${colors.borderLight}`, '&:last-child': { borderBottom: 'none' } }}>

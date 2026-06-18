@@ -7,7 +7,7 @@ import {
   GridViewRounded, FolderOpenRounded, CameraAltRounded, ViewInArRounded,
   MapRounded, BarChartRounded, PeopleRounded, TuneRounded, BusinessRounded,
   VpnKeyRounded, LogoutRounded, PersonRounded, MenuRounded, BugReportRounded, CloudUploadRounded,
-  AccountTreeRounded,
+  AccountTreeRounded, StorageRounded,
 } from '@mui/icons-material';
 import { useTheme } from '@mui/material/styles';
 import { colors, motion, zIndex } from '@theme/tokens';
@@ -36,6 +36,7 @@ const ADMIN_NAV: NavItem[] = [
   { label: 'Users',         path: '/users',         icon: <PeopleRounded />,   adminOnly: true },
   { label: 'Organizations', path: '/organizations', icon: <BusinessRounded />, adminOnly: true },
   { label: 'Access',        path: '/access',        icon: <VpnKeyRounded />,   adminOnly: true },
+  { label: 'Media',         path: '/admin/media',   icon: <StorageRounded />,  adminOnly: true },
 ];
 
 const BOTTOM_NAV: NavItem[] = [

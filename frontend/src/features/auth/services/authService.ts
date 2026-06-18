@@ -1,6 +1,6 @@
-import apiClient from '@services/apiClient';
 import type { AuthUser } from '@store/authStore';
 import type { RegisterFormValues } from '../schemas/authSchemas';
+import { authService as backendAuthService } from '@services/authService';
 
 interface LoginPayload {
   email: string;
@@ -20,30 +20,30 @@ interface ApiEnvelope<T> {
 
 export const authService = {
   async login(payload: LoginPayload): Promise<LoginResponse> {
-    const { data } = await apiClient.post<ApiEnvelope<LoginResponse>>(
-      '/auth/login',
-      payload
-    );
-    return data.data;
+    const data = await backendAuthService.login(payload);
+    return {
+      access_token: data.access_token,
+      user: {
+        ...data.user,
+        org_slug: 'default',
+      } satisfies AuthUser,
+    };
   },
 
   async register(payload: RegisterFormValues): Promise<{ id: string; name: string }> {
-    const { data } = await apiClient.post<ApiEnvelope<{ id: string; name: string }>>(
-      '/auth/register',
-      payload
-    );
-    return data.data;
+    const data = await backendAuthService.register(payload);
+    return { id: data.id, name: data.name };
   },
 
   async forgotPassword(email: string): Promise<void> {
-    await apiClient.post('/auth/forgot-password', { email });
+    await backendAuthService.forgotPassword({ email });
   },
 
   async resetPassword(token: string, new_password: string): Promise<void> {
-    await apiClient.post('/auth/reset-password', { token, new_password });
+    await backendAuthService.resetPassword({ token, new_password });
   },
 
   async logout(): Promise<void> {
-    await apiClient.post('/auth/logout');
+    await backendAuthService.logout();
   },
 };

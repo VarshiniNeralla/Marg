@@ -190,7 +190,7 @@ const FEATURES_DETAIL = [
   {
     icon: <MapRounded sx={{ fontSize: 32 }} />, color: '#0891b2', bg: 'rgba(8,145,178,0.08)',
     title: 'Project Hierarchy', badge: 'Core',
-    tagline: 'Organization → Project → Tower → Floor → Room.',
+    tagline: 'Organization → Project → Tower → Floor → Flat / Unit → Room.',
     bullets: [
       'Multi-tenant: each organization\'s data is fully isolated',
       'Projects contain towers, towers contain floors, floors contain rooms',

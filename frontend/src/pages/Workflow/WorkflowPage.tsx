@@ -7,9 +7,10 @@ import {
   EditRounded, DeleteOutlineRounded, ArchiveRounded, OpenInNewRounded,
   CheckRounded, CloseRounded, ReplayRounded, PublishRounded, UnpublishedRounded,
   AutoAwesomeRounded, MapRounded, PersonAddRounded, CloudUploadRounded, HistoryRounded,
+  HomeWorkRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { useWorkflowStore, type WfFloor, type WfRoom } from '@store/workflowStore';
+import { useWorkflowStore, type FlatType, type WfFlat, type WfFloor, type WfRoom } from '@store/workflowStore';
 import { statusConfig, mockUsers, type MockCapture, type MockTour } from '@/data/mockData';
 
 const ACCEPTED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.dng', '.insp', '.insv'];
@@ -131,8 +132,9 @@ function UploadCaptureModal({ roomName, title = 'Upload Capture', onUpload, onCl
   );
 }
 
-type NodeType = 'project' | 'tower' | 'floor' | 'room' | 'capture' | 'review' | 'publish' | 'tour';
+type NodeType = 'project' | 'tower' | 'floor' | 'flat' | 'room' | 'capture' | 'review' | 'publish' | 'tour';
 interface Selection { type: NodeType; id: string; }
+const FLAT_TYPES: FlatType[] = ['1 BHK', '2 BHK', '3 BHK', '4 BHK'];
 
 // ── Action button ───────────────────────────────────────────────────────────────
 function Action({ label, icon, onClick, tone = 'default', to }: {
@@ -254,6 +256,7 @@ export default function WorkflowPage() {
   const selProject = sel?.type === 'project' ? store.projects.find(p => p.id === sel.id) : undefined;
   const selTower = sel?.type === 'tower' ? store.towers.find(t => t.id === sel.id) : undefined;
   const selFloor = sel?.type === 'floor' ? store.floors.find(f => f.id === sel.id) : undefined;
+  const selFlat = sel?.type === 'flat' ? store.flats.find(f => f.id === sel.id) : undefined;
   const selRoom = sel?.type === 'room' ? store.rooms.find(r => r.id === sel.id) : undefined;
   const selCapture = (sel?.type === 'capture' || sel?.type === 'review' || sel?.type === 'publish') ? store.captures.find(c => c.id === sel.id) : undefined;
   const selTour = sel?.type === 'tour' ? store.tours.find(t => t.id === sel.id) : undefined;
@@ -276,34 +279,45 @@ export default function WorkflowPage() {
                   expandable expanded={isOpen(tKey)} onToggle={() => toggle(tKey)} onSelect={() => { setSel({ type: 'tower', id: t.id }); toggle(tKey); }} />
                 {isOpen(tKey) && floors.map(f => {
                   const fKey = `f:${f.id}`;
-                  const rooms = store.rooms.filter(r => r.floorId === f.id);
+                  const flats = store.flats.filter(fl => fl.floorId === f.id);
+                  const floorRooms = store.rooms.filter(r => r.floorId === f.id);
                   return (
                     <Box key={f.id}>
-                      <TreeRow depth={2} icon={<LayersRounded />} label={f.label} sub={`${rooms.length}`} active={sel?.type === 'floor' && sel.id === f.id}
+                      <TreeRow depth={2} icon={<LayersRounded />} label={f.label} sub={`${flats.length} flats · ${floorRooms.length} rooms`} active={sel?.type === 'floor' && sel.id === f.id}
                         expandable expanded={isOpen(fKey)} onToggle={() => toggle(fKey)} onSelect={() => { setSel({ type: 'floor', id: f.id }); toggle(fKey); }} />
-                      {isOpen(fKey) && rooms.map(r => {
-                        const rKey = `r:${r.id}`;
-                        const caps = store.captures.filter(c => c.roomId === r.id);
-                        const tour = store.tours.find(tr => caps.some(c => c.id === tr.captureId));
+                      {isOpen(fKey) && flats.map(flat => {
+                        const flatKey = `flat:${flat.id}`;
+                        const rooms = store.rooms.filter(r => r.flatId === flat.id);
                         return (
-                          <Box key={r.id}>
-                            <TreeRow depth={3} icon={<MeetingRoomRounded />} label={r.name} active={sel?.type === 'room' && sel.id === r.id}
-                              expandable expanded={isOpen(rKey)} onToggle={() => toggle(rKey)} onSelect={() => { setSel({ type: 'room', id: r.id }); toggle(rKey); }} />
-                            {isOpen(rKey) && (
-                              <>
-                                {caps.map(c => (
-                                  <TreeRow key={c.id} depth={4} icon={<CameraAltRounded />} label={`Capture · ${c.fileCount} files`} active={sel?.id === c.id && (sel?.type === 'capture')}
-                                    onSelect={() => setSel({ type: 'capture', id: c.id })} dot={statusConfig.capture[c.status].color} />
-                                ))}
-                                {caps.length === 0 && (
-                                  <TreeRow depth={4} icon={<CameraAltRounded />} label="No capture yet" active={false} onSelect={() => setSel({ type: 'room', id: r.id })} />
-                                )}
-                                {tour && (
-                                  <TreeRow depth={4} icon={<ViewInArRounded />} label="Tour" active={sel?.type === 'tour' && sel.id === tour.id}
-                                    onSelect={() => setSel({ type: 'tour', id: tour.id })} dot={statusConfig.tour[tour.status].color} />
-                                )}
-                              </>
-                            )}
+                          <Box key={flat.id}>
+                            <TreeRow depth={3} icon={<HomeWorkRounded />} label={`${flat.number} (${flat.type})`} sub={`${rooms.length} rooms`} active={sel?.type === 'flat' && sel.id === flat.id}
+                              expandable expanded={isOpen(flatKey)} onToggle={() => toggle(flatKey)} onSelect={() => { setSel({ type: 'flat', id: flat.id }); toggle(flatKey); }} />
+                            {isOpen(flatKey) && rooms.map(r => {
+                              const rKey = `r:${r.id}`;
+                              const caps = store.captures.filter(c => c.roomId === r.id);
+                              const tour = store.tours.find(tr => caps.some(c => c.id === tr.captureId));
+                              return (
+                                <Box key={r.id}>
+                                  <TreeRow depth={4} icon={<MeetingRoomRounded />} label={r.name} sub={`${caps.length} captures${tour ? ' · tour' : ''}`} active={sel?.type === 'room' && sel.id === r.id}
+                                    expandable expanded={isOpen(rKey)} onToggle={() => toggle(rKey)} onSelect={() => { setSel({ type: 'room', id: r.id }); toggle(rKey); }} dot={tour ? statusConfig.tour[tour.status].color : undefined} />
+                                  {isOpen(rKey) && (
+                                    <>
+                                      {caps.map(c => (
+                                        <TreeRow key={c.id} depth={5} icon={<CameraAltRounded />} label={`Capture · ${c.fileCount} files`} active={sel?.id === c.id && (sel?.type === 'capture')}
+                                          onSelect={() => setSel({ type: 'capture', id: c.id })} dot={statusConfig.capture[c.status].color} />
+                                      ))}
+                                      {caps.length === 0 && (
+                                        <TreeRow depth={5} icon={<CameraAltRounded />} label="No capture yet" active={false} onSelect={() => setSel({ type: 'room', id: r.id })} />
+                                      )}
+                                      {tour && (
+                                        <TreeRow depth={5} icon={<ViewInArRounded />} label="Tour" active={sel?.type === 'tour' && sel.id === tour.id}
+                                          onSelect={() => setSel({ type: 'tour', id: tour.id })} dot={statusConfig.tour[tour.status].color} />
+                                      )}
+                                    </>
+                                  )}
+                                </Box>
+                              );
+                            })}
                           </Box>
                         );
                       })}
@@ -342,6 +356,7 @@ export default function WorkflowPage() {
         {selProject && <ProjectPanel />}
         {selTower && <TowerPanel tower={selTower} />}
         {selFloor && <FloorPanel floor={selFloor} />}
+        {selFlat && <FlatPanel flat={selFlat} />}
         {selRoom && <RoomPanel room={selRoom} />}
         {selCapture && <CapturePanel capture={selCapture} />}
         {selTour && <TourPanel tour={selTour} />}
@@ -443,18 +458,19 @@ export default function WorkflowPage() {
 
   // ── Floor panel ──
   function FloorPanel({ floor }: { floor: WfFloor }) {
+    const flats = store.flats.filter(f => f.floorId === floor.id);
     const rooms = store.rooms.filter(r => r.floorId === floor.id);
     const tower = store.towers.find(t => t.id === floor.towerId);
     return (
       <>
-        <PanelHeader kind="Floor" title={floor.label} sub={`${tower?.name} · ${rooms.length} rooms`} />
+        <PanelHeader kind="Floor" title={floor.label} sub={`${tower?.name} · ${flats.length} flats · ${rooms.length} rooms`} />
         <PanelSection title="Actions">
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-            <Action label="Create Room" icon={<AddRounded />} tone="primary" onClick={() => setModal(
-              <PromptModal title="Create Room" fields={[
-                { key: 'name', label: 'Room name', value: `Room ${String(floor.number).padStart(2, '0')}0${rooms.length + 1}` },
-                { key: 'type', label: 'Type', value: 'living', type: 'select', options: ['living', 'bedroom', 'kitchen', 'bathroom', 'balcony', 'utility'].map(t => ({ value: t, label: t[0].toUpperCase() + t.slice(1) })) },
-              ]} onSave={v => { const id = store.createRoom(floor.id, v.name || 'New Room', v.type as WfRoom['type']); setSel({ type: 'room', id }); setExpanded(s => new Set(s).add(`f:${floor.id}`).add(`r:${id}`)); }} onClose={() => setModal(null)} />
+            <Action label="Create Flat" icon={<AddRounded />} tone="primary" onClick={() => setModal(
+              <PromptModal title="Create Flat / Unit" fields={[
+                { key: 'number', label: 'Flat number', value: `${floor.number}01` },
+                { key: 'type', label: 'Flat type', value: '3 BHK', type: 'select', options: FLAT_TYPES.map(t => ({ value: t, label: t })) },
+              ]} onSave={v => { const id = store.createFlat(floor.id, v.number || `${floor.number}01`, v.type as FlatType); setSel({ type: 'flat', id }); setExpanded(s => new Set(s).add(`f:${floor.id}`).add(`flat:${id}`)); }} onClose={() => setModal(null)} />
             )} />
             <Action label="Edit Floor" icon={<EditRounded />} onClick={() => setModal(
               <PromptModal title="Edit Floor" fields={[{ key: 'label', label: 'Floor label', value: floor.label }]} onSave={v => store.updateFloor(floor.id, { label: v.label })} onClose={() => setModal(null)} />
@@ -462,16 +478,67 @@ export default function WorkflowPage() {
             <Action label="Delete Floor" icon={<DeleteOutlineRounded />} tone="danger" onClick={() => { store.deleteFloor(floor.id); setSel({ type: 'tower', id: floor.towerId }); }} />
           </Box>
         </PanelSection>
-        <PanelSection title="Rooms">
-          {rooms.length === 0 ? <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>No rooms yet.</Typography> : (
+        <PanelSection title="Flats / Units">
+          {flats.length === 0 ? <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>No flats yet.</Typography> : (
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-              {rooms.map(r => (
-                <Box key={r.id} onClick={() => setSel({ type: 'room', id: r.id })} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderRadius: '10px', cursor: 'pointer', border: `1px solid ${colors.borderLight}`, '&:hover': { borderColor: colors.border, backgroundColor: colors.bg } }}>
-                  <MeetingRoomRounded sx={{ fontSize: 16, color: colors.textMuted }} />
-                  <Typography sx={{ flex: 1, fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong }}>{r.name}</Typography>
-                  <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, textTransform: 'capitalize' }}>{r.type}</Typography>
+              {flats.map(flat => {
+                const flatRooms = store.rooms.filter(r => r.flatId === flat.id);
+                return (
+                <Box key={flat.id} onClick={() => setSel({ type: 'flat', id: flat.id })} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderRadius: '10px', cursor: 'pointer', border: `1px solid ${colors.borderLight}`, '&:hover': { borderColor: colors.border, backgroundColor: colors.bg } }}>
+                  <HomeWorkRounded sx={{ fontSize: 16, color: colors.textMuted }} />
+                  <Typography sx={{ flex: 1, fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong }}>{flat.number}</Typography>
+                  <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued }}>{flat.type} · {flatRooms.length} rooms</Typography>
                 </Box>
-              ))}
+                );
+              })}
+            </Box>
+          )}
+        </PanelSection>
+      </>
+    );
+  }
+
+  // ── Flat panel ──
+  function FlatPanel({ flat }: { flat: WfFlat }) {
+    const rooms = store.rooms.filter(r => r.flatId === flat.id);
+    const floor = store.floors.find(f => f.id === flat.floorId);
+    const captureCount = store.captures.filter(c => rooms.some(r => r.id === c.roomId)).length;
+    return (
+      <>
+        <PanelHeader kind="Flat / Unit" title={`${flat.number} (${flat.type})`} sub={`${floor?.label ?? ''} · ${rooms.length} rooms · ${captureCount} captures`} />
+        <PanelSection title="Actions">
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+            <Action label="Edit Flat" icon={<EditRounded />} onClick={() => setModal(
+              <PromptModal title="Edit Flat" fields={[
+                { key: 'number', label: 'Flat number', value: flat.number },
+                { key: 'type', label: 'Flat type', value: flat.type, type: 'select', options: FLAT_TYPES.map(t => ({ value: t, label: t })) },
+              ]} onSave={v => store.updateFlat(flat.id, { number: v.number, type: v.type as FlatType })} onClose={() => setModal(null)} />
+            )} />
+            <Action label="View Room List" icon={<MeetingRoomRounded />} onClick={() => setExpanded(s => new Set(s).add(`flat:${flat.id}`))} />
+            <Action label="Generate Standard Rooms" icon={<AutoAwesomeRounded />} tone="primary" onClick={() => store.generateStandardRooms(flat.id)} />
+            <Action label="Create Room" icon={<AddRounded />} onClick={() => setModal(
+              <PromptModal title="Create Room" fields={[
+                { key: 'name', label: 'Room name', value: `Room ${rooms.length + 1}` },
+                { key: 'type', label: 'Type', value: 'living', type: 'select', options: ['living', 'bedroom', 'kitchen', 'bathroom', 'balcony', 'utility', 'dining', 'office', 'lounge', 'custom'].map(t => ({ value: t, label: t[0].toUpperCase() + t.slice(1) })) },
+              ]} onSave={v => { const id = store.createRoom(flat.id, v.name || 'New Room', v.type as WfRoom['type']); setSel({ type: 'room', id }); setExpanded(s => new Set(s).add(`flat:${flat.id}`).add(`r:${id}`)); }} onClose={() => setModal(null)} />
+            )} />
+            <Action label="Delete Flat" icon={<DeleteOutlineRounded />} tone="danger" onClick={() => { store.deleteFlat(flat.id); setSel({ type: 'floor', id: flat.floorId }); }} />
+          </Box>
+        </PanelSection>
+        <PanelSection title="Rooms">
+          {rooms.length === 0 ? <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>No rooms yet. Generate standard rooms or create one manually.</Typography> : (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+              {rooms.map(r => {
+                const caps = store.captures.filter(c => c.roomId === r.id);
+                const tour = store.tours.find(t => caps.some(c => c.id === t.captureId));
+                return (
+                  <Box key={r.id} onClick={() => setSel({ type: 'room', id: r.id })} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderRadius: '10px', cursor: 'pointer', border: `1px solid ${colors.borderLight}`, '&:hover': { borderColor: colors.border, backgroundColor: colors.bg } }}>
+                    <MeetingRoomRounded sx={{ fontSize: 16, color: colors.textMuted }} />
+                    <Typography sx={{ flex: 1, fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong }}>{r.name}</Typography>
+                    <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued }}>{caps.length} captures{tour ? ' · tour' : ''}</Typography>
+                  </Box>
+                );
+              })}
             </Box>
           )}
         </PanelSection>
@@ -482,9 +549,10 @@ export default function WorkflowPage() {
   // ── Room panel ──
   function RoomPanel({ room }: { room: WfRoom }) {
     const caps = store.captures.filter(c => c.roomId === room.id);
+    const flat = store.flats.find(f => f.id === room.flatId);
     return (
       <>
-        <PanelHeader kind="Room" title={room.name} sub={`${caps.length} capture${caps.length === 1 ? '' : 's'} · ${room.type}`} />
+        <PanelHeader kind="Room" title={room.name} sub={`${flat?.number ?? 'Flat'} · ${caps.length} capture${caps.length === 1 ? '' : 's'} · ${room.type}`} />
         <PanelSection title="Capture">
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
             <Action label="Upload Capture" icon={<CloudUploadRounded />} tone="primary" onClick={() => setModal(
@@ -499,7 +567,7 @@ export default function WorkflowPage() {
               <PromptModal title="Edit Room" fields={[{ key: 'name', label: 'Room name', value: room.name }]} onSave={v => store.updateRoom(room.id, { name: v.name })} onClose={() => setModal(null)} />
             )} />
             <Action label="Assign Floor Plan" icon={<MapRounded />} onClick={() => store.assignFloorPlan(room.id, `fp-${room.floorId}`)} />
-            <Action label="Delete Room" icon={<DeleteOutlineRounded />} tone="danger" onClick={() => { store.deleteRoom(room.id); setSel({ type: 'floor', id: room.floorId }); }} />
+            <Action label="Delete Room" icon={<DeleteOutlineRounded />} tone="danger" onClick={() => { store.deleteRoom(room.id); setSel({ type: 'flat', id: room.flatId }); }} />
           </Box>
         </PanelSection>
         {caps.length > 0 && (

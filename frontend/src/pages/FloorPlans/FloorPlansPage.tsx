@@ -15,6 +15,7 @@ export default function FloorPlansPage() {
   const projects = useWorkflowStore(s => s.projects);
   const towers = useWorkflowStore(s => s.towers);
   const floors = useWorkflowStore(s => s.floors);
+  const flats = useWorkflowStore(s => s.flats);
   const rooms = useWorkflowStore(s => s.rooms);
   const captures = useWorkflowStore(s => s.captures);
   const tours = useWorkflowStore(s => s.tours);
@@ -39,7 +40,7 @@ export default function FloorPlansPage() {
     setTowerId(tw?.id ?? '');
   }
 
-  const dataSlice = { rooms, captures, tours, floorPlans };
+  const dataSlice = { flats, rooms, captures, tours, floorPlans };
   const nextUploadFloor = towerFloors.find(f => !getFloorPlanByFloor(floorPlans, tower?.id ?? '', f.id));
   const headerUploadHref = nextUploadFloor
     ? `/floor-plans/${project?.id}/${tower?.id}/${nextUploadFloor.id}/upload`

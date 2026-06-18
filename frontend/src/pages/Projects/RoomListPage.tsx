@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Box, Typography, Grid, Chip, Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button, MenuItem } from '@mui/material';
-import { ArrowBackRounded, CameraAltRounded, ViewInArRounded, AddRounded } from '@mui/icons-material';
+import { ArrowBackRounded, CameraAltRounded, ViewInArRounded, AddRounded, HomeWorkRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
-import { getProjectById, getFloorsByTower, getRoomsByFloor, getTourForCapture } from '@store/workflowSelectors';
+import { getProjectById, getRoomsByFloor, getTourForCapture } from '@store/workflowSelectors';
 import type { WfRoom } from '@store/workflowStore';
 
 const roomTypeIcon: Record<string, string> = {
@@ -18,6 +18,7 @@ export default function RoomListPage() {
   const projects = useWorkflowStore(s => s.projects);
   const towers = useWorkflowStore(s => s.towers);
   const floors = useWorkflowStore(s => s.floors);
+  const flats = useWorkflowStore(s => s.flats);
   const rooms = useWorkflowStore(s => s.rooms);
   const captures = useWorkflowStore(s => s.captures);
   const tours = useWorkflowStore(s => s.tours);
@@ -27,6 +28,7 @@ export default function RoomListPage() {
   const tower = towers.find(t => t.id === towerId);
   const floor = floors.find(f => f.id === floorId);
   const floorRooms = getRoomsByFloor(rooms, floorId ?? '');
+  const floorFlats = flats.filter(f => f.floorId === floorId);
 
   const [open, setOpen] = useState(false);
   const [roomForm, setRoomForm] = useState({ name: '', type: 'bedroom' as WfRoom['type'] });
@@ -36,8 +38,9 @@ export default function RoomListPage() {
   const capturedCount = floorRooms.filter(r => captures.some(c => c.roomId === r.id)).length;
 
   function handleAddRoom() {
-    if (!roomForm.name.trim() || !floorId) return;
-    createRoom(floorId, roomForm.name, roomForm.type);
+    const targetFlat = floorFlats[0];
+    if (!roomForm.name.trim() || !targetFlat) return;
+    createRoom(targetFlat.id, roomForm.name, roomForm.type);
     setRoomForm({ name: '', type: 'bedroom' });
     setOpen(false);
   }
@@ -59,11 +62,11 @@ export default function RoomListPage() {
         <Box sx={{ flex: 1 }}>
           <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mb: 0.25 }}>{project.name} · {tower.name}</Typography>
           <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: '1.5rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>
-            {floor.label}
+            {floor.label} Flats / Rooms
           </Typography>
         </Box>
         <Box onClick={() => setOpen(true)} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 0.875, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.28)' }}>
-          <AddRounded sx={{ fontSize: 16 }} /> Add Room
+          <AddRounded sx={{ fontSize: 16 }} /> Add Room to {floorFlats[0]?.number ?? 'Flat A'}
         </Box>
       </Box>
 
@@ -71,6 +74,10 @@ export default function RoomListPage() {
         <Box sx={{ px: 2, py: 1, borderRadius: '8px', backgroundColor: colors.card, boxShadow: '0 1px 4px rgba(15,23,42,0.05)' }}>
           <Typography sx={{ fontSize: '1.25rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.03em' }}>{floorRooms.length}</Typography>
           <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>Total rooms</Typography>
+        </Box>
+        <Box sx={{ px: 2, py: 1, borderRadius: '8px', backgroundColor: colors.card, boxShadow: '0 1px 4px rgba(15,23,42,0.05)' }}>
+          <Typography sx={{ fontSize: '1.25rem', fontWeight: 700, color: '#0d9488', letterSpacing: '-0.03em' }}>{floorFlats.length}</Typography>
+          <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>Flats / Units</Typography>
         </Box>
         <Box sx={{ px: 2, py: 1, borderRadius: '8px', backgroundColor: colors.card, boxShadow: '0 1px 4px rgba(15,23,42,0.05)' }}>
           <Typography sx={{ fontSize: '1.25rem', fontWeight: 700, color: '#16a34a', letterSpacing: '-0.03em' }}>{capturedCount}</Typography>
@@ -82,8 +89,17 @@ export default function RoomListPage() {
         </Box>
       </Box>
 
-      <Grid container spacing={2}>
-        {floorRooms.map(room => {
+      {floorFlats.map(flat => {
+        const flatRooms = floorRooms.filter(room => room.flatId === flat.id);
+        return (
+          <Box key={flat.id} sx={{ mb: 3 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
+              <HomeWorkRounded sx={{ fontSize: 18, color: colors.textMuted }} />
+              <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong }}>{flat.number} ({flat.type})</Typography>
+              <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{flatRooms.length} rooms</Typography>
+            </Box>
+            <Grid container spacing={2}>
+        {flatRooms.map(room => {
           const status = roomStatus(room);
           const capture = captures.find(c => c.roomId === room.id);
           const tour = capture ? getTourForCapture(tours, capture.id) : undefined;
@@ -126,7 +142,10 @@ export default function RoomListPage() {
             </Grid>
           );
         })}
-      </Grid>
+            </Grid>
+          </Box>
+        );
+      })}
 
       <Dialog open={open} onClose={() => setOpen(false)} slotProps={{ paper: { sx: { borderRadius: '16px', minWidth: 360 } } }}>
         <DialogTitle sx={{ fontSize: '1rem', fontWeight: 700, color: colors.textStrong }}>Add Room</DialogTitle>

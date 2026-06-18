@@ -242,7 +242,7 @@ function Hero() {
                 </Box>
                 <Box sx={{ backgroundColor: '#fff', borderRadius: '10px', p: 2, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
                   <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#374151', mb: 1.5 }}>Projects</Typography>
-                  {['My Home Udyan', 'My Home Apas', 'Grava'].map((name, i) => (
+                  {['My Home Udyan'].map((name, i) => (
                     <Box key={name} sx={{ mb: 1.25 }}>
                       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.375 }}>
                         <Typography sx={{ fontSize: '0.6875rem', color: '#475569' }}>{name}</Typography>

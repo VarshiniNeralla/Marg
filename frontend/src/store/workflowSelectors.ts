@@ -4,7 +4,7 @@ import type {
   ReviewStatus, CaptureSnapshot, RoomHistory,
 } from '@/data/mockData';
 import { statusConfig } from '@/data/mockData';
-import type { ProjectArchived, WfFloor, WfRoom } from './workflowStore';
+import type { ProjectArchived, WfFlat, WfFloor, WfRoom } from './workflowStore';
 
 export { statusConfig };
 
@@ -12,6 +12,7 @@ export interface WorkflowData {
   projects: ProjectArchived[];
   towers: MockTower[];
   floors: WfFloor[];
+  flats: WfFlat[];
   rooms: WfRoom[];
   captures: MockCapture[];
   tours: MockTour[];
@@ -38,6 +39,14 @@ export function getFloorsByTower(floors: WfFloor[], towerId: string) {
 
 export function getRoomsByFloor(rooms: WfRoom[], floorId: string) {
   return rooms.filter(r => r.floorId === floorId);
+}
+
+export function getFlatsByFloor(flats: WfFlat[], floorId: string) {
+  return flats.filter(f => f.floorId === floorId);
+}
+
+export function getRoomsByFlat(rooms: WfRoom[], flatId: string) {
+  return rooms.filter(r => r.flatId === flatId);
 }
 
 export function getCaptureById(captures: MockCapture[], id: string) {
@@ -153,6 +162,7 @@ export function computeDashboardStats(data: WorkflowData) {
     projectCount: data.projects.filter(p => !p.archived).length,
     activeProjectCount: activeProjects.length,
     towerCount: data.towers.length,
+    flatCount: data.flats.length,
     roomCount: data.rooms.length,
     mappedRoomCount: mappedRooms,
     captureCount: data.captures.length,
@@ -165,9 +175,10 @@ export function computeDashboardStats(data: WorkflowData) {
 
 export function enrichFloorStats(
   floor: WfFloor,
-  data: Pick<WorkflowData, 'rooms' | 'captures' | 'tours' | 'floorPlans'>,
+  data: Pick<WorkflowData, 'flats' | 'rooms' | 'captures' | 'tours' | 'floorPlans'>,
 ) {
   const plan = getFloorPlanByFloor(data.floorPlans, floor.towerId, floor.id);
+  const flats = getFlatsByFloor(data.flats, floor.id);
   const floorRooms = getRoomsByFloor(data.rooms, floor.id);
   const roomCount = plan?.rooms.length ?? floorRooms.length;
   const capturesOnFloor = data.captures.filter(c =>
@@ -180,5 +191,5 @@ export function enrichFloorStats(
     ? plan.rooms.filter(r => r.status !== 'not_started').length
     : capturesOnFloor.filter(c => c.status === 'processed').length;
 
-  return { plan, roomCount, mapped, tourCount: toursOnFloor.length, capturesOnFloor };
+  return { plan, flatCount: flats.length, roomCount, mapped, tourCount: toursOnFloor.length, capturesOnFloor };
 }

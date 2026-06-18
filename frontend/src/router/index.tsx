@@ -62,6 +62,7 @@ const DefectsPage        = lazy(() => import('@/pages/Defects/DefectsPage'));
 const UsersPage          = lazy(() => import('@/pages/Users/UsersPage'));
 const OrganizationsPage  = lazy(() => import('@/pages/Organizations/OrganizationsPage'));
 const AccessPage         = lazy(() => import('@/pages/Access/AccessPage'));
+const MediaPage          = lazy(() => import('@/pages/Admin/MediaPage'));
 
 const router = createBrowserRouter([
   // Landing routes (public, no auth required, no GuestRoute)
@@ -133,6 +134,7 @@ const router = createBrowserRouter([
           { path: '/users',         element: <PageSuspense><UsersPage /></PageSuspense> },
           { path: '/organizations', element: <PageSuspense><OrganizationsPage /></PageSuspense> },
           { path: '/access',        element: <PageSuspense><AccessPage /></PageSuspense> },
+          { path: '/admin/media',   element: <PageSuspense><MediaPage /></PageSuspense> },
         ],
       },
     ],

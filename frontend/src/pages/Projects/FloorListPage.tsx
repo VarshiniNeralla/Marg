@@ -11,6 +11,7 @@ export default function FloorListPage() {
   const projects = useWorkflowStore(s => s.projects);
   const towers = useWorkflowStore(s => s.towers);
   const floors = useWorkflowStore(s => s.floors);
+  const flats = useWorkflowStore(s => s.flats);
   const rooms = useWorkflowStore(s => s.rooms);
   const captures = useWorkflowStore(s => s.captures);
   const tours = useWorkflowStore(s => s.tours);
@@ -19,7 +20,7 @@ export default function FloorListPage() {
   const project = getProjectById(projects, projectId ?? '');
   const tower = towers.find(t => t.id === towerId);
   const towerFloors = getFloorsByTower(floors, towerId ?? '');
-  const dataSlice = { rooms, captures, tours, floorPlans };
+  const dataSlice = { flats, rooms, captures, tours, floorPlans };
 
   if (!project || !tower) return <Box sx={{ p: 4, color: colors.textMuted }}>Tower not found.</Box>;
 
@@ -40,7 +41,7 @@ export default function FloorListPage() {
       <Box sx={{ borderRadius: '20px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', overflow: 'hidden' }}>
         <Box sx={{ px: 3, pt: 2.5, pb: 2, borderBottom: `1px solid ${colors.borderLight}` }}>
           <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong }}>{tower.name}</Typography>
-          <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{towerFloors.length} floors · {tower.rooms} total rooms</Typography>
+          <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{towerFloors.length} floors · {flats.filter(f => f.towerId === tower.id).length} flats · {tower.rooms} total rooms</Typography>
         </Box>
         <Box sx={{ p: 1.5, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
           {towerFloors.map(floor => {
@@ -74,6 +75,7 @@ export default function FloorListPage() {
                       <MeetingRoomRounded sx={{ fontSize: 12 }} />
                       <Typography sx={{ fontSize: '0.75rem', color: 'inherit' }}>{stats.mapped}/{stats.roomCount} rooms</Typography>
                     </Box>
+                    <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{stats.flatCount} flats</Typography>
                     {stats.tourCount > 0 && (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.375, color: colors.textMuted }}>
                         <ViewInArRounded sx={{ fontSize: 12 }} />

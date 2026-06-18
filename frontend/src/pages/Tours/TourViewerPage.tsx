@@ -15,6 +15,7 @@ import {
   getCaptureSeriesForCapture, type CaptureSnapshot,
 } from '@/data/mockData';
 import CaptureTimeline from '@shared/components/CaptureTimeline/CaptureTimeline';
+import { useWorkflowStore } from '@store/workflowStore';
 
 // Placeholder equirectangular panoramas — one per tour, keyed by tourId.
 // Replace these with real Cloudinary secure_url values from the API.
@@ -288,13 +289,28 @@ const TOUR_HOTSPOTS: Record<string, Array<{ id: string; yaw: number; pitch: numb
 export default function TourViewerPage() {
   const { tourId } = useParams<{ tourId: string }>();
   const navigate = useNavigate();
-  const tour = getTourById(tourId ?? '');
+  const tours = useWorkflowStore(s => s.tours);
+  const captures = useWorkflowStore(s => s.captures);
+  const publishTour = useWorkflowStore(s => s.publishTour);
+  const tour = tours.find(t => t.id === tourId) ?? getTourById(tourId ?? '');
 
   const [fullscreen, setFullscreen] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
 
-  const currentIdx = tourId ? mockTours.findIndex(t => t.id === tourId) : 0;
-  const panoramaUrl = PANORAMA_MAP[tourId ?? ''] ?? FALLBACK_PANORAMA;
+  const currentIdx = tourId ? tours.findIndex(t => t.id === tourId) : 0;
+  const tourMedia = tour as typeof tour & {
+    processedPanoramaUrl?: string | null;
+    processed_panorama_url?: string | null;
+    panoramaUrls?: string[];
+    panorama_urls?: string[];
+  };
+  const panoramaUrl =
+    tourMedia.processedPanoramaUrl ||
+    tourMedia.processed_panorama_url ||
+    tourMedia.panoramaUrls?.[0] ||
+    tourMedia.panorama_urls?.[0] ||
+    PANORAMA_MAP[tourId ?? ''] ||
+    FALLBACK_PANORAMA;
   const hotspots = TOUR_HOTSPOTS[tourId ?? ''] ?? [];
 
   const handleHotspotClick = useCallback((targetTourId: string) => {
@@ -302,14 +318,10 @@ export default function TourViewerPage() {
   }, [navigate]);
 
   const handlePublish = useCallback(() => {
-    // With React Query: useMutation to call tourService.publishTour(tour.id)
-    // For now, update mock data in-place
     if (tour) {
-      const idx = mockTours.findIndex(t => t.id === tour.id);
-      if (idx !== -1) mockTours[idx] = { ...mockTours[idx], status: 'published' };
-      navigate(0); // soft refresh
+      publishTour(tour.id);
     }
-  }, [tour, navigate]);
+  }, [publishTour, tour]);
 
   if (!tour) return (
     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '50vh', gap: 2 }}>
@@ -320,9 +332,9 @@ export default function TourViewerPage() {
   );
 
   const ts = (statusConfig.tour as Record<string, { label: string; color: string; bg: string }>)[tour.status] ?? statusConfig.tour.draft;
-  const prevTour = currentIdx > 0 ? mockTours[currentIdx - 1] : null;
-  const nextTour = currentIdx < mockTours.length - 1 ? mockTours[currentIdx + 1] : null;
-  const capture = mockCaptures.find(c => c.id === tour.captureId);
+  const prevTour = currentIdx > 0 ? tours[currentIdx - 1] : null;
+  const nextTour = currentIdx < tours.length - 1 ? tours[currentIdx + 1] : null;
+  const capture = captures.find(c => c.id === tour.captureId) ?? mockCaptures.find(c => c.id === tour.captureId);
   const series = getCaptureSeriesForCapture(tour.captureId);
   // roomId is "<tower>-<floor>-<room>", e.g. "t1-f14-r1" → floorId "t1-f14".
   const floorId = tour.roomId.split('-').slice(0, 2).join('-');

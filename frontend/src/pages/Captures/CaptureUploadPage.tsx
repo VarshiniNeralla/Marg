@@ -1,9 +1,10 @@
-import React, { useState, useRef } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useEffect, useState, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { Box, Typography, LinearProgress, Select, MenuItem, Grid } from '@mui/material';
 import { CloudUploadRounded, CheckCircleRounded, ArrowBackRounded, CameraAltRounded, CloseRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { mockProjects, mockTowers, getFloors, mockCaptures } from '@/data/mockData';
+import { useWorkflowStore } from '@store/workflowStore';
+import { uploadCaptureFiles } from '@/services/uploadService';
 
 const statuses = [
   { key: 'queued',     label: 'Queued',     color: '#64748b', bg: 'rgba(100,116,139,0.08)' },
@@ -49,19 +50,41 @@ const fieldSx = {
 interface FileState { file: File; id: string; status: string; progress: number; preview: string | null; }
 
 export default function CaptureUploadPage() {
-  const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
+  const projects = useWorkflowStore(s => s.projects);
+  const allTowers = useWorkflowStore(s => s.towers);
+  const allFloors = useWorkflowStore(s => s.floors);
+  const allFlats = useWorkflowStore(s => s.flats);
+  const rooms = useWorkflowStore(s => s.rooms);
+  const createRoom = useWorkflowStore(s => s.createRoom);
+  const uploadCapture = useWorkflowStore(s => s.uploadCapture);
   const [files, setFiles] = useState<FileState[]>([]);
   const [dragging, setDragging] = useState(false);
-  const [projectId, setProjectId] = useState('1');
-  const [towerId, setTowerId] = useState('t1');
+  const [projectId, setProjectId] = useState('');
+  const [towerId, setTowerId] = useState('');
   const [floorId, setFloorId] = useState('');
+  const [flatId, setFlatId] = useState('');
   const [roomName, setRoomName] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [overallProgress, setOverallProgress] = useState(0);
+  const [uploadError, setUploadError] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
 
-  const towers = mockTowers.filter(t => t.projectId === projectId);
-  const floors = getFloors(towerId);
+  const towers = allTowers.filter(t => t.projectId === projectId);
+  const floors = allFloors.filter(f => f.towerId === towerId);
+  const flats = allFlats.filter(f => f.floorId === floorId);
+
+  useEffect(() => {
+    if (!projectId && projects[0]) setProjectId(projects[0].id);
+  }, [projectId, projects]);
+
+  useEffect(() => {
+    if (!towerId && towers[0]) setTowerId(towers[0].id);
+  }, [towerId, towers]);
+
+  useEffect(() => {
+    if (!flatId && flats[0]) setFlatId(flats[0].id);
+  }, [flatId, flats]);
 
   function addFiles(fileList: FileList) {
     const newFiles: FileState[] = Array.from(fileList)
@@ -89,61 +112,31 @@ export default function CaptureUploadPage() {
     if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
   }
 
-  function handleUpload() {
-    if (!files.length) return;
-    const project = mockProjects.find(p => p.id === projectId);
-    const tower = mockTowers.find(t => t.id === towerId);
-    const floor = floors.find(f => f.id === floorId);
+  async function handleUpload() {
+    if (!files.length || !flatId || !roomName || isUploading) return;
+    setUploadError('');
+    setIsUploading(true);
+    setFiles(prev => prev.map(f => ({ ...f, status: 'uploading', progress: 0 })));
 
-    // Simulate progressive upload
-    let step = 0;
-    const totalSteps = files.length * 12;
-    const interval = setInterval(() => {
-      step++;
-      const pct = Math.min(100, Math.round((step / totalSteps) * 100));
-      setOverallProgress(pct);
+    try {
+      const uploadResult = await uploadCaptureFiles(files.map(f => f.file), percent => {
+        setOverallProgress(percent);
+        setFiles(prev => prev.map(f => ({ ...f, status: percent >= 100 ? 'processing' : 'uploading', progress: percent })));
+      });
 
-      setFiles(prev => prev.map((f, i) => {
-        const fileStep = Math.floor(step / (totalSteps / files.length));
-        const isRaw = isRawFormat(f.file.name);
-        if (i < fileStep) return { ...f, status: 'ready', progress: 100 };
-        if (i === fileStep) {
-          const subStep = step % 12;
-          let status = 'uploading';
-          if (subStep > 8 && isRaw) status = 'converting';
-          else if (subStep > 5) status = 'processing';
-          return { ...f, status, progress: Math.min(100, (subStep / 12) * 100) };
-        }
-        return f;
-      }));
-
-      if (step >= totalSteps) {
-        clearInterval(interval);
-        // Push to mock captures
-        const newCapture = {
-          id: `c${Date.now()}`,
-          roomId: floorId ? `${floorId}-r1` : 'r-new',
-          roomName: roomName || 'New Room',
-          projectId,
-          projectName: project?.name ?? '',
-          towerId,
-          towerName: tower?.name ?? '',
-          floorLabel: floor?.label ?? '',
-          status: 'review' as const,
-          reviewStatus: 'uploaded' as const,
-          uploadedBy: 'Ravi Kumar',
-          uploadedAt: 'Just now',
-          reviewedBy: null,
-          reviewNotes: null,
-          assignedTo: null,
-          fileCount: files.length,
-          sizeMb: +(files.reduce((a, f) => a + f.file.size, 0) / 1024 / 1024).toFixed(1),
-          gradient: project?.gradient ?? colors.primaryGradient,
-        };
-        mockCaptures.push(newCapture);
-        setSubmitted(true);
-      }
-    }, 120);
+      const existingRoom = rooms.find(r => r.flatId === flatId && r.name.toLowerCase() === roomName.toLowerCase());
+      const roomId = existingRoom?.id ?? createRoom(flatId, roomName, 'living');
+      uploadCapture(roomId, uploadResult.count || files.length, uploadResult.files);
+      setFiles(prev => prev.map(f => ({ ...f, status: 'ready', progress: 100 })));
+      setOverallProgress(100);
+      setSubmitted(true);
+    } catch (error) {
+      console.error('[capture-upload]', error);
+      setUploadError('Upload failed. Please check your connection and try again.');
+      setFiles(prev => prev.map(f => ({ ...f, status: 'queued', progress: 0 })));
+    } finally {
+      setIsUploading(false);
+    }
   }
 
   if (submitted) {
@@ -262,23 +255,31 @@ export default function CaptureUploadPage() {
               {/* Project */}
               <Box>
                 <Typography component="label" sx={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Project *</Typography>
-                <Select fullWidth size="small" value={projectId} onChange={e => { setProjectId(e.target.value); setTowerId(''); setFloorId(''); }} sx={{ ...fieldSx['& .MuiOutlinedInput-root'], borderRadius: '10px', fontSize: '0.9375rem' }}>
-                  {mockProjects.map(p => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
+                <Select fullWidth size="small" value={projectId} onChange={e => { setProjectId(e.target.value); setTowerId(''); setFloorId(''); setFlatId(''); }} sx={{ ...fieldSx['& .MuiOutlinedInput-root'], borderRadius: '10px', fontSize: '0.9375rem' }}>
+                  {projects.map(p => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
                 </Select>
               </Box>
               {/* Tower */}
               <Box>
                 <Typography component="label" sx={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Tower *</Typography>
-                <Select fullWidth size="small" value={towerId} onChange={e => { setTowerId(e.target.value); setFloorId(''); }} sx={{ borderRadius: '10px', fontSize: '0.9375rem' }}>
+                <Select fullWidth size="small" value={towerId} onChange={e => { setTowerId(e.target.value); setFloorId(''); setFlatId(''); }} sx={{ borderRadius: '10px', fontSize: '0.9375rem' }}>
                   {towers.map(t => <MenuItem key={t.id} value={t.id}>{t.name}</MenuItem>)}
                 </Select>
               </Box>
               {/* Floor */}
               <Box>
                 <Typography component="label" sx={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Floor *</Typography>
-                <Select fullWidth size="small" value={floorId} onChange={e => setFloorId(e.target.value)} sx={{ borderRadius: '10px', fontSize: '0.9375rem' }} displayEmpty>
+                <Select fullWidth size="small" value={floorId} onChange={e => { setFloorId(e.target.value); setFlatId(''); }} sx={{ borderRadius: '10px', fontSize: '0.9375rem' }} displayEmpty>
                   <MenuItem value=""><em>Select floor</em></MenuItem>
                   {floors.map(f => <MenuItem key={f.id} value={f.id}>{f.label}</MenuItem>)}
+                </Select>
+              </Box>
+              {/* Flat */}
+              <Box>
+                <Typography component="label" sx={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Flat / Unit *</Typography>
+                <Select fullWidth size="small" value={flatId} onChange={e => setFlatId(e.target.value)} sx={{ borderRadius: '10px', fontSize: '0.9375rem' }} displayEmpty>
+                  <MenuItem value=""><em>Select flat</em></MenuItem>
+                  {flats.map(f => <MenuItem key={f.id} value={f.id}>{f.number} ({f.type})</MenuItem>)}
                 </Select>
               </Box>
               {/* Room name */}
@@ -291,9 +292,10 @@ export default function CaptureUploadPage() {
             </Box>
 
             {/* Upload button */}
-            <Box onClick={handleUpload} sx={{ mt: 3, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, py: 1.25, borderRadius: '10px', background: files.length && roomName && floorId ? colors.primaryGradient : colors.bgDeep, color: files.length && roomName && floorId ? '#fff' : colors.textSubdued, fontSize: '0.9375rem', fontWeight: 600, cursor: files.length && roomName && floorId ? 'pointer' : 'not-allowed', boxShadow: files.length && roomName && floorId ? '0 4px 14px rgba(37,99,235,0.28)' : 'none', transition: `all ${motion.durationFast}` }}>
+            {uploadError && <Typography sx={{ mt: 2, fontSize: '0.8125rem', color: colors.danger }}>{uploadError}</Typography>}
+            <Box onClick={handleUpload} sx={{ mt: 3, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, py: 1.25, borderRadius: '10px', background: files.length && roomName && flatId && !isUploading ? colors.primaryGradient : colors.bgDeep, color: files.length && roomName && flatId && !isUploading ? '#fff' : colors.textSubdued, fontSize: '0.9375rem', fontWeight: 600, cursor: files.length && roomName && flatId && !isUploading ? 'pointer' : 'not-allowed', boxShadow: files.length && roomName && flatId && !isUploading ? '0 4px 14px rgba(37,99,235,0.28)' : 'none', transition: `all ${motion.durationFast}` }}>
               <CloudUploadRounded sx={{ fontSize: 18 }} />
-              Upload {files.length > 0 ? `${files.length} file${files.length > 1 ? 's' : ''}` : 'Capture'}
+              {isUploading ? 'Uploading...' : `Upload ${files.length > 0 ? `${files.length} file${files.length > 1 ? 's' : ''}` : 'Capture'}`}
             </Box>
           </Box>
         </Grid>

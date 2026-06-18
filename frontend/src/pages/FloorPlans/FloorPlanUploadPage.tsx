@@ -3,16 +3,18 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { Box, Typography, LinearProgress } from '@mui/material';
 import { UploadFileRounded, CheckCircleRounded, ArrowBackRounded, InsertDriveFileRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { getProjectById, mockTowers, getFloors, mockFloorPlans } from '@/data/mockData';
+import { useWorkflowStore } from '@store/workflowStore';
+import { uploadFloorPlanFiles } from '@/services/uploadService';
 
 const ACCEPTED = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg'];
 
 export default function FloorPlanUploadPage() {
   const { projectId, towerId, floorId } = useParams<{ projectId: string; towerId: string; floorId: string }>();
   const navigate = useNavigate();
-  const project = getProjectById(projectId ?? '');
-  const tower = mockTowers.find(t => t.id === towerId);
-  const floor = getFloors(towerId ?? '').find(f => f.id === floorId);
+  const project = useWorkflowStore(s => s.projects.find(p => p.id === projectId));
+  const tower = useWorkflowStore(s => s.towers.find(t => t.id === towerId));
+  const floor = useWorkflowStore(s => s.floors.find(f => f.id === floorId));
+  const uploadFloorPlan = useWorkflowStore(s => s.uploadFloorPlan);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [file, setFile] = useState<File | null>(null);
@@ -37,37 +39,33 @@ export default function FloorPlanUploadPage() {
     if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
   }
 
-  function handleUpload() {
+  async function handleUpload() {
     if (!file) return;
     setUploading(true);
     setProgress(0);
-    const interval = setInterval(() => {
-      setProgress(p => {
-        if (p >= 100) {
-          clearInterval(interval);
-          setUploading(false);
-          setDone(true);
-          // Push to mock store
-          const ext = file.type === 'application/pdf' ? 'pdf' : file.type === 'image/png' ? 'png' : 'jpg';
-          mockFloorPlans.push({
-            id: `fp-${towerId}-${floorId}-new`,
-            projectId: projectId ?? '',
-            towerId: towerId ?? '',
-            floorId: floorId ?? '',
-            floorLabel: floor?.label ?? '',
-            uploadedBy: 'Ravi Kumar',
-            uploadedAt: 'Just now',
-            fileType: ext as 'pdf' | 'png' | 'jpg',
-            fileName: file.name,
-            fileSizeMb: +(file.size / 1024 / 1024).toFixed(1),
-            rooms: [],
-          });
-          setTimeout(() => navigate(`/floor-plans/${projectId}/${towerId}/${floorId}`), 1200);
-          return 100;
-        }
-        return p + 8;
+    setError('');
+    try {
+      const result = await uploadFloorPlanFiles([file], setProgress, `fp-${towerId}-${floorId}`);
+      const ext = file.type === 'application/pdf' ? 'pdf' : file.type === 'image/png' ? 'png' : 'jpg';
+      uploadFloorPlan({
+        projectId: projectId ?? '',
+        towerId: towerId ?? '',
+        floorId: floorId ?? '',
+        floorLabel: floor?.label ?? '',
+        fileType: ext as 'pdf' | 'png' | 'jpg',
+        fileName: file.name,
+        fileSizeMb: +(file.size / 1024 / 1024).toFixed(1),
+        rooms: [],
+        mediaAssets: result.files,
       });
-    }, 150);
+      setUploading(false);
+      setDone(true);
+      setTimeout(() => navigate(`/floor-plans/${projectId}/${towerId}/${floorId}`), 1200);
+    } catch (err) {
+      console.error('[floor-plan-upload]', err);
+      setUploading(false);
+      setError('Upload failed. Please check your connection and try again.');
+    }
   }
 
   return (

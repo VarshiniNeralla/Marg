@@ -216,7 +216,8 @@ export default function DefectsPage() {
         {filtered.map((d, idx) => {
           const sevCfg = statusConfig.severity[d.severity];
           const stCfg = statusConfig.defect[d.status];
-          const location = [d.projectName, d.towerName, d.floorLabel, d.roomName].filter(Boolean).join(' · ');
+          const defectMeta = d as typeof d & { flatNumber?: string; flat_number?: string };
+          const location = [d.projectName, d.towerName, d.floorLabel, defectMeta.flatNumber || defectMeta.flat_number, d.roomName].filter(Boolean).join(' · ');
           return (
             <Box key={d.id} sx={{ p: 2.5, display: 'flex', gap: 2, alignItems: 'flex-start', borderTop: idx > 0 ? `1px solid ${colors.borderLight}` : 'none', transition: `background ${motion.durationFast}`, '&:hover': { backgroundColor: colors.bg }, '&:hover .dfx-delete': { opacity: 1 } }}>
               {/* Neutral icon, severity carried by a small dot */}

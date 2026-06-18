@@ -4,7 +4,7 @@ import { Box, Typography, IconButton } from '@mui/material';
 import {
   SearchRounded, FolderRounded, LayersRounded, MeetingRoomRounded,
   CameraAltRounded, ViewInArRounded, PeopleRounded, CloseRounded,
-  AddRounded, CloudUploadRounded, HistoryRounded,
+  AddRounded, CloudUploadRounded, HistoryRounded, HomeWorkRounded,
 } from '@mui/icons-material';
 import { colors, motion, zIndex } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
@@ -18,6 +18,7 @@ const typeIcon: Record<string, React.ReactNode> = {
   project: <FolderRounded sx={{ fontSize: 14 }} />,
   tower: <LayersRounded sx={{ fontSize: 14 }} />,
   floor: <LayersRounded sx={{ fontSize: 14 }} />,
+  flat: <HomeWorkRounded sx={{ fontSize: 14 }} />,
   room: <MeetingRoomRounded sx={{ fontSize: 14 }} />,
   capture: <CameraAltRounded sx={{ fontSize: 14 }} />,
   tour: <ViewInArRounded sx={{ fontSize: 14 }} />,
@@ -26,7 +27,7 @@ const typeIcon: Record<string, React.ReactNode> = {
 };
 
 const typeColor: Record<string, string> = {
-  project: '#2563eb', tower: '#7c3aed', floor: '#0891b2', room: '#059669',
+  project: '#2563eb', tower: '#7c3aed', floor: '#0891b2', flat: '#0d9488', room: '#059669',
   capture: '#d97706', tour: '#16a34a', user: '#64748b', action: colors.primary,
 };
 
@@ -40,6 +41,7 @@ function useSearchIndex() {
   const projects = useWorkflowStore(s => s.projects);
   const towers = useWorkflowStore(s => s.towers);
   const floors = useWorkflowStore(s => s.floors);
+  const flats = useWorkflowStore(s => s.flats);
   const rooms = useWorkflowStore(s => s.rooms);
   const captures = useWorkflowStore(s => s.captures);
   const tours = useWorkflowStore(s => s.tours);
@@ -59,11 +61,18 @@ function useSearchIndex() {
       const p = t ? projects.find(pr => pr.id === t.projectId) : undefined;
       results.push({ id: f.id, type: 'floor', title: f.label, sub: `${p?.name ?? ''} · ${t?.name ?? ''}`, link: `/floor-plans/${p?.id}/${f.towerId}/${f.id}`, icon: typeIcon.floor });
     });
+    flats.forEach(flat => {
+      const f = floors.find(fl => fl.id === flat.floorId);
+      const t = towers.find(tw => tw.id === flat.towerId);
+      const p = projects.find(pr => pr.id === flat.projectId);
+      results.push({ id: flat.id, type: 'flat', title: `${flat.number} (${flat.type})`, sub: `${p?.name ?? ''} · ${t?.name ?? ''} · ${f?.label ?? ''}`, link: '/workflow', icon: typeIcon.flat });
+    });
     rooms.forEach(r => {
       const p = projects.find(pr => pr.id === r.projectId);
       const t = towers.find(tw => tw.id === r.towerId);
       const f = floors.find(fl => fl.id === r.floorId);
-      results.push({ id: r.id, type: 'room', title: r.name, sub: `${p?.name ?? ''} · ${f?.label ?? ''}`, link: `/projects/${r.projectId}/towers/${r.towerId}/floors/${r.floorId}`, icon: typeIcon.room });
+      const flat = flats.find(fl => fl.id === r.flatId);
+      results.push({ id: r.id, type: 'room', title: r.name, sub: `${p?.name ?? ''} · ${t?.name ?? ''} · ${f?.label ?? ''} · ${flat?.number ?? 'Flat A'}`, link: '/workflow', icon: typeIcon.room });
     });
     captures.forEach(c =>
       results.push({ id: c.id, type: 'capture', title: c.roomName, sub: `${c.projectName} · ${c.towerName} · ${c.floorLabel}`, link: `/captures/${c.id}`, icon: typeIcon.capture })
@@ -75,7 +84,7 @@ function useSearchIndex() {
       results.push({ id: u.id, type: 'user', title: u.name, sub: `${u.designation} · ${u.email}`, link: '/users', icon: typeIcon.user })
     );
     return results;
-  }, [projects, towers, floors, rooms, captures, tours, users]);
+  }, [projects, towers, floors, flats, rooms, captures, tours, users]);
 }
 
 export default function GlobalSearch() {

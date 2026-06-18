@@ -46,6 +46,7 @@ export default function DashboardHomePage() {
   const tours = useWorkflowStore(s => s.tours);
   const towers = useWorkflowStore(s => s.towers);
   const floors = useWorkflowStore(s => s.floors);
+  const flats = useWorkflowStore(s => s.flats);
   const rooms = useWorkflowStore(s => s.rooms);
   const floorPlans = useWorkflowStore(s => s.floorPlans);
   const defects = useWorkflowStore(s => s.defects);
@@ -53,7 +54,7 @@ export default function DashboardHomePage() {
   const users = useWorkflowStore(s => s.users);
   const auditLogs = useWorkflowStore(s => s.auditLogs);
 
-  const stats = computeDashboardStats({ projects, towers, floors, rooms, captures, tours, floorPlans, defects, notifications, auditLogs, users });
+  const stats = computeDashboardStats({ projects, towers, floors, flats, rooms, captures, tours, floorPlans, defects, notifications, auditLogs, users });
   const activeProjects = projects.filter(p => !p.archived);
   const lastProject = activeProjects[0];
   const lastCapture = captures[0];
