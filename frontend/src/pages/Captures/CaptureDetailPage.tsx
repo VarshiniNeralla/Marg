@@ -108,14 +108,14 @@ export default function CaptureDetailPage() {
   const current = (activeSnap && series.some(s => s.id === activeSnap.id))
     ? activeSnap
     : series[series.length - 1];
-  const st = statusConfig.capture[capture.status];
-  const linkedTour = getTourForCapture(tours, capture.id);
-  const roomDefects = defects.filter(d => d.captureId === capture.id || d.roomName === capture.roomName);
+  const st = statusConfig.capture[capture!.status];
+  const linkedTour = getTourForCapture(tours, capture!.id);
+  const roomDefects = defects.filter(d => d.captureId === capture!.id || d.roomName === capture!.roomName);
 
   function handleAction(a: 'approved' | 'rejected' | 'reupload') {
-    if (a === 'approved') reviewCapture(capture.id, 'approve', notes || undefined);
-    else if (a === 'rejected') reviewCapture(capture.id, 'reject', notes || undefined);
-    else reviewCapture(capture.id, 'request_changes', notes || undefined);
+    if (a === 'approved') reviewCapture(capture!.id, 'approve', notes || undefined);
+    else if (a === 'rejected') reviewCapture(capture!.id, 'reject', notes || undefined);
+    else reviewCapture(capture!.id, 'request_changes', notes || undefined);
     setAction(a);
     setDone(true);
   }

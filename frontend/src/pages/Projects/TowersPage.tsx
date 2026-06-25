@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Box, Typography, Grid, Chip, LinearProgress, Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button } from '@mui/material';
-import { ArrowBackRounded, AddRounded, DomainRounded, ArrowForwardRounded } from '@mui/icons-material';
+import { Box, Typography, Grid, Chip, LinearProgress, Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button, Tooltip, IconButton } from '@mui/material';
+import { ArrowBackRounded, AddRounded, DomainRounded, ArrowForwardRounded, DeleteRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
+import { useAuthStore } from '@store/authStore';
 import { getProjectById, getTowersByProject } from '@store/workflowSelectors';
 
 export default function TowersPage() {
@@ -11,10 +12,17 @@ export default function TowersPage() {
   const projects = useWorkflowStore(s => s.projects);
   const towers = useWorkflowStore(s => s.towers);
   const createTower = useWorkflowStore(s => s.createTower);
+  const deleteTower = useWorkflowStore(s => s.deleteTower);
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === 'admin';
   const project = getProjectById(projects, projectId ?? '');
-  const projectTowers = getTowersByProject(towers, projectId ?? '');
+  const projectTowers = [...getTowersByProject(towers, projectId ?? '')].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { numeric: true })
+  );
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ name: '', floors: '14', description: '' });
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const towerToDelete = projectTowers.find(t => t.id === deleteTarget);
 
   if (!project) return <Box sx={{ p: 4, color: colors.textMuted }}>Project not found.</Box>;
 
@@ -23,6 +31,11 @@ export default function TowersPage() {
     createTower(project!.id, form.name, Number(form.floors));
     setForm({ name: '', floors: '14', description: '' });
     setOpen(false);
+  }
+
+  function handleDelete() {
+    if (deleteTarget) deleteTower(deleteTarget);
+    setDeleteTarget(null);
   }
 
   return (
@@ -35,9 +48,11 @@ export default function TowersPage() {
           <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mb: 0.25 }}>{project.name}</Typography>
           <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: '1.5rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>Towers</Typography>
         </Box>
-        <Box onClick={() => setOpen(true)} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 0.875, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.28)', userSelect: 'none' }}>
-          <AddRounded sx={{ fontSize: 16 }} /> Add Tower
-        </Box>
+        {isAdmin && (
+          <Box onClick={() => setOpen(true)} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 0.875, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.28)', userSelect: 'none' }}>
+            <AddRounded sx={{ fontSize: 16 }} /> Add Tower
+          </Box>
+        )}
       </Box>
 
       <Grid container spacing={2.5}>
@@ -49,10 +64,23 @@ export default function TowersPage() {
                   <DomainRounded sx={{ color: 'rgba(255,255,255,0.7)', fontSize: 22 }} />
                   <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: '1.125rem', fontWeight: 700, color: '#fff', letterSpacing: '-0.03em' }}>{tower.name}</Typography>
                 </Box>
-                <Chip label={tower.status === 'complete' ? 'Complete' : tower.status === 'active' ? 'Active' : 'Pending'} size="small"
-                  sx={{ height: 20, fontSize: '0.625rem', fontWeight: 600, borderRadius: '5px',
-                    color: tower.status === 'complete' ? '#16a34a' : tower.status === 'active' ? '#fff' : '#94a3b8',
-                    backgroundColor: tower.status === 'complete' ? 'rgba(22,163,74,0.15)' : tower.status === 'active' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.08)' }} />
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Chip label={tower.status === 'complete' ? 'Complete' : tower.status === 'active' ? 'Active' : 'Pending'} size="small"
+                    sx={{ height: 20, fontSize: '0.625rem', fontWeight: 600, borderRadius: '5px',
+                      color: tower.status === 'complete' ? '#16a34a' : tower.status === 'active' ? '#fff' : '#94a3b8',
+                      backgroundColor: tower.status === 'complete' ? 'rgba(22,163,74,0.15)' : tower.status === 'active' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.08)' }} />
+                  {isAdmin && (
+                    <Tooltip title="Delete tower">
+                      <IconButton
+                        size="small"
+                        onClick={() => setDeleteTarget(tower.id)}
+                        sx={{ width: 24, height: 24, backgroundColor: 'rgba(239,68,68,0.18)', color: '#ef4444', '&:hover': { backgroundColor: 'rgba(239,68,68,0.32)' } }}
+                      >
+                        <DeleteRounded sx={{ fontSize: 13 }} />
+                      </IconButton>
+                    </Tooltip>
+                  )}
+                </Box>
               </Box>
               <Box sx={{ p: 2.5 }}>
                 {tower.description && (
@@ -93,6 +121,20 @@ export default function TowersPage() {
         <DialogActions sx={{ px: 3, pb: 3, gap: 1 }}>
           <Button onClick={() => setOpen(false)} sx={{ borderRadius: '8px', textTransform: 'none', color: colors.textMuted }}>Cancel</Button>
           <Button onClick={handleAdd} variant="contained" sx={{ borderRadius: '8px', textTransform: 'none', background: colors.primaryGradient, boxShadow: 'none' }}>Add Tower</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} slotProps={{ paper: { sx: { borderRadius: '16px', minWidth: 360 } } }}>
+        <DialogTitle sx={{ fontSize: '1rem', fontWeight: 700, color: colors.textStrong }}>Delete Tower</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.9rem', color: colors.textMuted }}>
+            Are you sure you want to delete <strong style={{ color: colors.textStrong }}>{towerToDelete?.name}</strong>?
+            All floors and data within this tower will be removed.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 3, gap: 1 }}>
+          <Button onClick={() => setDeleteTarget(null)} sx={{ borderRadius: '8px', textTransform: 'none', color: colors.textMuted }}>Cancel</Button>
+          <Button onClick={handleDelete} variant="contained" sx={{ borderRadius: '8px', textTransform: 'none', backgroundColor: '#ef4444', boxShadow: 'none', '&:hover': { backgroundColor: '#dc2626' } }}>Delete</Button>
         </DialogActions>
       </Dialog>
     </Box>

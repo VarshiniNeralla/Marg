@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1.endpoints.auth import router as auth_router
 from app.api.v1.endpoints.organizations import router as org_router
+from app.api.v1.endpoints.uploads import router as uploads_router
 from app.api.v1.endpoints.user_projects import router as user_projects_router
 from app.api.v1.endpoints.users import router as users_router
 from app.api.v1.endpoints.workflow import router as workflow_router
@@ -19,6 +20,7 @@ api_router.include_router(org_router)
 api_router.include_router(users_router)
 api_router.include_router(user_projects_router)
 api_router.include_router(workflow_router)
+api_router.include_router(uploads_router)
 
 # Phase 3 — (uncomment as implemented)
 # from app.api.v1.endpoints.projects import router as projects_router

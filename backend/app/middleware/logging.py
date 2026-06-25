@@ -2,63 +2,80 @@ import time
 from uuid import uuid4
 
 from loguru import logger
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
+from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.datastructures import MutableHeaders
 
 
-class RequestLoggingMiddleware(BaseHTTPMiddleware):
+class RequestLoggingMiddleware:
     """
-    Structured HTTP request/response logging middleware.
+    Pure-ASGI request/response logging middleware.
 
-    For every request:
-    - Assigns a unique X-Request-ID header (or uses the one sent by the client).
-    - Logs method, path, status code, and response time.
-    - Propagates X-Request-ID in the response for client-side correlation.
-
-    Sensitive paths (login, register) are logged at DEBUG level to avoid
-    capturing credentials in log aggregators.
+    Uses the raw ASGI interface (not BaseHTTPMiddleware) to avoid the known
+    Starlette bug where BaseHTTPMiddleware strips headers set by inner
+    middleware — which breaks CORSMiddleware preflight responses.
     """
 
     _SENSITIVE_PATHS = {"/api/v1/auth/login", "/api/v1/auth/register"}
     _SKIP_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        # Skip noisy non-business paths
-        if request.url.path in self._SKIP_PATHS:
-            return await call_next(request)
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
-        request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        method = scope.get("method", "")
+        path = scope.get("path", "")
+
+        # Skip non-business paths and CORS preflight
+        if path in self._SKIP_PATHS or method == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
+
+        request_id = None
+        for name, value in scope.get("headers", []):
+            if name == b"x-request-id":
+                request_id = value.decode()
+                break
+        if not request_id:
+            request_id = str(uuid4())
+
+        # Expose request_id to downstream via scope state
+        if "state" not in scope:
+            scope["state"] = {}
+        scope["state"]["request_id"] = request_id
+
         start_time = time.perf_counter()
+        status_code = 500
 
-        # Make request_id available to downstream code via request.state
-        request.state.request_id = request_id
+        async def send_with_logging(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+                # Inject X-Request-ID into response headers
+                headers = MutableHeaders(scope=message)
+                headers.append("x-request-id", request_id)
+            await send(message)
 
         try:
-            response: Response = await call_next(request)
+            await self.app(scope, receive, send_with_logging)
         except Exception as exc:
             elapsed = (time.perf_counter() - start_time) * 1000
             logger.error(
-                f"[{request_id}] {request.method} {request.url.path} "
+                f"[{request_id}] {method} {path} "
                 f"UNHANDLED ERROR ({elapsed:.1f}ms) — {type(exc).__name__}: {exc}"
             )
             raise
+        finally:
+            elapsed = (time.perf_counter() - start_time) * 1000
+            log_fn = logger.info
+            if status_code >= 500:
+                log_fn = logger.error
+            elif status_code >= 400:
+                log_fn = logger.warning
+            elif path in self._SENSITIVE_PATHS:
+                log_fn = logger.debug
 
-        elapsed = (time.perf_counter() - start_time) * 1000
-        status_code = response.status_code
-
-        log_fn = logger.info
-        if status_code >= 500:
-            log_fn = logger.error
-        elif status_code >= 400:
-            log_fn = logger.warning
-        elif request.url.path in self._SENSITIVE_PATHS:
-            log_fn = logger.debug
-
-        log_fn(
-            f"[{request_id}] {request.method} {request.url.path} "
-            f"→ {status_code} ({elapsed:.1f}ms)"
-        )
-
-        response.headers["X-Request-ID"] = request_id
-        return response
+            log_fn(f"[{request_id}] {method} {path} → {status_code} ({elapsed:.1f}ms)")

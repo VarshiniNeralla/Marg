@@ -110,7 +110,8 @@ def _processing_status(kind: str, ext: str) -> str:
 def _asset_payload(asset: dict[str, Any], *, kind: str, entity_id: Optional[str], ext: str) -> dict[str, Any]:
     original_url = asset["original_url"]
     thumbnail_url = asset["thumbnail_url"]
-    processed_url = original_url if ext in {".jpg", ".jpeg", ".png"} else None
+    # PDFs are uploaded as resource_type=image and original_url is already an image-render URL
+    processed_url = original_url if ext in {".jpg", ".jpeg", ".png", ".pdf"} else None
     return {
         **asset,
         "originalUrl": original_url,
@@ -147,7 +148,7 @@ async def _upload_files(
             file_obj=file.file,
             filename=file.filename or f"upload{ext}",
             folder=folder,
-            resource_type="auto",
+            resource_type="image" if ext == ".pdf" else "auto",
         )
         uploaded.append(_asset_payload(asset, kind=kind, entity_id=entity_id, ext=ext))
     return uploaded

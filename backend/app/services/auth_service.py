@@ -74,12 +74,15 @@ class AuthService:
             )
 
         # 4. Hash password and create user document
+        _ALLOWED_ROLES = {"admin", "manager", "field_engineer", "user", "super_admin", "reviewer", "viewer"}
+        role = payload.role if payload.role and payload.role in _ALLOWED_ROLES else "user"
         user = UserDocument(
             org_id=org.id,
             name=payload.name.strip(),
             email=payload.email.lower(),
             password_hash=hash_password(payload.password),
-            role="user",
+            role=role,
+            designation=payload.designation or None,
             is_active=True,
         )
 

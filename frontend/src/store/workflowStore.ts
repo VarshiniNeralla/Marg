@@ -234,6 +234,10 @@ interface WorkflowState {
   markAllNotificationsRead: () => void;
   deleteNotification: (id: string) => void;
   restoreNotification: (n: MockNotification, index: number) => void;
+
+  // ── Team membership ──
+  addUserToProject: (userId: string, projectId: string) => void;
+  removeUserFromProject: (userId: string, projectId: string) => void;
 }
 
 const GRADIENTS = [
@@ -434,7 +438,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       towers: 0, floors: 0, rooms: 0, captures: 0, totalRooms: 0,
       startDate: p.startDate ?? '', endDate: p.endDate ?? '',
       gradient: GRADIENTS[get().projects.length % GRADIENTS.length], accent: '#2563eb',
-      lastUpdated: 'Just now', thumbnail: null, teamSize: 1,
+      lastUpdated: 'Just now', thumbnail: (p as any).thumbnailUrl ?? null, teamSize: 1,
     };
     set(s => ({ projects: [...s.projects, project] }));
     mirrorApi(workflowApiService.createProject(project));
@@ -842,6 +846,25 @@ export const useWorkflowStore = create<WorkflowState>()(
       return { notifications: list };
     });
     mirrorApi(workflowApiService.createNotification(n));
+  },
+
+  addUserToProject(userId, projectId) {
+    set(s => ({
+      users: s.users.map(u =>
+        u.id === userId && !u.projectIds.includes(projectId)
+          ? { ...u, projectIds: [...u.projectIds, projectId] }
+          : u
+      ),
+    }));
+  },
+  removeUserFromProject(userId, projectId) {
+    set(s => ({
+      users: s.users.map(u =>
+        u.id === userId
+          ? { ...u, projectIds: u.projectIds.filter(id => id !== projectId) }
+          : u
+      ),
+    }));
   },
     }),
     {

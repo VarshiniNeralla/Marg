@@ -113,17 +113,17 @@ async def update_user(
     "/{user_id}",
     response_model=ApiResponse[None],
     status_code=status.HTTP_200_OK,
-    summary="Deactivate a user (admin only)",
+    summary="Permanently delete a user (admin only)",
 )
-async def deactivate_user(
+async def delete_user(
     user_id: str,
     caller: UserDocument = Depends(require_admin),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ) -> ApiResponse[None]:
     service = UserService(db)
-    await service.deactivate_user(
+    await service.delete_user_permanent(
         target_user_id=user_id,
         org_id=str(caller.org_id),
         caller_id=caller.id,
     )
-    return ApiResponse(success=True, data=None, message="User deactivated")
+    return ApiResponse(success=True, data=None, message="User permanently deleted")

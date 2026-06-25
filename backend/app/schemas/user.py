@@ -3,7 +3,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-_VALID_SYSTEM_ROLES = ("admin", "user")
+_VALID_SYSTEM_ROLES = ("admin", "manager", "field_engineer", "user", "super_admin", "reviewer", "viewer")
 
 
 # ── Response schemas ──────────────────────────────────────────────────────────
@@ -26,6 +26,7 @@ class UserResponse(BaseModel):
     email: str
     role: str
     is_active: bool
+    designation: Optional[str] = None
     avatar_url: Optional[str] = None
     last_login: Optional[datetime] = None
     created_at: datetime
@@ -49,6 +50,7 @@ class UpdateUserRequest(BaseModel):
     """
     name: Optional[str] = Field(default=None, min_length=2, max_length=100, strip_whitespace=True)
     avatar_url: Optional[str] = Field(default=None, max_length=2048)
+    designation: Optional[str] = Field(default=None, max_length=120)
     role: Optional[str] = Field(default=None)
     is_active: Optional[bool] = None
 
@@ -73,6 +75,7 @@ class UserListResponse(BaseModel):
     email: str
     role: str
     is_active: bool
+    designation: Optional[str] = None
     avatar_url: Optional[str] = None
     last_login: Optional[datetime] = None
     created_at: datetime

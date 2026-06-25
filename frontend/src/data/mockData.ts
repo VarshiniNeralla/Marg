@@ -3,7 +3,7 @@
 export type ProjectStatus = 'active' | 'review' | 'done' | 'draft';
 export type CaptureStatus = 'processed' | 'review' | 'rejected' | 'uploading';
 export type TourStatus = 'draft' | 'processing' | 'in_review' | 'published';
-export type UserRole = 'super_admin' | 'admin' | 'manager' | 'reviewer' | 'viewer';
+export type UserRole = 'super_admin' | 'admin' | 'manager' | 'field_engineer' | 'reviewer' | 'viewer';
 export type DefectSeverity = 'low' | 'medium' | 'high' | 'critical';
 export type DefectStatus = 'open' | 'in_progress' | 'resolved' | 'closed';
 export type ReviewStatus = 'uploaded' | 'assigned' | 'reviewing' | 'changes_requested' | 'approved' | 'published';
@@ -548,6 +548,17 @@ export const permissionMatrix: PermissionMatrix[] = [
       analytics: ['view'],
       users:     ['view'],
       settings:  ['view'],
+    },
+  },
+  {
+    role: 'field_engineer',
+    modules: {
+      projects:  ['view'],
+      captures:  ['view','create','edit'],
+      tours:     ['view'],
+      analytics: [],
+      users:     [],
+      settings:  [],
     },
   },
   {

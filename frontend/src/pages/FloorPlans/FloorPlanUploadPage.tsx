@@ -6,7 +6,7 @@ import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import { uploadFloorPlanFiles } from '@/services/uploadService';
 
-const ACCEPTED = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg'];
+const ACCEPTED = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
 
 export default function FloorPlanUploadPage() {
   const { projectId, towerId, floorId } = useParams<{ projectId: string; towerId: string; floorId: string }>();
@@ -24,7 +24,18 @@ export default function FloorPlanUploadPage() {
   const [done, setDone] = useState(false);
   const [error, setError] = useState('');
 
-  if (!project || !tower || !floor) return <Box sx={{ p: 4, color: colors.textMuted }}>Floor not found.</Box>;
+  const backUrl = `/floor-plans?project=${projectId ?? ''}&tower=${towerId ?? ''}`;
+
+  if (!project || !tower || !floor) {
+    return (
+      <Box sx={{ p: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <Box component={Link} to={backUrl} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, color: colors.primary, textDecoration: 'none', fontSize: '0.875rem', fontWeight: 500 }}>
+          <ArrowBackRounded sx={{ fontSize: 16 }} /> Go back
+        </Box>
+        <Typography sx={{ color: colors.textMuted }}>Floor not found.</Typography>
+      </Box>
+    );
+  }
 
   function handleFile(f: File) {
     if (!ACCEPTED.includes(f.type)) { setError('Only PDF, PNG, JPG files are accepted.'); return; }
@@ -60,7 +71,7 @@ export default function FloorPlanUploadPage() {
       });
       setUploading(false);
       setDone(true);
-      setTimeout(() => navigate(`/floor-plans/${projectId}/${towerId}/${floorId}`), 1200);
+      setTimeout(() => navigate(backUrl), 1200);
     } catch (err) {
       console.error('[floor-plan-upload]', err);
       setUploading(false);
@@ -71,7 +82,7 @@ export default function FloorPlanUploadPage() {
   return (
     <Box>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 4 }}>
-        <Box component={Link} to={`/floor-plans/${projectId}/${towerId}/${floorId}`} sx={{ color: colors.textMuted, textDecoration: 'none', display: 'flex', '&:hover': { color: colors.textStrong } }}>
+        <Box component={Link} to={backUrl} sx={{ color: colors.textMuted, textDecoration: 'none', display: 'flex', '&:hover': { color: colors.textStrong } }}>
           <ArrowBackRounded sx={{ fontSize: 20 }} />
         </Box>
         <Box>

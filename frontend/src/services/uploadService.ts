@@ -1,6 +1,34 @@
 import apiClient from './apiClient';
 import type { ApiResponse } from '@/types/dto';
 
+export interface ImageUploadResponse {
+  url: string;
+  public_id: string;
+  width?: number;
+  height?: number;
+}
+
+export async function uploadImage(
+  file: File,
+  folder = 'thumbnails',
+  onProgress?: (percent: number) => void,
+): Promise<ImageUploadResponse> {
+  const form = new FormData();
+  form.append('file', file);
+  const { data } = await apiClient.post<ApiResponse<ImageUploadResponse>>(
+    `/uploads/image?folder=${encodeURIComponent(folder)}`,
+    form,
+    {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: event => {
+        if (!event.total || !onProgress) return;
+        onProgress(Math.round((event.loaded / event.total) * 100));
+      },
+    },
+  );
+  return data.data!;
+}
+
 export interface UploadedFileResponse {
   original_url: string;
   thumbnail_url: string;

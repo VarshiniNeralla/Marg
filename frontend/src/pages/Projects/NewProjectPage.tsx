@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Box, Typography, Grid, TextField, MenuItem, Alert } from '@mui/material';
-import { ArrowBackRounded, AddRounded } from '@mui/icons-material';
+import { Box, Typography, Grid, TextField, MenuItem, Alert, CircularProgress } from '@mui/material';
+import { ArrowBackRounded, AddPhotoAlternateRounded, DeleteRounded } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
+import { uploadImage } from '@services/uploadService';
 
 const STATES = ['Telangana','Andhra Pradesh','Karnataka','Maharashtra','Tamil Nadu','Gujarat','Rajasthan','Delhi'];
 const STATUSES = [
@@ -35,8 +36,40 @@ export default function NewProjectPage() {
     status: 'active', startDate: '', endDate: '',
   });
 
+  // Thumbnail state
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [thumbPreview, setThumbPreview] = useState<string | null>(null);
+  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+  const [thumbUploading, setThumbUploading] = useState(false);
+  const [thumbError, setThumbError] = useState('');
+
   function handleChange(field: string, value: string) {
     setForm(f => ({ ...f, [field]: value }));
+  }
+
+  async function handleThumbnailPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Local preview immediately
+    setThumbPreview(URL.createObjectURL(file));
+    setThumbError('');
+    setThumbUploading(true);
+    try {
+      const res = await uploadImage(file, 'thumbnails');
+      setThumbUrl(res.url);
+    } catch {
+      setThumbError('Upload failed. The thumbnail will not be saved.');
+      setThumbUrl(null);
+    } finally {
+      setThumbUploading(false);
+    }
+  }
+
+  function removeThumbnail() {
+    setThumbPreview(null);
+    setThumbUrl(null);
+    setThumbError('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -52,6 +85,7 @@ export default function NewProjectPage() {
       status: form.status as 'active' | 'draft',
       startDate: form.startDate,
       endDate: form.endDate,
+      ...(thumbUrl ? { thumbnailUrl: thumbUrl } : {}),
     });
     setSaved(true);
     setTimeout(() => navigate(`/projects/${newId}`), 1200);
@@ -146,27 +180,71 @@ export default function NewProjectPage() {
                 </TextField>
               </SectionCard>
 
-              {/* Thumbnail placeholder */}
+              {/* Cover Image upload */}
               <SectionCard title="Cover Image">
-                <Box
-                  sx={{
-                    height: 140,
-                    borderRadius: '10px',
-                    border: '2px dashed #e5e7eb',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 1,
-                    cursor: 'pointer',
-                    '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
-                    transition: `all ${motion.durationFast}`,
-                  }}
-                >
-                  <AddRounded sx={{ color: colors.textSubdued, fontSize: 28 }} />
-                  <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>Upload thumbnail</Typography>
-                  <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued }}>PNG, JPG up to 5MB</Typography>
-                </Box>
+                {/* Hidden file input */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  style={{ display: 'none' }}
+                  onChange={handleThumbnailPick}
+                />
+
+                {thumbPreview ? (
+                  /* Preview with remove button */
+                  <Box sx={{ position: 'relative', borderRadius: '10px', overflow: 'hidden', height: 160 }}>
+                    <Box
+                      component="img"
+                      src={thumbPreview}
+                      alt="Cover preview"
+                      sx={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                    />
+                    {/* Upload progress overlay */}
+                    {thumbUploading && (
+                      <Box sx={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 1 }}>
+                        <CircularProgress size={28} sx={{ color: '#fff' }} />
+                        <Typography sx={{ fontSize: '0.75rem', color: '#fff' }}>Uploading…</Typography>
+                      </Box>
+                    )}
+                    {/* Success indicator */}
+                    {!thumbUploading && thumbUrl && (
+                      <Box sx={{ position: 'absolute', top: 8, left: 8, backgroundColor: 'rgba(22,163,74,0.85)', borderRadius: '6px', px: 1, py: 0.25 }}>
+                        <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: '#fff' }}>Uploaded ✓</Typography>
+                      </Box>
+                    )}
+                    {/* Remove button */}
+                    <Box
+                      onClick={removeThumbnail}
+                      sx={{ position: 'absolute', top: 8, right: 8, width: 28, height: 28, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(220,38,38,0.8)' }, transition: 'background 150ms' }}
+                    >
+                      <DeleteRounded sx={{ fontSize: 15, color: '#fff' }} />
+                    </Box>
+                  </Box>
+                ) : (
+                  /* Drop zone */
+                  <Box
+                    onClick={() => fileInputRef.current?.click()}
+                    sx={{
+                      height: 140, borderRadius: '10px', border: `2px dashed ${colors.border}`,
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1,
+                      cursor: 'pointer',
+                      '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+                      transition: `all ${motion.durationFast}`,
+                    }}
+                  >
+                    <AddPhotoAlternateRounded sx={{ color: colors.textSubdued, fontSize: 32 }} />
+                    <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textMuted }}>Click to upload thumbnail</Typography>
+                    <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued }}>PNG, JPG, WebP · max 5 MB</Typography>
+                  </Box>
+                )}
+
+                {thumbError && (
+                  <Typography sx={{ fontSize: '0.75rem', color: '#dc2626', mt: 1 }}>{thumbError}</Typography>
+                )}
+                {!thumbUrl && !thumbUploading && thumbPreview && (
+                  <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 1 }}>Upload in progress — wait before saving.</Typography>
+                )}
               </SectionCard>
 
               {/* Submit */}

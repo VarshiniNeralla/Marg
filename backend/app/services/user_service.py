@@ -141,6 +141,8 @@ class UserService:
             fields["name"] = payload.name.strip()
         if payload.avatar_url is not None:
             fields["avatar_url"] = payload.avatar_url
+        if payload.designation is not None:
+            fields["designation"] = payload.designation.strip()
         if is_admin and payload.role is not None:
             fields["role"] = payload.role
         if is_admin and payload.is_active is not None:
@@ -197,6 +199,29 @@ class UserService:
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
+    # ── DELETE /users/:id/permanent (hard delete) ─────────────────────────────
+
+    async def delete_user_permanent(
+        self, target_user_id: str, org_id: str, caller_id: str
+    ) -> None:
+        """Permanently removes a user document from the database."""
+        if target_user_id == caller_id:
+            raise ForbiddenException("You cannot delete your own account")
+
+        target = await self._user_repo.find_by_id(target_user_id, org_id=org_id)
+        if not target:
+            raise NotFoundException("User", target_user_id)
+
+        await self._user_repo._collection.delete_one({"_id": ObjectId(target_user_id) if ObjectId.is_valid(target_user_id) else target_user_id})
+
+        await self._write_audit_log(
+            org_id=org_id,
+            actor_id=caller_id,
+            action="USER_DELETED_PERMANENT",
+            resource_id=target_user_id,
+        )
+        logger.info(f"User {target_user_id} permanently deleted by {caller_id}")
+
     @staticmethod
     def _to_response(user: UserDocument) -> UserResponse:
         return UserResponse(
@@ -205,6 +230,7 @@ class UserService:
             email=user.email,
             role=user.role,
             is_active=user.is_active,
+            designation=getattr(user, 'designation', None),
             avatar_url=user.avatar_url,
             last_login=user.last_login,
             created_at=user.created_at,
@@ -219,6 +245,7 @@ class UserService:
             email=user.email,
             role=user.role,
             is_active=user.is_active,
+            designation=getattr(user, 'designation', None),
             avatar_url=user.avatar_url,
             last_login=user.last_login,
             created_at=user.created_at,

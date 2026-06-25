@@ -34,6 +34,7 @@ class UserDocument(BaseModel):
 
     # ── Profile ───────────────────────────────────────────────────────────────
     avatar_url: Optional[str] = None
+    designation: Optional[str] = None
 
     # ── Password reset ────────────────────────────────────────────────────────
     # raw token is NEVER stored — only the bcrypt hash

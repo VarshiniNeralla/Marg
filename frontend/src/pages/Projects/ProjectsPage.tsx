@@ -1,16 +1,13 @@
-import React from 'react';
-import { Box, Typography, Grid, Chip, LinearProgress } from '@mui/material';
+import React, { useState } from 'react';
+import { Box, Typography, Grid, Chip, LinearProgress, Dialog, DialogTitle, DialogContent, DialogActions, Button as MuiButton, Tooltip, IconButton } from '@mui/material';
 import {
-  DomainRounded,
-  LayersRounded,
-  MeetingRoomRounded,
-  CameraAltRounded,
-  ArrowForwardRounded,
-  AddRounded,
+  DomainRounded, LayersRounded, MeetingRoomRounded, CameraAltRounded,
+  ArrowForwardRounded, AddRounded, DeleteRounded, EditRounded,
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
+import { useAuthStore } from '@store/authStore';
 
 const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
   active:  { label: 'Active',      color: colors.success,   bg: colors.successBg },
@@ -23,7 +20,19 @@ const statusConfig: Record<string, { label: string; color: string; bg: string }>
 
 export default function ProjectsPage() {
   const allProjects = useWorkflowStore(s => s.projects);
+  const archiveProject = useWorkflowStore(s => s.archiveProject);
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === 'admin';
   const mockProjects = allProjects.filter(p => !p.archived);
+
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const projectToDelete = mockProjects.find(p => p.id === deleteTarget);
+
+  function handleDelete() {
+    if (deleteTarget) archiveProject(deleteTarget);
+    setDeleteTarget(null);
+  }
+
   return (
     <Box>
       {/* Page header */}
@@ -46,30 +55,32 @@ export default function ProjectsPage() {
             {mockProjects.length} project{mockProjects.length === 1 ? '' : 's'} · My Home Constructions
           </Typography>
         </Box>
-        <Box
-          component={Link}
-          to="/projects/new"
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 0.75,
-            px: 2,
-            py: 0.875,
-            borderRadius: '10px',
-            background: colors.primaryGradient,
-            color: '#fff',
-            fontSize: '0.875rem',
-            fontWeight: 600,
-            textDecoration: 'none',
-            boxShadow: '0 4px 14px rgba(37,99,235,0.28)',
-            flexShrink: 0,
-            '&:hover': { opacity: 0.92 },
-            transition: `opacity ${motion.durationFast}`,
-          }}
-        >
-          <AddRounded sx={{ fontSize: 18 }} />
-          New Project
-        </Box>
+        {isAdmin && (
+          <Box
+            component={Link}
+            to="/projects/new"
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.75,
+              px: 2,
+              py: 0.875,
+              borderRadius: '10px',
+              background: colors.primaryGradient,
+              color: '#fff',
+              fontSize: '0.875rem',
+              fontWeight: 600,
+              textDecoration: 'none',
+              boxShadow: '0 4px 14px rgba(37,99,235,0.28)',
+              flexShrink: 0,
+              '&:hover': { opacity: 0.92 },
+              transition: `opacity ${motion.durationFast}`,
+            }}
+          >
+            <AddRounded sx={{ fontSize: 18 }} />
+            New Project
+          </Box>
+        )}
       </Box>
 
       {/* Project cards — visual-first */}
@@ -95,7 +106,7 @@ export default function ProjectsPage() {
                 <Box
                   sx={{
                     height: 180,
-                    background: project.gradient,
+                    background: project.thumbnail ? `url(${project.thumbnail}) center/cover no-repeat` : project.gradient,
                     position: 'relative',
                     display: 'flex',
                     flexDirection: 'column',
@@ -103,24 +114,47 @@ export default function ProjectsPage() {
                     p: 2.5,
                   }}
                 >
-                  {/* Top: status chip */}
-                  <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-                    <Chip
-                      label={status.label}
-                      size="small"
-                      sx={{
-                        height: 22,
-                        fontSize: '0.6875rem',
-                        fontWeight: 600,
-                        color: status.color,
-                        backgroundColor: status.bg,
-                        borderRadius: '7px',
-                      }}
-                    />
+                  {/* dark overlay so text stays readable over photos */}
+                  {project.thumbnail && (
+                    <Box sx={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(0,0,0,0.18) 0%, rgba(0,0,0,0.55) 100%)' }} />
+                  )}
+                  {/* Top: status chip + admin delete — position:relative to sit above overlay */}
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'relative' }}>
+                    <Box />
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Chip
+                        label={status.label}
+                        size="small"
+                        sx={{
+                          height: 22,
+                          fontSize: '0.6875rem',
+                          fontWeight: 600,
+                          color: status.color,
+                          backgroundColor: status.bg,
+                          borderRadius: '7px',
+                        }}
+                      />
+                      {isAdmin && (
+                        <Tooltip title="Delete project">
+                          <IconButton
+                            size="small"
+                            onClick={(e) => { e.preventDefault(); setDeleteTarget(project.id); }}
+                            sx={{
+                              width: 26, height: 26,
+                              backgroundColor: 'rgba(239,68,68,0.15)',
+                              color: '#ef4444',
+                              '&:hover': { backgroundColor: 'rgba(239,68,68,0.28)' },
+                            }}
+                          >
+                            <DeleteRounded sx={{ fontSize: 14 }} />
+                          </IconButton>
+                        </Tooltip>
+                      )}
+                    </Box>
                   </Box>
 
-                  {/* Bottom: project name overlay */}
-                  <Box>
+                  {/* Bottom: project name overlay — position:relative to sit above overlay */}
+                  <Box sx={{ position: 'relative' }}>
                     <Typography
                       sx={{
                         fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
@@ -219,6 +253,35 @@ export default function ProjectsPage() {
           );
         })}
       </Grid>
+
+      {/* Delete confirmation dialog */}
+      <Dialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        slotProps={{ paper: { sx: { borderRadius: '16px', minWidth: 360 } } }}
+      >
+        <DialogTitle sx={{ fontSize: '1rem', fontWeight: 700, color: colors.textStrong }}>
+          Delete Project
+        </DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.9rem', color: colors.textMuted }}>
+            Are you sure you want to delete <strong style={{ color: colors.textStrong }}>{projectToDelete?.name}</strong>?
+            This action cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 3, gap: 1 }}>
+          <MuiButton onClick={() => setDeleteTarget(null)} sx={{ borderRadius: '8px', textTransform: 'none', color: colors.textMuted }}>
+            Cancel
+          </MuiButton>
+          <MuiButton
+            onClick={handleDelete}
+            variant="contained"
+            sx={{ borderRadius: '8px', textTransform: 'none', backgroundColor: '#ef4444', boxShadow: 'none', '&:hover': { backgroundColor: '#dc2626' } }}
+          >
+            Delete
+          </MuiButton>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Box, Typography, TextField, Switch, Select, MenuItem, Snackbar, Alert } from '@mui/material';
+import { Box, Typography, TextField, Switch, Select, MenuItem, Snackbar, Alert, InputAdornment, IconButton } from '@mui/material';
 import {
-  PersonRounded, BusinessRounded, PeopleRounded, NotificationsRounded,
+  PersonRounded, PeopleRounded, NotificationsRounded,
   LockRounded, PaletteRounded, CheckRounded, WarningAmberRounded, StorageRounded,
+  VisibilityRounded, VisibilityOffRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useAuthStore } from '@store/authStore';
@@ -14,7 +15,6 @@ import { resetApplicationData } from '@store/resetApplicationData';
 
 const tabs = [
   { key: 'account',       label: 'Account',        icon: <PersonRounded sx={{ fontSize: 16 }} /> },
-  { key: 'organization',  label: 'Organization',   icon: <BusinessRounded sx={{ fontSize: 16 }} /> },
   { key: 'team',          label: 'Team',           icon: <PeopleRounded sx={{ fontSize: 16 }} /> },
   { key: 'notifications', label: 'Notifications',  icon: <NotificationsRounded sx={{ fontSize: 16 }} /> },
   { key: 'security',      label: 'Security',       icon: <LockRounded sx={{ fontSize: 16 }} /> },
@@ -301,6 +301,34 @@ function NotificationsTab({ onSaved }: { onSaved: () => void }) {
 
 // ── Security Tab ──────────────────────────────────────────────────────────────
 
+function PwField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  const [show, setShow] = useState(false);
+  return (
+    <FieldRow label={label}>
+      <TextField
+        fullWidth
+        type={show ? 'text' : 'password'}
+        placeholder="••••••••"
+        size="small"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        sx={fieldSx}
+        slotProps={{
+          input: {
+            endAdornment: (
+              <InputAdornment position="end">
+                <IconButton size="small" onClick={() => setShow(s => !s)} edge="end" tabIndex={-1} sx={{ color: colors.textMuted }}>
+                  {show ? <VisibilityOffRounded sx={{ fontSize: 18 }} /> : <VisibilityRounded sx={{ fontSize: 18 }} />}
+                </IconButton>
+              </InputAdornment>
+            ),
+          },
+        }}
+      />
+    </FieldRow>
+  );
+}
+
 function SecurityTab({ onSaved }: { onSaved: () => void }) {
   const security = useSettingsStore(s => s.security);
   const patchSecurity = useSettingsStore(s => s.patchSecurity);
@@ -321,15 +349,9 @@ function SecurityTab({ onSaved }: { onSaved: () => void }) {
     <>
       {error && <Alert severity="error" sx={{ mb: 2, borderRadius: '10px' }}>{error}</Alert>}
       <SectionCard title="Change Password">
-        <FieldRow label="Current password">
-          <TextField fullWidth type="password" placeholder="••••••••" size="small" value={form.current} onChange={e => setForm(f => ({ ...f, current: e.target.value }))} sx={fieldSx} />
-        </FieldRow>
-        <FieldRow label="New password">
-          <TextField fullWidth type="password" placeholder="••••••••" size="small" value={form.newPw} onChange={e => setForm(f => ({ ...f, newPw: e.target.value }))} sx={fieldSx} />
-        </FieldRow>
-        <FieldRow label="Confirm new password">
-          <TextField fullWidth type="password" placeholder="••••••••" size="small" value={form.confirm} onChange={e => setForm(f => ({ ...f, confirm: e.target.value }))} sx={fieldSx} />
-        </FieldRow>
+        <PwField label="Current password" value={form.current} onChange={v => setForm(f => ({ ...f, current: v }))} />
+        <PwField label="New password" value={form.newPw} onChange={v => setForm(f => ({ ...f, newPw: v }))} />
+        <PwField label="Confirm new password" value={form.confirm} onChange={v => setForm(f => ({ ...f, confirm: v }))} />
       </SectionCard>
       <SectionCard title="Two-Factor Authentication">
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -441,7 +463,6 @@ export default function SettingsPage() {
 
   const tabContent: Record<string, React.ReactNode> = {
     account:       <AccountTab onSaved={handleSaved} />,
-    organization:  <OrganizationTab onSaved={handleSaved} />,
     team:          <TeamTab />,
     notifications: <NotificationsTab onSaved={handleSaved} />,
     security:      <SecurityTab onSaved={handleSaved} />,
@@ -455,7 +476,7 @@ export default function SettingsPage() {
         <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.5rem', md: '2rem' }, fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1, mb: 0.75 }}>
           Settings
         </Typography>
-        <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>Manage your account, organization, and preferences</Typography>
+        <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>Manage your account, team, and preferences</Typography>
       </Box>
 
       <Box sx={{ display: 'flex', gap: 4, alignItems: 'flex-start' }}>

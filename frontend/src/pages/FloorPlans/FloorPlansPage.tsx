@@ -1,9 +1,9 @@
 import React, { useState, useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Box, Typography, Grid, Chip } from '@mui/material';
 import {
-  LayersRounded, MeetingRoomRounded, ViewInArRounded, ArrowForwardRounded,
-  UploadFileRounded, MapRounded, CheckCircleRounded, AddRounded, CameraAltRounded,
+  LayersRounded, MeetingRoomRounded, ViewInArRounded,
+  MapRounded, CheckCircleRounded, AddRounded, CameraAltRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import PageHeader from '@shared/components/PageHeader/PageHeader';
@@ -20,33 +20,42 @@ export default function FloorPlansPage() {
   const captures = useWorkflowStore(s => s.captures);
   const tours = useWorkflowStore(s => s.tours);
   const floorPlans = useWorkflowStore(s => s.floorPlans);
+  const [searchParams] = useSearchParams();
 
   const activeProjects = useMemo(
     () => projects.filter(p => !p.archived && getTowersByProject(towers, p.id).length > 0),
     [projects, towers],
   );
 
-  const [projectId, setProjectId] = useState(activeProjects[0]?.id ?? '');
+  const [projectId, setProjectId] = useState(() => {
+    const pid = searchParams.get('project');
+    return pid && activeProjects.find(p => p.id === pid) ? pid : (activeProjects[0]?.id ?? '');
+  });
   const project = activeProjects.find(p => p.id === projectId) ?? activeProjects[0];
-  const projectTowers = useMemo(() => project ? getTowersByProject(towers, project.id) : [], [towers, project]);
-  const [towerId, setTowerId] = useState(projectTowers[0]?.id ?? '');
+  const projectTowers = useMemo(
+    () => project
+      ? [...getTowersByProject(towers, project.id)].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+      : [],
+    [towers, project],
+  );
+  const [towerId, setTowerId] = useState(() => {
+    const tid = searchParams.get('tower');
+    return tid || (projectTowers[0]?.id ?? '');
+  });
   const tower = projectTowers.find(t => t.id === towerId) ?? projectTowers[0];
 
-  const towerFloors = useMemo(() => tower ? getFloorsByTower(floors, tower.id) : [], [floors, tower]);
+  const towerFloors = useMemo(
+    () => tower ? [...getFloorsByTower(floors, tower.id)].sort((a, b) => a.number - b.number) : [],
+    [floors, tower],
+  );
 
   function selectProject(id: string) {
     setProjectId(id);
-    const tw = getTowersByProject(towers, id)[0];
-    setTowerId(tw?.id ?? '');
+    const sorted = [...getTowersByProject(towers, id)].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    setTowerId(sorted[0]?.id ?? '');
   }
 
   const dataSlice = { flats, rooms, captures, tours, floorPlans };
-  const nextUploadFloor = towerFloors.find(f => !getFloorPlanByFloor(floorPlans, tower?.id ?? '', f.id));
-  const headerUploadHref = nextUploadFloor
-    ? `/floor-plans/${project?.id}/${tower?.id}/${nextUploadFloor.id}/upload`
-    : towerFloors[0]
-      ? `/floor-plans/${project?.id}/${tower?.id}/${towerFloors[0].id}/upload`
-      : '/floor-plans';
 
   if (!project) {
     return (
@@ -67,11 +76,6 @@ export default function FloorPlansPage() {
         title="Floor Plans"
         subtitle="Architectural blueprint view — map rooms, captures, and tours"
         breadcrumbs={[{ label: 'Floor Plans' }]}
-        actions={
-          <Box component={Link} to={headerUploadHref} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.875, px: 2.25, py: 1.125, borderRadius: '10px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none', boxShadow: '0 4px 14px rgba(37,99,235,0.28)', '&:hover': { opacity: 0.92 }, transition: `opacity ${motion.durationFast}` }}>
-            <UploadFileRounded sx={{ fontSize: 17 }} /> Upload Floor Plan
-          </Box>
-        }
       />
 
       <Grid container spacing={3}>

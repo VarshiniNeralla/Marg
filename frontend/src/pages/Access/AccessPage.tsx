@@ -2,18 +2,25 @@ import React, { useState } from 'react';
 import { Box, Typography, Chip } from '@mui/material';
 import { CheckRounded, CloseRounded } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
-import { permissionMatrix, mockUsers, type UserRole } from '@/data/mockData';
+import { permissionMatrix } from '@/data/mockData';
+import { useWorkflowStore } from '@store/workflowStore';
 
-const roles: UserRole[] = ['admin', 'manager', 'reviewer', 'viewer'];
+type AppRole = 'admin' | 'manager' | 'field_engineer';
+
+const roles: AppRole[] = ['admin', 'manager', 'field_engineer'];
+const ROLE_LABEL: Record<AppRole, string> = {
+  admin: 'Admin',
+  manager: 'Manager',
+  field_engineer: 'Site Engineer',
+};
+
 const modules = ['projects', 'captures', 'tours', 'analytics', 'users', 'settings'];
 const allActions = ['view', 'create', 'edit', 'delete', 'approve', 'publish'];
 
-const roleColor: Record<string, { color: string; bg: string }> = {
-  super_admin: { color: '#7c3aed', bg: 'rgba(124,58,237,0.1)' },
-  admin:       { color: '#7c3aed', bg: 'rgba(124,58,237,0.1)' },
-  manager:     { color: '#2563eb', bg: 'rgba(37,99,235,0.1)' },
-  reviewer:    { color: '#d97706', bg: 'rgba(217,119,6,0.1)' },
-  viewer:      { color: '#64748b', bg: 'rgba(100,116,139,0.1)' },
+const roleColor: Record<AppRole, { color: string; bg: string }> = {
+  admin:          { color: '#7c3aed', bg: 'rgba(124,58,237,0.1)' },
+  manager:        { color: '#2563eb', bg: 'rgba(37,99,235,0.1)' },
+  field_engineer: { color: '#059669', bg: 'rgba(5,150,105,0.1)' },
 };
 
 function PermCell({ has }: { has: boolean }) {
@@ -25,9 +32,13 @@ function PermCell({ has }: { has: boolean }) {
 }
 
 export default function AccessPage() {
-  const [activeRole, setActiveRole] = useState<UserRole>('admin');
+  const [activeRole, setActiveRole] = useState<AppRole>('admin');
+  const storeUsers = useWorkflowStore(s => s.users);
+
   const matrix = permissionMatrix.find(m => m.role === activeRole);
-  const roleUsers = mockUsers.filter(u => u.role === activeRole);
+
+  const roleUsers = storeUsers.filter(u => u.role === activeRole);
+  const rc = roleColor[activeRole];
 
   return (
     <Box>
@@ -41,12 +52,13 @@ export default function AccessPage() {
       {/* Role selector */}
       <Box sx={{ display: 'flex', gap: 1.5, mb: 4, flexWrap: 'wrap' }}>
         {roles.map(r => {
-          const rc = roleColor[r];
-          const count = mockUsers.filter(u => u.role === r).length;
+          const c = roleColor[r];
+          const count = storeUsers.filter(u => u.role === r).length;
+          const isActive = activeRole === r;
           return (
-            <Box key={r} onClick={() => setActiveRole(r)} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, px: 2, py: 1.25, borderRadius: '12px', border: `1.5px solid ${activeRole === r ? rc.color : colors.borderLight}`, backgroundColor: activeRole === r ? rc.bg : colors.card, cursor: 'pointer', transition: 'all 0.15s' }}>
+            <Box key={r} onClick={() => setActiveRole(r)} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, px: 2, py: 1.25, borderRadius: '12px', border: `1.5px solid ${isActive ? c.color : colors.borderLight}`, backgroundColor: isActive ? c.bg : colors.card, cursor: 'pointer', transition: 'all 0.15s' }}>
               <Box sx={{ textAlign: 'left' }}>
-                <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: activeRole === r ? rc.color : colors.textStrong, textTransform: 'capitalize' }}>{r}</Typography>
+                <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: isActive ? c.color : colors.textStrong }}>{ROLE_LABEL[r]}</Typography>
                 <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>{count} user{count !== 1 ? 's' : ''}</Typography>
               </Box>
             </Box>
@@ -77,28 +89,24 @@ export default function AccessPage() {
       {/* Users with this role */}
       <Box>
         <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.08em', textTransform: 'uppercase', mb: 2 }}>
-          Users with {activeRole} role ({roleUsers.length})
+          Users with {ROLE_LABEL[activeRole]} role ({roleUsers.length})
         </Typography>
         {roleUsers.length === 0 ? (
           <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted }}>No users with this role.</Typography>
         ) : (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {roleUsers.map(u => {
-              const rc = roleColor[u.role];
-              return (
-                <Box key={u.id} sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 2, borderRadius: '12px', backgroundColor: colors.card, boxShadow: '0 1px 4px rgba(15,23,42,0.04)' }}>
-                  <Box sx={{ width: 36, height: 36, borderRadius: '50%', background: colors.primaryGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: '#fff' }}>{u.name[0]}</Typography>
-                  </Box>
-                  <Box sx={{ flex: 1 }}>
-                    <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong }}>{u.name}</Typography>
-                    <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{u.email} · {u.designation}</Typography>
-                  </Box>
-                  <Typography sx={{ fontSize: '0.75rem', color: colors.textSubdued }}>{u.lastActive}</Typography>
-                  <Chip label={u.role} size="small" sx={{ height: 22, fontSize: '0.6875rem', fontWeight: 600, color: rc.color, backgroundColor: rc.bg, borderRadius: '6px', textTransform: 'capitalize' }} />
+            {roleUsers.map(u => (
+              <Box key={u.id} sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 2, borderRadius: '12px', backgroundColor: colors.card, boxShadow: '0 1px 4px rgba(15,23,42,0.04)' }}>
+                <Box sx={{ width: 36, height: 36, borderRadius: '50%', background: colors.primaryGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: '#fff' }}>{u.name[0]}</Typography>
                 </Box>
-              );
-            })}
+                <Box sx={{ flex: 1 }}>
+                  <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong }}>{u.name}</Typography>
+                  <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{u.email}</Typography>
+                </Box>
+                <Chip label={ROLE_LABEL[activeRole]} size="small" sx={{ height: 22, fontSize: '0.6875rem', fontWeight: 600, color: rc.color, backgroundColor: rc.bg, borderRadius: '6px' }} />
+              </Box>
+            ))}
           </Box>
         )}
       </Box>

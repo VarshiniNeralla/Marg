@@ -273,35 +273,56 @@ function Hero() {
 // ── Features ──────────────────────────────────────────────────────────────────
 
 const FEATURES = [
-  { icon: <ViewInArRounded sx={{ fontSize: 28 }} />, color: '#2563eb', bg: 'rgba(37,99,235,0.08)', title: '360° Virtual Tours', desc: 'Immersive equirectangular panoramas with room-to-room hotspot navigation. Powered by Photo Sphere Viewer v5.' },
-  { icon: <MapRounded sx={{ fontSize: 28 }} />, color: '#7c3aed', bg: 'rgba(124,58,237,0.08)', title: 'Floor Plan Mapping', desc: 'Upload PDF/PNG floor plans and overlay interactive SVG room markers with live capture status indicators.' },
-  { icon: <CameraAltRounded sx={{ fontSize: 28 }} />, color: '#0891b2', bg: 'rgba(8,145,178,0.08)', title: 'Capture Management', desc: 'Multi-file drag-drop upload pipeline. Supports .jpg .jpeg .png .dng .insp .insv with per-file progress tracking.' },
-  { icon: <CheckCircleRounded sx={{ fontSize: 28 }} />, color: '#16a34a', bg: 'rgba(22,163,74,0.08)', title: 'Review Workflows', desc: '6-state review lifecycle: Uploaded → Assigned → Reviewing → Changes Requested → Approved → Published.' },
-  { icon: <BugReportRounded sx={{ fontSize: 28 }} />, color: '#dc2626', bg: 'rgba(220,38,38,0.08)', title: 'Defect Tracking', desc: 'Create, filter, and assign defects by severity. Link defects to specific captures, floors, and rooms.' },
-  { icon: <BarChartRounded sx={{ fontSize: 28 }} />, color: '#d97706', bg: 'rgba(217,119,6,0.08)', title: 'Analytics Dashboard', desc: 'KPI tiles, bar charts, team productivity metrics, and project completion tracking across your portfolio.' },
+  { icon: <ViewInArRounded sx={{ fontSize: 28 }} />, color: '#2563eb', bg: 'rgba(37,99,235,0.08)', title: '360° Virtual Tours', desc: 'Room-to-room hotspot navigation in immersive equirectangular panoramas.' },
+  { icon: <MapRounded sx={{ fontSize: 28 }} />, color: '#7c3aed', bg: 'rgba(124,58,237,0.08)', title: 'Floor Plan Mapping', desc: 'Overlay interactive SVG markers on PDF/PNG plans with live capture status.' },
+  { icon: <CameraAltRounded sx={{ fontSize: 28 }} />, color: '#0891b2', bg: 'rgba(8,145,178,0.08)', title: 'Capture Management', desc: 'Drag-drop multi-file uploads with per-file progress tracking.' },
+  { icon: <CheckCircleRounded sx={{ fontSize: 28 }} />, color: '#16a34a', bg: 'rgba(22,163,74,0.08)', title: 'Review Workflows', desc: '6-stage lifecycle from upload to publish — assign, review, approve.' },
+  { icon: <BugReportRounded sx={{ fontSize: 28 }} />, color: '#dc2626', bg: 'rgba(220,38,38,0.08)', title: 'Defect Tracking', desc: 'Log, filter, and assign defects by severity, floor, and room.' },
+  { icon: <BarChartRounded sx={{ fontSize: 28 }} />, color: '#d97706', bg: 'rgba(217,119,6,0.08)', title: 'Analytics Dashboard', desc: 'KPIs, charts, and team productivity across your full portfolio.' },
 ];
 
 function FeaturesSection() {
+  const [visible, setVisible] = React.useState(false);
+  const ref = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } }, { threshold: 0.1 });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
   return (
-    <Box sx={{ py: { xs: 8, md: 12 }, px: { xs: 3, md: 6 }, maxWidth: 1200, mx: 'auto' }}>
-      <Box sx={{ textAlign: 'center', mb: { xs: 6, md: 8 } }}>
+    <Box ref={ref} sx={{ py: { xs: 8, md: 12 }, px: { xs: 3, md: 6 }, maxWidth: 1200, mx: 'auto',
+      '@keyframes fadeUp': { from: { opacity: 0, transform: 'translateY(32px)' }, to: { opacity: 1, transform: 'translateY(0)' } },
+    }}>
+      <Box sx={{ textAlign: 'center', mb: { xs: 6, md: 8 }, opacity: visible ? 1 : 0, animation: visible ? 'fadeUp 0.6s ease both' : 'none' }}>
         <Pill>Platform Features</Pill>
-        <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '2rem', md: '2.75rem' }, fontWeight: 800, letterSpacing: '-0.04em', color: colors.textStrong, mt: 2, mb: 1.5 }}>
-          Everything your construction team needs
+        <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.875rem', md: '2.5rem' }, fontWeight: 800, letterSpacing: '-0.04em', color: colors.textStrong, mt: 2, mb: 1 }}>
+          One platform. Every site.
         </Typography>
-        <Typography sx={{ fontSize: '1.0625rem', color: colors.textMuted, maxWidth: 540, mx: 'auto', lineHeight: 1.7 }}>
-          A complete digital twin platform — from first site capture to final handover delivery.
+        <Typography sx={{ fontSize: '1rem', color: colors.textMuted, maxWidth: 420, mx: 'auto', lineHeight: 1.6 }}>
+          Capture → Review → Publish — end to end.
         </Typography>
       </Box>
       <Grid container spacing={3}>
-        {FEATURES.map(f => (
+        {FEATURES.map((f, i) => (
           <Grid key={f.title} size={{ xs: 12, sm: 6, md: 4 }}>
-            <Box sx={{ p: 3, borderRadius: '20px', border: `1px solid ${colors.border}`, backgroundColor: colors.card, height: '100%', transition: `all ${motion.durationNormal}`, '&:hover': { boxShadow: shadows.lg, transform: 'translateY(-3px)', borderColor: f.color + '40' } }}>
-              <Box sx={{ width: 52, height: 52, borderRadius: '14px', backgroundColor: f.bg, color: f.color, display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 2 }}>
+            <Box sx={{
+              p: 3, borderRadius: '20px', border: `1px solid ${colors.border}`, backgroundColor: colors.card,
+              height: '100%', cursor: 'default',
+              opacity: visible ? 1 : 0,
+              animation: visible ? `fadeUp 0.55s ease both` : 'none',
+              animationDelay: visible ? `${0.08 + i * 0.07}s` : '0s',
+              transition: `box-shadow 0.2s, transform 0.2s, border-color 0.2s`,
+              '&:hover': { boxShadow: shadows.lg, transform: 'translateY(-4px) scale(1.01)', borderColor: f.color + '55' },
+            }}>
+              <Box sx={{ width: 50, height: 50, borderRadius: '14px', backgroundColor: f.bg, color: f.color, display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 2 }}>
                 {f.icon}
               </Box>
-              <Typography sx={{ fontSize: '1.0625rem', fontWeight: 700, color: colors.textStrong, mb: 1, letterSpacing: '-0.02em' }}>{f.title}</Typography>
-              <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted, lineHeight: 1.65 }}>{f.desc}</Typography>
+              <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: colors.textStrong, mb: 0.75, letterSpacing: '-0.02em' }}>{f.title}</Typography>
+              <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted, lineHeight: 1.6 }}>{f.desc}</Typography>
             </Box>
           </Grid>
         ))}

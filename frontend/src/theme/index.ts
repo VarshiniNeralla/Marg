@@ -293,6 +293,35 @@ const theme = createTheme({
         root: {
           borderRadius: radii.sm,
           fontSize: '0.875rem',
+          // Force visible text for all severity states regardless of variant
+          '&.MuiAlert-colorError': {
+            backgroundColor: '#fef2f2',
+            border: '1px solid #fecaca',
+            color: '#b91c1c',
+            '& .MuiAlert-icon': { color: '#dc2626' },
+            '& .MuiAlert-message': { color: '#b91c1c' },
+          },
+          '&.MuiAlert-colorSuccess': {
+            backgroundColor: '#f0fdf4',
+            border: '1px solid #bbf7d0',
+            color: '#15803d',
+            '& .MuiAlert-icon': { color: '#16a34a' },
+            '& .MuiAlert-message': { color: '#15803d' },
+          },
+          '&.MuiAlert-colorWarning': {
+            backgroundColor: '#fffbeb',
+            border: '1px solid #fde68a',
+            color: '#92400e',
+            '& .MuiAlert-icon': { color: '#d97706' },
+            '& .MuiAlert-message': { color: '#92400e' },
+          },
+          '&.MuiAlert-colorInfo': {
+            backgroundColor: '#eff6ff',
+            border: '1px solid #bfdbfe',
+            color: '#1e40af',
+            '& .MuiAlert-icon': { color: '#2563eb' },
+            '& .MuiAlert-message': { color: '#1e40af' },
+          },
         },
       },
     },
@@ -313,8 +342,6 @@ const theme = createTheme({
     // ── CssBaseline ───────────────────────────────────────────────────────
     MuiCssBaseline: {
       styleOverrides: `
-        @import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Google+Sans+Flex:wght@300..700&family=Inter:wght@300;400;500;600;700&display=swap');
-
         *, *::before, *::after { box-sizing: border-box; }
 
         body {

@@ -8,7 +8,8 @@ import {
   ArrowForwardRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { getProjectById, mockTowers, getFloorPlanByFloor, getFloors, getRoomHistory } from '@/data/mockData';
+import { useWorkflowStore } from '@store/workflowStore';
+import { getFloorPlanByFloor, getFloorsByTower } from '@store/workflowSelectors';
 import type { MockRoomMarker } from '@/data/mockData';
 
 const roomStatusColor: Record<string, { fill: string; stroke: string; label: string }> = {
@@ -18,12 +19,8 @@ const roomStatusColor: Record<string, { fill: string; stroke: string; label: str
   published:   { fill: 'rgba(22,163,74,0.15)',    stroke: '#16a34a', label: 'Published' },
 };
 
-function RoomActionPanel({ room, onClose, uploadHref }: { room: MockRoomMarker; onClose: () => void; uploadHref: string }) {
-  const sc = roomStatusColor[room.status];
-  // 7D/7E — when the room has a capture, surface its room-history mini-summary so
-  // the floor plan acts as a true digital-twin entry point (plan → room → capture → tour).
-  const history = room.captureId ? getRoomHistory(room.captureId) : null;
-
+function RoomActionPanel({ room, onClose }: { room: MockRoomMarker; onClose: () => void }) {
+  const sc = roomStatusColor[room.status] ?? roomStatusColor.not_started;
   return (
     <Box sx={{ position: 'absolute', top: 16, right: 16, width: 272, borderRadius: '16px', backgroundColor: colors.card, boxShadow: '0 12px 40px rgba(15,23,42,0.16)', zIndex: 10, overflow: 'hidden' }}>
       <Box sx={{ px: 2.5, py: 2, borderBottom: `1px solid ${colors.borderLight}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -38,23 +35,6 @@ function RoomActionPanel({ room, onClose, uploadHref }: { room: MockRoomMarker; 
           <Chip label={sc.label} size="small" sx={{ height: 22, fontSize: '0.6875rem', fontWeight: 600, color: sc.stroke, backgroundColor: sc.fill, borderRadius: '6px' }} />
           <Chip label={room.type} size="small" sx={{ height: 22, fontSize: '0.6875rem', fontWeight: 500, color: colors.textSecondary, backgroundColor: colors.bgDeep, borderRadius: '6px', textTransform: 'capitalize' }} />
         </Box>
-
-        {/* Room-history mini-summary */}
-        {history && (
-          <Box sx={{ display: 'flex', gap: 0.75, mb: 2 }}>
-            {[
-              { label: 'Captures', value: String(history.captureCount) },
-              { label: 'Latest', value: history.latest.dateLabel },
-              { label: 'Done', value: `${history.latest.progress}%` },
-            ].map(s => (
-              <Box key={s.label} sx={{ flex: 1, textAlign: 'center', py: 0.875, borderRadius: '8px', backgroundColor: colors.bgDeep }}>
-                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 800, color: colors.textStrong, lineHeight: 1 }}>{s.value}</Typography>
-                <Typography sx={{ fontSize: '0.5625rem', color: colors.textSubdued, textTransform: 'uppercase', letterSpacing: '0.05em', mt: 0.375 }}>{s.label}</Typography>
-              </Box>
-            ))}
-          </Box>
-        )}
-
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
           {room.captureId && (
             <Box component={Link} to={`/captures/${room.captureId}`} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderRadius: '8px', backgroundColor: colors.primarySoft, color: colors.primary, fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none', '&:hover': { backgroundColor: colors.primaryRing } }}>
@@ -68,9 +48,6 @@ function RoomActionPanel({ room, onClose, uploadHref }: { room: MockRoomMarker; 
               <ArrowForwardRounded sx={{ fontSize: 14, ml: 'auto' }} />
             </Box>
           )}
-          <Box component={Link} to={uploadHref} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderRadius: '8px', border: `1px dashed ${colors.border}`, color: colors.textMuted, fontSize: '0.8125rem', fontWeight: 500, textDecoration: 'none', '&:hover': { borderColor: colors.primary, color: colors.primary } }}>
-            <UploadFileRounded sx={{ fontSize: 15 }} /> Upload Capture
-          </Box>
         </Box>
       </Box>
     </Box>
@@ -79,11 +56,15 @@ function RoomActionPanel({ room, onClose, uploadHref }: { room: MockRoomMarker; 
 
 export default function FloorPlanViewerPage() {
   const { projectId, towerId, floorId } = useParams<{ projectId: string; towerId: string; floorId: string }>();
-  const project = getProjectById(projectId ?? '');
-  const tower = mockTowers.find(t => t.id === towerId);
-  const floors = getFloors(towerId ?? '');
-  const floor = floors.find(f => f.id === floorId);
-  const floorPlan = getFloorPlanByFloor(towerId ?? '', floorId ?? '');
+
+  const project   = useWorkflowStore(s => s.projects.find(p => p.id === projectId));
+  const tower     = useWorkflowStore(s => s.towers.find(t => t.id === towerId));
+  const floors    = useWorkflowStore(s => s.floors);
+  const floorPlans = useWorkflowStore(s => s.floorPlans);
+
+  const towerFloors = [...getFloorsByTower(floors, towerId ?? '')].sort((a, b) => a.number - b.number);
+  const floor = towerFloors.find(f => f.id === floorId);
+  const floorPlan = getFloorPlanByFloor(floorPlans, towerId ?? '', floorId ?? '');
 
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -111,7 +92,16 @@ export default function FloorPlanViewerPage() {
   };
   const handleMouseUp = () => setIsDragging(false);
 
-  if (!project || !tower || !floor) return <Box sx={{ p: 4, color: colors.textMuted }}>Floor not found.</Box>;
+  if (!project || !tower || !floor) {
+    return (
+      <Box sx={{ p: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <Box component={Link} to="/floor-plans" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, color: colors.primary, textDecoration: 'none', fontSize: '0.875rem', fontWeight: 500 }}>
+          <ArrowBackRounded sx={{ fontSize: 16 }} /> Back to Floor Plans
+        </Box>
+        <Typography sx={{ color: colors.textMuted }}>Floor not found.</Typography>
+      </Box>
+    );
+  }
 
   const statusCounts = floorPlan ? {
     not_started: floorPlan.rooms.filter(r => r.status === 'not_started').length,
@@ -120,12 +110,27 @@ export default function FloorPlanViewerPage() {
     published: floorPlan.rooms.filter(r => r.status === 'published').length,
   } : null;
 
+  /* mediaAssets is stored as an extra field beyond the typed MockFloorPlan shape.
+     For PDFs the backend now returns a Cloudinary image-render URL in original_url,
+     so we can always display a plain <img> regardless of file type. */
+  const planRecord = floorPlan as (typeof floorPlan & Record<string, unknown>) | null;
+  const mediaAssets = (planRecord?.mediaAssets as { original_url?: string; thumbnail_url?: string }[] | undefined) ?? [];
+  const uploadedImageUrl: string | null =
+    (planRecord?.fileUrl as string | undefined)
+    ?? (planRecord?.file_url as string | undefined)
+    ?? mediaAssets[0]?.original_url
+    ?? null;
+
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: fullscreen ? '100vh' : 'auto' }}>
       {/* Header */}
       {!fullscreen && (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3, flexWrap: 'wrap' }}>
-          <Box component={Link} to={`/projects/${projectId}/towers/${towerId}`} sx={{ color: colors.textMuted, textDecoration: 'none', display: 'flex', alignItems: 'center', '&:hover': { color: colors.textStrong } }}>
+          <Box
+            component={Link}
+            to={`/floor-plans?project=${projectId}&tower=${towerId}`}
+            sx={{ color: colors.textMuted, textDecoration: 'none', display: 'flex', alignItems: 'center', '&:hover': { color: colors.textStrong } }}
+          >
             <ArrowBackRounded sx={{ fontSize: 20 }} />
           </Box>
           <Box sx={{ flex: 1 }}>
@@ -139,11 +144,16 @@ export default function FloorPlanViewerPage() {
               <UploadFileRounded sx={{ fontSize: 16 }} /> Upload Floor Plan
             </Box>
           )}
+          {floorPlan && (
+            <Box component={Link} to={`/floor-plans/${projectId}/${towerId}/${floorId}/upload`} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 0.875, borderRadius: '8px', border: `1px solid ${colors.borderLight}`, color: colors.textSecondary, fontSize: '0.875rem', fontWeight: 500, textDecoration: 'none', '&:hover': { borderColor: colors.primary, color: colors.primary } }}>
+              <UploadFileRounded sx={{ fontSize: 16 }} /> Replace Plan
+            </Box>
+          )}
         </Box>
       )}
 
-      {/* Legend */}
-      {!fullscreen && statusCounts && (
+      {/* Legend (only shown when rooms are mapped) */}
+      {!fullscreen && statusCounts && floorPlan && floorPlan.rooms.length > 0 && (
         <Box sx={{ display: 'flex', gap: 1.5, mb: 2, flexWrap: 'wrap' }}>
           {(Object.entries(roomStatusColor) as [string, typeof roomStatusColor[string]][]).map(([key, val]) => (
             <Box key={key} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 1.5, py: 0.5, borderRadius: '8px', backgroundColor: colors.card, boxShadow: '0 1px 4px rgba(15,23,42,0.05)' }}>
@@ -156,7 +166,8 @@ export default function FloorPlanViewerPage() {
       )}
 
       {/* Viewer area */}
-      <Box sx={{ position: 'relative', flex: 1, borderRadius: fullscreen ? 0 : '20px', overflow: 'hidden', backgroundColor: colors.bgDeep, minHeight: 480, cursor: isDragging ? 'grabbing' : 'grab', userSelect: 'none' }}
+      <Box
+        sx={{ position: 'relative', flex: 1, borderRadius: fullscreen ? 0 : '20px', overflow: 'hidden', backgroundColor: colors.bgDeep, minHeight: 480, cursor: isDragging ? 'grabbing' : 'grab', userSelect: 'none' }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -169,41 +180,56 @@ export default function FloorPlanViewerPage() {
         <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <Box sx={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`, transition: isDragging ? 'none' : `transform ${motion.durationFast}`, transformOrigin: 'center center', willChange: 'transform' }}>
             {floorPlan ? (
-              /* Floor plan with SVG room overlays */
-              <Box sx={{ position: 'relative', width: 600, height: 450, borderRadius: '12px', overflow: 'hidden', boxShadow: '0 12px 40px rgba(15,23,42,0.12)' }}>
-                {/* Floor plan background — architectural grid */}
-                <Box sx={{ position: 'absolute', inset: 0, backgroundColor: '#f8f6f0', border: '2px solid #c8bfa0' }}>
-                  {/* Structural walls */}
-                  <Box sx={{ position: 'absolute', inset: '4%', border: '3px solid #8b7355' }} />
-                  <Box sx={{ position: 'absolute', top: '4%', left: '50%', width: '3px', height: '92%', backgroundColor: '#8b7355' }} />
-                  <Box sx={{ position: 'absolute', top: '50%', left: '4%', width: '92%', height: '3px', backgroundColor: '#8b7355' }} />
+              uploadedImageUrl ? (
+                /* All file types (PNG, JPG, PDF-converted-to-image) render as <img> */
+                <Box sx={{ position: 'relative', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 12px 40px rgba(15,23,42,0.22)' }}>
+                  <Box
+                    component="img"
+                    src={uploadedImageUrl}
+                    alt={`${floor.label} floor plan`}
+                    sx={{ display: 'block', maxWidth: 900, maxHeight: 700, width: 'auto', height: 'auto', objectFit: 'contain', backgroundColor: '#fff' }}
+                    draggable={false}
+                  />
+                  {/* SVG room markers overlay */}
+                  {floorPlan.rooms.length > 0 && (
+                    <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
+                      {floorPlan.rooms.map(room => {
+                        const sc = roomStatusColor[room.status] ?? roomStatusColor.not_started;
+                        const rx = (room.x / 100) * 900;
+                        const ry = (room.y / 100) * 700;
+                        const rw = (room.width / 100) * 900;
+                        const rh = (room.height / 100) * 700;
+                        const isSelected = selectedRoom?.id === room.id;
+                        return (
+                          <g key={room.id} onClick={e => { e.stopPropagation(); setSelectedRoom(isSelected ? null : room); }} style={{ cursor: 'pointer' }}>
+                            <rect x={rx} y={ry} width={rw} height={rh} fill={isSelected ? sc.stroke : sc.fill} fillOpacity={isSelected ? 0.35 : 1} stroke={sc.stroke} strokeWidth={isSelected ? 2.5 : 1.5} rx="4" />
+                            <text x={rx + rw / 2} y={ry + rh / 2 - 6} textAnchor="middle" style={{ fontSize: '11px', fontWeight: 700, fill: isSelected ? '#fff' : sc.stroke, pointerEvents: 'none' }}>{room.number}</text>
+                            <text x={rx + rw / 2} y={ry + rh / 2 + 8} textAnchor="middle" style={{ fontSize: '9px', fill: isSelected ? 'rgba(255,255,255,0.8)' : '#64748b', pointerEvents: 'none' }}>{room.type}</text>
+                          </g>
+                        );
+                      })}
+                    </svg>
+                  )}
+                  <Box sx={{ position: 'absolute', bottom: 8, left: 8, display: 'flex', alignItems: 'center', gap: 0.75, px: 1.25, py: 0.5, borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }}>
+                    <LayersRounded sx={{ fontSize: 12, color: 'rgba(255,255,255,0.7)' }} />
+                    <Typography sx={{ fontSize: '0.6875rem', color: 'rgba(255,255,255,0.9)', fontWeight: 500 }}>{floorPlan.fileName}</Typography>
+                  </Box>
                 </Box>
-
-                {/* SVG room markers */}
-                <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
-                  {floorPlan.rooms.map(room => {
-                    const sc = roomStatusColor[room.status];
-                    const rx = (room.x / 100) * 600;
-                    const ry = (room.y / 100) * 450;
-                    const rw = (room.width / 100) * 600;
-                    const rh = (room.height / 100) * 450;
-                    const isSelected = selectedRoom?.id === room.id;
-                    return (
-                      <g key={room.id} onClick={(e) => { e.stopPropagation(); setSelectedRoom(isSelected ? null : room); }} style={{ cursor: 'pointer' }}>
-                        <rect x={rx} y={ry} width={rw} height={rh} fill={isSelected ? sc.stroke : sc.fill} fillOpacity={isSelected ? 0.35 : 1} stroke={sc.stroke} strokeWidth={isSelected ? 2.5 : 1.5} rx="4" />
-                        <text x={rx + rw / 2} y={ry + rh / 2 - 6} textAnchor="middle" style={{ fontSize: '11px', fontWeight: 700, fill: isSelected ? '#fff' : sc.stroke, pointerEvents: 'none' }}>{room.number}</text>
-                        <text x={rx + rw / 2} y={ry + rh / 2 + 8} textAnchor="middle" style={{ fontSize: '9px', fill: isSelected ? 'rgba(255,255,255,0.8)' : '#64748b', pointerEvents: 'none', textTransform: 'capitalize' }}>{room.type}</text>
-                      </g>
-                    );
-                  })}
-                </svg>
-
-                {/* File info overlay */}
-                <Box sx={{ position: 'absolute', bottom: 8, left: 8, display: 'flex', alignItems: 'center', gap: 0.75, px: 1.25, py: 0.5, borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }}>
-                  <LayersRounded sx={{ fontSize: 12, color: 'rgba(255,255,255,0.7)' }} />
-                  <Typography sx={{ fontSize: '0.6875rem', color: 'rgba(255,255,255,0.9)', fontWeight: 500 }}>{floorPlan.fileName}</Typography>
+              ) : (
+                /* File saved locally but no preview URL — prompt re-upload */
+                <Box sx={{ width: 560, height: 420, borderRadius: '16px', border: '1px solid rgba(100,116,139,0.3)', background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2.5, boxShadow: '0 12px 40px rgba(0,0,0,0.3)' }}>
+                  <Box sx={{ width: 72, height: 72, borderRadius: '16px', backgroundColor: 'rgba(37,99,235,0.15)', border: '1px solid rgba(37,99,235,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <LayersRounded sx={{ fontSize: 36, color: '#60a5fa' }} />
+                  </Box>
+                  <Box sx={{ textAlign: 'center' }}>
+                    <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: 'rgba(255,255,255,0.9)', mb: 0.5 }}>{floorPlan.fileName}</Typography>
+                    <Typography sx={{ fontSize: '0.8125rem', color: 'rgba(148,163,184,0.8)' }}>{floorPlan.fileType?.toUpperCase()} · {floorPlan.fileSizeMb} MB</Typography>
+                  </Box>
+                  <Box component={Link} to={`/floor-plans/${projectId}/${towerId}/${floorId}/upload`} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2.5, py: 1, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none', boxShadow: '0 4px 14px rgba(37,99,235,0.28)' }}>
+                    <UploadFileRounded sx={{ fontSize: 16 }} /> Re-upload to get preview
+                  </Box>
                 </Box>
-              </Box>
+              )
             ) : (
               /* No floor plan uploaded */
               <Box sx={{ width: 560, height: 420, borderRadius: '16px', border: `2px dashed ${colors.border}`, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, backgroundColor: colors.card }}>
@@ -249,16 +275,15 @@ export default function FloorPlanViewerPage() {
           <Typography sx={{ fontSize: '0.6875rem', color: 'rgba(255,255,255,0.9)', fontWeight: 600 }}>{Math.round(scale * 100)}%</Typography>
         </Box>
 
-        {/* Room action panel */}
-        {selectedRoom && <RoomActionPanel room={selectedRoom} onClose={() => setSelectedRoom(null)} uploadHref="/captures/upload" />}
+        {selectedRoom && <RoomActionPanel room={selectedRoom} onClose={() => setSelectedRoom(null)} />}
       </Box>
 
       {/* Floor selector */}
-      {!fullscreen && (
+      {!fullscreen && towerFloors.length > 1 && (
         <Box sx={{ mt: 3 }}>
           <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.08em', textTransform: 'uppercase', mb: 2 }}>Other Floors</Typography>
           <Box sx={{ display: 'flex', gap: 1, overflowX: 'auto', pb: 1 }}>
-            {getFloors(towerId ?? '').slice(0, 8).map(f => (
+            {towerFloors.map(f => (
               <Box key={f.id} component={Link} to={`/floor-plans/${projectId}/${towerId}/${f.id}`}
                 sx={{ flexShrink: 0, px: 2, py: 1, borderRadius: '8px', border: `1.5px solid ${f.id === floorId ? colors.primary : colors.borderLight}`, backgroundColor: f.id === floorId ? colors.primarySoft : colors.card, color: f.id === floorId ? colors.primary : colors.textSecondary, fontSize: '0.8125rem', fontWeight: f.id === floorId ? 700 : 400, textDecoration: 'none', transition: `all ${motion.durationFast}`, '&:hover': { borderColor: colors.primary, color: colors.primary } }}>
                 {f.label}

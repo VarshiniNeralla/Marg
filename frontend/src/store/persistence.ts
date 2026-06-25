@@ -16,7 +16,7 @@ export const LEGACY_KEYS = [
 
 export const STORE_VERSION = {
   auth: 1,
-  workflow: 2,
+  workflow: 3,
   settings: 1,
   user: 1,
 } as const;

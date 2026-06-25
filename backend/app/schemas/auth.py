@@ -50,6 +50,8 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
     org_slug: str = Field(..., min_length=3, max_length=50)
+    role: Optional[str] = Field(default=None)
+    designation: Optional[str] = Field(default=None, max_length=120)
 
     @field_validator("password")
     @classmethod
@@ -59,7 +61,7 @@ class RegisterRequest(BaseModel):
     @field_validator("name")
     @classmethod
     def no_html_in_name(cls, v: str) -> str:
-        if re.search(r"[<>\"']", v):
+        if re.search(r"[<>\"&]", v):
             raise ValueError("Name must not contain HTML characters")
         return v
 
