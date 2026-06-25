@@ -43,7 +43,7 @@ export default function AuthCard({ title, subtitle, children, footer }: AuthCard
       {/* ── Centered column ─────────────────────────────────────────────────── */}
       <Box sx={{
         position: 'relative', zIndex: 1,
-        width: '100%', maxWidth: 500,
+        width: '100%', maxWidth: 640,
         display: 'flex', flexDirection: 'column', alignItems: 'stretch',
       }}>
         {/* Top bar: back link */}
@@ -110,11 +110,11 @@ export default function AuthCard({ title, subtitle, children, footer }: AuthCard
           border: '1px solid rgba(15,23,42,0.07)',
           borderRadius: '20px',
           boxShadow: '0 1px 2px rgba(15,23,42,0.04), 0 12px 40px rgba(15,23,42,0.06)',
-          px: { xs: 3.5, sm: 5 },
-          py: { xs: 3.5, sm: 4 },
+          px: { xs: 3.5, sm: 5.5 },
+          py: { xs: 2.5, sm: 3 },
         }}>
           {/* Brand — inside the card, centered, at the very top */}
-          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mb: 2.5 }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mb: 1.75 }}>
             <Box component="img" src="/assets/new_logo.png" alt="My Home Group"
               sx={{ height: 30, width: 'auto', objectFit: 'contain', mb: 1 }} />
             <Typography sx={{
@@ -122,7 +122,7 @@ export default function AuthCard({ title, subtitle, children, footer }: AuthCard
               fontWeight: 800, fontSize: '1.125rem', color: colors.textStrong,
               letterSpacing: '-0.04em', lineHeight: 1.1,
             }}>
-              Horizon
+              Prāṅgaṇ
             </Typography>
             <Typography sx={{
               fontSize: '0.5625rem', fontWeight: 500, color: colors.textSubdued,

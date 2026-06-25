@@ -5,6 +5,11 @@ from loguru import logger
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.datastructures import MutableHeaders
 
+try:
+    from uvicorn.protocols.utils import ClientDisconnected as _ClientDisconnected
+except ImportError:
+    _ClientDisconnected = None  # type: ignore[assignment,misc]
+
 
 class RequestLoggingMiddleware:
     """
@@ -62,6 +67,10 @@ class RequestLoggingMiddleware:
         try:
             await self.app(scope, receive, send_with_logging)
         except Exception as exc:
+            # Client closed the connection before the response was fully sent.
+            # This is normal in SPAs during navigation — not a server error.
+            if _ClientDisconnected and isinstance(exc, _ClientDisconnected):
+                return
             elapsed = (time.perf_counter() - start_time) * 1000
             logger.error(
                 f"[{request_id}] {method} {path} "

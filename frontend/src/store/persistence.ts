@@ -2,7 +2,7 @@
 
 export const AUTH_STORE_KEY = 'sitesurelabs-auth';
 export const WORKFLOW_STORE_KEY = 'sitesurelabs-workflow';
-export const SETTINGS_STORE_KEY = 'sitesurelabs-settings';
+export const SETTINGS_STORE_KEY = 'sitesurelabs-settings-v2';
 export const USER_STORE_KEY = 'sitesurelabs-user';
 
 /** Legacy keys migrated on first load — cleared on reset. */
@@ -17,7 +17,7 @@ export const LEGACY_KEYS = [
 export const STORE_VERSION = {
   auth: 1,
   workflow: 3,
-  settings: 1,
+  settings: 2,
   user: 1,
 } as const;
 

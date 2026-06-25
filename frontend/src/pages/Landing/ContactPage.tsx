@@ -92,7 +92,7 @@ function Navbar() {
       <Box component={Link} to="/" sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mr: 'auto', textDecoration: 'none' }}>
         <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 32, width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
         <Box>
-          <Typography sx={{ fontSize: '1.0625rem', fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>Horizon</Typography>
+          <Typography sx={{ fontSize: '1.0625rem', fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>Prāṅgaṇ</Typography>
           <Typography sx={{ fontSize: '0.625rem', fontWeight: 500, color: colors.textSubdued, letterSpacing: '0.06em', textTransform: 'uppercase', lineHeight: 1 }}>by SiteSureLabs</Typography>
         </Box>
       </Box>
@@ -307,7 +307,7 @@ export default function ContactPage() {
                 <Box sx={{ position: 'absolute', inset: 0, backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(255,255,255,0.06) 1px, transparent 0)', backgroundSize: '24px 24px' }} />
                 <Box sx={{ position: 'absolute', top: '-30%', right: '-10%', width: 200, height: 200, borderRadius: '50%', background: 'radial-gradient(ellipse, rgba(37,99,235,0.25) 0%, transparent 70%)', filter: 'blur(20px)' }} />
                 <Box sx={{ position: 'relative', zIndex: 1 }}>
-                  <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: '1rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.03em', mb: 0.625 }}>See Horizon live</Typography>
+                  <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: '1rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.03em', mb: 0.625 }}>See Prāṅgaṇ live</Typography>
                   <Typography sx={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.6)', mb: 2.5, lineHeight: 1.65 }}>30-minute tailored demo with your use case — book a slot this week.</Typography>
                   <Box component={Link} to="/register" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.875, px: 2, py: 0.875, borderRadius: '8px', backgroundColor: '#fff', color: colors.primary, fontWeight: 700, fontSize: '0.875rem', textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(255,255,255,0.92)' }, transition: `background-color ${motion.durationFast}` }}>
                     Book a demo <ArrowForwardRounded sx={{ fontSize: 14 }} />

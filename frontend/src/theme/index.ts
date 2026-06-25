@@ -111,7 +111,7 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           fontSize: '0.75rem',
-          HorizoninTop: '4px',
+          marginTop: '4px',
         },
       },
     },
@@ -194,7 +194,7 @@ const theme = createTheme({
           borderRadius: radii.md,
           border: `1px solid ${colors.border}`,
           boxShadow: '0 24px 48px rgba(15, 23, 42, 0.08)',
-          HorizoninTop: '4px',
+          marginTop: '4px',
         },
       },
     },
@@ -203,7 +203,7 @@ const theme = createTheme({
         root: {
           fontSize: '0.875rem',
           borderRadius: '6px',
-          Horizonin: '0 4px',
+          margin: '0 4px',
           '&:hover': {
             backgroundColor: colors.primarySoft,
             color: colors.primary,

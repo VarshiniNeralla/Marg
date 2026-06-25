@@ -37,7 +37,7 @@ function Navbar() {
       <Box component={Link} to="/" sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mr: 'auto', textDecoration: 'none' }}>
         <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 32, width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
         <Box>
-          <Typography sx={{ fontSize: '1.0625rem', fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>Horizon</Typography>
+          <Typography sx={{ fontSize: '1.0625rem', fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>Prāṅgaṇ</Typography>
           <Typography sx={{ fontSize: '0.625rem', fontWeight: 500, color: colors.textSubdued, letterSpacing: '0.06em', textTransform: 'uppercase', lineHeight: 1 }}>by SiteSureLabs</Typography>
         </Box>
       </Box>
@@ -234,7 +234,7 @@ export default function FeaturesPage() {
             Every feature, no surprises
           </Typography>
           <Typography sx={{ fontSize: '1.0625rem', color: colors.textMuted, maxWidth: 560, mx: 'auto', lineHeight: 1.7 }}>
-            Horizon ships with everything a construction team needs — from first capture to client handover.
+            Prāṅgaṇ ships with everything a construction team needs — from first capture to client handover.
           </Typography>
           <Box sx={{ mt: 3, display: 'flex', gap: 1.5, justifyContent: 'center', flexWrap: 'wrap' }}>
             <Box component={Link} to="/register" sx={{ display: 'inline-flex', alignItems: 'center', gap: 1, px: 2.5, py: 1.375, borderRadius: '10px', background: colors.primaryGradient, color: '#fff', fontWeight: 600, fontSize: '0.9375rem', textDecoration: 'none', boxShadow: shadows.btn, '&:hover': { opacity: 0.9 }, transition: `opacity ${motion.durationFast}` }}>

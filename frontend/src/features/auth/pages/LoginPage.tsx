@@ -72,9 +72,8 @@ const ROLE_OPTIONS = [
 ] as const;
 
 const DEMO_CREDENTIALS = [
-  { role: 'admin',          roleLabel: 'Admin',          email: 'admin@myhomeconstructions.com',    password: 'Horizon@123', color: '#2563eb' },
-  { role: 'manager',        roleLabel: 'Manager',        email: 'manager@myhomeconstructions.com',  password: 'Horizon@123', color: '#7c3aed' },
-  { role: 'field_engineer', roleLabel: 'Field Engineer', email: 'engineer@myhomeconstructions.com', password: 'Horizon@123', color: '#059669' },
+  { role: 'admin',          roleLabel: 'Admin',          email: 'admin@myhomeconstructions.com',    password: 'Prangan@123', color: '#2563eb' },
+  { role: 'manager',        roleLabel: 'Manager',        email: 'manager@myhomeconstructions.com',  password: 'Prangan@123', color: '#7c3aed' },
 ];
 
 export default function LoginPage() {
@@ -107,12 +106,13 @@ export default function LoginPage() {
     setIsLoading(true);
     try {
       const data = await authService.login({ email: values.email, password: values.password });
-      // Set token immediately so /auth/me request is authenticated.
+      // Use the role returned by the auth response — never the UI role picker.
+      const authedRole = data.user.role;
       setAuth(data.access_token, {
         id: data.user.id,
         name: data.user.name,
         email: data.user.email,
-        role: values.role as typeof data.user.role,
+        role: authedRole,
         org_id: data.user.org_id,
         org_name: data.user.org_name,
         org_slug: 'myhome',
@@ -125,7 +125,7 @@ export default function LoginPage() {
           id: me.id,
           name: me.name,
           email: me.email,
-          role: values.role as typeof data.user.role,
+          role: (me.role ?? authedRole) as typeof authedRole,
           org_id: me.org_id,
           org_name: me.org_name,
           org_slug: me.org_slug,
@@ -134,7 +134,7 @@ export default function LoginPage() {
       } catch {
         // /me failed — continue with partial data, org_slug defaults to 'myhome'
       }
-      navigate(from ?? getRoleLandingPath(values.role), { replace: true });
+      navigate(from ?? getRoleLandingPath(authedRole), { replace: true });
     } catch (err) {
       const e = normaliseError(err);
       setServerError(
@@ -150,7 +150,7 @@ export default function LoginPage() {
   return (
     <AuthCard
       title="Sign in"
-      subtitle="Access your Horizon workspace"
+      subtitle="Access your Prāṅgaṇ workspace"
     >
       <Box component="form" onSubmit={handleSubmit(onSubmit)} noValidate sx={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
         {serverError && (

@@ -71,9 +71,18 @@ def _pdf_image_url(public_id: str) -> str:
         secure=True,
         page=1,
         fetch_format="png",
-        quality="auto",
-        dpr="2.0",
+        quality=100,
+        dpr="3.0",
+        density=300,
         flags="attachment:false",
+    )
+
+
+def _pdf_raw_url(public_id: str) -> str:
+    """Return the original PDF download URL from Cloudinary (for PDF.js vector rendering)."""
+    return cloudinary.CloudinaryImage(public_id).build_url(
+        secure=True,
+        format="pdf",
     )
 
 
@@ -133,10 +142,13 @@ async def upload_media(
 
     # For PDFs, override the original_url with a direct image render URL
     # so the frontend can display it as a plain <img> without auth issues
-    if _is_pdf(filename, fmt):
+    is_pdf = _is_pdf(filename, fmt)
+    if is_pdf:
         preview_url = _pdf_image_url(public_id)
+        raw_pdf_url = _pdf_raw_url(public_id)
     else:
         preview_url = secure_url
+        raw_pdf_url = None
 
     return {
         "original_url": preview_url,
@@ -150,4 +162,5 @@ async def upload_media(
         "height": result.get("height"),
         "pages": result.get("pages"),
         "original_filename": filename,
+        "raw_pdf_url": raw_pdf_url,
     }

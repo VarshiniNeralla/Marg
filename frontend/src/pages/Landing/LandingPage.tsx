@@ -83,7 +83,7 @@ function Navbar() {
       <Box component={Link} to="/" sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mr: 'auto', textDecoration: 'none' }}>
         <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 32, width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
         <Box>
-          <Typography sx={{ fontSize: '1.0625rem', fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>Horizon</Typography>
+          <Typography sx={{ fontSize: '1.0625rem', fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>Prāṅgaṇ</Typography>
           <Typography sx={{ fontSize: '0.625rem', fontWeight: 500, color: colors.textSubdued, letterSpacing: '0.06em', textTransform: 'uppercase', lineHeight: 1 }}>by SiteSureLabs</Typography>
         </Box>
       </Box>
@@ -157,7 +157,7 @@ function Hero() {
           fontWeight: 800, lineHeight: 1.05, letterSpacing: '-0.05em',
           color: colors.textStrong, mb: 1,
         }}>
-          Horizon
+          Prāṅgaṇ
         </Typography>
 
         <Typography sx={{
@@ -198,7 +198,7 @@ function Hero() {
           <Box sx={{ height: 44, backgroundColor: '#f8f9fb', borderBottom: '1px solid #e5e7eb', display: 'flex', alignItems: 'center', px: 2, gap: 1 }}>
             {['#ef4444','#f59e0b','#10b981'].map((c, i) => <Box key={i} sx={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: c }} />)}
             <Box sx={{ ml: 1, flex: 1, maxWidth: 320, height: 22, borderRadius: '6px', backgroundColor: '#e5e7eb', display: 'flex', alignItems: 'center', px: 1.5 }}>
-              <Typography sx={{ fontSize: '0.6875rem', color: '#9ca3af' }}>horizon.sitesurelabs.com/dashboard</Typography>
+              <Typography sx={{ fontSize: '0.6875rem', color: '#9ca3af' }}>prangan.sitesurelabs.com/dashboard</Typography>
             </Box>
           </Box>
           {/* Dashboard preview */}
@@ -206,8 +206,8 @@ function Hero() {
             {/* Sidebar */}
             <Box sx={{ width: 200, backgroundColor: '#0f172a', p: 2, flexShrink: 0 }}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 3, px: 1 }}>
-                <Box component="img" src="/assets/new_logo.png" alt="Horizon" sx={{ height: 20, width: 'auto', objectFit: 'contain', filter: 'brightness(0) invert(1)', flexShrink: 0 }} />
-                <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: '#fff' }}>Horizon</Typography>
+                <Box component="img" src="/assets/new_logo.png" alt="Prāṅgaṇ" sx={{ height: 20, width: 'auto', objectFit: 'contain', filter: 'brightness(0) invert(1)', flexShrink: 0 }} />
+                <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: '#fff' }}>Prāṅgaṇ</Typography>
               </Box>
               {['Dashboard','Projects','Captures','Tours','Floor Plans','Defects','Analytics'].map((item, i) => (
                 <Box key={item} sx={{ px: 1.5, py: 0.875, borderRadius: '6px', mb: 0.25, backgroundColor: i === 0 ? 'rgba(37,99,235,0.25)' : 'transparent', display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -380,7 +380,7 @@ function WorkflowSection() {
 // ── Testimonials ──────────────────────────────────────────────────────────────
 
 const TESTIMONIALS = [
-  { name: 'Rajesh Nair', role: 'Head of Projects, My Home Constructions', quote: 'Horizon completely transformed how we deliver virtual handovers. What took 3 months of coordination now takes a week. The review workflow alone saved us from 4 major defects.' },
+  { name: 'Rajesh Nair', role: 'Head of Projects, My Home Constructions', quote: 'Prāṅgaṇ completely transformed how we deliver virtual handovers. What took 3 months of coordination now takes a week. The review workflow alone saved us from 4 major defects.' },
   { name: 'Priya Sharma', role: 'Project Lead, Prestige Group', quote: 'The floor plan mapping feature is exceptional. Our clients can now walk through every apartment virtually before possession. Tour view count went from 0 to 1,200 in the first month.' },
   { name: 'Arjun Mehta', role: 'QA Director, Brigade Group', quote: 'The capture review workflow is exactly what we needed. Assigning reviewers, tracking status, requesting re-uploads — all in one place. Our QA cycle time dropped by 60%.' },
 ];
@@ -424,7 +424,7 @@ const TESTIMONIALS = [
 // ── FAQ ───────────────────────────────────────────────────────────────────────
 
 const FAQS = [
-  { q: 'What camera formats are supported?', a: 'Horizon supports .jpg, .jpeg, .png for standard photos and .dng (DNG raw), .insp/.insv (Insta360) for 360° cameras. RAW and Insta360 files go through our processing pipeline before becoming viewable panoramas.' },
+  { q: 'What camera formats are supported?', a: 'Prāṅgaṇ supports .jpg, .jpeg, .png for standard photos and .dng (DNG raw), .insp/.insv (Insta360) for 360° cameras. RAW and Insta360 files go through our processing pipeline before becoming viewable panoramas.' },
   { q: 'How does the review workflow work?', a: 'Captures go through a 6-state lifecycle: Uploaded → Assigned → Reviewing → Changes Requested → Approved → Published. Reviewers can approve, request re-uploads, or reject with detailed notes.' },
   { q: 'Can I invite my entire construction team?', a: 'Yes. You can invite unlimited team members with role-based permissions: Admin, Manager, Reviewer, and Viewer. Each role has specific access to captures, tours, analytics, and settings.' },
   { q: 'Is data stored securely?', a: 'All media files are stored on Cloudinary with private delivery URLs. Metadata is stored on MongoDB Atlas with tenant isolation. Access tokens expire in 15 minutes; refresh tokens are httpOnly cookies.' },
@@ -479,7 +479,7 @@ function CTABanner() {
           Ready to digitise your construction site?
         </Typography>
         <Typography sx={{ fontSize: '1.0625rem', color: 'rgba(255,255,255,0.75)', mb: 4, maxWidth: 480, mx: 'auto' }}>
-          Join 40+ construction teams already using Horizon to deliver better handovers.
+          Join 40+ construction teams already using Prāṅgaṇ to deliver better handovers.
         </Typography>
         <Box sx={{ display: 'flex', gap: 1.5, justifyContent: 'center', flexWrap: 'wrap' }}>
           <Box component={Link} to="/register" sx={{ display: 'inline-flex', alignItems: 'center', gap: 1, px: 3, py: 1.5, borderRadius: '10px', backgroundColor: '#fff', color: colors.primary, fontWeight: 700, fontSize: '1rem', textDecoration: 'none', boxShadow: '0 4px 14px rgba(0,0,0,0.15)', '&:hover': { transform: 'translateY(-1px)' }, transition: `all ${motion.durationFast}` }}>
@@ -502,7 +502,7 @@ function Footer() {
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 2 }}>
               <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 28, width: 'auto', objectFit: 'contain', filter: 'brightness(0) invert(1)', flexShrink: 0 }} />
               <Box>
-                <Typography sx={{ fontSize: '1rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.03em', lineHeight: 1.1 }}>Horizon</Typography>
+                <Typography sx={{ fontSize: '1rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.03em', lineHeight: 1.1 }}>Prāṅgaṇ</Typography>
                 <Typography sx={{ fontSize: '0.5625rem', fontWeight: 500, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.07em', textTransform: 'uppercase' }}>by SiteSureLabs</Typography>
               </Box>
             </Box>
@@ -538,7 +538,7 @@ function Footer() {
         </Grid>
         <Box sx={{ borderTop: '1px solid rgba(255,255,255,0.07)', pt: 4, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2 }}>
           <Typography sx={{ fontSize: '0.8125rem', color: 'rgba(255,255,255,0.3)' }}>
-            © 2026 SiteSureLabs · Horizon. Built for construction teams.
+            © 2026 SiteSureLabs · Prāṅgaṇ. Built for construction teams.
           </Typography>
           <Typography sx={{ fontSize: '0.8125rem', color: 'rgba(255,255,255,0.3)' }}>
             Made with care in Hyderabad, India

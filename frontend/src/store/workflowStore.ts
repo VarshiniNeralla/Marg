@@ -271,25 +271,21 @@ function keepPrimaryProjectData(data: WorkflowDataState): WorkflowDataState {
 }
 
 export function buildInitialWorkflowData(): WorkflowDataState {
-  const initialFloors = seedFloors();
-  const initialFlats = seedFlats(initialFloors);
-  const initialRooms = seedRooms(initialFloors);
-  const projectIds = primaryProjectIds();
-  return keepPrimaryProjectData({
-    projects: mockProjects.filter(p => projectIds.has(p.id)).map(p => ({ ...p })),
-    towers: mockTowers.filter(t => projectIds.has(t.projectId)).map(t => ({ ...t })),
-    floors: initialFloors,
-    flats: initialFlats,
-    rooms: initialRooms,
-    captures: mockCaptures.map(c => ({ ...c })),
-    tours: mockTours.map(t => ({ ...t })),
-    floorPlans: mockFloorPlans.map(fp => ({ ...fp, rooms: fp.rooms.map(r => ({ ...r })) })),
-    defects: mockDefects.map(d => ({ ...d })),
-    notifications: mockNotifications.map(n => ({ ...n })),
-    auditLogs: mockAuditLogs.map(a => ({ ...a })),
-    users: mockUsers.map(u => ({ ...u })),
-    uidCounter: Date.now() % 100000,
-  });
+  return {
+    projects: [],
+    towers: [],
+    floors: [],
+    flats: [],
+    rooms: [],
+    captures: [],
+    tours: [],
+    floorPlans: [],
+    defects: [],
+    notifications: [],
+    auditLogs: [],
+    users: [],
+    uidCounter: 1,
+  };
 }
 
 function isValidWorkflowData(data: unknown): data is WorkflowDataState {
@@ -794,6 +790,8 @@ export const useWorkflowStore = create<WorkflowState>()(
       page_count: firstAsset?.pages ?? 1,
       pageCount: firstAsset?.pages ?? 1,
       dimensions: firstAsset?.width && firstAsset?.height ? { width: firstAsset.width, height: firstAsset.height } : null,
+      raw_pdf_url: firstAsset?.raw_pdf_url ?? null,
+      rawPdfUrl: firstAsset?.raw_pdf_url ?? null,
     } as MockFloorPlan & Record<string, unknown>;
     set(s => ({
       floorPlans: [...s.floorPlans.filter(fp => !(fp.towerId === payload.towerId && fp.floorId === payload.floorId)), plan],

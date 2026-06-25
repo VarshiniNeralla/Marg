@@ -6,7 +6,7 @@ import {
 import {
   GridViewRounded, FolderOpenRounded, CameraAltRounded, ViewInArRounded,
   MapRounded, BarChartRounded, PeopleRounded, TuneRounded,
-  VpnKeyRounded, LogoutRounded, PersonRounded, MenuRounded, BugReportRounded,
+  VpnKeyRounded, LogoutRounded, PersonRounded, MenuRounded,
   CloudUploadRounded, StorageRounded, RateReviewRounded,
   PhotoCameraRounded, ChevronLeftRounded, ChevronRightRounded,
 } from '@mui/icons-material';
@@ -39,7 +39,6 @@ const ADMIN_NAV: NavSection[] = [
       { label: 'Floor Plans', path: '/floor-plans', icon: <MapRounded /> },
       { label: 'Captures',   path: '/captures',    icon: <CameraAltRounded /> },
       { label: 'Tours',       path: '/tours',       icon: <ViewInArRounded /> },
-      { label: 'Defects',     path: '/defects',     icon: <BugReportRounded /> },
       { label: 'Analytics',   path: '/analytics',   icon: <BarChartRounded /> },
     ],
   },
@@ -75,7 +74,6 @@ const MANAGER_NAV: NavSection[] = [
       { label: 'Projects',    path: '/projects',    icon: <FolderOpenRounded /> },
       { label: 'Floor Plans', path: '/floor-plans', icon: <MapRounded /> },
       { label: 'Analytics',   path: '/analytics',   icon: <BarChartRounded /> },
-      { label: 'Defects',     path: '/defects',     icon: <BugReportRounded /> },
     ],
   },
 ];
@@ -277,7 +275,7 @@ export default function DashboardLayout() {
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, minWidth: 0, flex: 1 }}>
             <Box component="img" src="/assets/new_logo.png" alt="My Home Constructions" sx={{ width: 28, height: 28, objectFit: 'contain', flexShrink: 0 }} />
             <Box sx={{ minWidth: 0 }}>
-              <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontWeight: 700, fontSize: '0.875rem', color: colors.textStrong, letterSpacing: '-0.025em', lineHeight: 1.1 }}>Horizon</Typography>
+              <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontWeight: 700, fontSize: '0.875rem', color: colors.textStrong, letterSpacing: '-0.025em', lineHeight: 1.1 }}>Prāṅgaṇ</Typography>
               <Typography sx={{ fontSize: '0.625rem', color: colors.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase', fontWeight: 500 }}>by SiteSureLabs</Typography>
             </Box>
           </Box>

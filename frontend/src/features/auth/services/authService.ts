@@ -13,13 +13,13 @@ interface LoginResponse {
 
 // ── Mock credential table ─────────────────────────────────────────────────────
 // Used when the backend is unreachable (network error / dev without server).
-// Password for all mock accounts: Horizon@123
+// Password for all mock accounts: Prangan@123
 
 const MOCK_USERS: AuthUser[] = [
   {
     id: 'u1',
-    name: 'Priya Sharma',
-    email: 'priya@myhomeconstructions.com',
+    name: 'Admin',
+    email: 'admin@myhomeconstructions.com',
     role: 'admin',
     org_id: 'org1',
     org_name: 'My Home Constructions',
@@ -29,8 +29,8 @@ const MOCK_USERS: AuthUser[] = [
   },
   {
     id: 'u2',
-    name: 'Ravi Kumar',
-    email: 'ravi@myhomeconstructions.com',
+    name: 'Manager',
+    email: 'manager@myhomeconstructions.com',
     role: 'manager',
     org_id: 'org1',
     org_name: 'My Home Constructions',
@@ -40,8 +40,8 @@ const MOCK_USERS: AuthUser[] = [
   },
   {
     id: 'u7',
-    name: 'Kiran Desai',
-    email: 'kiran@myhomeconstructions.com',
+    name: 'Field Engineer',
+    email: 'engineer@myhomeconstructions.com',
     role: 'field_engineer',
     org_id: 'org1',
     org_name: 'My Home Constructions',
@@ -51,7 +51,7 @@ const MOCK_USERS: AuthUser[] = [
   },
 ];
 
-const MOCK_PASSWORD = 'Horizon@123';
+const MOCK_PASSWORD = 'Prangan@123';
 
 function mockLogin(email: string, password: string): LoginResponse | null {
   if (password !== MOCK_PASSWORD) return null;

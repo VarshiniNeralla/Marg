@@ -21,6 +21,7 @@
     "axios": "^1.17.0",
     "dayjs": "^1.11.21",
     "jwt-decode": "^4.0.0",
+    "pdfjs-dist": "^4.4.168",
     "photo-sphere-viewer": "^4.8.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

@@ -72,19 +72,19 @@ def _build_reset_email_html(name: str, reset_url: str) -> str:
     return f"""
     <!DOCTYPE html>
     <html>
-    <body style="font-family: Arial, sans-serif; max-width: 600px; Horizonin: 0 auto; padding: 20px;">
+    <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <h2 style="color: #1976D2;">Password Reset Request</h2>
         <p>Hi {name},</p>
         <p>You requested a password reset for your <strong>{settings.APP_NAME}</strong> account.</p>
         <p>Click the button below to reset your password. This link is valid for <strong>15 minutes</strong>.</p>
         <a href="{reset_url}"
            style="display:inline-block; padding:12px 24px; background:#1976D2;
-                  color:#fff; text-decoration:none; border-radius:4px; Horizonin:16px 0;">
+                  color:#fff; text-decoration:none; border-radius:4px; margin:16px 0;">
             Reset Password
         </a>
         <p>Or copy this link into your browser:</p>
         <p style="word-break:break-all; color:#555;">{reset_url}</p>
-        <hr style="border:none; border-top:1px solid #eee; Horizonin:24px 0;">
+        <hr style="border:none; border-top:1px solid #eee; margin:24px 0;">
         <p style="color:#888; font-size:12px;">
             If you did not request a password reset, please ignore this email.
             Your password will not be changed.

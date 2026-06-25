@@ -12,7 +12,7 @@ import {
   getProjectById, getTowersByProject,
 } from '@store/workflowSelectors';
 import { useWorkflowStore } from '@store/workflowStore';
-import { useAuthStore } from '@store/authStore';
+import { useAuthStore, isAdmin } from '@store/authStore';
 import ActivityFeed from '@shared/components/ActivityFeed/ActivityFeed';
 
 const ROLE_COLORS: Record<string, { color: string; bg: string }> = {
@@ -29,12 +29,15 @@ export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const projects    = useWorkflowStore(s => s.projects);
   const towers      = useWorkflowStore(s => s.towers);
+  const floors      = useWorkflowStore(s => s.floors);
+  const rooms       = useWorkflowStore(s => s.rooms);
+  const captures    = useWorkflowStore(s => s.captures);
   const users       = useWorkflowStore(s => s.users);
   const auditLogs   = useWorkflowStore(s => s.auditLogs);
   const addUserToProject    = useWorkflowStore(s => s.addUserToProject);
   const removeUserFromProject = useWorkflowStore(s => s.removeUserFromProject);
   const { user: currentUser } = useAuthStore();
-  const isAdmin = currentUser?.role === 'admin';
+  const hasAdminRole = isAdmin(currentUser);
 
   const project = getProjectById(projects, projectId ?? '');
   const [tab, setTab] = useState(0);
@@ -56,6 +59,12 @@ export default function ProjectDetailPage() {
   const projectTowers  = [...getTowersByProject(towers, project.id)].sort((a, b) =>
     a.name.localeCompare(b.name, undefined, { numeric: true })
   );
+  const projectTowerIds  = new Set(projectTowers.map(t => t.id));
+  const projectFloors    = floors.filter(f => projectTowerIds.has(f.towerId));
+  const projectFloorIds  = new Set(projectFloors.map(f => f.id));
+  const projectRooms     = rooms.filter(r => projectFloorIds.has(r.floorId));
+  const projectRoomIds   = new Set(projectRooms.map(r => r.id));
+  const projectCaptures  = captures.filter(c => projectRoomIds.has(c.roomId));
   const teamMembers    = users.filter(u => u.projectIds?.includes(project.id));
   const nonMembers     = users.filter(u => !u.projectIds?.includes(project.id) &&
     (u.name.toLowerCase().includes(memberSearch.toLowerCase()) || u.email?.toLowerCase().includes(memberSearch.toLowerCase()))
@@ -112,11 +121,11 @@ export default function ProjectDetailPage() {
       {/* Stat row */}
       <Grid container spacing={2} sx={{ mb: 4 }}>
         {[
-          { icon: <DomainRounded sx={{ fontSize: 18 }} />,      label: 'Towers',   value: project.towers,       color: '#2563eb' },
-          { icon: <LayersRounded sx={{ fontSize: 18 }} />,      label: 'Floors',   value: project.floors,       color: '#0891b2' },
-          { icon: <MeetingRoomRounded sx={{ fontSize: 18 }} />, label: 'Rooms',    value: project.rooms,        color: '#7c3aed' },
-          { icon: <CameraAltRounded sx={{ fontSize: 18 }} />,   label: 'Captures', value: project.captures,     color: '#059669' },
-          { icon: <PeopleRounded sx={{ fontSize: 18 }} />,      label: 'Team',     value: teamMembers.length,   color: '#64748b' },
+          { icon: <DomainRounded sx={{ fontSize: 18 }} />,      label: 'Towers',   value: projectTowers.length,   color: '#2563eb' },
+          { icon: <LayersRounded sx={{ fontSize: 18 }} />,      label: 'Floors',   value: projectFloors.length,   color: '#0891b2' },
+          { icon: <MeetingRoomRounded sx={{ fontSize: 18 }} />, label: 'Rooms',    value: projectRooms.length,    color: '#7c3aed' },
+          { icon: <CameraAltRounded sx={{ fontSize: 18 }} />,   label: 'Captures', value: projectCaptures.length, color: '#059669' },
+          { icon: <PeopleRounded sx={{ fontSize: 18 }} />,      label: 'Team',     value: teamMembers.length,     color: '#64748b' },
         ].map(({ icon, label, value, color }) => (
           <Grid key={label} size={{ xs: 6, sm: 4, md: 2 }}>
             <Box sx={{ p: 2, borderRadius: '14px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', textAlign: 'center' }}>
@@ -140,7 +149,7 @@ export default function ProjectDetailPage() {
         <Box>
           <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
             <Box component={Link} to={`/projects/${project.id}/towers`} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 0.875, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none', boxShadow: '0 4px 14px rgba(37,99,235,0.28)' }}>
-              <AddRounded sx={{ fontSize: 16 }} /> View Towers
+              <AddRounded sx={{ fontSize: 16 }} /> Add Tower
             </Box>
           </Box>
           <Grid container spacing={2}>
@@ -155,8 +164,6 @@ export default function ProjectDetailPage() {
                     <Box sx={{ width: 36, height: 36, borderRadius: '9px', background: project.gradient, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       <DomainRounded sx={{ color: 'rgba(255,255,255,0.7)', fontSize: 18 }} />
                     </Box>
-                    <Chip label={tower.status === 'complete' ? 'Complete' : tower.status === 'active' ? 'Active' : 'Pending'}
-                      size="small" sx={{ height: 20, fontSize: '0.625rem', fontWeight: 600, color: tower.status === 'complete' ? '#16a34a' : tower.status === 'active' ? '#2563eb' : '#64748b', backgroundColor: tower.status === 'complete' ? 'rgba(22,163,74,0.08)' : tower.status === 'active' ? 'rgba(37,99,235,0.08)' : 'rgba(100,116,139,0.08)', borderRadius: '5px' }} />
                   </Box>
                   <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600, color: colors.textStrong, mb: 0.25 }}>{tower.name}</Typography>
                   <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mb: 1.5 }}>{tower.floors} floors · {tower.rooms} rooms</Typography>
@@ -195,7 +202,7 @@ export default function ProjectDetailPage() {
             <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted }}>
               {teamMembers.length} member{teamMembers.length !== 1 ? 's' : ''} assigned to this project
             </Typography>
-            {isAdmin && (
+            {hasAdminRole && (
               <Box
                 onClick={() => { setMemberSearch(''); setAddOpen(true); }}
                 sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 0.875, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.28)', userSelect: 'none' }}
@@ -220,7 +227,7 @@ export default function ProjectDetailPage() {
                     <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{u.designation || u.email || '—'}</Typography>
                   </Box>
                   <Chip label={ROLE_LABELS[u.role] ?? u.role} size="small" sx={{ height: 22, fontSize: '0.6875rem', fontWeight: 600, color: rc.color, backgroundColor: rc.bg, borderRadius: '6px' }} />
-                  {isAdmin && (
+                  {hasAdminRole && (
                     <Box
                       onClick={() => removeUserFromProject(u.id, project.id)}
                       title="Remove from project"

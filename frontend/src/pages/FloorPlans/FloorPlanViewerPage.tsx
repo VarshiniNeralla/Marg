@@ -7,11 +7,38 @@ import {
   LayersRounded, RoomRounded, CameraAltRounded, ViewInArRounded, ArrowForwardRounded,
   CloudOffRounded, KeyboardArrowDownRounded,
 } from '@mui/icons-material';
-import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, isFieldEngineer } from '@store/authStore';
 import { getFloorPlanByFloor, getFloorsByTower } from '@store/workflowSelectors';
 import type { MockRoomMarker } from '@/data/mockData';
+
+/* ── PDF.js (lazy-loaded so bundle stays small until a PDF is needed) ──── */
+type PdfViewport = { width: number; height: number };
+type PdfPage = {
+  getViewport: (opts: { scale: number }) => PdfViewport;
+  render: (opts: { canvasContext: CanvasRenderingContext2D; viewport: PdfViewport }) => { promise: Promise<void> };
+};
+type PdfDoc = {
+  getPage: (n: number) => Promise<PdfPage>;
+  numPages: number;
+};
+type PdfJsLib = {
+  getDocument: (src: { url: string }) => { promise: Promise<PdfDoc> };
+  GlobalWorkerOptions: { workerSrc: string };
+  version: string;
+};
+
+let _pdfjs: PdfJsLib | null = null;
+
+async function getPdfJs(): Promise<PdfJsLib> {
+  if (!_pdfjs) {
+    const mod = await import('pdfjs-dist');
+    _pdfjs = mod as unknown as PdfJsLib;
+    _pdfjs.GlobalWorkerOptions.workerSrc =
+      `https://cdn.jsdelivr.net/npm/pdfjs-dist@${_pdfjs.version}/build/pdf.worker.min.mjs`;
+  }
+  return _pdfjs;
+}
 
 /* ── palette ────────────────────────────────────────────────────────────── */
 const P = {
@@ -34,7 +61,7 @@ const STATUS_COLOR: Record<string, { fill: string; stroke: string; label: string
   published:   { fill: 'rgba(22,163,74,0.15)',    stroke: '#16a34a', label: 'Published'   },
 };
 
-/* ── CtrlBtn — small icon button inside the viewer ─────────────────────── */
+/* ── CtrlBtn ─────────────────────────────────────────────────────────────── */
 function CtrlBtn({ title, onClick, children, small }: { title: string; onClick: () => void; children: React.ReactNode; small?: boolean }) {
   const size = small ? 28 : 34;
   return (
@@ -134,6 +161,21 @@ export default function FloorPlanViewerPage() {
   const floor       = towerFloors.find(f => f.id === floorId);
   const floorPlan   = getFloorPlanByFloor(floorPlans, towerId ?? '', floorId ?? '');
 
+  // Derive image / PDF URLs before any early returns
+  const planRecord  = floorPlan as (typeof floorPlan & Record<string, unknown>) | null;
+  const mediaAssets = (planRecord?.mediaAssets as { original_url?: string }[] | undefined) ?? [];
+  const imageUrl: string | null =
+    (planRecord?.fileUrl as string | undefined)
+    ?? (planRecord?.file_url as string | undefined)
+    ?? mediaAssets[0]?.original_url
+    ?? null;
+  const rawPdfUrl: string | null =
+    (planRecord?.rawPdfUrl as string | undefined)
+    ?? (planRecord?.raw_pdf_url as string | undefined)
+    ?? null;
+  const fileFormat = ((planRecord?.format ?? planRecord?.fileType ?? '') as string).toLowerCase();
+  const isPdf = fileFormat === 'pdf' || (imageUrl?.toLowerCase().includes('.pdf') ?? false);
+
   /* ── state ──────────────────────────────────────────────────────────── */
   const [scale, setScale]               = useState(1);
   const [offset, setOffset]             = useState({ x: 0, y: 0 });
@@ -143,10 +185,14 @@ export default function FloorPlanViewerPage() {
   const [fadeIn, setFadeIn]             = useState(false);
   const [floorSheetOpen, setFloorSheetOpen] = useState(false);
 
+  // SVG viewer state
+  const [pageSize, setPageSize]                 = useState({ w: 0, h: 0 });
+  const [renderedImageUrl, setRenderedImageUrl] = useState<string | null>(null);
+  const [containerSize, setContainerSize]       = useState({ w: 1, h: 1 });
+
   /* trigger fade-in animation every time the floor changes */
   useEffect(() => {
     setFadeIn(false);
-    // double-rAF ensures the browser has painted the hidden state before fading in
     let t1: number, t2: number;
     t1 = requestAnimationFrame(() => {
       t2 = requestAnimationFrame(() => setFadeIn(true));
@@ -154,34 +200,54 @@ export default function FloorPlanViewerPage() {
     return () => { cancelAnimationFrame(t1); cancelAnimationFrame(t2); };
   }, [floorId]);
 
-  /* mutable refs so event handlers always read fresh values without re-binding */
-  const scaleRef     = useRef(1);
-  const offsetRef    = useRef({ x: 0, y: 0 });
-  const dragStartRef = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
-  const draggingRef  = useRef(false);
-  const viewerRef    = useRef<HTMLDivElement>(null);
-  const imgRef       = useRef<HTMLImageElement>(null);
+  /* mutable refs for event handlers */
+  const scaleRef        = useRef(1);
+  const offsetRef       = useRef({ x: 0, y: 0 });
+  const dragStartRef    = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
+  const draggingRef     = useRef(false);
+  const viewerRef       = useRef<HTMLDivElement>(null);
+  const pdfDocRef       = useRef<PdfDoc | null>(null);
+  const renderingRef    = useRef(false);
+  const lastRenderScale = useRef(0);
 
-  /* keep refs in sync */
   useEffect(() => { scaleRef.current  = scale;  }, [scale]);
   useEffect(() => { offsetRef.current = offset; }, [offset]);
 
+  /* ── container size tracking ────────────────────────────────────────── */
+  useEffect(() => {
+    const el = viewerRef.current;
+    if (!el) return;
+    setContainerSize({ w: el.clientWidth, h: el.clientHeight });
+    const ro = new ResizeObserver(e => {
+      const r = e[0]?.contentRect;
+      if (r) setContainerSize({ w: r.width, h: r.height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fullscreen]);
+
   /* ── centerImage ────────────────────────────────────────────────────── */
   const centerImage = useCallback(() => {
-    const el  = viewerRef.current;
-    const img = imgRef.current;
-    if (!el || !img) return;
+    const el = viewerRef.current;
+    if (!el || !pageSize.w || !pageSize.h) return;
     const vw = el.clientWidth;
     const vh = el.clientHeight;
-    const iw = img.naturalWidth  || img.offsetWidth;
-    const ih = img.naturalHeight || img.offsetHeight;
-    if (!vw || !vh || !iw || !ih) return;
-    const s = Math.min(vw / iw, vh / ih) * 0.90;
-    const x = (vw - iw * s) / 2;
-    const y = (vh - ih * s) / 2;
+    if (!vw || !vh) return;
+    const s = Math.min(vw / pageSize.w, vh / pageSize.h) * 0.90;
+    const x = (vw - pageSize.w * s) / 2;
+    const y = (vh - pageSize.h * s) / 2;
     setScale(s); setOffset({ x, y });
     scaleRef.current = s; offsetRef.current = { x, y };
-  }, []);
+  }, [pageSize]);
+
+  /* re-center when pageSize arrives */
+  useEffect(() => {
+    if (pageSize.w > 0) {
+      centerImage();
+      const t = setTimeout(centerImage, 120);
+      return () => clearTimeout(t);
+    }
+  }, [pageSize, centerImage]);
 
   /* re-center on fullscreen change */
   useEffect(() => {
@@ -189,11 +255,93 @@ export default function FloorPlanViewerPage() {
     return () => clearTimeout(t);
   }, [fullscreen, centerImage]);
 
-  /* ── pointer drag (pure DOM to avoid stale closure issues) ─────────── */
+  /* ── PDF.js rendering ───────────────────────────────────────────────── */
+  const renderPdf = useCallback(async (renderScale: number) => {
+    if (!pdfDocRef.current || renderingRef.current) return;
+    renderingRef.current = true;
+    try {
+      const page = await pdfDocRef.current.getPage(1);
+      const dpr  = window.devicePixelRatio || 1;
+      const vp   = page.getViewport({ scale: renderScale * dpr });
+      const canvas = document.createElement('canvas');
+      canvas.width  = Math.round(vp.width);
+      canvas.height = Math.round(vp.height);
+      const ctx = canvas.getContext('2d', { alpha: false })!;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      setRenderedImageUrl(canvas.toDataURL('image/png', 1.0));
+      lastRenderScale.current = renderScale;
+    } finally {
+      renderingRef.current = false;
+    }
+  }, []);
+
+  /* ── Load image or PDF when imageUrl / rawPdfUrl changes ───────────── */
+  useEffect(() => {
+    if (!imageUrl) {
+      setPageSize({ w: 0, h: 0 });
+      setRenderedImageUrl(null);
+      pdfDocRef.current = null;
+      return;
+    }
+    if (isPdf) {
+      // Load the original PDF via PDF.js for true vector quality
+      const pdfSrc = rawPdfUrl || imageUrl;
+      let cancelled = false;
+      getPdfJs().then(async lib => {
+        if (cancelled) return;
+        const doc = await lib.getDocument({ url: pdfSrc }).promise;
+        if (cancelled) return;
+        pdfDocRef.current = doc;
+        const page = await doc.getPage(1);
+        if (cancelled) return;
+        const vp = page.getViewport({ scale: 1 });
+        setPageSize({ w: vp.width, h: vp.height });
+        // Initial render at a reasonable resolution; will re-render after centerImage
+        await renderPdf(1.5);
+      }).catch(() => {
+        // PDF.js failed — fall back to the PNG preview from Cloudinary
+        if (cancelled) return;
+        const img = new Image();
+        img.onload = () => {
+          if (cancelled) return;
+          setPageSize({ w: img.naturalWidth, h: img.naturalHeight });
+          setRenderedImageUrl(imageUrl);
+        };
+        img.src = imageUrl;
+      });
+      return () => { cancelled = true; };
+    } else {
+      // PNG / JPG — load normally
+      pdfDocRef.current = null;
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      let cancelled = false;
+      img.onload = () => {
+        if (cancelled) return;
+        setPageSize({ w: img.naturalWidth, h: img.naturalHeight });
+        setRenderedImageUrl(imageUrl);
+      };
+      img.src = imageUrl;
+      return () => { cancelled = true; img.onload = null; };
+    }
+  }, [imageUrl, isPdf, rawPdfUrl, renderPdf]);
+
+  /* ── Re-render PDF at higher resolution when zoom changes significantly */
+  useEffect(() => {
+    if (!isPdf || !pdfDocRef.current || !pageSize.w) return;
+    const ratio = scale / (lastRenderScale.current || scale);
+    if (ratio > 1.6 || ratio < 0.6) {
+      const t = setTimeout(() => renderPdf(scale), 120);
+      return () => clearTimeout(t);
+    }
+  }, [scale, isPdf, pageSize.w, renderPdf]);
+
+  /* ── pointer drag ───────────────────────────────────────────────────── */
   useEffect(() => {
     const el = viewerRef.current;
     if (!el) return;
-
     const onDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
       if ((e.target as HTMLElement).closest('button')) return;
@@ -209,26 +357,21 @@ export default function FloorPlanViewerPage() {
       offsetRef.current = { x: nx, y: ny };
     };
     const onUp = () => { draggingRef.current = false; setIsDragging(false); };
-
-    // track visual dragging state for cursor
-    const onDownVis  = () => setIsDragging(true);
-    const onUpVis    = () => setIsDragging(false);
-
+    const onDownVis = () => setIsDragging(true);
     el.addEventListener('pointerdown', onDown);
     el.addEventListener('pointermove', onMove);
     el.addEventListener('pointerup',   onUp);
     el.addEventListener('pointercancel', onUp);
     el.addEventListener('pointerdown', onDownVis);
-    el.addEventListener('pointerup',   onUpVis);
+    el.addEventListener('pointerup',   onUp);
     return () => {
       el.removeEventListener('pointerdown', onDown);
       el.removeEventListener('pointermove', onMove);
       el.removeEventListener('pointerup',   onUp);
       el.removeEventListener('pointercancel', onUp);
       el.removeEventListener('pointerdown', onDownVis);
-      el.removeEventListener('pointerup',   onUpVis);
+      el.removeEventListener('pointerup',   onUp);
     };
-  // re-bind whenever fullscreen changes so we get the fresh DOM node
   }, [fullscreen]);
 
   /* ── Ctrl+Wheel zoom ────────────────────────────────────────────────── */
@@ -240,7 +383,7 @@ export default function FloorPlanViewerPage() {
       e.preventDefault();
       e.stopPropagation();
       const delta = e.deltaY < 0 ? 0.12 : -0.12;
-      const next  = Math.min(8, Math.max(0.1, scaleRef.current + delta));
+      const next  = Math.min(20, Math.max(0.05, scaleRef.current + delta));
       const rect  = el.getBoundingClientRect();
       const mx    = e.clientX - rect.left;
       const my    = e.clientY - rect.top;
@@ -254,7 +397,7 @@ export default function FloorPlanViewerPage() {
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [fullscreen]); // re-bind on fullscreen toggle
+  }, [fullscreen]);
 
   /* ── Escape exits fullscreen ────────────────────────────────────────── */
   useEffect(() => {
@@ -275,20 +418,21 @@ export default function FloorPlanViewerPage() {
     );
   }
 
-  const planRecord   = floorPlan as (typeof floorPlan & Record<string, unknown>) | null;
-  const mediaAssets  = (planRecord?.mediaAssets as { original_url?: string }[] | undefined) ?? [];
-  const imageUrl: string | null =
-    (planRecord?.fileUrl as string | undefined)
-    ?? (planRecord?.file_url as string | undefined)
-    ?? mediaAssets[0]?.original_url
-    ?? null;
-
   const statusCounts = floorPlan ? {
     not_started: floorPlan.rooms.filter(r => r.status === 'not_started').length,
     in_progress: floorPlan.rooms.filter(r => r.status === 'in_progress').length,
     reviewed:    floorPlan.rooms.filter(r => r.status === 'reviewed').length,
     published:   floorPlan.rooms.filter(r => r.status === 'published').length,
   } : null;
+
+  /* ── SVG viewBox: maps scale+offset state to SVG coordinate space ─── */
+  // ViewBox defines which portion of "page space" (0,0 → pageW,pageH) is visible.
+  // When scale=1 and offset=(0,0), we'd see: x=0, y=0, w=cw, h=ch in page units.
+  // Shifting offset moves the window; scaling zooms by shrinking w/h around cursor.
+  const vbX = containerSize.w > 0 ? -offset.x / scale : 0;
+  const vbY = containerSize.h > 0 ? -offset.y / scale : 0;
+  const vbW = containerSize.w > 0 ? containerSize.w / scale : 100;
+  const vbH = containerSize.h > 0 ? containerSize.h / scale : 100;
 
   /* ── viewer box ─────────────────────────────────────────────────────── */
   const viewerBox = (
@@ -310,56 +454,104 @@ export default function FloorPlanViewerPage() {
         touchAction: 'none',
       }}
     >
-      {/* Transformed image layer — only rendered when there's an image */}
-      <Box sx={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
-        <Box sx={{
-          position: 'absolute', top: 0, left: 0,
-          transform: `translate(${offset.x}px,${offset.y}px) scale(${scale})`,
-          transformOrigin: '0 0',
-          transition: isDragging ? 'none' : 'transform 80ms ease-out',
-          willChange: 'transform',
-        }}>
-          {imageUrl && (
-            <Box sx={{ position: 'relative', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 8px 32px rgba(15,23,42,0.20)' }}>
-              <Box
-                component="img"
-                ref={imgRef}
-                src={imageUrl}
-                alt={`${floor.label} floor plan`}
-                draggable={false}
-                onLoad={() => { centerImage(); setTimeout(centerImage, 120); }}
-                sx={{ display: 'block', width: 'auto', height: 'auto', maxWidth: 'none', maxHeight: 'none', backgroundColor: '#fff' }}
-              />
-              {/* SVG room overlays */}
-              {floorPlan && floorPlan.rooms.length > 0 && (
-                <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
-                  {floorPlan.rooms.map(room => {
-                    const sc = STATUS_COLOR[room.status] ?? STATUS_COLOR.not_started;
-                    const rx = (room.x / 100) * 900;
-                    const ry = (room.y / 100) * 700;
-                    const rw = (room.width / 100) * 900;
-                    const rh = (room.height / 100) * 700;
-                    const sel = selectedRoom?.id === room.id;
-                    return (
-                      <g key={room.id} onClick={e => { e.stopPropagation(); setSelectedRoom(sel ? null : room); }} style={{ cursor: 'pointer', pointerEvents: 'all' }}>
-                        <rect x={rx} y={ry} width={rw} height={rh} fill={sel ? sc.stroke : sc.fill} fillOpacity={sel ? 0.35 : 1} stroke={sc.stroke} strokeWidth={sel ? 2.5 : 1.5} rx="4" />
-                        <text x={rx + rw / 2} y={ry + rh / 2 - 5} textAnchor="middle" style={{ fontSize: '11px', fontWeight: 700, fill: sel ? '#fff' : sc.stroke, pointerEvents: 'none' }}>{room.number}</text>
-                        <text x={rx + rw / 2} y={ry + rh / 2 + 8} textAnchor="middle" style={{ fontSize: '9px', fill: sel ? 'rgba(255,255,255,0.8)' : '#64748b', pointerEvents: 'none' }}>{room.type}</text>
-                      </g>
-                    );
-                  })}
-                </svg>
-              )}
-            </Box>
-          )}
-        </Box>
-      </Box>
+      {/* ── SVG viewer: single coordinate system for floor plan + all layers ── */}
+      {renderedImageUrl && pageSize.w > 0 && (
+        <svg
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block', overflow: 'visible' }}
+          viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`}
+          preserveAspectRatio="none"
+        >
+          <defs>
+            {/* Drop shadow filter for the floor plan sheet */}
+            <filter id="fp-shadow" x="-8%" y="-8%" width="116%" height="116%">
+              <feDropShadow dx="0" dy="4" stdDeviation="14" floodColor="rgba(15,23,42,0.20)" />
+            </filter>
+          </defs>
 
-      {/* Empty states — centered absolutely, outside the pan/zoom transform */}
+          {/* Layer 0: Floor plan image (PDF.js canvas or PNG/JPG) */}
+          {/* White background behind image */}
+          <rect x={0} y={0} width={pageSize.w} height={pageSize.h} fill="#ffffff" filter="url(#fp-shadow)" rx={8 / scale} />
+          <image
+            href={renderedImageUrl}
+            x={0} y={0}
+            width={pageSize.w}
+            height={pageSize.h}
+            preserveAspectRatio="none"
+            style={{ imageRendering: 'auto' }}
+          />
+
+          {/* Layer 1: Room overlays
+              All coordinates are % of pageSize, converted to page units.
+              vectorEffect="non-scaling-stroke" keeps stroke widths at 1.5px visually
+              regardless of zoom level — no thick borders at high zoom. */}
+          {floorPlan && floorPlan.rooms.length > 0 && (
+            <g id="layer-rooms">
+              {floorPlan.rooms.map(room => {
+                const sc  = STATUS_COLOR[room.status] ?? STATUS_COLOR.not_started;
+                const rx  = (room.x      / 100) * pageSize.w;
+                const ry  = (room.y      / 100) * pageSize.h;
+                const rw  = (room.width  / 100) * pageSize.w;
+                const rh  = (room.height / 100) * pageSize.h;
+                const sel = selectedRoom?.id === room.id;
+                // Font size proportional to room area — stays legible at any zoom
+                const fs1 = Math.max(pageSize.w * 0.009, Math.min(rw, rh) * 0.18);
+                const fs2 = Math.max(pageSize.w * 0.007, Math.min(rw, rh) * 0.13);
+                return (
+                  <g
+                    key={room.id}
+                    onClick={e => { e.stopPropagation(); setSelectedRoom(sel ? null : room); }}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    <rect
+                      x={rx} y={ry} width={rw} height={rh}
+                      fill={sel ? sc.stroke : sc.fill}
+                      fillOpacity={sel ? 0.38 : 1}
+                      stroke={sc.stroke}
+                      strokeWidth={sel ? 2.5 : 1.5}
+                      vectorEffect="non-scaling-stroke"
+                      rx={Math.min(rw, rh) * 0.06}
+                    />
+                    <text
+                      x={rx + rw / 2} y={ry + rh / 2 - fs1 * 0.6}
+                      textAnchor="middle" dominantBaseline="middle"
+                      fontSize={fs1}
+                      fontWeight={700}
+                      fill={sel ? '#fff' : sc.stroke}
+                      pointerEvents="none"
+                      fontFamily="Inter, system-ui, sans-serif"
+                    >{room.number}</text>
+                    <text
+                      x={rx + rw / 2} y={ry + rh / 2 + fs1 * 0.9}
+                      textAnchor="middle" dominantBaseline="middle"
+                      fontSize={fs2}
+                      fill={sel ? 'rgba(255,255,255,0.8)' : '#64748b'}
+                      pointerEvents="none"
+                      fontFamily="Inter, system-ui, sans-serif"
+                    >{room.type}</text>
+                  </g>
+                );
+              })}
+            </g>
+          )}
+
+          {/* Layer 2: Capture points — future */}
+          {/* <g id="layer-captures"> ... </g> */}
+
+          {/* Layer 3: AI defect markers — future */}
+          {/* <g id="layer-defects"> ... </g> */}
+
+          {/* Layer 4: Measurements — future */}
+          {/* <g id="layer-measurements"> ... </g> */}
+
+          {/* Layer 5: Navigation paths — future */}
+          {/* <g id="layer-nav-paths"> ... </g> */}
+        </svg>
+      )}
+
+      {/* Empty states */}
       {!imageUrl && (
         <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
           {floorPlan ? (
-            /* has plan record but no image URL */
             <Box sx={{ pointerEvents: 'all', maxWidth: { xs: '85%', sm: 360 }, width: '100%', borderRadius: '16px', border: `1.5px solid ${P.border}`, backgroundColor: P.white, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1.5, px: 3, py: 4, boxShadow: '0 4px 24px rgba(15,23,42,0.10)' }}>
               <LayersRounded sx={{ fontSize: 40, color: P.subtle }} />
               <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong }}>{floorPlan.fileName}</Typography>
@@ -370,7 +562,6 @@ export default function FloorPlanViewerPage() {
               )}
             </Box>
           ) : isEngineer ? (
-            /* engineer — no plan */
             <Box sx={{ maxWidth: { xs: '85%', sm: 320 }, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1.25 }}>
               <Box sx={{ width: 56, height: 56, borderRadius: '16px', backgroundColor: P.white, border: `1.5px solid ${P.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(15,23,42,0.06)', mb: 0.5 }}>
                 <CloudOffRounded sx={{ fontSize: 26, color: P.subtle }} />
@@ -383,7 +574,6 @@ export default function FloorPlanViewerPage() {
               </Typography>
             </Box>
           ) : (
-            /* admin/manager — no plan: show upload CTA */
             <Box sx={{ pointerEvents: 'all', maxWidth: { xs: '85%', sm: 360 }, width: '100%', borderRadius: '16px', border: `2px dashed ${P.border}`, backgroundColor: P.white, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1.5, px: 3, py: 4 }}>
               <RoomRounded sx={{ fontSize: 40, color: P.subtle }} />
               <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong }}>No floor plan uploaded</Typography>
@@ -396,17 +586,31 @@ export default function FloorPlanViewerPage() {
         </Box>
       )}
 
-      {/* Controls column — left (nudge down in fullscreen to clear the Back button) */}
+      {/* Controls */}
       <Box sx={{ position: 'absolute', top: fullscreen ? 56 : 12, left: 12, display: 'flex', flexDirection: 'column', gap: 0.625, zIndex: 10 }}>
-        <CtrlBtn title="Zoom in"        small={isMobile} onClick={() => { const n = Math.min(8, scaleRef.current + 0.25); const cx = (viewerRef.current?.clientWidth ?? 0) / 2; const cy = (viewerRef.current?.clientHeight ?? 0) / 2; const r = n / scaleRef.current; scaleRef.current = n; setScale(n); setOffset(o => { const nx = cx - r*(cx-o.x); const ny = cy - r*(cy-o.y); offsetRef.current={x:nx,y:ny}; return {x:nx,y:ny}; }); }}><ZoomInRounded sx={{ fontSize: isMobile ? 15 : 17 }} /></CtrlBtn>
-        <CtrlBtn title="Zoom out"       small={isMobile} onClick={() => { const n = Math.max(0.1, scaleRef.current - 0.25); const cx = (viewerRef.current?.clientWidth ?? 0) / 2; const cy = (viewerRef.current?.clientHeight ?? 0) / 2; const r = n / scaleRef.current; scaleRef.current = n; setScale(n); setOffset(o => { const nx = cx - r*(cx-o.x); const ny = cy - r*(cy-o.y); offsetRef.current={x:nx,y:ny}; return {x:nx,y:ny}; }); }}><ZoomOutRounded sx={{ fontSize: isMobile ? 15 : 17 }} /></CtrlBtn>
-        <CtrlBtn title="Fit to screen"  small={isMobile} onClick={centerImage}><CenterFocusStrongRounded sx={{ fontSize: isMobile ? 15 : 17 }} /></CtrlBtn>
+        <CtrlBtn title="Zoom in" small={isMobile} onClick={() => {
+          const n = Math.min(20, scaleRef.current + 0.25);
+          const cx = (viewerRef.current?.clientWidth ?? 0) / 2;
+          const cy = (viewerRef.current?.clientHeight ?? 0) / 2;
+          const r = n / scaleRef.current;
+          scaleRef.current = n; setScale(n);
+          setOffset(o => { const nx = cx - r*(cx-o.x); const ny = cy - r*(cy-o.y); offsetRef.current={x:nx,y:ny}; return {x:nx,y:ny}; });
+        }}><ZoomInRounded sx={{ fontSize: isMobile ? 15 : 17 }} /></CtrlBtn>
+        <CtrlBtn title="Zoom out" small={isMobile} onClick={() => {
+          const n = Math.max(0.05, scaleRef.current - 0.25);
+          const cx = (viewerRef.current?.clientWidth ?? 0) / 2;
+          const cy = (viewerRef.current?.clientHeight ?? 0) / 2;
+          const r = n / scaleRef.current;
+          scaleRef.current = n; setScale(n);
+          setOffset(o => { const nx = cx - r*(cx-o.x); const ny = cy - r*(cy-o.y); offsetRef.current={x:nx,y:ny}; return {x:nx,y:ny}; });
+        }}><ZoomOutRounded sx={{ fontSize: isMobile ? 15 : 17 }} /></CtrlBtn>
+        <CtrlBtn title="Fit to screen" small={isMobile} onClick={centerImage}><CenterFocusStrongRounded sx={{ fontSize: isMobile ? 15 : 17 }} /></CtrlBtn>
         <CtrlBtn title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} small={isMobile} onClick={() => setFullscreen(f => !f)}>
           {fullscreen ? <FullscreenExitRounded sx={{ fontSize: isMobile ? 15 : 17 }} /> : <FullscreenRounded sx={{ fontSize: isMobile ? 15 : 17 }} />}
         </CtrlBtn>
       </Box>
 
-      {/* Fullscreen: ← Back — top-left, always visible */}
+      {/* Fullscreen back button */}
       {fullscreen && (
         <Box
           onClick={() => setFullscreen(false)}
@@ -426,7 +630,7 @@ export default function FloorPlanViewerPage() {
         </Box>
       )}
 
-      {/* Bottom bar: zoom % + hint */}
+      {/* Zoom indicator + hint */}
       <Box sx={{ position: 'absolute', bottom: 12, right: 12, zIndex: 10, display: 'flex', alignItems: 'center', gap: 0.625 }}>
         {!fullscreen && (
           <Box sx={{ display: { xs: 'none', sm: 'block' }, px: 1.125, py: 0.375, borderRadius: '6px', backgroundColor: 'rgba(17,24,39,0.55)', backdropFilter: 'blur(8px)' }}>
@@ -473,7 +677,6 @@ export default function FloorPlanViewerPage() {
             </Typography>
           </Box>
         </Box>
-        {/* Upload button — admins/managers only */}
         {!isEngineer && (
           <Box component={Link} to={`/floor-plans/${projectId}/${towerId}/${floorId}/upload`}
             sx={{
@@ -517,13 +720,12 @@ export default function FloorPlanViewerPage() {
 
       {/* Viewer + Floor sidebar */}
       <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start', flexDirection: { xs: 'column', md: 'row' } }}>
-        {/* Viewer takes remaining space */}
         <Box sx={{ flex: 1, minWidth: 0, width: '100%' }}>{viewerBox}</Box>
 
         {/* Floor switcher */}
         {towerFloors.length > 1 && (
           <>
-            {/* Mobile: compact dropdown trigger → bottom sheet */}
+            {/* Mobile: compact dropdown → bottom sheet */}
             <Box sx={{ display: { xs: 'block', md: 'none' }, width: '100%' }}>
               <Box
                 onClick={() => setFloorSheetOpen(true)}
@@ -583,7 +785,7 @@ export default function FloorPlanViewerPage() {
               </Drawer>
             </Box>
 
-            {/* Desktop: vertical pill list on the right */}
+            {/* Desktop: vertical pill list */}
             <Box sx={{
               display: { xs: 'none', md: 'flex' },
               width: 108, flexShrink: 0,

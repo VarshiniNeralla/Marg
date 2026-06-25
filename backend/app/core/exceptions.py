@@ -5,6 +5,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+try:
+    from uvicorn.protocols.utils import ClientDisconnected as _ClientDisconnected
+except ImportError:
+    _ClientDisconnected = None  # type: ignore[assignment,misc]
+
 
 # ── Base application exception ────────────────────────────────────────────────
 
@@ -196,6 +201,8 @@ async def validation_exception_handler(
 
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Catch-all handler for unhandled exceptions. Logs full traceback."""
+    if _ClientDisconnected and isinstance(exc, _ClientDisconnected):
+        return JSONResponse(status_code=200, content={})
     logger.exception(f"Unhandled exception on {request.method} {request.url}: {exc}")
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -47,6 +47,7 @@ export interface UploadedFileResponse {
   width?: number | null;
   height?: number | null;
   pages?: number | null;
+  raw_pdf_url?: string | null;
 }
 
 export interface UploadCaptureFilesResponse {

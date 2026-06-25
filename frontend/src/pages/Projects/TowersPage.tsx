@@ -4,7 +4,7 @@ import { Box, Typography, Grid, Chip, LinearProgress, Dialog, DialogTitle, Dialo
 import { ArrowBackRounded, AddRounded, DomainRounded, ArrowForwardRounded, DeleteRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
-import { useAuthStore } from '@store/authStore';
+import { useAuthStore, isAdmin } from '@store/authStore';
 import { getProjectById, getTowersByProject } from '@store/workflowSelectors';
 
 export default function TowersPage() {
@@ -14,7 +14,7 @@ export default function TowersPage() {
   const createTower = useWorkflowStore(s => s.createTower);
   const deleteTower = useWorkflowStore(s => s.deleteTower);
   const { user } = useAuthStore();
-  const isAdmin = user?.role === 'admin';
+  const hasAdminRole = isAdmin(user);
   const project = getProjectById(projects, projectId ?? '');
   const projectTowers = [...getTowersByProject(towers, projectId ?? '')].sort((a, b) =>
     a.name.localeCompare(b.name, undefined, { numeric: true })
@@ -48,7 +48,7 @@ export default function TowersPage() {
           <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mb: 0.25 }}>{project.name}</Typography>
           <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: '1.5rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>Towers</Typography>
         </Box>
-        {isAdmin && (
+        {hasAdminRole && (
           <Box onClick={() => setOpen(true)} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 0.875, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.28)', userSelect: 'none' }}>
             <AddRounded sx={{ fontSize: 16 }} /> Add Tower
           </Box>
@@ -65,11 +65,7 @@ export default function TowersPage() {
                   <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: '1.125rem', fontWeight: 700, color: '#fff', letterSpacing: '-0.03em' }}>{tower.name}</Typography>
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Chip label={tower.status === 'complete' ? 'Complete' : tower.status === 'active' ? 'Active' : 'Pending'} size="small"
-                    sx={{ height: 20, fontSize: '0.625rem', fontWeight: 600, borderRadius: '5px',
-                      color: tower.status === 'complete' ? '#16a34a' : tower.status === 'active' ? '#fff' : '#94a3b8',
-                      backgroundColor: tower.status === 'complete' ? 'rgba(22,163,74,0.15)' : tower.status === 'active' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.08)' }} />
-                  {isAdmin && (
+                  {hasAdminRole && (
                     <Tooltip title="Delete tower">
                       <IconButton
                         size="small"

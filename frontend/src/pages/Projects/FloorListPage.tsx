@@ -4,7 +4,7 @@ import { Box, Typography, Chip, LinearProgress, Dialog, DialogTitle, DialogConte
 import { ArrowBackRounded, LayersRounded, MeetingRoomRounded, ViewInArRounded, ArrowForwardRounded, DeleteRounded, UploadFileRounded, AddRounded, SortRounded, ArrowUpwardRounded, ArrowDownwardRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
-import { useAuthStore } from '@store/authStore';
+import { useAuthStore, isAdmin } from '@store/authStore';
 import { getProjectById, getFloorsByTower, enrichFloorStats } from '@store/workflowSelectors';
 
 export default function FloorListPage() {
@@ -20,7 +20,7 @@ export default function FloorListPage() {
   const deleteFloor = useWorkflowStore(s => s.deleteFloor);
   const createFloor = useWorkflowStore(s => s.createFloor);
   const { user } = useAuthStore();
-  const isAdmin = user?.role === 'admin';
+  const hasAdminRole = isAdmin(user);
 
   const project = getProjectById(projects, projectId ?? '');
   const tower = towers.find(t => t.id === towerId);
@@ -114,7 +114,7 @@ export default function FloorListPage() {
             </MenuItem>
           ))}
         </Menu>
-        {isAdmin && (
+        {hasAdminRole && (
           <Box
             onClick={() => setAddOpen(true)}
             sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 0.875, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.28)', userSelect: 'none' }}
@@ -181,7 +181,7 @@ export default function FloorListPage() {
                   </Box>
                   <ArrowForwardRounded className="fl-arrow" sx={{ fontSize: 15, color: colors.textSubdued, opacity: 0, transition: `opacity ${motion.durationFast}, transform ${motion.durationFast}`, flexShrink: 0 }} />
                 </Box>
-                {isAdmin && (
+                {hasAdminRole && (
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
                     <Tooltip title="Upload floor plan">
                       <IconButton

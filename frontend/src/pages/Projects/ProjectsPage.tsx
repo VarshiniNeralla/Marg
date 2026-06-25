@@ -7,7 +7,8 @@ import {
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
-import { useAuthStore } from '@store/authStore';
+import { useAuthStore, isAdmin } from '@store/authStore';
+import { useSettingsStore } from '@store/settingsStore';
 
 const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
   active:  { label: 'Active',      color: colors.success,   bg: colors.successBg },
@@ -22,7 +23,8 @@ export default function ProjectsPage() {
   const allProjects = useWorkflowStore(s => s.projects);
   const archiveProject = useWorkflowStore(s => s.archiveProject);
   const { user } = useAuthStore();
-  const isAdmin = user?.role === 'admin';
+  const orgName = useSettingsStore(s => s.organization.name);
+  const hasAdminRole = isAdmin(user);
   const mockProjects = allProjects.filter(p => !p.archived);
 
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -52,10 +54,10 @@ export default function ProjectsPage() {
             Projects
           </Typography>
           <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>
-            {mockProjects.length} project{mockProjects.length === 1 ? '' : 's'} · My Home Constructions
+            {mockProjects.length} project{mockProjects.length === 1 ? '' : 's'} · {orgName}
           </Typography>
         </Box>
-        {isAdmin && (
+        {hasAdminRole && (
           <Box
             component={Link}
             to="/projects/new"
@@ -134,7 +136,7 @@ export default function ProjectsPage() {
                           borderRadius: '7px',
                         }}
                       />
-                      {isAdmin && (
+                      {hasAdminRole && (
                         <Tooltip title="Delete project">
                           <IconButton
                             size="small"

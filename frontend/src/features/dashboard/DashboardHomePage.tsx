@@ -21,6 +21,7 @@ import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
+import { useSettingsStore } from '@store/settingsStore';
 import { computeDashboardStats } from '@store/workflowSelectors';
 import OnboardingWizard, { isOnboarded } from '@shared/components/OnboardingWizard/OnboardingWizard';
 
@@ -41,6 +42,7 @@ const progressStatusConfig: Record<string, { label: string; color: string; bg: s
 
 export default function DashboardHomePage() {
   const user = useAuthStore((s) => s.user);
+  const orgName = useSettingsStore(s => s.organization.name);
   const projects = useWorkflowStore(s => s.projects);
   const captures = useWorkflowStore(s => s.captures);
   const tours = useWorkflowStore(s => s.tours);
@@ -234,7 +236,7 @@ export default function DashboardHomePage() {
 
               {/* Org badge */}
               <Typography sx={{ fontSize: '0.8125rem', color: colors.inkSubdued }}>
-                {user?.org_name ?? 'My Home Constructions'} · Construction Intelligence Platform
+                {orgName || user?.org_name || 'My Home Constructions'} · Construction Intelligence Platform
               </Typography>
             </Grid>
 

@@ -66,12 +66,7 @@ export const NOTIF_PREF_DEFAULTS: Record<string, boolean> = {
   weekly_digest: false,
 };
 
-const DEFAULT_TEAM: TeamMember[] = [
-  { name: 'Ravi Kumar', email: 'ravi@demo.com', role: 'Admin', status: 'Active' },
-  { name: 'Anil P', email: 'anil@demo.com', role: 'Reviewer', status: 'Active' },
-  { name: 'Kiran Desai', email: 'kiran@demo.com', role: 'Member', status: 'Active' },
-  { name: 'Meena R', email: 'meena@demo.com', role: 'Member', status: 'Invited' },
-];
+const DEFAULT_TEAM: TeamMember[] = [];
 
 export function buildDefaultSettings(): Omit<SettingsState, keyof Pick<SettingsState,
   'patchAccount' | 'patchOrganization' | 'patchNotifications' | 'patchAppearance' |
@@ -220,6 +215,8 @@ export const useSettingsStore = create<SettingsState>()(
       migrate: (persisted, version) => {
         const defaults = buildDefaultSettings();
         const merged = migrateLegacySettings(persisted as Partial<SettingsState> | null);
+        // version <= 1 had hardcoded demo team members — reset to empty
+        const keepTeam = version >= 2 ? (merged?.teamMembers ?? defaults.teamMembers) : [];
         if (!merged || version === 0) {
           return {
             account: { ...defaults.account, ...merged?.account },
@@ -228,7 +225,7 @@ export const useSettingsStore = create<SettingsState>()(
             appearance: { ...defaults.appearance, ...merged?.appearance },
             security: { ...defaults.security, ...merged?.security },
             profile: { ...defaults.profile, ...merged?.profile },
-            teamMembers: merged?.teamMembers?.length ? merged.teamMembers : defaults.teamMembers,
+            teamMembers: keepTeam,
             recentSearches: merged?.recentSearches ?? defaults.recentSearches,
           };
         }
@@ -239,7 +236,7 @@ export const useSettingsStore = create<SettingsState>()(
           appearance: { ...defaults.appearance, ...merged.appearance },
           security: { ...defaults.security, ...merged.security },
           profile: { ...defaults.profile, ...merged.profile },
-          teamMembers: merged.teamMembers?.length ? merged.teamMembers : defaults.teamMembers,
+          teamMembers: keepTeam,
           recentSearches: merged.recentSearches ?? defaults.recentSearches,
         };
       },
