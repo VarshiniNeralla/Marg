@@ -1,164 +1,235 @@
 import React from 'react';
-import { Box, Typography, Grid, LinearProgress, Chip } from '@mui/material';
+import { Box, Typography, Grid } from '@mui/material';
 import {
-  PhotoCameraRounded, CheckCircleRounded, AccessTimeRounded, WarningAmberRounded,
-  QueueRounded, FolderRounded, ArrowForwardRounded, UploadFileRounded,
-  ReplayRounded, CancelRounded,
+  PhotoCameraRounded, ArrowForwardRounded,
+  MapRounded, HistoryRounded,
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
-import { colors, motion } from '@theme/tokens';
 import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
-import PageHeader from '@shared/components/PageHeader/PageHeader';
 
-const captureStatusConfig: Record<string, { label: string; color: string; bg: string }> = {
-  processed: { label: 'Processed', color: '#059669', bg: 'rgba(5,150,105,0.08)' },
-  review:    { label: 'In Review', color: '#d97706', bg: 'rgba(217,119,6,0.08)' },
-  rejected:  { label: 'Rejected',  color: '#dc2626', bg: 'rgba(220,38,38,0.08)' },
-  uploaded:  { label: 'Uploaded',  color: '#64748b', bg: 'rgba(100,116,139,0.08)' },
+/* ─── palette ────────────────────────────────────────────────────────────── */
+const P = {
+  black:      '#080a0d',
+  ink:        '#111318',
+  inkSurface: '#1a1d24',
+  border:     '#e4e7ec',
+  borderDark: 'rgba(255,255,255,0.07)',
+  muted:      '#6b7280',
+  subtle:     '#9ca3af',
+  body:       '#374151',
+  strong:     '#111827',
+  blue:       '#2563eb',
+  blueHover:  '#1d4ed8',
+  blueSoft:   'rgba(37,99,235,0.08)',
+  blueRing:   'rgba(37,99,235,0.18)',
+  white:      '#ffffff',
+  bg:         '#f7f8fa',
 };
 
+const EASE = 'cubic-bezier(0.4,0,0.2,1)';
+const T = `all 160ms ${EASE}`;
+
 export default function EngineerDashboard() {
-  const user     = useAuthStore((s) => s.user);
+  const user     = useAuthStore(s => s.user);
   const projects = useWorkflowStore(s => s.projects);
   const captures = useWorkflowStore(s => s.captures);
-  const floors   = useWorkflowStore(s => s.floors);
 
-  // Engineer sees only assigned projects
   const assignedIds = new Set(user?.assignedProjectIds ?? []);
-  const myProjects = assignedIds.size
+  const myProjects  = assignedIds.size
     ? projects.filter(p => assignedIds.has(p.id) && !p.archived)
     : projects.filter(p => !p.archived).slice(0, 3);
 
-  // Captures attributed to this user (mock: all captures for now)
-  const myCaptures = captures;
-  const pendingUploads = myCaptures.filter(c => c.status === 'review');
-  const approved       = myCaptures.filter(c => c.status === 'processed');
-  const rejected       = myCaptures.filter(c => c.status === 'rejected');
+  const pending  = captures.filter(c => c.status === 'review');
+  const reviewed = captures.filter(c => c.status === 'processed');
 
-  const hour = new Date().getHours();
-  const greeting = hour < 12 ? 'Morning' : hour < 17 ? 'Afternoon' : 'Evening';
+  const hour     = new Date().getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const name     = user?.name?.split(' ')[0] ?? 'Engineer';
 
   return (
-    <Box>
-      <PageHeader
-        title={`${greeting}, ${user?.name?.split(' ')[0] ?? 'Engineer'}`}
-        subtitle="Your capture assignments and upload status"
-        breadcrumbs={[{ label: 'My Overview' }]}
-        actions={
-          <Box component={Link} to="/capture-workflow" sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 1, borderRadius: '10px', background: 'linear-gradient(135deg,#059669,#047857)', color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none' }}>
-            <PhotoCameraRounded sx={{ fontSize: 18 }} /> Start Capture
-          </Box>
-        }
-      />
+    <Box sx={{ maxWidth: 960, mx: 'auto', pb: 6 }}>
 
-      {/* KPI row */}
-      <Grid container spacing={2} sx={{ mb: 4 }}>
+      {/* ════════════════════════════════════════════════════════════════════
+          HERO — dark ink card, full width
+      ════════════════════════════════════════════════════════════════════ */}
+      <Box
+        sx={{
+          position: 'relative', overflow: 'hidden',
+          borderRadius: '20px', mb: 3,
+          background: `linear-gradient(140deg, ${P.black} 0%, ${P.ink} 60%, #0a0f1a 100%)`,
+          border: `1px solid ${P.borderDark}`,
+          boxShadow: '0 20px 60px rgba(0,0,0,0.28), 0 1px 0 rgba(255,255,255,0.04) inset',
+        }}
+      >
+        {/* Grid noise */}
+        <Box sx={{ position:'absolute', inset:0, opacity:0.03, pointerEvents:'none',
+          backgroundImage:`linear-gradient(rgba(255,255,255,1) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,1) 1px,transparent 1px)`,
+          backgroundSize:'28px 28px' }} />
+        {/* Blue radial */}
+        <Box sx={{ position:'absolute', top:-80, left:-80, width:320, height:320, borderRadius:'50%',
+          background:`radial-gradient(circle, rgba(37,99,235,0.15) 0%, transparent 65%)`, pointerEvents:'none' }} />
+        {/* Red radial */}
+        <Box sx={{ position:'absolute', bottom:-60, right:80, width:240, height:240, borderRadius:'50%',
+          background:`radial-gradient(circle, rgba(220,38,38,0.11) 0%, transparent 65%)`, pointerEvents:'none' }} />
+
+        <Box sx={{ position:'relative', px:{ xs:3, md:5 }, pt:{ xs:3.5, md:4.5 }, pb:{ xs:3, md:4 },
+          display:'flex', alignItems:'center', justifyContent:'space-between', gap:3, flexWrap:'wrap' }}>
+          <Box>
+            <Typography sx={{ fontSize:'0.6875rem', fontWeight:700, letterSpacing:'0.12em',
+              textTransform:'uppercase', color:'rgba(255,255,255,0.32)', mb:1.25 }}>
+              My Overview
+            </Typography>
+            <Typography sx={{
+              fontFamily:'"Google Sans Flex","Google Sans",Inter,sans-serif',
+              fontSize:{ xs:'2rem', md:'2.625rem' }, fontWeight:800,
+              color:P.white, letterSpacing:'-0.055em', lineHeight:1.05, mb:0.875,
+            }}>
+              {greeting}, {name}
+            </Typography>
+            <Typography sx={{ fontSize:'0.9375rem', color:'rgba(255,255,255,0.38)', letterSpacing:'-0.01em' }}>
+              Your capture assignments and upload status
+            </Typography>
+          </Box>
+
+          {/* CTA */}
+          <Box component={Link} to="/capture-workflow" sx={{
+            display:'flex', alignItems:'center', gap:1.5,
+            px:2.75, py:1.5, borderRadius:'12px', flexShrink:0,
+            background:`linear-gradient(135deg, ${P.blue} 0%, ${P.blueHover} 100%)`,
+            color:P.white, textDecoration:'none',
+            fontSize:'0.9375rem', fontWeight:700, letterSpacing:'-0.01em',
+            boxShadow:`0 4px 20px rgba(37,99,235,0.5)`,
+            transition: T,
+            '&:hover':{ background:`linear-gradient(135deg,${P.blueHover} 0%,#1e40af 100%)`,
+              boxShadow:`0 6px 28px rgba(37,99,235,0.6)`, transform:'translateY(-1px)' },
+          }}>
+            <PhotoCameraRounded sx={{ fontSize:19 }} />
+            Start Capture
+          </Box>
+        </Box>
+
+        {/* Bottom accent line */}
+        <Box sx={{ height:2, background:`linear-gradient(90deg, ${P.blue}80 0%, transparent 100%)` }} />
+      </Box>
+
+      {/* ════════════════════════════════════════════════════════════════════
+          KPI STRIP
+      ════════════════════════════════════════════════════════════════════ */}
+      <Grid container spacing={1.5} sx={{ mb: 3 }}>
         {[
-          { label: 'Assigned Projects', value: String(myProjects.length), sub: 'active sites', color: '#2563eb', icon: <FolderRounded /> },
-          { label: 'My Uploads', value: String(myCaptures.length), sub: 'total captures', color: '#059669', icon: <UploadFileRounded /> },
-          { label: 'Pending Review', value: String(pendingUploads.length), sub: 'awaiting manager', color: '#d97706', icon: <AccessTimeRounded /> },
-          { label: 'Rejected', value: String(rejected.length), sub: 'need re-capture', color: '#dc2626', icon: <ReplayRounded /> },
-        ].map(({ label, value, sub, color, icon }) => (
-          <Grid key={label} size={{ xs: 12, sm: 6, md: 3 }}>
-            <Box sx={{ p: 2.5, borderRadius: '16px', border: `1px solid ${colors.border}`, backgroundColor: colors.card, display: 'flex', gap: 2, alignItems: 'flex-start' }}>
-              <Box sx={{ width: 44, height: 44, borderRadius: '12px', backgroundColor: color + '14', color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, '& svg': { fontSize: 22 } }}>{icon}</Box>
-              <Box>
-                <Typography sx={{ fontSize: '1.5rem', fontWeight: 800, color: colors.textStrong, lineHeight: 1, letterSpacing: '-0.04em' }}>{value}</Typography>
-                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textSecondary, mt: 0.25 }}>{label}</Typography>
-                <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.25 }}>{sub}</Typography>
-              </Box>
+          { label:'Assigned Projects', value: myProjects.length, sub:'active sites',      accent: P.blue    },
+          { label:'Total Uploads',     value: captures.length,   sub:'captures uploaded', accent: P.strong  },
+          { label:'Pending Review',    value: pending.length,    sub:'awaiting manager',  accent: '#d97706' },
+          { label:'Reviewed',          value: reviewed.length,   sub:'captures reviewed', accent: '#16a34a' },
+        ].map(({ label, value, sub, accent }) => (
+          <Grid key={label} size={{ xs:6, md:3 }}>
+            <Box sx={{
+              px:2.5, py:2.5, borderRadius:'16px',
+              backgroundColor: P.white,
+              border:`1.5px solid ${P.border}`,
+              boxShadow:'0 1px 3px rgba(0,0,0,0.04)',
+              transition: T,
+              '&:hover':{ borderColor: accent + '55', boxShadow:`0 4px 16px ${accent}14` },
+            }}>
+              <Typography sx={{ fontSize:'2rem', fontWeight:800, color: accent === P.strong ? P.strong : accent,
+                letterSpacing:'-0.06em', lineHeight:1, mb:0.5 }}>
+                {value}
+              </Typography>
+              <Typography sx={{ fontSize:'0.8125rem', fontWeight:600, color:P.strong, mb:0.125 }}>{label}</Typography>
+              <Typography sx={{ fontSize:'0.6875rem', color:P.subtle }}>{sub}</Typography>
             </Box>
           </Grid>
         ))}
       </Grid>
 
-      <Grid container spacing={3}>
-        {/* Assigned projects */}
-        <Grid size={{ xs: 12, md: 5 }}>
-          <Box sx={{ p: 3, borderRadius: '16px', border: `1px solid ${colors.border}`, backgroundColor: colors.card }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2.5 }}>
-              <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em' }}>My Projects</Typography>
-            </Box>
-            {myProjects.length === 0 ? (
-              <Box sx={{ py: 4, textAlign: 'center' }}>
-                <FolderRounded sx={{ fontSize: 40, color: colors.textSubdued, mb: 1 }} />
-                <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>No projects assigned yet.</Typography>
-                <Typography sx={{ fontSize: '0.8125rem', color: colors.textSubdued, mt: 0.5 }}>Contact your admin to get assigned.</Typography>
-              </Box>
-            ) : (
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                {myProjects.map(p => (
-                  <Box key={p.id} component={Link} to={`/projects/${p.id}`} sx={{ p: 2, borderRadius: '12px', border: `1px solid ${colors.border}`, textDecoration: 'none', '&:hover': { borderColor: p.accent + '55', backgroundColor: colors.bg } }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 1.25 }}>
-                      <Box sx={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: p.accent }} />
-                      <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong, flex: 1 }} noWrap>{p.name}</Typography>
-                      <ArrowForwardRounded sx={{ fontSize: 14, color: colors.textSubdued }} />
-                    </Box>
-                    <LinearProgress variant="determinate" value={p.progress} sx={{ height: 5, borderRadius: 3, backgroundColor: colors.bgDeep, mb: 0.75, '& .MuiLinearProgress-bar': { borderRadius: 3, backgroundColor: p.accent } }} />
-                    <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{p.progress}% complete · {p.towers} towers</Typography>
-                  </Box>
-                ))}
-              </Box>
-            )}
+      {/* ════════════════════════════════════════════════════════════════════
+          CAPTURE WORKFLOW — primary nav card
+      ════════════════════════════════════════════════════════════════════ */}
+      <Box
+        component={Link}
+        to="/capture-workflow"
+        sx={{
+          display:'flex', alignItems:'center', gap:3,
+          px:{ xs:2.5, md:3.5 }, py:2.75, mb:1.5,
+          borderRadius:'16px',
+          backgroundColor: P.white,
+          border:`1.5px solid ${P.border}`,
+          textDecoration:'none',
+          transition: T,
+          boxShadow:'0 1px 3px rgba(0,0,0,0.04)',
+          '&:hover':{ borderColor: P.blueRing, boxShadow:`0 6px 24px rgba(37,99,235,0.1)`, transform:'translateY(-1px)' },
+          '&:hover .arrow-icon':{ transform:'translateX(3px)', color: P.blue },
+        }}
+      >
+        {/* Icon */}
+        <Box sx={{
+          width:50, height:50, borderRadius:'14px', flexShrink:0,
+          background:`linear-gradient(135deg, ${P.blue} 0%, ${P.blueHover} 100%)`,
+          display:'flex', alignItems:'center', justifyContent:'center',
+          boxShadow:`0 4px 16px rgba(37,99,235,0.35)`,
+        }}>
+          <PhotoCameraRounded sx={{ fontSize:24, color:P.white }} />
+        </Box>
 
-            {/* Start capture CTA */}
-            <Box component={Link} to="/capture-workflow" sx={{ mt: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, py: 1.5, borderRadius: '12px', border: `1.5px dashed ${colors.primary}50`, color: colors.primary, textDecoration: 'none', fontSize: '0.875rem', fontWeight: 600, '&:hover': { backgroundColor: colors.primarySoft } }}>
-              <PhotoCameraRounded sx={{ fontSize: 18 }} /> Start New Capture
-            </Box>
-          </Box>
-        </Grid>
+        {/* Text */}
+        <Box sx={{ flex:1 }}>
+          <Typography sx={{ fontSize:'1rem', fontWeight:700, color:P.strong, letterSpacing:'-0.02em', mb:0.25 }}>
+            Capture Workflow
+          </Typography>
+          <Typography sx={{ fontSize:'0.8125rem', color:P.muted }}>
+          Choose Project, Tower, Floor, and capture the image.
+          </Typography>
+        </Box>
 
-        {/* Recent uploads */}
-        <Grid size={{ xs: 12, md: 7 }}>
-          <Box sx={{ p: 3, borderRadius: '16px', border: `1px solid ${colors.border}`, backgroundColor: colors.card }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2.5 }}>
-              <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em' }}>My Recent Uploads</Typography>
-              <Box component={Link} to="/my-captures" sx={{ fontSize: '0.8125rem', color: colors.primary, textDecoration: 'none', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                All uploads <ArrowForwardRounded sx={{ fontSize: 14 }} />
-              </Box>
-            </Box>
+        {/* Pill badge */}
+        <Box sx={{ px:1.5, py:0.5, borderRadius:'8px', backgroundColor: P.blueSoft,
+          fontSize:'0.6875rem', fontWeight:700, color: P.blue, flexShrink:0, display:{ xs:'none', sm:'block' } }}>
+          Primary
+        </Box>
 
-            {myCaptures.length === 0 ? (
-              <Box sx={{ py: 6, textAlign: 'center' }}>
-                <QueueRounded sx={{ fontSize: 48, color: colors.textSubdued, mb: 1 }} />
-                <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600, color: colors.textSecondary }}>No captures yet.</Typography>
-                <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, mt: 0.5 }}>Use the Capture Workflow to upload your first image.</Typography>
-              </Box>
-            ) : (
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-                {myCaptures.slice(0, 8).map((c, i) => {
-                  const sc = captureStatusConfig[c.status] ?? captureStatusConfig.uploaded;
-                  return (
-                    <Box key={c.id} sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 1.25, borderBottom: i < Math.min(myCaptures.length, 8) - 1 ? `1px solid ${colors.borderLight}` : 'none' }}>
-                      <Box sx={{ width: 36, height: 36, borderRadius: '8px', background: c.gradient, flexShrink: 0 }} />
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong }}>{c.roomName}</Typography>
-                        <Typography noWrap sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{c.projectName} · {c.floorLabel}</Typography>
-                      </Box>
-                      <Chip label={sc.label} size="small" sx={{ height: 20, fontSize: '0.6875rem', fontWeight: 600, color: sc.color, backgroundColor: sc.bg, borderRadius: '5px' }} />
-                      <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, flexShrink: 0 }}>{c.uploadedAt}</Typography>
-                    </Box>
-                  );
-                })}
-              </Box>
-            )}
-          </Box>
+        <ArrowForwardRounded className="arrow-icon" sx={{ fontSize:18, color:P.subtle, flexShrink:0, transition: T }} />
+      </Box>
 
-          {/* Rejected — needs attention */}
-          {rejected.length > 0 && (
-            <Box sx={{ mt: 2.5, p: 2.5, borderRadius: '14px', border: `1px solid rgba(220,38,38,0.2)`, backgroundColor: 'rgba(220,38,38,0.04)' }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.25 }}>
-                <WarningAmberRounded sx={{ fontSize: 18, color: '#dc2626' }} />
-                <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: '#dc2626' }}>{rejected.length} capture{rejected.length > 1 ? 's' : ''} rejected — re-capture needed</Typography>
+      {/* ════════════════════════════════════════════════════════════════════
+          SECONDARY NAV — 2 cards
+      ════════════════════════════════════════════════════════════════════ */}
+      <Grid container spacing={1.5} sx={{ mb: 3 }}>
+        {[
+          { to:'/my-captures', icon:<HistoryRounded sx={{ fontSize:20 }} />, label:'Capture History',
+            desc:'View all your uploaded captures', accent: P.strong },
+          { to:'/floor-plans',  icon:<MapRounded sx={{ fontSize:20 }} />,    label:'Floor Plans',
+            desc:'Browse uploaded site blueprints', accent: P.blue },
+        ].map(c => (
+          <Grid key={c.to} size={{ xs:12, sm:6 }}>
+            <Box component={Link} to={c.to} sx={{
+              display:'flex', alignItems:'center', gap:2,
+              px:2.5, py:2.25, borderRadius:'14px',
+              backgroundColor: P.white,
+              border:`1.5px solid ${P.border}`,
+              textDecoration:'none',
+              transition: T,
+              boxShadow:'0 1px 3px rgba(0,0,0,0.04)',
+              '&:hover':{ borderColor:`${c.accent}40`, boxShadow:`0 4px 16px ${c.accent}10`, transform:'translateY(-1px)' },
+              '&:hover .sec-arrow':{ transform:'translateX(3px)', color: c.accent },
+              '&:hover .sec-icon':{ color: c.accent, backgroundColor:`${c.accent}12` },
+            }}>
+              <Box className="sec-icon" sx={{ width:40, height:40, borderRadius:'11px',
+                backgroundColor:`${c.accent}0d`, color: c.accent,
+                display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, transition: T }}>
+                {c.icon}
               </Box>
-              <Box component={Link} to="/capture-workflow" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, fontSize: '0.8125rem', color: '#dc2626', fontWeight: 600, textDecoration: 'none' }}>
-                Go to Capture Workflow <ArrowForwardRounded sx={{ fontSize: 14 }} />
+              <Box sx={{ flex:1, minWidth:0 }}>
+                <Typography sx={{ fontSize:'0.875rem', fontWeight:700, color:P.strong, letterSpacing:'-0.01em' }}>{c.label}</Typography>
+                <Typography sx={{ fontSize:'0.75rem', color:P.muted }}>{c.desc}</Typography>
               </Box>
+              <ArrowForwardRounded className="sec-arrow" sx={{ fontSize:16, color:P.subtle, flexShrink:0, transition: T }} />
             </Box>
-          )}
-        </Grid>
+          </Grid>
+        ))}
       </Grid>
+
+
     </Box>
   );
 }

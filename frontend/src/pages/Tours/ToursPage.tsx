@@ -23,8 +23,8 @@ export default function ToursPage() {
   const mockTours = useWorkflowStore(s => s.tours);
   const mockProjects = useWorkflowStore(s => s.projects);
   const PROJECTS_WITH_TOURS = useMemo(
-    () => mockProjects.filter(p => !p.archived && mockTours.some(t => t.projectId === p.id)),
-    [mockProjects, mockTours],
+    () => mockProjects.filter(p => !p.archived),
+    [mockProjects],
   );
 
   const tours = useMemo(

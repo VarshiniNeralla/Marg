@@ -65,7 +65,7 @@ export default function NotificationCenter() {
     <>
       <IconButton
         size="small"
-        onClick={e => setAnchor(e.currentTarget)}
+        onClick={e => { setAnchor(e.currentTarget); e.currentTarget.blur(); }}
         sx={{ position: 'relative', color: colors.textMuted, '&:hover': { color: colors.textStrong, backgroundColor: colors.bgDeep } }}
       >
         <Badge badgeContent={unread} color="error" max={9} sx={{ '& .MuiBadge-badge': { fontSize: '0.5625rem', minWidth: 16, height: 16 } }}>

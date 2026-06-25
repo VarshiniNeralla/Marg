@@ -139,11 +139,13 @@ const router = createBrowserRouter([
       // ── Shared authenticated routes ───────────────────────────────────────
       { path: '/profile', element: <PageSuspense><UserProfilePage /></PageSuspense> },
 
-      // ── Projects — all authenticated roles can view ───────────────────────
-      { path: '/projects',           element: <PageSuspense><ProjectsPage /></PageSuspense> },
-      { path: '/projects/:projectId', element: <PageSuspense><ProjectDetailPage /></PageSuspense> },
+      // ── Routes accessible by all authenticated roles ─────────────────────
+      { path: '/projects',                                                  element: <PageSuspense><ProjectsPage /></PageSuspense> },
+      { path: '/projects/:projectId',                                       element: <PageSuspense><ProjectDetailPage /></PageSuspense> },
+      { path: '/floor-plans',                                               element: <PageSuspense><FloorPlansPage /></PageSuspense> },
+      { path: '/floor-plans/:projectId/:towerId/:floorId',                  element: <PageSuspense><FloorPlanViewerPage /></PageSuspense> },
 
-      // ── Projects deep routes (Admin + Manager only) ───────────────────────
+      // ── Admin + Manager only ──────────────────────────────────────────────
       {
         element: <ManagerOrAdminRoute><Outlet /></ManagerOrAdminRoute>,
         children: [
@@ -154,8 +156,6 @@ const router = createBrowserRouter([
           { path: '/defects',   element: <PageSuspense><DefectsPage /></PageSuspense> },
           { path: '/tours',     element: <PageSuspense><ToursPage /></PageSuspense> },
           { path: '/tours/:tourId', element: <PageSuspense><TourViewerPage /></PageSuspense> },
-          { path: '/floor-plans', element: <PageSuspense><FloorPlansPage /></PageSuspense> },
-          { path: '/floor-plans/:projectId/:towerId/:floorId', element: <PageSuspense><FloorPlanViewerPage /></PageSuspense> },
         ],
       },
 

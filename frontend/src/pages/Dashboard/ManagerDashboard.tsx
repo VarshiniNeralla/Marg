@@ -1,9 +1,8 @@
 import React from 'react';
 import { Box, Typography, Grid, Chip } from '@mui/material';
 import {
-  RateReviewRounded, CheckCircleRounded, AccessTimeRounded, CancelRounded,
-  ViewInArRounded, BugReportRounded, FolderRounded, ArrowForwardRounded,
-  TrendingUpRounded, ReplayRounded,
+  RateReviewRounded, CheckCircleRounded, AccessTimeRounded,
+  ViewInArRounded, BugReportRounded, ArrowForwardRounded,
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
@@ -13,14 +12,10 @@ import PageHeader from '@shared/components/PageHeader/PageHeader';
 
 const statusConfig: Record<string, { label: string; color: string; bg: string; icon: React.ReactNode }> = {
   uploaded:  { label: 'Uploaded',  color: '#64748b', bg: 'rgba(100,116,139,0.08)', icon: <AccessTimeRounded sx={{ fontSize: 13 }} /> },
-  assigned:  { label: 'Assigned',  color: '#0891b2', bg: 'rgba(8,145,178,0.08)',   icon: <AccessTimeRounded sx={{ fontSize: 13 }} /> },
+  review:    { label: 'Pending Review', color: '#d97706', bg: 'rgba(217,119,6,0.08)', icon: <RateReviewRounded sx={{ fontSize: 13 }} /> },
   reviewing: { label: 'Reviewing', color: '#d97706', bg: 'rgba(217,119,6,0.08)',   icon: <RateReviewRounded sx={{ fontSize: 13 }} /> },
-  changes_requested: { label: 'Changes Req.', color: '#dc2626', bg: 'rgba(220,38,38,0.08)', icon: <ReplayRounded sx={{ fontSize: 13 }} /> },
-  approved:  { label: 'Approved',  color: '#059669', bg: 'rgba(5,150,105,0.08)',   icon: <CheckCircleRounded sx={{ fontSize: 13 }} /> },
+  processed: { label: 'Reviewed',  color: '#059669', bg: 'rgba(5,150,105,0.08)',   icon: <CheckCircleRounded sx={{ fontSize: 13 }} /> },
   published: { label: 'Published', color: '#2563eb', bg: 'rgba(37,99,235,0.08)',   icon: <ViewInArRounded sx={{ fontSize: 13 }} /> },
-  review:    { label: 'In Review', color: '#d97706', bg: 'rgba(217,119,6,0.08)',   icon: <RateReviewRounded sx={{ fontSize: 13 }} /> },
-  processed: { label: 'Processed', color: '#059669', bg: 'rgba(5,150,105,0.08)',   icon: <CheckCircleRounded sx={{ fontSize: 13 }} /> },
-  rejected:  { label: 'Rejected',  color: '#dc2626', bg: 'rgba(220,38,38,0.08)',   icon: <CancelRounded sx={{ fontSize: 13 }} /> },
 };
 
 export default function ManagerDashboard() {
@@ -36,8 +31,8 @@ export default function ManagerDashboard() {
     ? projects.filter(p => assignedIds.has(p.id) && !p.archived)
     : projects.filter(p => !p.archived);
 
-  const pendingReviews   = captures.filter(c => c.status === 'review');
-  const approvedToday    = captures.filter(c => c.status === 'processed');
+  const pendingReviews  = captures.filter(c => c.status === 'review');
+  const reviewed        = captures.filter(c => c.status === 'processed');
   const unpublishedTours = tours.filter(t => t.status !== 'published');
   const openDefects      = defects.filter(d => d.status === 'open' || d.status === 'in_progress');
 
@@ -61,7 +56,7 @@ export default function ManagerDashboard() {
       <Grid container spacing={2} sx={{ mb: 4 }}>
         {[
           { label: 'Pending Reviews', value: String(pendingReviews.length), sub: 'awaiting your action', color: '#d97706', icon: <RateReviewRounded /> },
-          { label: 'Approved', value: String(approvedToday.length), sub: 'captures processed', color: '#059669', icon: <CheckCircleRounded /> },
+          { label: 'Reviewed', value: String(reviewed.length), sub: 'captures reviewed', color: '#059669', icon: <CheckCircleRounded /> },
           { label: 'Unpublished Tours', value: String(unpublishedTours.length), sub: 'ready to publish', color: '#2563eb', icon: <ViewInArRounded /> },
           { label: 'Open Defects', value: String(openDefects.length), sub: 'needs attention', color: '#dc2626', icon: <BugReportRounded /> },
         ].map((s) => (
