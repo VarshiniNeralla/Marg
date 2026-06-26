@@ -1,15 +1,16 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Box, Typography } from '@mui/material';
+import { Box, Typography, Snackbar, Alert } from '@mui/material';
 import {
   FolderRounded, DomainRounded, LayersRounded, PhotoCameraRounded,
   CheckCircleRounded, ArrowForwardRounded, ArrowBackRounded,
   CloudUploadRounded, AddLocationAltRounded, ZoomInRounded, ZoomOutRounded,
   CenterFocusStrongRounded, MyLocationRounded, FullscreenRounded, FullscreenExitRounded,
 } from '@mui/icons-material';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getFloorPlanByFloor, getFloorsByTower } from '@store/workflowSelectors';
+import { uploadCaptureFiles } from '@/services/uploadService';
 
 /* ── palette ────────────────────────────────────────────────────────────── */
 const P = {
@@ -234,15 +235,37 @@ function FloorCard({ label, number, onClick }: { label: string; number: number; 
   );
 }
 
+/* ── Persisted pin shape for rendering ──────────────────────────────────── */
+interface RenderPin {
+  id: string;
+  sequenceNumber: number;
+  x: number;
+  y: number;
+  hasCapture: boolean;
+}
+
 /* ── Floor plan viewer with pin + fullscreen ─────────────────────────────── */
-function FloorPlanWithPin({ floorPlan, onPinPlace }: { floorPlan: Record<string, unknown> | null; onPinPlace: (x: number, y: number) => void }) {
+function FloorPlanWithPin({
+  floorPlan, pin, pins, onPinPlace, onPinClick,
+}: {
+  floorPlan: Record<string, unknown> | null;
+  pin: { x: number; y: number } | null;       // pending pin being placed (not yet captured)
+  pins: RenderPin[];                            // persisted, numbered pins for this floor plan
+  onPinPlace: (x: number, y: number) => void;
+  onPinClick: (pinId: string) => void;
+}) {
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const [pin, setPin] = useState<{ x: number; y: number } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const dragStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
+  // The IMAGE element is the single coordinate reference. Pins live INSIDE an
+  // overlay that is sized to exactly match the image box and shares the same
+  // pan/zoom transform — so pins never drift relative to the plan, at any
+  // container size, fullscreen state, or zoom level. Coordinates are stored as
+  // % of the image (identical model to FloorPlanViewerPage).
+  const imgWrapRef = useRef<HTMLDivElement>(null);
 
   const zoom = useCallback((dir: 1 | -1) => setScale(s => Math.min(4, Math.max(0.5, s + dir * 0.25))), []);
   const resetView = useCallback(() => { setScale(1); setOffset({ x: 0, y: 0 }); }, []);
@@ -264,14 +287,21 @@ function FloorPlanWithPin({ floorPlan, onPinPlace }: { floorPlan: Record<string,
     setOffset({ x: dragStart.current.ox + e.clientX - dragStart.current.x, y: dragStart.current.oy + e.clientY - dragStart.current.y });
   }
   function onMouseUp() { setIsDragging(false); }
+
   function onClick(e: React.MouseEvent) {
-    if (!containerRef.current || isDragging) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const x = ((e.clientX - rect.left - offset.x) / scale) / rect.width * 100;
-    const y = ((e.clientY - rect.top - offset.y) / scale) / rect.height * 100;
-    const clamped = { x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)) };
-    setPin(clamped);
-    onPinPlace(clamped.x, clamped.y);
+    if (isDragging) return;
+    // Ignore clicks that landed on an existing numbered pin.
+    if ((e.target as Element).closest?.('[data-pin-id]')) return;
+    const wrap = imgWrapRef.current;
+    if (!wrap) return;
+    // The wrapper IS the image box and carries the transform, so its live rect
+    // already reflects pan/zoom/fullscreen. Map the click into 0–100% of it.
+    const rect = wrap.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    if (x < 0 || y < 0 || x > 100 || y > 100) return; // clicked outside the plan
+    onPinPlace(x, y);
   }
 
   const imageUrl = floorPlan
@@ -317,30 +347,57 @@ function FloorPlanWithPin({ floorPlan, onPinPlace }: { floorPlan: Record<string,
         {controls}
       </Box>
 
-      {/* Canvas */}
+      {/* Canvas — a centered flex stage holds the pan/zoom transform; the image
+          wrapper shrink-wraps the plan exactly so pins (its % children) never drift. */}
       <Box ref={containerRef} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp} onClick={onClick}
-        sx={{ width: '100%', height: '100%', overflow: 'hidden', cursor: isDragging ? 'grabbing' : 'crosshair', position: 'relative', userSelect: 'none' }}>
-        <Box sx={{ position: 'absolute', inset: 0, transform: `translate(${offset.x}px,${offset.y}px) scale(${scale})`, transformOrigin: '0 0', transition: isDragging ? 'none' : 'transform 0.1s' }}>
+        sx={{ width: '100%', height: '100%', overflow: 'hidden', cursor: isDragging ? 'grabbing' : 'crosshair', position: 'relative', userSelect: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <Box sx={{ transform: `translate(${offset.x}px,${offset.y}px) scale(${scale})`, transition: isDragging ? 'none' : 'transform 0.1s', display: 'flex', alignItems: 'center', justifyContent: 'center', maxWidth: '100%', maxHeight: '100%' }}>
           {imageUrl ? (
-            <Box component="img" src={imageUrl} alt="Floor plan" draggable={false} sx={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+            /* Wrapper sized to the rendered image; pins are % of THIS box. */
+            <Box ref={imgWrapRef} sx={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}>
+              <Box component="img" src={imageUrl} alt="Floor plan" draggable={false}
+                sx={{ display: 'block', maxWidth: '88vw', maxHeight: '70vh', width: 'auto', height: 'auto' }} />
+
+              {/* Persisted, numbered pins — % of the image, so zero drift */}
+              {pins.map(p => {
+                const color = p.hasCapture ? '#16a34a' : '#d97706';
+                return (
+                  <Box
+                    key={p.id}
+                    data-pin-id={p.id}
+                    onClick={(e) => { e.stopPropagation(); onPinClick(p.id); }}
+                    sx={{ position: 'absolute', left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%,-100%)', cursor: 'pointer', zIndex: 5 }}
+                  >
+                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.5))', transition: T, '&:hover': { transform: 'scale(1.08)' } }}>
+                      <Box sx={{ width: 30, height: 30, borderRadius: '50% 50% 50% 0', backgroundColor: color, border: '3px solid #fff', transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <Typography sx={{ fontSize: '0.8125rem', fontWeight: 800, color: '#fff', transform: 'rotate(45deg)', lineHeight: 1 }}>{p.sequenceNumber}</Typography>
+                      </Box>
+                      <Box sx={{ width: 2, height: 6, backgroundColor: color, mt: '-1px' }} />
+                    </Box>
+                  </Box>
+                );
+              })}
+
+              {/* Pending pin being placed (before its image is attached) */}
+              {pin && (
+                <Box sx={{ position: 'absolute', left: `${pin.x}%`, top: `${pin.y}%`, transform: 'translate(-50%,-100%)', pointerEvents: 'none', zIndex: 6 }}>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.5))' }}>
+                    <Box sx={{ width: 34, height: 34, borderRadius: '50% 50% 50% 0', backgroundColor: '#22c55e', border: '3px solid #fff', transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'pinpulse 1.2s ease-in-out infinite', '@keyframes pinpulse': { '0%,100%': { boxShadow: '0 0 0 0 rgba(34,197,94,0.5)' }, '50%': { boxShadow: '0 0 0 6px rgba(34,197,94,0)' } } }}>
+                      <MyLocationRounded sx={{ fontSize: 14, color: '#fff', transform: 'rotate(45deg)' }} />
+                    </Box>
+                    <Box sx={{ width: 2, height: 8, backgroundColor: '#22c55e', mt: '-1px' }} />
+                    <Box sx={{ width: 5, height: 5, borderRadius: '50%', backgroundColor: '#22c55e', opacity: 0.4 }} />
+                  </Box>
+                </Box>
+              )}
+            </Box>
           ) : (
             <Box sx={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 1.5 }}>
               <Box sx={{ width: 64, height: 64, borderRadius: '18px', backgroundColor: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <LayersRounded sx={{ fontSize: 32, color: 'rgba(255,255,255,0.18)' }} />
               </Box>
               <Typography sx={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.9375rem', fontWeight: 600 }}>No floor plan uploaded yet</Typography>
-              <Typography sx={{ color: 'rgba(255,255,255,0.22)', fontSize: '0.8125rem', textAlign: 'center', maxWidth: 260 }}>Place your capture point on this blank canvas</Typography>
-            </Box>
-          )}
-          {pin && (
-            <Box sx={{ position: 'absolute', left: `${pin.x}%`, top: `${pin.y}%`, transform: 'translate(-50%,-100%)', pointerEvents: 'none' }}>
-              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.5))' }}>
-                <Box sx={{ width: 34, height: 34, borderRadius: '50% 50% 50% 0', backgroundColor: '#22c55e', border: '3px solid #fff', transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <MyLocationRounded sx={{ fontSize: 14, color: '#fff', transform: 'rotate(45deg)' }} />
-                </Box>
-                <Box sx={{ width: 2, height: 8, backgroundColor: '#22c55e', mt: '-1px' }} />
-                <Box sx={{ width: 5, height: 5, borderRadius: '50%', backgroundColor: '#22c55e', opacity: 0.4 }} />
-              </Box>
+              <Typography sx={{ color: 'rgba(255,255,255,0.22)', fontSize: '0.8125rem', textAlign: 'center', maxWidth: 260 }}>A floor plan is required to place capture pins.</Typography>
             </Box>
           )}
         </Box>
@@ -384,14 +441,24 @@ export default function CaptureWorkflowPage() {
   const towers     = useWorkflowStore(s => s.towers);
   const floors     = useWorkflowStore(s => s.floors);
   const floorPlans = useWorkflowStore(s => s.floorPlans);
+  const flats      = useWorkflowStore(s => s.flats);
+  const rooms      = useWorkflowStore(s => s.rooms);
+  const allPins    = useWorkflowStore(s => s.capturePins);
+  const createRoom         = useWorkflowStore(s => s.createRoom);
+  const uploadCapture      = useWorkflowStore(s => s.uploadCapture);
+  const createCapturePin   = useWorkflowStore(s => s.createCapturePin);
+  const attachCaptureToPin = useWorkflowStore(s => s.attachCaptureToPin);
+  const navigate = useNavigate();
 
   const [step, setStep]               = useState<Step>('project');
   const [selectedProject, setProject] = useState<string>('');
   const [selectedTower, setTower]     = useState<string>('');
   const [selectedFloor, setFloor]     = useState<string>('');
   const [pinPos, setPinPos]           = useState<{ x: number; y: number } | null>(null);
-  const [uploaded, setUploaded]       = useState(false);
   const [dragging, setDragging]       = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const [toast, setToast]             = useState('');
 
   const assignedIds = new Set(user?.assignedProjectIds ?? []);
   const myProjects  = assignedIds.size
@@ -405,6 +472,21 @@ export default function CaptureWorkflowPage() {
     .sort((a, b) => a.number - b.number);
 
   const floorPlan = getFloorPlanByFloor(floorPlans, selectedTower, selectedFloor);
+
+  // Persisted, numbered pins for the current floor plan — kept visible on the plan.
+  const floorPins: RenderPin[] = floorPlan
+    ? [...allPins.filter(p => p.floorPlanId === floorPlan.id)]
+        .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
+        .map(p => ({ id: p.id, sequenceNumber: p.sequenceNumber, x: p.x, y: p.y, hasCapture: p.captureIds.length > 0 }))
+    : [];
+
+  // Click a numbered pin → open its latest capture image.
+  function openPinCapture(pinId: string) {
+    const pin = allPins.find(p => p.id === pinId);
+    const captureId = pin?.captureIds[pin.captureIds.length - 1];
+    if (captureId) navigate(`/captures/${captureId}`);
+    else setToast('This pin has no capture yet — drop a point and upload to attach one.');
+  }
 
   const stepIdx = STEPS.findIndex(s => s.key === step);
   const selectedProjectObj = projects.find(p => p.id === selectedProject);
@@ -432,11 +514,53 @@ export default function CaptureWorkflowPage() {
     if (prev) jumpToStep(prev.key);
   }
 
-  function reset() {
-    setStep('project'); setProject(''); setTower(''); setFloor(''); setPinPos(null); setUploaded(false);
+  /* ── Real upload — runs the actual Cloudinary + store pipeline ─────────── */
+  async function handleCaptureFiles(fileList: FileList | null) {
+    const files = fileList ? Array.from(fileList) : [];
+    if (!files.length || !pinPos || !selectedFloor || isUploading) return;
+    setUploadError('');
+    setIsUploading(true);
+    try {
+      // 1) Upload to Cloudinary via the existing service.
+      const result = await uploadCaptureFiles(files);
+      const fileCount = result.count || files.length;
+
+      // 2) If this floor has a plan, place a permanent capture pin at the dropped
+      //    location and attach the capture to it (shows up in the floor-plan viewer).
+      if (floorPlan) {
+        const pinId = createCapturePin({
+          floorPlanId: floorPlan.id,
+          floorId: selectedFloor,
+          towerId: selectedTower,
+          projectId: selectedProject,
+          x: pinPos.x,
+          y: pinPos.y,
+        });
+        attachCaptureToPin(pinId, fileCount, result.files);
+        const seq = (floorPlan ? allPins.filter(p => p.floorPlanId === floorPlan.id).length : 0) + 1;
+        setToast(`Image attached to Pin ${seq} · sent for review`);
+      } else {
+        // 3) No floor plan yet — still create a real capture against a room on
+        //    this floor so it reaches review + history.
+        const flat = flats.find(f => f.floorId === selectedFloor);
+        const flatId = flat?.id ?? `${selectedFloor}-flat-a`;
+        const seq = rooms.filter(r => r.floorId === selectedFloor).length + 1;
+        const roomId = createRoom(flatId, `Capture Point ${seq}`, 'custom');
+        uploadCapture(roomId, fileCount, result.files);
+        setToast('Capture uploaded · sent for review');
+      }
+
+      // Keep the floor plan + its numbered pins visible; just clear the pending pin
+      // so the engineer can immediately place the next point.
+      setPinPos(null);
+    } catch {
+      setUploadError('Upload failed. Please check your connection and try again.');
+    } finally {
+      setIsUploading(false);
+    }
   }
 
-  const BackBtn = step !== 'project' && !uploaded ? (
+  const BackBtn = step !== 'project' ? (
     <Box onClick={goBack} sx={{
       display: 'inline-flex', alignItems: 'center', gap: 0.75,
       px: 1.75, py: 0.875, borderRadius: '10px',
@@ -545,24 +669,38 @@ export default function CaptureWorkflowPage() {
       )}
 
       {/* ── CAPTURE ─────────────────────────────────────────────────────── */}
-      {step === 'capture' && !uploaded && (
+      {step === 'capture' && (
         <Box>
           <ContextBar items={[
             { label: 'Project', value: selectedProjectObj?.name },
             { label: 'Tower',   value: selectedTowerObj?.name },
             { label: 'Floor',   value: selectedFloorObj?.label },
           ]} />
+          {/* Pin count + history link */}
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5, gap: 1, flexWrap: 'wrap' }}>
+            <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
+              {floorPins.length > 0
+                ? `${floorPins.length} pin${floorPins.length !== 1 ? 's' : ''} placed · tap a pin to view its capture`
+                : 'No pins yet — tap the plan to place your first capture point'}
+            </Typography>
+            <Box component={Link} to="/my-captures" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.5, py: 0.625, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none', transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}>
+              View History <ArrowForwardRounded sx={{ fontSize: 13 }} />
+            </Box>
+          </Box>
           <Box sx={{ mb: 2.5 }}>
             <FloorPlanWithPin
               floorPlan={(floorPlan as unknown) as Record<string, unknown> | null}
+              pin={pinPos}
+              pins={floorPins}
               onPinPlace={(x, y) => setPinPos({ x, y })}
+              onPinClick={openPinCapture}
             />
           </Box>
           {/* Upload zone */}
           <Box
             onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
             onDragLeave={() => setDragging(false)}
-            onDrop={(e) => { e.preventDefault(); setDragging(false); if (e.dataTransfer.files.length > 0 && pinPos) setUploaded(true); }}
+            onDrop={(e) => { e.preventDefault(); setDragging(false); if (pinPos && !isUploading) void handleCaptureFiles(e.dataTransfer.files); }}
             sx={{
               borderRadius: '16px', p: { xs: 2.5, sm: 3.5 }, textAlign: 'center',
               border: `2px dashed ${dragging ? P.blue : pinPos ? P.blue + '55' : P.border}`,
@@ -578,10 +716,11 @@ export default function CaptureWorkflowPage() {
                 <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>Upload Capture Image</Typography>
                 <Typography sx={{ fontSize: '0.875rem', color: P.muted, mb: 1.75 }}>Drag & drop or click to browse</Typography>
                 <Typography sx={{ fontSize: '0.75rem', color: P.subtle, mb: 2.5 }}>Supported: .jpg .jpeg .png .dng .insp</Typography>
-                <Box component="label" htmlFor="capture-file-input" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.75, py: 1.125, borderRadius: '10px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, cursor: 'pointer', fontSize: '0.875rem', fontWeight: 700, color: P.white, boxShadow: '0 4px 14px rgba(37,99,235,0.3)', '&:hover': { opacity: 0.9 } }}>
-                  <PhotoCameraRounded sx={{ fontSize: 17 }} /> Browse & Upload
+                <Box component="label" htmlFor="capture-file-input" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.75, py: 1.125, borderRadius: '10px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, cursor: isUploading ? 'default' : 'pointer', fontSize: '0.875rem', fontWeight: 700, color: P.white, boxShadow: '0 4px 14px rgba(37,99,235,0.3)', opacity: isUploading ? 0.7 : 1, '&:hover': { opacity: isUploading ? 0.7 : 0.9 } }}>
+                  <PhotoCameraRounded sx={{ fontSize: 17 }} /> {isUploading ? 'Uploading…' : 'Browse & Upload'}
                 </Box>
-                <Box component="input" id="capture-file-input" type="file" accept=".jpg,.jpeg,.png,.dng,.insp" onChange={() => { if (pinPos) setUploaded(true); }} sx={{ display: 'none' }} />
+                <Box component="input" id="capture-file-input" type="file" multiple accept=".jpg,.jpeg,.png,.dng,.insp" disabled={isUploading} onChange={(e: React.ChangeEvent<HTMLInputElement>) => { void handleCaptureFiles(e.target.files); e.target.value = ''; }} sx={{ display: 'none' }} />
+                {uploadError && <Typography sx={{ mt: 1.75, fontSize: '0.8125rem', color: P.red }}>{uploadError}</Typography>}
               </>
             ) : (
               <>
@@ -596,27 +735,12 @@ export default function CaptureWorkflowPage() {
         </Box>
       )}
 
-      {/* ── SUCCESS ─────────────────────────────────────────────────────── */}
-      {step === 'capture' && uploaded && (
-        <Box sx={{ textAlign: 'center', py: 6 }}>
-          <Box sx={{ width: 80, height: 80, borderRadius: '50%', backgroundColor: 'rgba(34,197,94,0.1)', border: '2px solid rgba(34,197,94,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 3 }}>
-            <CheckCircleRounded sx={{ fontSize: 44, color: '#22c55e' }} />
-          </Box>
-          <Typography sx={{ fontSize: { xs: '1.25rem', sm: '1.5rem' }, fontWeight: 800, color: P.strong, letterSpacing: '-0.04em', mb: 0.75 }}>Capture Submitted!</Typography>
-          <Typography sx={{ fontSize: '0.9375rem', color: P.muted, maxWidth: 340, mx: 'auto', mb: 1 }}>
-            Your image for <strong>{selectedFloorObj?.label}</strong> in <strong>{selectedTowerObj?.name}</strong> has been sent for review.
-          </Typography>
-          <Typography sx={{ fontSize: '0.8125rem', color: P.subtle, mb: 4 }}>A manager will review it shortly.</Typography>
-          <Box sx={{ display: 'flex', gap: 1.5, justifyContent: 'center', flexWrap: 'wrap' }}>
-            <Box onClick={reset} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.75, py: 1.125, borderRadius: '10px', border: `1.5px solid ${P.border}`, cursor: 'pointer', fontSize: '0.875rem', fontWeight: 700, color: P.muted, transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}>
-              <PhotoCameraRounded sx={{ fontSize: 16 }} /> Capture Another
-            </Box>
-            <Box component={Link} to="/my-captures" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.75, py: 1.125, borderRadius: '10px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, color: P.white, fontSize: '0.875rem', fontWeight: 700, textDecoration: 'none', boxShadow: '0 4px 14px rgba(37,99,235,0.28)' }}>
-              View History <ArrowForwardRounded sx={{ fontSize: 16 }} />
-            </Box>
-          </Box>
-        </Box>
-      )}
+      {/* Attach-success toast — floor plan stays in place behind it */}
+      <Snackbar open={!!toast} autoHideDuration={3500} onClose={() => setToast('')} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
+        <Alert severity="success" icon={<CheckCircleRounded sx={{ fontSize: 20 }} />} onClose={() => setToast('')} sx={{ borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.16)', fontWeight: 600 }}>
+          {toast}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }

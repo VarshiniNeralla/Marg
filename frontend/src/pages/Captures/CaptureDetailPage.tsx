@@ -1,367 +1,176 @@
-import React, { useState, useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { Box, Typography, Chip, Grid, TextField, Alert } from '@mui/material';
+import React, { useMemo, useState } from 'react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { Box, Typography } from '@mui/material';
 import {
-  ArrowBackRounded, CheckRounded, CloseRounded, ReplayRounded, AccessTimeRounded,
-  CameraAltRounded, NavigateNextRounded,
-  ViewInArRounded, BugReportRounded, CompareArrowsRounded, TimelineRounded,
-  MapRounded,
+  ArrowBackRounded, CameraAltRounded, LayersRounded, EventRounded, AccessTimeRounded,
 } from '@mui/icons-material';
-import { colors, motion } from '@theme/tokens';
-import {
-  statusConfig, getCaptureSeriesForCapture, getRoomHistory,
-  getCaptureById, getTourForCapture,
-} from '@store/workflowSelectors';
-import type { CaptureSnapshot } from '@/data/mockData';
+import { getCaptureById, getPinForCapture, getPinCaptureTimeline } from '@store/workflowSelectors';
+import type { MockCapture } from '@/data/mockData';
 import { useWorkflowStore } from '@store/workflowStore';
-import ActivityFeed from '@shared/components/ActivityFeed/ActivityFeed';
-import ProcessingPipeline, { type PipelineStage } from '@shared/components/ProcessingPipeline/ProcessingPipeline';
-import CaptureTimeline from '@shared/components/CaptureTimeline/CaptureTimeline';
-import CompareView from '@shared/components/CompareView/CompareView';
-import RoomHistoryPanel from '@shared/components/RoomHistoryPanel/RoomHistoryPanel';
 
-const reviewStatusToPipeline: Record<string, PipelineStage> = {
-  uploaded: 'uploaded',
-  assigned: 'queued',
-  reviewing: 'processing',
-  changes_requested: 'processing',
-  approved: 'reviewed',
-  published: 'published',
+const P = {
+  border: '#e4e7ec', muted: '#6b7280', subtle: '#9ca3af', strong: '#111827',
+  blue: '#2563eb', blueSoft: 'rgba(37,99,235,0.08)', white: '#ffffff', bg: '#f7f8fa',
 };
+const T = `all 160ms cubic-bezier(0.4,0,0.2,1)`;
 
-// ── Small building blocks ───────────────────────────────────────────────────────
-
-function Panel({ title, icon, action, children, accent }: {
-  title: string; icon?: React.ReactNode; action?: React.ReactNode; children: React.ReactNode; accent?: string;
-}) {
+/** Real image URL for a capture, if one was uploaded. */
+function captureImageUrl(c: MockCapture | undefined): string | null {
+  if (!c) return null;
+  const r = c as MockCapture & Record<string, unknown>;
   return (
-    <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', overflow: 'hidden' }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2.5, py: 1.75, borderBottom: `1px solid ${colors.borderLight}` }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          {icon && <Box sx={{ color: accent ?? colors.textMuted, display: 'flex' }}>{icon}</Box>}
-          <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.01em' }}>{title}</Typography>
-        </Box>
-        {action}
-      </Box>
-      <Box sx={{ p: 2.5 }}>{children}</Box>
-    </Box>
+    (r.processedPanoramaUrl as string | undefined) ??
+    (r.original_url as string | undefined) ??
+    (r.originalFileUrl as string | undefined) ??
+    (r.thumbnailUrl as string | undefined) ??
+    (r.thumbnail_url as string | undefined) ??
+    null
   );
 }
 
-function Breadcrumb({ items }: { items: { label: string; to?: string }[] }) {
-  return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
-      {items.map((it, i) => (
-        <React.Fragment key={i}>
-          {i > 0 && <NavigateNextRounded sx={{ fontSize: 14, color: colors.textSubdued }} />}
-          {it.to ? (
-            <Box component={Link} to={it.to} sx={{ fontSize: '0.75rem', fontWeight: 500, color: colors.textMuted, textDecoration: 'none', '&:hover': { color: colors.primary } }}>{it.label}</Box>
-          ) : (
-            <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.textStrong }}>{it.label}</Typography>
-          )}
-        </React.Fragment>
-      ))}
-    </Box>
-  );
+/** Format an ISO timestamp into a date + time label; falls back to uploadedAt. */
+function fmtDateTime(c: MockCapture): { date: string; time: string } {
+  const iso = (c as MockCapture & { capturedAt?: string }).capturedAt;
+  if (iso) {
+    const d = new Date(iso);
+    if (!Number.isNaN(d.getTime())) {
+      return {
+        date: d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+        time: d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true }),
+      };
+    }
+  }
+  return { date: c.uploadedAt, time: '' };
 }
-
-// ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function CaptureDetailPage() {
   const { captureId } = useParams<{ captureId: string }>();
   const captures = useWorkflowStore(s => s.captures);
-  const tours = useWorkflowStore(s => s.tours);
-  const defects = useWorkflowStore(s => s.defects);
-  const auditLogs = useWorkflowStore(s => s.auditLogs);
-  const reviewCapture = useWorkflowStore(s => s.reviewCapture);
-  const publishCapture = useWorkflowStore(s => s.publishCapture);
-  const generateTour = useWorkflowStore(s => s.generateTour);
+  const pins = useWorkflowStore(s => s.capturePins);
 
   const capture = getCaptureById(captures, captureId ?? '');
 
-  const series = useMemo(() => getCaptureSeriesForCapture(capture), [capture]);
-  const roomHistory = useMemo(() => getRoomHistory(capture), [capture]);
+  // Real timeline: every capture attached to this pin, oldest → newest.
+  const timeline = useMemo(
+    () => getPinCaptureTimeline(pins, captures, captureId ?? ''),
+    [pins, captures, captureId],
+  );
+  const pin = useMemo(() => getPinForCapture(pins, captureId ?? ''), [pins, captureId]);
 
-  // The active snapshot drives the preview. Default to the latest.
-  const [activeSnap, setActiveSnap] = useState<CaptureSnapshot | null>(series[series.length - 1] ?? null);
-  const [compareMode, setCompareMode] = useState(false);
-  const [compareIds, setCompareIds] = useState<[string | null, string | null]>([
-    series[0]?.id ?? null,
-    series[series.length - 1]?.id ?? null,
-  ]);
+  // Which capture in the timeline is being previewed (default: the one in the URL).
+  const [activeId, setActiveId] = useState<string | null>(captureId ?? null);
+  const active = (timeline.find(c => c.id === activeId) ?? capture) as MockCapture | undefined;
 
-  const [action, setAction] = useState<string | null>(null);
-  const [notes, setNotes] = useState('');
-  const [done, setDone] = useState(false);
-  const [tab, setTab] = useState<'overview' | 'files' | 'history' | 'activity'>('overview');
+  const navigate = useNavigate();
 
-  if (!capture) return (
+  if (!capture || !active) return (
     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '50vh', gap: 2 }}>
-      <Typography sx={{ fontSize: '2rem', fontWeight: 700, color: colors.borderLight }}>404</Typography>
-      <Typography sx={{ color: colors.textMuted }}>Capture not found</Typography>
-      <Box component={Link} to="/captures" sx={{ color: colors.primary, textDecoration: 'none', fontSize: '0.875rem' }}>← All captures</Box>
+      <Typography sx={{ fontSize: '2rem', fontWeight: 700, color: P.border }}>404</Typography>
+      <Typography sx={{ color: P.muted }}>Capture not found</Typography>
+      <Box onClick={() => navigate(-1)} sx={{ cursor: 'pointer', color: P.blue, textDecoration: 'none', fontSize: '0.875rem' }}>← Back</Box>
     </Box>
   );
 
-  // Keep the active snapshot valid for the current room's series (handles
-  // navigating between captures without remounting).
-  const current = (activeSnap && series.some(s => s.id === activeSnap.id))
-    ? activeSnap
-    : series[series.length - 1];
-  const st = statusConfig.capture[capture!.status];
-  const linkedTour = getTourForCapture(tours, capture!.id);
-  const roomDefects = defects.filter(d => d.captureId === capture!.id || d.roomName === capture!.roomName);
-
-  function handleAction(a: 'approved' | 'rejected' | 'reupload') {
-    if (a === 'approved') reviewCapture(capture!.id, 'approve', notes || undefined);
-    else if (a === 'rejected') reviewCapture(capture!.id, 'reject', notes || undefined);
-    else reviewCapture(capture!.id, 'request_changes', notes || undefined);
-    setAction(a);
-    setDone(true);
-  }
-
-  function handleTimelineSelect(snap: CaptureSnapshot) {
-    if (compareMode) {
-      // Toggle the snapshot into the A/B selection (FIFO).
-      setCompareIds(([, b]) => [b, snap.id]);
-    } else {
-      setActiveSnap(snap);
-    }
-  }
-
-  const compareA = series.find(s => s.id === compareIds[0]) ?? series[0];
-  const compareB = series.find(s => s.id === compareIds[1]) ?? series[series.length - 1];
-  const captureMeta = capture as typeof capture & { flatNumber?: string; flat_number?: string; flatType?: string; flat_type?: string };
-  const flatLabel = captureMeta.flatNumber || captureMeta.flat_number || 'Flat A';
-  const flatType = captureMeta.flatType || captureMeta.flat_type;
+  const title = pin ? `Pin ${pin.sequenceNumber}` : active.roomName;
+  const imageUrl = captureImageUrl(active);
+  const activeWhen = fmtDateTime(active);
 
   return (
-    <Box>
-      {/* ── Header: breadcrumb + title + status ──────────────────────────────── */}
-      <Box sx={{ mb: 3 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1.5 }}>
-          <Box component={Link} to="/captures" sx={{ color: colors.textMuted, textDecoration: 'none', display: 'flex', alignItems: 'center', width: 30, height: 30, borderRadius: '8px', justifyContent: 'center', backgroundColor: colors.card, boxShadow: '0 1px 3px rgba(15,23,42,0.06)', '&:hover': { color: colors.textStrong } }}>
-            <ArrowBackRounded sx={{ fontSize: 18 }} />
-          </Box>
-          <Breadcrumb items={[
-            { label: 'Home', to: '/dashboard' },
-            { label: capture.projectName, to: `/projects/${capture.projectId}` },
-            { label: capture.towerName, to: `/projects/${capture.projectId}/towers/${capture.towerId}` },
-            { label: capture.floorLabel },
-            { label: flatType ? `${flatLabel} (${flatType})` : flatLabel },
-            { label: capture.roomName },
-          ]} />
-        </Box>
+    <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
+      {/* Back */}
+      <Box onClick={() => navigate(-1)} sx={{
+        cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+        px: 1.25, py: 0.625, borderRadius: '8px',
+        border: `1.5px solid ${P.border}`, color: P.muted,
+        fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+        transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft },
+      }}>
+        <ArrowBackRounded sx={{ fontSize: 15 }} /> Back
+      </Box>
 
-        <Box sx={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2 }}>
-          <Box>
-            <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: '1.75rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>{capture.roomName}</Typography>
-            <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted, mt: 0.25 }}>
-              {roomHistory?.captureCount ?? 1} captures over time · last updated {current?.dateLabel ?? capture.uploadedAt}
-            </Typography>
+      {/* Heading */}
+      <Box sx={{ mb: 3 }}>
+        <Typography sx={{
+          fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
+          fontSize: { xs: '1.75rem', md: '2.25rem' }, fontWeight: 800,
+          color: P.strong, letterSpacing: '-0.05em', lineHeight: 1.05, mb: 0.5,
+        }}>{title}</Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', color: P.muted, fontSize: '0.875rem' }}>
+          <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+            <LayersRounded sx={{ fontSize: 15 }} /> {active.towerName} · {active.floorLabel}
           </Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            {linkedTour && (
-              <Box component={Link} to={`/tours/${linkedTour.id}`} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2, py: 1, borderRadius: '10px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none', boxShadow: '0 4px 14px rgba(37,99,235,0.28)', '&:hover': { opacity: 0.92 } }}>
-                <ViewInArRounded sx={{ fontSize: 16 }} /> Open Tour
-              </Box>
-            )}
-            <Chip label={st.label} size="small" sx={{ height: 28, fontSize: '0.75rem', fontWeight: 600, color: st.color, backgroundColor: st.bg, borderRadius: '8px' }} />
+          <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+            <EventRounded sx={{ fontSize: 15 }} /> {activeWhen.date}
           </Box>
+          {activeWhen.time && (
+            <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+              <AccessTimeRounded sx={{ fontSize: 15 }} /> {activeWhen.time}
+            </Box>
+          )}
         </Box>
       </Box>
 
-      {done && <Alert severity="success" sx={{ mb: 3, borderRadius: '10px' }}>Review submitted successfully.</Alert>}
-
-      <Grid container spacing={3}>
-        {/* ── LEFT: preview + timeline (always visible) ──────────────────────── */}
-        <Grid size={{ xs: 12, md: 8 }}>
-          {compareMode && compareA && compareB ? (
-            <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, p: 2.5, border: `1px solid ${colors.borderLight}`, mb: 2.5 }}>
-              <CompareView a={compareA} b={compareB} />
-            </Box>
-          ) : (
-            <Box sx={{ borderRadius: '16px', overflow: 'hidden', border: `1px solid ${colors.borderLight}`, mb: 2.5, position: 'relative' }}>
-              <Box sx={{ height: 400, background: current?.gradient ?? capture.gradient, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
-                <Box sx={{ textAlign: 'center' }}>
-                  <CameraAltRounded sx={{ color: 'rgba(255,255,255,0.25)', fontSize: 72, display: 'block', mx: 'auto', mb: 1 }} />
-                  <Typography sx={{ color: 'rgba(255,255,255,0.45)', fontSize: '0.875rem' }}>360° Panorama Preview</Typography>
-                  {linkedTour && (
-                    <Box component={Link} to={`/tours/${linkedTour.id}`} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, mt: 2, px: 2.5, py: 1, borderRadius: '8px', backgroundColor: 'rgba(255,255,255,0.15)', color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none', border: '1px solid rgba(255,255,255,0.25)', '&:hover': { backgroundColor: 'rgba(255,255,255,0.22)' } }}>
-                      Open 360° Viewer →
-                    </Box>
-                  )}
-                </Box>
-                {current && (
-                  <Box sx={{ position: 'absolute', top: 14, left: 14, px: 1.5, py: 0.75, borderRadius: '10px', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', gap: 0.875 }}>
-                    <AccessTimeRounded sx={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }} />
-                    <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: '#fff' }}>{current.dateLabel}</Typography>
-                    <Box sx={{ width: 1, height: 12, backgroundColor: 'rgba(255,255,255,0.25)' }} />
-                    <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.85)' }}>{current.progress}% complete</Typography>
-                  </Box>
-                )}
-              </Box>
-            </Box>
-          )}
-
-          {/* Timeline + comparison toggle */}
-          <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, p: 2.5, border: `1px solid ${colors.borderLight}` }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', mb: 1 }}>
-              <Box
-                onClick={() => setCompareMode(v => !v)}
-                sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.5, py: 0.625, borderRadius: '8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600, color: compareMode ? colors.primary : colors.textMuted, backgroundColor: compareMode ? colors.primarySoft : colors.bgDeep, transition: `all ${motion.durationFast}`, '&:hover': { color: colors.primary } }}
-              >
-                <CompareArrowsRounded sx={{ fontSize: 15 }} /> {compareMode ? 'Exit compare' : 'Compare captures'}
-              </Box>
-            </Box>
-            <CaptureTimeline
-              series={series}
-              activeId={compareMode ? '' : (current?.id ?? '')}
-              onSelect={handleTimelineSelect}
-              compareIds={compareMode ? compareIds : undefined}
-            />
-            {compareMode && (
-              <Typography sx={{ fontSize: '0.75rem', color: colors.textSubdued, textAlign: 'center', mt: 1.5 }}>
-                Click two captures on the timeline to set <b>A</b> and <b>B</b> for comparison.
-              </Typography>
-            )}
+      {/* Capture preview */}
+      <Box sx={{ position: 'relative', borderRadius: '18px', overflow: 'hidden', aspectRatio: '16 / 10', background: active.gradient, boxShadow: '0 8px 32px rgba(15,23,42,0.12)', mb: 2.5 }}>
+        {imageUrl ? (
+          <Box component="img" src={imageUrl} alt={title} sx={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+        ) : (
+          <Box sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
+            <CameraAltRounded sx={{ fontSize: 36, color: 'rgba(255,255,255,0.3)' }} />
+            <Typography sx={{ fontSize: '0.8125rem', color: 'rgba(255,255,255,0.5)', fontWeight: 500 }}>360° panorama preview</Typography>
           </Box>
-        </Grid>
+        )}
+        {/* Date badge on the image */}
+        <Box sx={{ position: 'absolute', top: 12, left: 12, px: 1.25, py: 0.625, borderRadius: '8px', backgroundColor: 'rgba(17,24,39,0.75)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', gap: 0.75 }}>
+          <EventRounded sx={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }} />
+          <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: '#fff' }}>
+            {activeWhen.date}{activeWhen.time ? ` · ${activeWhen.time}` : ''}
+          </Typography>
+        </Box>
+        <Box sx={{ position: 'absolute', bottom: 12, right: 12, px: 1, py: 0.5, borderRadius: '7px', backgroundColor: 'rgba(17,24,39,0.65)', backdropFilter: 'blur(8px)' }}>
+          <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: '#fff' }}>{active.fileCount} file{active.fileCount !== 1 ? 's' : ''}</Typography>
+        </Box>
+      </Box>
 
-        {/* ── RIGHT: location + review (compact, always visible) ─────────────── */}
-        <Grid size={{ xs: 12, md: 4 }}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
-            <Panel title="Location" icon={<MapRounded sx={{ fontSize: 16 }} />}>
-              {[
-                { label: 'Project', value: capture.projectName, to: `/projects/${capture.projectId}` },
-                { label: 'Tower', value: capture.towerName, to: `/projects/${capture.projectId}/towers/${capture.towerId}` },
-                { label: 'Floor', value: capture.floorLabel },
-                { label: 'Flat', value: flatType ? `${flatLabel} (${flatType})` : flatLabel },
-                { label: 'Room', value: capture.roomName },
-              ].map(({ label, value, to }) => (
-                <Box key={label} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 0.875, borderBottom: `1px solid ${colors.borderLight}`, '&:last-child': { borderBottom: 'none' } }}>
-                  <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, textTransform: 'uppercase', letterSpacing: '0.06em', width: 56, flexShrink: 0 }}>{label}</Typography>
-                  {to ? (
-                    <Box component={Link} to={to} sx={{ fontSize: '0.8125rem', color: colors.textStrong, fontWeight: 600, textDecoration: 'none', '&:hover': { color: colors.primary } }}>{value}</Box>
-                  ) : (
-                    <Typography sx={{ fontSize: '0.8125rem', color: colors.textStrong, fontWeight: 500 }}>{value}</Typography>
-                  )}
-                </Box>
-              ))}
-            </Panel>
-
-            {/* Review — only when pending, kept beside the preview for quick action */}
-            {capture.status === 'review' && !done && (
-              <Panel title="Review" icon={<CheckRounded sx={{ fontSize: 16 }} />} accent={colors.warning}>
-                <TextField fullWidth multiline rows={3} placeholder="Add review notes (optional)…" value={notes} onChange={e => setNotes(e.target.value)}
-                  sx={{ mb: 2, '& .MuiOutlinedInput-root': { borderRadius: '10px', fontSize: '0.875rem' } }} />
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                  <Box onClick={() => handleAction('approved')} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.75, py: 1.125, borderRadius: '10px', backgroundColor: 'rgba(22,163,74,0.1)', color: '#16a34a', fontWeight: 600, fontSize: '0.9375rem', cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(22,163,74,0.18)' }, transition: `background ${motion.durationFast}` }}>
-                    <CheckRounded sx={{ fontSize: 18 }} /> Approve
-                  </Box>
-                  <Box onClick={() => handleAction('reupload')} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.75, py: 1, borderRadius: '10px', backgroundColor: 'rgba(217,119,6,0.08)', color: '#d97706', fontWeight: 600, fontSize: '0.875rem', cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(217,119,6,0.15)' }, transition: `background ${motion.durationFast}` }}>
-                    <ReplayRounded sx={{ fontSize: 16 }} /> Request Re-upload
-                  </Box>
-                  <Box onClick={() => handleAction('rejected')} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.75, py: 1, borderRadius: '10px', backgroundColor: 'rgba(220,38,38,0.06)', color: '#dc2626', fontWeight: 600, fontSize: '0.875rem', cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(220,38,38,0.12)' }, transition: `background ${motion.durationFast}` }}>
-                    <CloseRounded sx={{ fontSize: 16 }} /> Reject
-                  </Box>
-                </Box>
-              </Panel>
-            )}
-
-            {capture.reviewNotes && (
-              <Box sx={{ borderRadius: '16px', backgroundColor: 'rgba(220,38,38,0.04)', border: '1px solid rgba(220,38,38,0.15)', p: 2.5 }}>
-                <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#dc2626', mb: 0.75 }}>Reviewer Notes</Typography>
-                <Typography sx={{ fontSize: '0.875rem', color: colors.textSecondary, lineHeight: 1.6 }}>{capture.reviewNotes}</Typography>
-              </Box>
-            )}
-          </Box>
-        </Grid>
-      </Grid>
-
-      {/* ── Detail tabs — progressive disclosure of the heavy panels ─────────── */}
-      <Box sx={{ mt: 4 }}>
-        <Box sx={{ display: 'flex', gap: 3, borderBottom: `1px solid ${colors.borderLight}`, mb: 3 }}>
-          {([
-            ['overview', 'Overview'],
-            ['files', `Files (${current?.fileCount ?? capture.fileCount})`],
-            ['history', 'Room History'],
-            ['activity', 'Activity'],
-          ] as const).map(([key, label]) => {
-            const isActive = tab === key;
+      {/* Timeline — real captures attached to this pin over time */}
+      <Box sx={{ borderRadius: '16px', border: `1.5px solid ${P.border}`, backgroundColor: P.white, overflow: 'hidden' }}>
+        <Box sx={{ px: 2.5, py: 1.75, borderBottom: `1px solid ${P.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong }}>Capture Timeline</Typography>
+          <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
+            {timeline.length} capture{timeline.length !== 1 ? 's' : ''} over time
+          </Typography>
+        </Box>
+        <Box>
+          {timeline.map((c, i) => {
+            const when = fmtDateTime(c);
+            const isActive = c.id === active.id;
+            const isLatest = i === timeline.length - 1;
             return (
-              <Box key={key} onClick={() => setTab(key)} sx={{ position: 'relative', pb: 1.5, cursor: 'pointer', fontSize: '0.9375rem', fontWeight: isActive ? 600 : 500, color: isActive ? colors.textStrong : colors.textSubdued, letterSpacing: '-0.01em', transition: `color ${motion.durationFast}`, '&:hover': { color: colors.textStrong }, '&::after': { content: '""', position: 'absolute', left: 0, right: 0, bottom: -1, height: 2, borderRadius: '2px', backgroundColor: colors.textStrong, transform: isActive ? 'scaleX(1)' : 'scaleX(0)', transformOrigin: 'center', transition: `transform ${motion.durationNormal} ${motion.easeOut}` } }}>
-                {label}
+              <Box
+                key={c.id}
+                onClick={() => setActiveId(c.id)}
+                sx={{ display: 'flex', alignItems: 'center', gap: 1.5, px: 2.5, py: 1.5, cursor: 'pointer', borderBottom: i < timeline.length - 1 ? `1px solid ${P.border}` : 'none', backgroundColor: isActive ? P.blueSoft : 'transparent', transition: T, '&:hover': { backgroundColor: isActive ? P.blueSoft : P.bg } }}
+              >
+                <Box sx={{ width: 36, height: 36, borderRadius: '10px', background: c.gradient, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', border: isActive ? `2px solid ${P.blue}` : 'none' }}>
+                  <CameraAltRounded sx={{ fontSize: 16, color: 'rgba(255,255,255,0.85)' }} />
+                </Box>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                    <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: P.strong }}>
+                      {when.date}{when.time ? ` · ${when.time}` : ''}
+                    </Typography>
+                    {isLatest && (
+                      <Box sx={{ px: 0.75, py: 0.125, borderRadius: '5px', backgroundColor: 'rgba(22,163,74,0.12)', color: '#16a34a', fontSize: '0.625rem', fontWeight: 700 }}>Latest</Box>
+                    )}
+                  </Box>
+                  <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
+                    Visit {i + 1} · {c.fileCount} file{c.fileCount !== 1 ? 's' : ''}
+                  </Typography>
+                </Box>
+                {isActive && <Box sx={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: P.blue, flexShrink: 0 }} />}
               </Box>
             );
           })}
-        </Box>
-
-        <Box key={tab} sx={{ animation: `cdFade ${motion.durationNormal} ${motion.easeOut}`, '@keyframes cdFade': { from: { opacity: 0, transform: 'translateY(6px)' }, to: { opacity: 1, transform: 'translateY(0)' } } }}>
-          {tab === 'overview' && (
-            <Grid container spacing={3}>
-              <Grid size={{ xs: 12, md: 7 }}>
-                <Panel title="Processing Pipeline" icon={<TimelineRounded sx={{ fontSize: 16 }} />}>
-                  <ProcessingPipeline currentStage={reviewStatusToPipeline[capture.reviewStatus] ?? 'uploaded'} />
-                </Panel>
-              </Grid>
-              <Grid size={{ xs: 12, md: 5 }}>
-                <Panel
-                  title={`Defects (${roomDefects.length})`}
-                  icon={<BugReportRounded sx={{ fontSize: 16 }} />}
-                  accent={roomDefects.length ? colors.danger : colors.textMuted}
-                  action={<Box component={Link} to="/defects" sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.primary, textDecoration: 'none' }}>View all</Box>}
-                >
-                  {roomDefects.length === 0 ? (
-                    <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>No defects logged for this room.</Typography>
-                  ) : (
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                      {roomDefects.slice(0, 4).map(d => {
-                        const sev = statusConfig.severity[d.severity];
-                        return (
-                          <Box key={d.id} sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.25 }}>
-                            <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: sev.color, mt: 0.625, flexShrink: 0 }} />
-                            <Box sx={{ flex: 1 }}>
-                              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong, lineHeight: 1.4 }}>{d.title}</Typography>
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 0.25 }}>
-                                <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: sev.color }}>{sev.label}</Typography>
-                                <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued }}>· {statusConfig.defect[d.status].label}</Typography>
-                              </Box>
-                            </Box>
-                          </Box>
-                        );
-                      })}
-                    </Box>
-                  )}
-                </Panel>
-              </Grid>
-            </Grid>
-          )}
-
-          {tab === 'files' && current && (
-            <Panel title={`Uploaded Files (${current.fileCount})`} icon={<CameraAltRounded sx={{ fontSize: 16 }} />}>
-              <Grid container spacing={1.5}>
-                {Array.from({ length: current.fileCount }).map((_, i) => (
-                  <Grid key={i} size={{ xs: 6, sm: 4, md: 3, lg: 2 }}>
-                    <Box sx={{ aspectRatio: '1', borderRadius: '10px', background: current.gradient, opacity: 0.55 + (i % 6) * 0.06, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <CameraAltRounded sx={{ color: 'rgba(255,255,255,0.4)', fontSize: 18 }} />
-                    </Box>
-                  </Grid>
-                ))}
-              </Grid>
-            </Panel>
-          )}
-
-          {tab === 'history' && roomHistory && <RoomHistoryPanel history={roomHistory} />}
-
-          {tab === 'activity' && (
-            <Panel title="Activity History" icon={<AccessTimeRounded sx={{ fontSize: 16 }} />}>
-              <ActivityFeed
-                logs={auditLogs.filter(l => l.entityId === captureId || (l.entityType === 'capture' && l.projectId === capture.projectId)).slice(0, 8)}
-                compact
-              />
-            </Panel>
-          )}
         </Box>
       </Box>
     </Box>

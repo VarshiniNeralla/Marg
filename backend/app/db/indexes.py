@@ -86,6 +86,12 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         [("floor_id", ASCENDING), ("is_active", ASCENDING)], name="floorplan_floor"
     )
 
+    # ── capture_pins ──────────────────────────────────────────────────────────
+    await db.capture_pins.create_index(
+        [("orgId", ASCENDING), ("floorPlanId", ASCENDING), ("sequenceNumber", ASCENDING)],
+        name="pin_floorplan_sequence",
+    )
+
     # ── rooms ─────────────────────────────────────────────────────────────────
     await db.rooms.create_index(
         [("floor_id", ASCENDING), ("org_id", ASCENDING)], name="room_floor"

@@ -72,6 +72,7 @@ const ReviewsPage = lazy(() => import('@/pages/Reviews/ReviewsPage'));
 
 // ── Field Engineer-only ───────────────────────────────────────────────────────
 const CaptureWorkflowPage = lazy(() => import('@/pages/CaptureWorkflow/CaptureWorkflowPage'));
+const PublishToursPage    = lazy(() => import('@/pages/CaptureWorkflow/PublishToursPage'));
 const UploadQueuePage     = lazy(() => import('@/pages/Captures/CaptureUploadPage'));
 const MyCaptures          = lazy(() => import('@/pages/Captures/CapturesPage'));
 
@@ -139,24 +140,27 @@ const router = createBrowserRouter([
       { path: '/profile', element: <PageSuspense><UserProfilePage /></PageSuspense> },
 
       // ── Routes accessible by all authenticated roles ─────────────────────
-      { path: '/projects',                                                  element: <PageSuspense><ProjectsPage /></PageSuspense> },
-      { path: '/projects/:projectId',                                       element: <PageSuspense><ProjectDetailPage /></PageSuspense> },
+      // Capture detail is viewable by all roles — engineers open their own captures from pins/history.
+      { path: '/captures/:captureId',                                       element: <PageSuspense><CaptureDetailPage /></PageSuspense> },
+      // Floor plans are viewable by all roles — engineers browse/view but cannot upload.
       { path: '/floor-plans',                                               element: <PageSuspense><FloorPlansPage /></PageSuspense> },
       { path: '/floor-plans/:projectId/:towerId/:floorId',                  element: <PageSuspense><FloorPlanViewerPage /></PageSuspense> },
+      // Tours are viewable by all roles — engineers verify their published walkthroughs.
+      { path: '/tours',                                                     element: <PageSuspense><ToursPage /></PageSuspense> },
+      { path: '/tours/:tourId',                                             element: <PageSuspense><TourViewerPage /></PageSuspense> },
 
       // ── Admin + Manager only ──────────────────────────────────────────────
       {
         element: <ManagerOrAdminRoute><Outlet /></ManagerOrAdminRoute>,
         children: [
-          { path: '/projects/:projectId/towers',                          element: <PageSuspense><TowersPage /></PageSuspense> },
-          { path: '/projects/:projectId/towers/:towerId',                 element: <PageSuspense><FloorListPage /></PageSuspense> },
-          { path: '/projects/:projectId/towers/:towerId/floors/:floorId', element: <PageSuspense><RoomListPage /></PageSuspense> },
+          { path: '/projects',                                                  element: <PageSuspense><ProjectsPage /></PageSuspense> },
+          { path: '/projects/:projectId',                                       element: <PageSuspense><ProjectDetailPage /></PageSuspense> },
+          { path: '/projects/:projectId/towers',                                element: <PageSuspense><TowersPage /></PageSuspense> },
+          { path: '/projects/:projectId/towers/:towerId',                       element: <PageSuspense><FloorListPage /></PageSuspense> },
+          { path: '/projects/:projectId/towers/:towerId/floors/:floorId',       element: <PageSuspense><RoomListPage /></PageSuspense> },
           { path: '/analytics', element: <PageSuspense><AnalyticsPage /></PageSuspense> },
           { path: '/defects',   element: <PageSuspense><DefectsPage /></PageSuspense> },
-          { path: '/tours',     element: <PageSuspense><ToursPage /></PageSuspense> },
-          { path: '/tours/:tourId', element: <PageSuspense><TourViewerPage /></PageSuspense> },
           { path: '/captures',                element: <PageSuspense><CapturesPage /></PageSuspense> },
-          { path: '/captures/:captureId',     element: <PageSuspense><CaptureDetailPage /></PageSuspense> },
         ],
       },
 
@@ -190,6 +194,7 @@ const router = createBrowserRouter([
         children: [
           { path: '/capture-workflow', element: <PageSuspense><CaptureWorkflowPage /></PageSuspense> },
           { path: '/my-captures',      element: <PageSuspense><MyCaptures /></PageSuspense> },
+          { path: '/publish-tours',    element: <PageSuspense><PublishToursPage /></PageSuspense> },
           { path: '/upload-queue',     element: <PageSuspense><UploadQueuePage /></PageSuspense> },
         ],
       },

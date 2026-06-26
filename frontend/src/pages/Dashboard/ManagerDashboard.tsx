@@ -2,7 +2,7 @@ import React from 'react';
 import { Box, Typography, Grid, LinearProgress } from '@mui/material';
 import {
   RateReviewRounded, CheckCircleRounded, CameraAltRounded,
-  ViewInArRounded, ArrowForwardRounded, FolderOpenRounded,
+  ViewInArRounded, ArrowForwardRounded, FolderOpenRounded
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
@@ -92,32 +92,30 @@ export default function ManagerDashboard() {
       />
 
       {/* KPI row */}
-      <Grid container spacing={2} sx={{ mb: 4 }}>
+      <Grid container spacing={2.5} sx={{ mb: 4 }}>
         {kpis.map((s) => (
           <Grid key={s.label} size={{ xs: 12, sm: 6, lg: 3 }}>
             <Box
               component={Link}
               to={s.to}
               sx={{
-                display: 'flex', gap: 2, alignItems: 'flex-start',
+                display: 'flex', flexDirection: 'column',
                 p: 2.5, borderRadius: '16px',
-                border: `1px solid ${colors.border}`,
+                border: `1px solid ${colors.borderLight}`,
                 backgroundColor: colors.card,
                 textDecoration: 'none',
-                transition: `box-shadow ${motion.durationFast}, transform ${motion.durationFast}`,
-                '&:hover': { boxShadow: '0 6px 24px rgba(15,23,42,0.08)', transform: 'translateY(-2px)' },
+                transition: `transform ${motion.durationFast} ${motion.easeOut}, box-shadow ${motion.durationFast}`,
+                '&:hover': { transform: 'translateY(-2px)', boxShadow: `0 4px 12px rgba(0,0,0,0.05)` },
               }}
             >
-              <Box sx={{ width: 44, height: 44, borderRadius: '12px', backgroundColor: s.bg, color: s.color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, '& svg': { fontSize: 22 } }}>
+              <Box sx={{ width: 38, height: 38, borderRadius: '10px', backgroundColor: s.bg, color: s.color, display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 2, '& svg': { fontSize: 20 } }}>
                 {s.icon}
               </Box>
-              <Box>
-                <Typography sx={{ fontSize: '1.625rem', fontWeight: 800, color: colors.textStrong, lineHeight: 1, letterSpacing: '-0.04em' }}>
-                  {s.value}
-                </Typography>
-                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textSecondary, mt: 0.25 }}>{s.label}</Typography>
-                <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.125 }}>{s.sub}</Typography>
-              </Box>
+              <Typography sx={{ fontSize: '1.875rem', fontWeight: 800, color: colors.textStrong, lineHeight: 1, letterSpacing: '-0.04em', mb: 0.5 }}>
+                {s.value}
+              </Typography>
+              <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textSecondary }}>{s.label}</Typography>
+              <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.25 }}>{s.sub}</Typography>
             </Box>
           </Grid>
         ))}
@@ -150,16 +148,16 @@ export default function ManagerDashboard() {
                 <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, mt: 0.5 }}>New uploads will appear here.</Typography>
               </Box>
             ) : (
-              <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-                {pendingReviews.slice(0, 8).map((c, i) => (
+              <Box sx={{ display: 'flex', flexDirection: 'column', maxHeight: 300, overflowY: 'auto', pr: 1, '&::-webkit-scrollbar': { width: '6px' }, '&::-webkit-scrollbar-thumb': { backgroundColor: colors.border, borderRadius: '4px' } }}>
+                {pendingReviews.map((c, i) => (
                   <Box
                     key={c.id}
                     component={Link}
                     to={`/captures/${c.id}`}
                     sx={{
                       display: 'flex', alignItems: 'center', gap: 2,
-                      py: 1.5, mx: -1, px: 1, borderRadius: '10px',
-                      borderBottom: i < Math.min(pendingReviews.length, 8) - 1 ? `1px solid ${colors.borderLight}` : 'none',
+                      py: 1.5, px: 1.5, borderRadius: '10px',
+                      borderBottom: i < pendingReviews.length - 1 ? `1px solid ${colors.borderLight}` : 'none',
                       textDecoration: 'none',
                       '&:hover': { backgroundColor: colors.bg },
                       transition: `background ${motion.durationFast}`,
@@ -183,7 +181,7 @@ export default function ManagerDashboard() {
         {/* Right column */}
         <Grid size={{ xs: 12, md: 5 }}>
           {/* Projects */}
-          <Box sx={{ p: 3, borderRadius: '16px', border: `1px solid ${colors.border}`, backgroundColor: colors.card, mb: 3 }}>
+          <Box sx={{ p: 3, borderRadius: '16px', border: `1px solid ${colors.borderLight}`, backgroundColor: colors.card, mb: 3 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
               <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em' }}>
                 Projects
@@ -212,25 +210,13 @@ export default function ManagerDashboard() {
                       '&:hover': { borderColor: p.accent + '60' },
                     }}
                   >
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 1 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25 }}>
                       <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: p.accent, flexShrink: 0 }} />
                       <Typography noWrap sx={{ flex: 1, fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong }}>
                         {p.name}
                       </Typography>
                       <ArrowForwardRounded sx={{ fontSize: 14, color: colors.textSubdued }} />
                     </Box>
-                    <LinearProgress
-                      variant="determinate"
-                      value={p.progress}
-                      sx={{
-                        height: 3, borderRadius: '99px',
-                        backgroundColor: p.accent + '18',
-                        '& .MuiLinearProgress-bar': { borderRadius: '99px', background: p.accent },
-                      }}
-                    />
-                    <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, mt: 0.5 }}>
-                      {p.progress}% complete · {p.towers} tower{p.towers !== 1 ? 's' : ''}
-                    </Typography>
                   </Box>
                 ))}
               </Box>

@@ -11,7 +11,7 @@ import type {
   MockTour,
   MockTower,
 } from '@/data/mockData';
-import type { WfFlat, WfFloor, WfRoom } from '@store/workflowStore';
+import type { WfCapturePin, WfFlat, WfFloor, WfRoom } from '@store/workflowStore';
 
 type Snapshot = Omit<WorkflowDataState, 'uidCounter' | 'users'>;
 
@@ -113,8 +113,25 @@ export const workflowApiService = {
     return getData<MockTour>(apiClient.put(`/tours/${id}/status`, patch));
   },
 
+  async deleteTour(id: string): Promise<void> {
+    await apiClient.delete(`/tours/${id}`);
+  },
+
   async createFloorPlan(floorPlan: MockFloorPlan): Promise<MockFloorPlan> {
     return getData<MockFloorPlan>(apiClient.post('/floor-plans', floorPlan));
+  },
+
+  // ── Capture Pins ──
+  async createCapturePin(pin: WfCapturePin): Promise<WfCapturePin> {
+    return getData<WfCapturePin>(apiClient.post(`/floor-plans/${pin.floorPlanId}/pins`, pin));
+  },
+
+  async updateCapturePin(id: string, patch: Partial<WfCapturePin>): Promise<WfCapturePin> {
+    return getData<WfCapturePin>(apiClient.put(`/pins/${id}`, patch));
+  },
+
+  async deleteCapturePin(id: string): Promise<void> {
+    await apiClient.delete(`/pins/${id}`);
   },
 
   async createDefect(defect: MockDefect): Promise<MockDefect> {

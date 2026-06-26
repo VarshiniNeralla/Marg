@@ -3,10 +3,12 @@ import { Link } from 'react-router-dom';
 import { Box, Typography, InputBase, Menu, MenuItem } from '@mui/material';
 import {
   ViewInArRounded, PlayArrowRounded, CameraAltRounded,
-  KeyboardArrowDownRounded, CheckRounded, SearchRounded, ArrowBackRounded,
+  KeyboardArrowDownRounded, CheckRounded, SearchRounded, ArrowBackRounded, DeleteRounded,
+  BusinessRounded, LayersRounded
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { statusConfig } from '@/data/mockData';
+import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore , getRoleLandingPath } from '@store/authStore';
 
@@ -31,33 +33,61 @@ const P = {
 
 export default function ToursPage() {
   const user = useAuthStore(s => s.user);
-  const [projectId, setProjectId]     = useState<string>('all');
+  const role = user?.role || 'default';
+  
+  const [projectId, setProjectId] = useState<string>(() => sessionStorage.getItem(`tours_projectId_${role}`) || '');
+  const [towerId, setTowerId]     = useState<string>(() => sessionStorage.getItem(`tours_towerId_${role}`) || '');
+  const [floorId, setFloorId]     = useState<string>(() => sessionStorage.getItem(`tours_floorId_${role}`) || '');
+  
   const [query, setQuery]             = useState('');
   const [menuAnchor, setMenuAnchor]   = useState<null | HTMLElement>(null);
-  const [statusAnchor, setStatusAnchor] = useState<null | HTMLElement>(null);
-  const [statusFilter, setStatusFilter] = useState<string>('All');
+  const [towerMenuAnchor, setTowerMenuAnchor] = useState<null | HTMLElement>(null);
+  const [floorMenuAnchor, setFloorMenuAnchor] = useState<null | HTMLElement>(null);
 
   const allTours    = useWorkflowStore(s => s.tours);
   const allProjects = useWorkflowStore(s => s.projects);
+  const allTowers   = useWorkflowStore(s => s.towers);
+  const allFloors   = useWorkflowStore(s => s.floors);
+  const deleteTour  = useWorkflowStore(s => s.deleteTour);
+  
+  const [deleteTarget, setDeleteTarget] = useState<any>(null);
+
+  const handleProjectSelect = (id: string) => { 
+    setProjectId(id); setTowerId(''); setFloorId(''); setMenuAnchor(null); 
+    sessionStorage.setItem(`tours_projectId_${role}`, id);
+    sessionStorage.setItem(`tours_towerId_${role}`, '');
+    sessionStorage.setItem(`tours_floorId_${role}`, '');
+  };
+  const handleTowerSelect = (id: string) => { 
+    setTowerId(id); setFloorId(''); setTowerMenuAnchor(null); 
+    sessionStorage.setItem(`tours_towerId_${role}`, id);
+    sessionStorage.setItem(`tours_floorId_${role}`, '');
+  };
+  const handleFloorSelect = (id: string) => { 
+    setFloorId(id); setFloorMenuAnchor(null); 
+    sessionStorage.setItem(`tours_floorId_${role}`, id);
+  };
 
   const projects = useMemo(() => allProjects.filter(p => !p.archived), [allProjects]);
+  const availableTowers = useMemo(() => !projectId || projectId === 'all' ? [] : allTowers.filter(t => t.projectId === projectId).sort((a,b) => a.name.localeCompare(b.name, undefined, {numeric:true})), [allTowers, projectId]);
+  const availableFloors = useMemo(() => !towerId || towerId === 'all' ? [] : allFloors.filter(f => f.towerId === towerId).sort((a,b) => a.label.localeCompare(b.label, undefined, {numeric:true})), [allFloors, towerId]);
 
   const filtered = useMemo(() => allTours.filter(t => {
     const matchProject = projectId === 'all' || t.projectId === projectId;
-    const matchStatus  = statusFilter === 'All' || t.status === statusFilter;
-    const q = query.trim().toLowerCase();
-    const matchQuery = !q || t.roomName.toLowerCase().includes(q) || t.projectName.toLowerCase().includes(q) || t.towerName.toLowerCase().includes(q);
-    return matchProject && matchStatus && matchQuery;
-  }), [allTours, projectId, statusFilter, query]);
+    const matchTower   = towerId === 'all' || t.towerId === towerId;
+    const floorLabel   = availableFloors.find(f => f.id === floorId)?.label;
+    const matchFloor   = floorId === 'all' || t.floorLabel === floorLabel;
+    
+    return matchProject && matchTower && matchFloor;
+  }), [allTours, projectId, towerId, floorId, availableFloors]);
 
   const selectedProject = projects.find(p => p.id === projectId);
-  const selectedCount   = projectId === 'all' ? allTours.length : allTours.filter(t => t.projectId === projectId).length;
+  const selectedTower   = availableTowers.find(t => t.id === towerId);
+  const selectedFloor   = availableFloors.find(f => f.id === floorId);
 
-  const STATUS_OPTIONS = ['All', 'published', 'in_review', 'processing', 'draft'];
-  const STATUS_LABELS: Record<string, string> = {
-    All: 'All status', published: 'Published', in_review: 'In Review',
-    processing: 'Processing', draft: 'Draft',
-  };
+  const selectedCount   = !projectId || projectId === 'all' ? allTours.length : allTours.filter(t => t.projectId === projectId).length;
+
+  const isSelectionComplete = projectId && projectId !== 'all' && towerId && towerId !== 'all' && floorId && floorId !== 'all';
 
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
@@ -103,7 +133,7 @@ export default function ToursPage() {
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, overflow: 'hidden' }}>
             <Box sx={{ width: 18, height: 18, borderRadius: '5px', background: selectedProject ? selectedProject.gradient : `linear-gradient(135deg,${P.subtle},${P.muted})`, flexShrink: 0 }} />
             <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: P.strong, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {selectedProject ? selectedProject.name : 'All projects'}
+              {selectedProject ? selectedProject.name : (projectId === 'all' ? 'All projects' : 'Select a project')}
             </Typography>
           </Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0 }}>
@@ -114,41 +144,51 @@ export default function ToursPage() {
           </Box>
         </Box>
 
-        <Box sx={{ flex: 1, order: 2, display: { xs: 'none', sm: 'block' } }} />
-
-        {/* Search */}
-        <Box sx={{
-          display: 'flex', alignItems: 'center', gap: 0.75,
-          width: { xs: '100%', sm: 220 }, px: 1.25, py: 0.75,
-          borderRadius: '10px', backgroundColor: P.white,
-          border: `1.5px solid ${P.border}`, transition: T,
-          '&:focus-within': { borderColor: P.blue }, order: 3,
-        }}>
-          <SearchRounded sx={{ fontSize: 16, color: P.subtle, flexShrink: 0 }} />
-          <InputBase placeholder="Search tours…" value={query} onChange={e => setQuery(e.target.value)} sx={{ flex: 1, fontSize: '0.8125rem', '& input::placeholder': { color: P.subtle, opacity: 1 } }} />
-        </Box>
-
-        {/* Status pill */}
-        <Box
-          onClick={e => setStatusAnchor(e.currentTarget)}
-          sx={{
-            display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0,
+        {/* Tower pill */}
+        {projectId && projectId !== 'all' && (
+          <Box onClick={(e) => setTowerMenuAnchor(e.currentTarget)} sx={{
+            display: 'flex', alignItems: 'center', gap: 1,
             px: 1.5, py: 0.875, borderRadius: '10px', cursor: 'pointer',
-            border: `1.5px solid ${statusAnchor ? P.blue : P.border}`,
-            backgroundColor: statusAnchor ? P.blueSoft : P.white,
+            border: `1.5px solid ${towerMenuAnchor ? P.blue : P.border}`,
+            backgroundColor: towerMenuAnchor ? P.blueSoft : P.white,
             transition: T, '&:hover': { borderColor: P.blue },
-            flex: { xs: '1 1 0%', sm: 'initial' }, justifyContent: 'space-between',
-            order: { xs: 2, sm: 4 },
-          }}
-        >
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, overflow: 'hidden' }}>
-            <Box sx={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: STATUS_DOT[statusFilter] ?? P.subtle, flexShrink: 0 }} />
-            <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: P.strong, letterSpacing: '-0.01em', whiteSpace: 'nowrap' }}>
-              {STATUS_LABELS[statusFilter]}
-            </Typography>
+            flex: { xs: '1 1 0%', sm: 'initial' },
+            justifyContent: 'space-between',
+            order: 1
+          }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, overflow: 'hidden' }}>
+              <BusinessRounded sx={{ fontSize: 18, color: P.subtle }} />
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: P.strong, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {selectedTower ? selectedTower.name : (towerId === 'all' ? 'All towers' : 'Select a tower')}
+              </Typography>
+            </Box>
+            <KeyboardArrowDownRounded sx={{ fontSize: 16, color: P.muted, transform: towerMenuAnchor ? 'rotate(180deg)' : 'none', transition: T }} />
           </Box>
-          <KeyboardArrowDownRounded sx={{ fontSize: 16, color: P.muted, transform: statusAnchor ? 'rotate(180deg)' : 'none', transition: T, flexShrink: 0 }} />
-        </Box>
+        )}
+
+        {/* Floor pill */}
+        {projectId && projectId !== 'all' && towerId && towerId !== 'all' && (
+          <Box onClick={(e) => setFloorMenuAnchor(e.currentTarget)} sx={{
+            display: 'flex', alignItems: 'center', gap: 1,
+            px: 1.5, py: 0.875, borderRadius: '10px', cursor: 'pointer',
+            border: `1.5px solid ${floorMenuAnchor ? P.blue : P.border}`,
+            backgroundColor: floorMenuAnchor ? P.blueSoft : P.white,
+            transition: T, '&:hover': { borderColor: P.blue },
+            flex: { xs: '1 1 0%', sm: 'initial' },
+            justifyContent: 'space-between',
+            order: 1
+          }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, overflow: 'hidden' }}>
+              <LayersRounded sx={{ fontSize: 18, color: P.subtle }} />
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: P.strong, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {selectedFloor ? selectedFloor.label : (floorId === 'all' ? 'All floors' : 'Select a floor')}
+              </Typography>
+            </Box>
+            <KeyboardArrowDownRounded sx={{ fontSize: 16, color: P.muted, transform: floorMenuAnchor ? 'rotate(180deg)' : 'none', transition: T }} />
+          </Box>
+        )}
+
+        <Box sx={{ flex: 1, order: 2, display: { xs: 'none', sm: 'block' } }} />
       </Box>
 
       {/* Project menu */}
@@ -157,12 +197,11 @@ export default function ToursPage() {
         transformOrigin={{ vertical: 'top', horizontal: 'left' }}
         slotProps={{ paper: { sx: { mt: 1, width: { xs: menuAnchor ? menuAnchor.offsetWidth : 'auto', sm: 280 }, minWidth: { sm: 280 }, maxWidth: 'calc(100vw - 32px)', borderRadius: '14px', boxShadow: '0 12px 40px rgba(15,23,42,0.14)', border: `1px solid ${colors.borderLight}`, p: 0.75 } } }}
       >
-        {[{ id: 'all', name: 'All projects', gradient: `linear-gradient(135deg,${P.subtle},${P.muted})`, count: allTours.length },
-          ...projects.map(p => ({ id: p.id, name: p.name, gradient: p.gradient, count: allTours.filter(t => t.projectId === p.id).length }))]
-          .map(opt => {
+        {projects.map(opt => {
             const isActive = projectId === opt.id;
+            const projectToursCount = allTours.filter(t => t.projectId === opt.id).length;
             return (
-              <MenuItem key={opt.id} onClick={() => { setProjectId(opt.id); setMenuAnchor(null); }}
+              <MenuItem key={opt.id} onClick={() => handleProjectSelect(opt.id)}
                 sx={{ borderRadius: '10px', py: 1, px: 1, gap: 1.25, '&:hover': { backgroundColor: colors.bg }, backgroundColor: isActive ? colors.primarySoft : 'transparent' }}
               >
                 <Box sx={{ width: 22, height: 22, borderRadius: '7px', background: opt.gradient, flexShrink: 0 }} />
@@ -170,7 +209,7 @@ export default function ToursPage() {
                   {opt.name}
                 </Typography>
                 <Box sx={{ px: 0.875, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: colors.bgDeep, color: colors.textMuted }}>
-                  {opt.count}
+                  {projectToursCount}
                 </Box>
                 {isActive && <CheckRounded sx={{ fontSize: 17, color: colors.primary }} />}
               </MenuItem>
@@ -178,21 +217,24 @@ export default function ToursPage() {
           })}
       </Menu>
 
-      {/* Status menu */}
-      <Menu anchorEl={statusAnchor} open={!!statusAnchor} onClose={() => setStatusAnchor(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-        slotProps={{ paper: { sx: { mt: 1, minWidth: 180, maxWidth: 'calc(100vw - 32px)', borderRadius: '14px', boxShadow: '0 12px 40px rgba(15,23,42,0.14)', border: `1px solid ${colors.borderLight}`, p: 0.75 } } }}
+      {/* Tower menu */}
+      <Menu
+        anchorEl={towerMenuAnchor}
+        open={!!towerMenuAnchor}
+        onClose={() => setTowerMenuAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        slotProps={{ paper: { sx: { mt: 1, width: { xs: towerMenuAnchor ? towerMenuAnchor.offsetWidth : 'auto', sm: 260 }, minWidth: { sm: 260 }, maxWidth: 'calc(100vw - 32px)', borderRadius: '14px', boxShadow: '0 12px 40px rgba(15,23,42,0.14)', border: `1px solid ${colors.borderLight}`, p: 0.75 } } }}
       >
-        {STATUS_OPTIONS.map(s => {
-          const isActive = statusFilter === s;
+        {availableTowers.map(t => {
+          const isActive = towerId === t.id;
           return (
-            <MenuItem key={s} onClick={() => { setStatusFilter(s); setStatusAnchor(null); }}
-              sx={{ borderRadius: '10px', py: 0.875, px: 1, gap: 1.25, '&:hover': { backgroundColor: colors.bg }, backgroundColor: isActive ? colors.primarySoft : 'transparent' }}
+            <MenuItem key={t.id} onClick={() => handleTowerSelect(t.id)}
+              sx={{ borderRadius: '10px', py: 1, px: 1, gap: 1.25, '&:hover': { backgroundColor: colors.bg }, backgroundColor: isActive ? colors.primarySoft : 'transparent' }}
             >
-              <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: STATUS_DOT[s] ?? P.subtle, flexShrink: 0 }} />
+              <BusinessRounded sx={{ fontSize: 18, color: isActive ? colors.primary : colors.textMuted }} />
               <Typography sx={{ flex: 1, fontSize: '0.875rem', fontWeight: isActive ? 700 : 500, color: isActive ? colors.primary : colors.textStrong }}>
-                {STATUS_LABELS[s]}
+                {t.name}
               </Typography>
               {isActive && <CheckRounded sx={{ fontSize: 17, color: colors.primary }} />}
             </MenuItem>
@@ -200,12 +242,43 @@ export default function ToursPage() {
         })}
       </Menu>
 
-      {/* Empty state */}
-      {filtered.length === 0 ? (
+      {/* Floor menu */}
+      <Menu
+        anchorEl={floorMenuAnchor}
+        open={!!floorMenuAnchor}
+        onClose={() => setFloorMenuAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        slotProps={{ paper: { sx: { mt: 1, width: { xs: floorMenuAnchor ? floorMenuAnchor.offsetWidth : 'auto', sm: 260 }, minWidth: { sm: 260 }, maxWidth: 'calc(100vw - 32px)', borderRadius: '14px', boxShadow: '0 12px 40px rgba(15,23,42,0.14)', border: `1px solid ${colors.borderLight}`, p: 0.75 } } }}
+      >
+        {availableFloors.map(f => {
+          const isActive = floorId === f.id;
+          return (
+            <MenuItem key={f.id} onClick={() => handleFloorSelect(f.id)}
+              sx={{ borderRadius: '10px', py: 1, px: 1, gap: 1.25, '&:hover': { backgroundColor: colors.bg }, backgroundColor: isActive ? colors.primarySoft : 'transparent' }}
+            >
+              <LayersRounded sx={{ fontSize: 18, color: isActive ? colors.primary : colors.textMuted }} />
+              <Typography sx={{ flex: 1, fontSize: '0.875rem', fontWeight: isActive ? 700 : 500, color: isActive ? colors.primary : colors.textStrong }}>
+                {f.label}
+              </Typography>
+              {isActive && <CheckRounded sx={{ fontSize: 17, color: colors.primary }} />}
+            </MenuItem>
+          );
+        })}
+      </Menu>
+
+      {/* Empty state or Tours List */}
+      {!isSelectionComplete ? (
+        <Box sx={{ py: 8, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>
+          <LayersRounded sx={{ fontSize: 44, color: P.subtle, mb: 1.5 }} />
+          <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>Select a project, tower, and floor</Typography>
+          <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Please select all options above to view the virtual tours.</Typography>
+        </Box>
+      ) : filtered.length === 0 ? (
         <Box sx={{ py: 8, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>
           <ViewInArRounded sx={{ fontSize: 44, color: P.subtle, mb: 1.5 }} />
           <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>No tours found</Typography>
-          <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Try a different project, search, or filter.</Typography>
+          <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Try a different search or filter.</Typography>
         </Box>
       ) : (
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2,1fr)', sm: 'repeat(3,1fr)' }, gap: 2 }}>
@@ -223,6 +296,7 @@ export default function ToursPage() {
                   '&:hover': { transform: 'translateY(-3px)' },
                   '&:hover .tour-thumb': { boxShadow: '0 12px 32px rgba(15,23,42,0.14)' },
                   '&:hover .tour-play': { opacity: 1, transform: 'scale(1)' },
+                  '&:hover .tour-delete': { opacity: 1 },
                 }}
               >
                 {/* Thumbnail */}
@@ -250,6 +324,15 @@ export default function ToursPage() {
                   <Box sx={{ position: 'absolute', top: 8, right: 8, px: 1, py: 0.375, borderRadius: '5px', backgroundColor: st.bg, fontSize: '0.5625rem', fontWeight: 700, color: st.color }}>
                     {st.label}
                   </Box>
+                  {/* Delete button on hover */}
+                  <Box className="tour-delete" sx={{ position: 'absolute', bottom: 8, right: 8, zIndex: 10, opacity: 0, transition: `opacity ${motion.durationNormal} ${motion.easeOut}` }}>
+                    <Box
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDeleteTarget(tour); }}
+                      sx={{ width: 32, height: 32, borderRadius: '8px', backgroundColor: 'rgba(239,68,68,0.9)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'background-color 150ms ease, transform 150ms ease', '&:hover': { backgroundColor: 'rgba(220,38,38,1)', transform: 'scale(1.05)' } }}
+                    >
+                      <DeleteRounded sx={{ color: '#fff', fontSize: 16 }} />
+                    </Box>
+                  </Box>
                 </Box>
 
                 {/* Metadata */}
@@ -273,6 +356,16 @@ export default function ToursPage() {
           })}
         </Box>
       )}
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Delete this tour?"
+        description={`The generated tour for ${deleteTarget?.roomName ?? 'this room'} will be permanently removed. The underlying capture point will still exist. This cannot be undone.`}
+        confirmLabel="Delete tour"
+        destructive
+        onConfirm={() => { if (deleteTarget) deleteTour(deleteTarget.id); setDeleteTarget(null); }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </Box>
   );
 }

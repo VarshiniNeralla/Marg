@@ -1,0 +1,299 @@
+CODEBASE ARCHITECTURE Q&A
+=========================
+Generated: 2026-06-26
+Project: virtual_room_tour
+
+
+─────────────────────────────────────────────────────────────
+1. HOW ARE FLOOR PLANS CURRENTLY STORED?
+─────────────────────────────────────────────────────────────
+Floor plans are stored in a MongoDB collection called `floor_plans`.
+
+On the backend:
+- Collection indexed in backend/app/db/indexes.py (lines 84-87)
+- Index is on ("floor_id", "is_active") — one active floor plan per floor
+- Uploaded via POST /uploads/floorplans, then saved via POST /floor-plans (workflow.py)
+- Files go to Cloudinary: horizon/floorplans/{org_id}/{entity_id}/
+
+On the frontend, the type is MockFloorPlan (frontend/src/data/mockData.ts lines 132-144):
+  id, projectId, towerId, floorId, floorLabel, uploadedBy, uploadedAt,
+  fileType ('pdf' | 'png' | 'jpg'), fileName, fileSizeMb,
+  rooms: MockRoomMarker[]   ← this is the pin/annotation JSON array
+
+IS THERE A JSON FIELD FOR PINS?
+Yes. The `rooms` field on MockFloorPlan is an array of MockRoomMarker objects
+(mockData.ts lines 146-158):
+  id, name, number, type, x, y, width, height, status,
+  captureId?, tourId?
+These store rectangular marker positions on the floor plan image.
+
+
+─────────────────────────────────────────────────────────────
+2. HOW ARE ROOM POLYGONS STORED?
+─────────────────────────────────────────────────────────────
+Room markers/polygons are stored inside the floor plan document as an array
+(the `rooms: MockRoomMarker[]` field described above).
+
+Each marker has: x, y, width, height — rectangular regions, not polygons.
+They are persisted to the MongoDB floor_plans collection when a floor plan
+is saved (workflowStore.ts uploadFloorPlan function, line ~797).
+
+There is NO separate room polygon collection. Polygons are embedded in the
+floor plan document.
+
+HOWEVER — the WfRoom objects in the `rooms` collection (workflowStore.ts
+lines 48-57) are separate entities that track room metadata (name, type,
+flatId, etc.) but do NOT store coordinates. They are linked via `floorPlanId?`.
+
+Conclusion: coordinates live in floor_plans.rooms[]. Room metadata lives in
+the rooms collection. The two are linked by captureId / roomId cross-reference.
+
+
+─────────────────────────────────────────────────────────────
+3. HOW ARE UPLOADS ASSOCIATED?
+─────────────────────────────────────────────────────────────
+When a floor plan image is uploaded, it is owned by a FLOOR.
+
+Foreign key hierarchy:
+  floorId   → directly links to the Floor (primary FK)
+  towerId   → denormalised for query performance
+  projectId → denormalised for query performance
+
+Evidence:
+- FloorPlanUploadPage.tsx reads projectId, towerId, floorId from URL params (line ~61)
+- The WfFloor interface has floorPlanId?: string back-reference (workflowStore.ts lines 29-35)
+- MongoDB index: ("floor_id", "is_active") — one floor plan per floor
+
+Capture uploads are also owned by a Floor (via roomId → room.floorId).
+Upload path: POST /uploads/captures — returns Cloudinary URLs stored on the
+Capture document as mediaAssets[].
+
+
+─────────────────────────────────────────────────────────────
+4. IS THERE ALREADY A "PUBLISH" WORKFLOW?
+─────────────────────────────────────────────────────────────
+YES. There are three separate publish steps, all wired to real API calls:
+
+Step 1 — Capture Publish
+  Function: publishCapture(id) — workflowStore.ts line ~719
+  Endpoint: PUT /captures/{id}/publish (workflow.py line ~378)
+  Changes reviewStatus: 'approved' → 'published'
+  NOT a placeholder.
+
+Step 2 — Tour Generation
+  Function: generateTour(captureId) — workflowStore.ts line ~730
+  Endpoint: POST /tours (workflow.py line ~432)
+  Creates a new Tour document from the capture's panoramaUrls
+  NOT a placeholder — creates a real tour object.
+
+Step 3 — Tour Publish
+  Function: publishTour(id) — workflowStore.ts line ~758
+  Endpoint: PUT /tours/{id}/status (workflow.py line ~459)
+  Changes tour status: 'processing' → 'published'
+
+Full review pipeline: uploaded → assigned → reviewing → approved → published
+(mockData.ts line ~313)
+
+
+─────────────────────────────────────────────────────────────
+5. IS THERE ALREADY A CAPTURE MODEL?
+─────────────────────────────────────────────────────────────
+YES. The MockCapture interface (mockData.ts lines 88-107):
+
+  id, roomId, roomName, projectId, projectName, towerId, towerName,
+  floorLabel, status (CaptureStatus), reviewStatus (ReviewStatus),
+  uploadedBy, uploadedAt, reviewedBy, reviewNotes, assignedTo,
+  fileCount, sizeMb, gradient
+
+Fields added at upload time (workflowStore.ts lines 632-658):
+  mediaAssets: UploadedFileResponse[]   ← Cloudinary file responses
+  original_url, thumbnail_url, public_id, format, size
+  processingStatus / processing_status
+  originalFileUrl, processedPanoramaUrl, thumbnailUrl, previewUrl
+  panoramaUrls: string[]                ← used by TourViewer
+
+NOTE: There is NO floor_plan_id on Capture. Captures link to rooms,
+rooms link to floors, floors link to floor plans. It's indirect.
+
+MongoDB collection: `captures` (indexes.py lines 103-124)
+
+
+─────────────────────────────────────────────────────────────
+6. IS THERE ALREADY A VIRTUAL TOUR MODEL?
+─────────────────────────────────────────────────────────────
+YES. The MockTour interface (mockData.ts lines 112-127):
+
+  id, captureId, roomId, roomName, projectId, projectName,
+  towerId, towerName, floorLabel,
+  status: TourStatus ('draft' | 'processing' | 'in_review' | 'published'),
+  captures (fileCount), lastCapture, gradient, viewCount
+
+Fields added at generation time (workflowStore.ts lines 739-753):
+  panoramaUrls: string[]             ← array of Cloudinary panorama URLs
+  panorama_urls: string[]
+  processedPanoramaUrl: string|null  ← first panorama URL
+  thumbnailUrl: string|undefined
+  flatId, flatNumber, flatType       ← from parent capture
+
+MongoDB collection: `tours` (workflow.py line ~34, 426-451)
+
+The TourViewer (TourViewerPage.tsx) reads panoramaUrls and renders them
+using the PSV (Photo Sphere Viewer) library.
+
+
+─────────────────────────────────────────────────────────────
+7. DOES THE APP DETECT DEVICE TYPE?
+─────────────────────────────────────────────────────────────
+NO explicit device detection exists anywhere in the codebase.
+
+No usage of:
+- navigator.userAgent parsing
+- window.innerWidth breakpoint detection hooks
+- isMobile / isTablet / isDesktop variables
+- Any device-detection library
+
+Responsive layout IS handled via Material-UI Grid breakpoints:
+  xs, sm, md, lg — used across all pages
+Example: <Grid size={{ xs: 12, md: 8 }}>
+
+If device-specific behaviour is needed (e.g. camera vs upload),
+it must be implemented fresh.
+
+
+─────────────────────────────────────────────────────────────
+8. IS THERE A CAMERA PAGE USING getUserMedia?
+─────────────────────────────────────────────────────────────
+NO. There is no camera page and no usage of navigator.mediaDevices.getUserMedia()
+anywhere in the codebase.
+
+The app is entirely FILE-UPLOAD-BASED:
+- Captures: CaptureUploadPage.tsx (drag-drop or file picker)
+- Floor plans: FloorPlanUploadPage.tsx (drag-drop or file picker)
+- Avatars: UserProfilePage.tsx (file picker via <input type="file">)
+
+Accepted capture formats: JPG, JPEG, PNG, DNG, INSP, INSV (360° camera exports)
+The app expects files exported FROM a physical 360° camera, not live capture.
+
+Camera functionality is NOT implemented and would need to be built from scratch
+using navigator.mediaDevices.getUserMedia() if required.
+
+
+─────────────────────────────────────────────────────────────
+9. IS IMAGE UPLOAD ALREADY WORKING EVERYWHERE?
+─────────────────────────────────────────────────────────────
+YES. Upload is fully implemented end-to-end.
+
+Upload service: frontend/src/services/uploadService.ts
+  uploadCaptureFiles()   → POST /uploads/captures   → Cloudinary
+  uploadFloorPlanFiles() → POST /uploads/floorplans  → Cloudinary
+  uploadAvatarFiles()    → POST /uploads/avatars     → Cloudinary
+  uploadMediaFiles()     → shared multipart FormData POST with progress tracking
+
+Backend: workflow.py
+  POST /uploads/captures   (line ~396) — validates extensions, calls cloudinary_service
+  POST /uploads/floorplans (line ~402) — same
+  Storage path: horizon/{captures|floorplans}/{org_id}/{entity_id}/
+
+For desktop use after clicking a pin: YES, the existing CaptureUploadPage
+component can be reused by passing roomId as a query param:
+  /captures/upload?roomId={roomId}
+This is already the pattern used by RoomListPage.tsx.
+
+
+─────────────────────────────────────────────────────────────
+10. WFFLOORPLAN TYPE IN THE FRONTEND STORE?
+─────────────────────────────────────────────────────────────
+There is NO dedicated WfFloorPlan interface.
+
+The store uses MockFloorPlan (imported from mockData.ts) directly:
+  floorPlans: MockFloorPlan[]   (workflowStore.ts line ~169)
+
+This is inconsistent with other entities (WfFloor, WfFlat, WfRoom have
+dedicated Wf* interfaces). Floor plans kept the original mock type.
+
+If a WfFloorPlan type is needed, it should be defined in workflowStore.ts
+and exported for use across pages.
+
+
+─────────────────────────────────────────────────────────────
+11. KEY WORKFLOWSTORE INTERFACES
+─────────────────────────────────────────────────────────────
+All in frontend/src/store/workflowStore.ts:
+
+  WfFloor {
+    id, towerId, number, label, floorPlanId?
+  }
+
+  WfFlat {
+    id, floorId, towerId, projectId, number, type (1/2/3/4 BHK)
+  }
+
+  WfRoom {
+    id, flatId, floorId, towerId, projectId, name, type, floorPlanId?
+  }
+
+  MockCapture {
+    id, roomId, roomName, projectId, projectName, towerId, towerName,
+    floorLabel, status, reviewStatus, uploadedBy, uploadedAt,
+    reviewedBy, reviewNotes, assignedTo, fileCount, sizeMb, gradient,
+    mediaAssets?, panoramaUrls?, ...
+  }
+
+  MockTour {
+    id, captureId, roomId, roomName, projectId, projectName,
+    towerId, towerName, floorLabel, status, captures, lastCapture,
+    gradient, viewCount, panoramaUrls?, processedPanoramaUrl?, ...
+  }
+
+  MockFloorPlan {
+    id, projectId, towerId, floorId, floorLabel, uploadedBy, uploadedAt,
+    fileType, fileName, fileSizeMb, rooms: MockRoomMarker[]
+  }
+
+  MockRoomMarker {
+    id, name, number, type, x, y, width, height, status,
+    captureId?, tourId?
+  }
+
+
+─────────────────────────────────────────────────────────────
+12. CAN THE DATABASE SCHEMA BE MODIFIED?
+─────────────────────────────────────────────────────────────
+YES, freely. The database is MongoDB (schemaless NoSQL).
+
+There is NO Alembic, NO migrations, NO schema enforcement.
+
+Schema is defined by:
+  1. backend/app/db/indexes.py — MongoDB indexes (created at startup, idempotent)
+  2. Pydantic models in backend/app/models/ — validation only, not enforced by DB
+  3. What the API endpoints write to collections
+
+To add a new field to any collection:
+  - Just start writing it — MongoDB accepts any document shape
+  - Add an index in indexes.py if querying by that field (safe to re-run)
+  - Update the Pydantic model for validation
+  - No migration scripts needed, no downtime
+
+To add a new collection:
+  - Add indexes in indexes.py
+  - Add API endpoints in workflow.py or a new router
+  - Add frontend types + store actions
+
+This means Claude CAN design and implement new models/collections freely.
+
+
+─────────────────────────────────────────────────────────────
+QUICK REFERENCE SUMMARY
+─────────────────────────────────────────────────────────────
+Floor plan stored in?         MongoDB `floor_plans` collection (floorId FK)
+Pin/annotation field?         YES — rooms: MockRoomMarker[] (x, y, w, h)
+Room polygons in DB?          YES — embedded in floor plan document
+Upload owner entity?          Floor (floorId is primary FK)
+Publish workflow real?        YES — 3 steps, all wired to real API endpoints
+Capture model exists?         YES — MockCapture, no floor_plan_id (uses roomId)
+Virtual Tour model?           YES — MockTour with panoramaUrls[]
+Device detection?             NO — must implement from scratch
+Camera (getUserMedia)?        NO — file upload only, no live camera
+Upload working?               YES — Cloudinary, all three upload types work
+WfFloorPlan type?             NO — uses MockFloorPlan from mockData.ts
+Can modify DB schema?         YES — MongoDB schemaless, no migrations needed

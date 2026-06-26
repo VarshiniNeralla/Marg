@@ -4,7 +4,7 @@ import {
   CheckCircleRounded, RateReviewRounded, ViewInArRounded,
   ArrowForwardRounded, KeyboardArrowDownRounded, CheckRounded, SearchRounded,
 } from '@mui/icons-material';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import Button from '@shared/components/Button/Button';
@@ -30,18 +30,19 @@ const TAB_OPTIONS: { value: ReviewTab; label: string }[] = [
 
 export default function ReviewsPage() {
   const tours = useWorkflowStore(s => s.tours);
+  const updateTour = useWorkflowStore(s => s.updateTour);
+  const navigate = useNavigate();
 
   const [tab, setTab]               = useState<ReviewTab>('pending');
   const [tabAnchor, setTabAnchor]   = useState<null | HTMLElement>(null);
   const [query, setQuery]           = useState('');
   const [selectedTour, setSelectedTour] = useState<typeof tours[0] | null>(null);
   const [notes, setNotes]           = useState('');
-  const [underReviewIds, setUnderReviewIds] = useState<Set<string>>(new Set());
 
-  const publishedTours = tours.filter(t => t.status === 'published');
-
-  const pendingTours   = publishedTours.filter(t => !underReviewIds.has(t.id));
-  const reviewingTours = publishedTours.filter(t => underReviewIds.has(t.id));
+  // Use global state instead of local underReviewIds so it persists across navigation
+  const pendingTours   = tours.filter(t => t.status === 'published' && !(t as any).managerReviewed);
+  const reviewingTours = tours.filter(t => t.status === 'in_review');
+  const publishedTours = tours.filter(t => t.status === 'published' && (t as any).managerReviewed);
 
   const base = tab === 'pending' ? pendingTours : reviewingTours;
   const displayed = base.filter(t => {
@@ -50,12 +51,15 @@ export default function ReviewsPage() {
   });
 
   function startReview(tour: typeof tours[0]) {
-    setUnderReviewIds(s => new Set([...s, tour.id]));
     setSelectedTour(tour);
     setNotes('');
   }
 
   function confirmReview() {
+    if (selectedTour) {
+      updateTour(selectedTour.id, { status: 'in_review' });
+      navigate(`/tours/${selectedTour.id}`);
+    }
     setSelectedTour(null);
     setNotes('');
   }
@@ -177,7 +181,7 @@ export default function ReviewsPage() {
         /* Tour list */
         <Box sx={{ display: 'flex', flexDirection: 'column', border: `1.5px solid ${P.border}`, borderRadius: '18px', backgroundColor: P.white, overflow: 'hidden' }}>
           {displayed.map((t, i) => {
-            const isReviewing = underReviewIds.has(t.id);
+            const isReviewing = t.status === 'in_review';
             const sm = isReviewing
               ? { label: 'Under Review', color: '#d97706', bg: 'rgba(217,119,6,0.08)' }
               : { label: 'Published',    color: '#2563eb', bg: 'rgba(37,99,235,0.08)' };

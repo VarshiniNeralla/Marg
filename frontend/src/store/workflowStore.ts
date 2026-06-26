@@ -3,7 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import {
   mockProjects, mockTowers, mockCaptures, mockTours, getFloors, getRooms,
   mockFloorPlans, mockDefects, mockNotifications, mockAuditLogs, mockUsers,
-  type MockProject, type MockTower, type MockCapture, type MockTour,
+  type MockProject, type MockTower, type MockCapture, type MockTour, type TourStep,
   type MockFloorPlan, type MockDefect, type MockNotification, type MockAuditLog,
   type MockUser, type NotifType, type AuditEventType,
 } from '@/data/mockData';
@@ -58,9 +58,30 @@ export interface WfRoom {
 
 export type ProjectArchived = MockProject & { archived?: boolean };
 
+// ── Capture Pin ───────────────────────────────────────────────────────────────
+// A numbered marker placed directly on a floor plan. The sequenceNumber defines
+// the walkthrough order of the published virtual tour and is permanent across
+// site visits. Each pin references existing Capture records by id (captureIds)
+// rather than duplicating any upload information. A pin owns one backing WfRoom
+// (roomId) so the existing capture → review → tour pipeline works unchanged.
+export interface WfCapturePin {
+  id: string;
+  floorPlanId: string;
+  floorId: string;
+  towerId: string;
+  projectId: string;
+  roomId: string;            // backing room — implementation detail, never shown
+  sequenceNumber: number;    // walkthrough order, 1-based
+  x: number;                 // % of floor-plan page width (0–100), zoom-invariant
+  y: number;                 // % of floor-plan page height (0–100), zoom-invariant
+  createdBy: string;
+  createdAt: string;
+  captureIds: string[];      // capture timeline, newest last
+}
+
 export type WorkflowDataState = Pick<WorkflowState,
   'projects' | 'towers' | 'floors' | 'flats' | 'rooms' | 'captures' | 'tours' |
-  'floorPlans' | 'defects' | 'notifications' | 'auditLogs' | 'users' | 'uidCounter'
+  'floorPlans' | 'capturePins' | 'defects' | 'notifications' | 'auditLogs' | 'users' | 'uidCounter'
 >;
 
 // ── Seed from mockData ──────────────────────────────────────────────────────────
@@ -167,6 +188,7 @@ interface WorkflowState {
   captures: MockCapture[];
   tours: MockTour[];
   floorPlans: MockFloorPlan[];
+  capturePins: WfCapturePin[];
   defects: MockDefect[];
   notifications: MockNotification[];
   auditLogs: MockAuditLog[];
@@ -207,6 +229,12 @@ interface WorkflowState {
   // ── Floor Plans ──
   uploadFloorPlan: (payload: Omit<MockFloorPlan, 'id' | 'uploadedAt' | 'uploadedBy'> & { uploadedBy?: string; mediaAssets?: UploadedFileResponse[] }) => string;
 
+  // ── Capture Pins ──
+  createCapturePin: (args: { floorPlanId: string; floorId: string; towerId: string; projectId: string; x: number; y: number; createdBy?: string }) => string;
+  attachCaptureToPin: (pinId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => string;
+  deleteCapturePin: (id: string) => void;
+  publishFloorPlanTour: (floorPlanId: string) => string[];
+
   // ── Captures ──
   uploadCapture: (roomId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => string;
   deleteCapture: (id: string) => void;
@@ -224,6 +252,7 @@ interface WorkflowState {
   generateTour: (captureId: string) => string;
   publishTour: (id: string) => void;
   updateTour: (id: string, patch: Partial<MockTour>) => void;
+  deleteTour: (id: string) => void;
 
   // ── Defects ──
   createDefect: (d: Omit<MockDefect, 'id' | 'createdAt' | 'updatedAt'>) => string;
@@ -265,6 +294,7 @@ function keepPrimaryProjectData(data: WorkflowDataState): WorkflowDataState {
     captures: data.captures.filter(c => projectIds.has(c.projectId) && roomIds.has(c.roomId)),
     tours: data.tours.filter(t => projectIds.has(t.projectId) && roomIds.has(t.roomId) && captureIds.has(t.captureId)),
     floorPlans: data.floorPlans.filter(fp => projectIds.has(fp.projectId) && towerIds.has(fp.towerId) && floorIds.has(fp.floorId)),
+    capturePins: (data.capturePins ?? []).filter(pin => projectIds.has(pin.projectId) && floorIds.has(pin.floorId)),
     defects: data.defects.filter(d => projectIds.has(d.projectId)),
     auditLogs: data.auditLogs.filter(a => !a.projectId || projectIds.has(a.projectId)),
   };
@@ -280,6 +310,7 @@ export function buildInitialWorkflowData(): WorkflowDataState {
     captures: [],
     tours: [],
     floorPlans: [],
+    capturePins: [],
     defects: [],
     notifications: [],
     auditLogs: [],
@@ -332,6 +363,7 @@ function ensureFlatHierarchy(data: Partial<WorkflowDataState>): WorkflowDataStat
     captures: data.captures ?? seed.captures,
     tours: data.tours ?? seed.tours,
     floorPlans: data.floorPlans ?? seed.floorPlans,
+    capturePins: data.capturePins ?? seed.capturePins,
     defects: data.defects ?? seed.defects,
     notifications: data.notifications ?? seed.notifications,
     auditLogs: data.auditLogs ?? seed.auditLogs,
@@ -415,6 +447,7 @@ export const useWorkflowStore = create<WorkflowState>()(
           captures: migrated.captures ?? s.captures,
           tours: migrated.tours ?? s.tours,
           floorPlans: migrated.floorPlans ?? s.floorPlans,
+          capturePins: migrated.capturePins ?? s.capturePins,
           defects: migrated.defects ?? s.defects,
           notifications: migrated.notifications ?? s.notifications,
           auditLogs: migrated.auditLogs ?? s.auditLogs,
@@ -629,6 +662,11 @@ export const useWorkflowStore = create<WorkflowState>()(
     const floor = get().floors.find(f => f.id === room.floorId);
     const flat = get().flats.find(f => f.id === room.flatId);
     const firstAsset = mediaAssets[0];
+    const now = new Date();
+    const capturedAt = now.toISOString();
+    const uploadedAtLabel = now.toLocaleString('en-IN', {
+      day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
+    });
     const capture = {
       id, roomId, roomName: room.name,
       flatId: room.flatId, flatNumber: flat?.number ?? 'Flat A', flatType: flat?.type ?? '1 BHK',
@@ -637,7 +675,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       towerId: room.towerId, towerName: tower?.name ?? '',
       floorLabel: floor?.label ?? '',
       status: 'review', reviewStatus: 'uploaded',
-      uploadedBy: 'You', uploadedAt: 'Just now',
+      uploadedBy: 'You', uploadedAt: uploadedAtLabel, capturedAt, captured_at: capturedAt,
       reviewedBy: null, reviewNotes: null, assignedTo: null,
       fileCount,
       sizeMb: mediaAssets.length ? +(mediaAssets.reduce((sum, asset) => sum + (asset.size || 0), 0) / 1024 / 1024).toFixed(1) : fileCount * 4,
@@ -668,12 +706,22 @@ export const useWorkflowStore = create<WorkflowState>()(
   },
   deleteCapture(id) {
     const cap = get().captures.find(c => c.id === id);
+    // Pins that referenced this capture in their timeline — unlink it.
+    const affectedPins = get().capturePins.filter(p => p.captureIds.includes(id));
     set(s => ({
       captures: s.captures.filter(c => c.id !== id),
       tours: s.tours.filter(t => t.captureId !== id),
+      capturePins: s.capturePins.map(p =>
+        p.captureIds.includes(id) ? { ...p, captureIds: p.captureIds.filter(cid => cid !== id) } : p
+      ),
       towers: cap ? s.towers.map(t => t.id === cap.towerId ? { ...t, captures: Math.max(0, t.captures - 1) } : t) : s.towers,
     }));
     mirrorApi(workflowApiService.deleteCapture(id));
+    // Mirror the unlink on each affected pin so the backend timeline stays in sync.
+    affectedPins.forEach(p => {
+      const remaining = p.captureIds.filter(cid => cid !== id);
+      mirrorApi(workflowApiService.updateCapturePin(p.id, { captureIds: remaining }));
+    });
   },
   replaceCapture(id, fileCount) {
     const patch = { fileCount, sizeMb: fileCount * 4, status: 'review' as const, reviewStatus: 'uploaded' as const, uploadedAt: 'Just now', reviewNotes: null, processingStatus: 'uploaded', processing_status: 'uploaded' };
@@ -768,6 +816,14 @@ export const useWorkflowStore = create<WorkflowState>()(
     set(s => ({ tours: s.tours.map(t => t.id === id ? { ...t, ...patch } : t) }));
     mirrorApi(workflowApiService.updateTour(id, patch));
   },
+  deleteTour(id) {
+    const tour = get().tours.find(t => t.id === id);
+    set(s => ({ tours: s.tours.filter(t => t.id !== id) }));
+    mirrorApi(workflowApiService.deleteTour(id));
+    if (tour) {
+      pushAudit(set, 'tour_deleted', 'tour', id, tour.roomName, tour.projectId, `Deleted tour for ${tour.roomName}`);
+    }
+  },
 
   uploadFloorPlan(payload) {
     const id = get().nextId('fp');
@@ -802,6 +858,139 @@ export const useWorkflowStore = create<WorkflowState>()(
     pushNotif(set, 'floor_plan_uploaded', 'Floor plan uploaded', `${payload.floorLabel} uploaded for ${project?.name ?? 'project'}`, `/floor-plans/${payload.projectId}/${payload.towerId}/${payload.floorId}`);
     pushAudit(set, 'floor_plan_uploaded', 'floor_plan', id, payload.floorLabel, payload.projectId, `Uploaded floor plan for ${payload.floorLabel}`);
     return id;
+  },
+
+  // ── Capture Pins ────────────────────────────────────────────────────────────
+  createCapturePin({ floorPlanId, floorId, towerId, projectId, x, y, createdBy }) {
+    const id = get().nextId('pin');
+    // Sequence number is scoped to the floor plan and always the next available.
+    const existingOnPlan = get().capturePins.filter(p => p.floorPlanId === floorPlanId);
+    const sequenceNumber = existingOnPlan.length
+      ? Math.max(...existingOnPlan.map(p => p.sequenceNumber)) + 1
+      : 1;
+
+    // Each pin owns a backing room so the existing capture → review → tour
+    // pipeline works unchanged. The room is an implementation detail — its name
+    // ("Pin N") is never surfaced as a separate concept to the engineer.
+    const roomId = get().createRoom(defaultFlatId(floorId), `Pin ${sequenceNumber}`, 'custom');
+
+    const pin: WfCapturePin = {
+      id, floorPlanId, floorId, towerId, projectId, roomId,
+      sequenceNumber, x, y,
+      createdBy: createdBy ?? 'You',
+      createdAt: 'Just now',
+      captureIds: [],
+    };
+    set(s => ({ capturePins: [...s.capturePins, pin] }));
+    mirrorApi(workflowApiService.createCapturePin(pin));
+    pushAudit(set, 'floor_plan_uploaded', 'floor_plan', id, `Pin ${sequenceNumber}`, projectId, `Placed capture pin ${sequenceNumber}`);
+    return id;
+  },
+  attachCaptureToPin(pinId, fileCount, mediaAssets = []) {
+    const pin = get().capturePins.find(p => p.id === pinId);
+    if (!pin) return '';
+    // Reuse the existing capture pipeline entirely — upload, review, publish all
+    // operate on this capture exactly as before. We only record its id on the pin.
+    const captureId = get().uploadCapture(pin.roomId, fileCount, mediaAssets);
+    set(s => ({
+      capturePins: s.capturePins.map(p =>
+        p.id === pinId ? { ...p, captureIds: [...p.captureIds, captureId] } : p
+      ),
+    }));
+    const updated = get().capturePins.find(p => p.id === pinId);
+    if (updated) mirrorApi(workflowApiService.updateCapturePin(pinId, { captureIds: updated.captureIds }));
+    return captureId;
+  },
+  publishFloorPlanTour(floorPlanId) {
+    // Build ONE sequential walkthrough tour for the whole floor: each pin's latest
+    // capture becomes a step, ordered by pin sequence (1 → 2 → 3 …). The viewer
+    // steps through these with prev/next arrows. Re-publishing replaces the
+    // existing walkthrough for this floor plan rather than duplicating it.
+    const pins = get().capturePins
+      .filter(p => p.floorPlanId === floorPlanId)
+      .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+
+    const steps: TourStep[] = [];
+    for (const pin of pins) {
+      const latestCaptureId = pin.captureIds[pin.captureIds.length - 1];
+      if (!latestCaptureId) continue; // pin still waiting for a capture
+      const cap = get().captures.find(c => c.id === latestCaptureId) as (MockCapture & Record<string, unknown>) | undefined;
+      if (!cap) continue;
+      const mediaAssets = (cap.mediaAssets as UploadedFileResponse[] | undefined) ?? [];
+      const panoramaUrl = firstMediaUrl(mediaAssets) ?? (cap.processedPanoramaUrl as string | undefined) ?? null;
+      steps.push({
+        pinId: pin.id,
+        captureId: latestCaptureId,
+        sequenceNumber: pin.sequenceNumber,
+        label: `Pin ${pin.sequenceNumber}`,
+        panoramaUrl,
+        thumbnailUrl: (mediaAssets[0]?.thumbnail_url ?? (cap.thumbnailUrl as string | undefined)) ?? null,
+      });
+    }
+    if (!steps.length) return [];
+
+    const floor = get().floors.find(f => f.id === pins[0].floorId);
+    const tower = get().towers.find(t => t.id === pins[0].towerId);
+    const project = get().projects.find(p => p.id === pins[0].projectId);
+    const first = steps[0];
+    const panoramaUrls = steps.map(s => s.panoramaUrl).filter((u): u is string => !!u);
+
+    // One stable tour per floor plan — reuse the existing record if present.
+    const existing = get().tours.find(t => (t as MockTour & { floorPlanId?: string }).floorPlanId === floorPlanId);
+    const id = existing?.id ?? get().nextId('tour');
+
+    const tour = {
+      id,
+      floorPlanId,
+      captureId: first.captureId,
+      roomId: pins[0].roomId,
+      roomName: `${floor?.label ?? 'Floor'} Walkthrough`,
+      projectId: pins[0].projectId, projectName: project?.name ?? '',
+      towerId: pins[0].towerId, towerName: tower?.name ?? '',
+      floorLabel: floor?.label ?? '',
+      status: 'published',
+      captures: steps.length,
+      lastCapture: 'Just now',
+      gradient: project?.gradient ?? GRADIENTS[0],
+      viewCount: existing?.viewCount ?? 0,
+      steps,
+      panoramaUrls,
+      panorama_urls: panoramaUrls,
+      processedPanoramaUrl: panoramaUrls[0] ?? null,
+      processed_panorama_url: panoramaUrls[0] ?? null,
+      thumbnailUrl: first.thumbnailUrl ?? undefined,
+      thumbnail_url: first.thumbnailUrl ?? undefined,
+    } as MockTour & Record<string, unknown>;
+
+    set(s => ({ tours: [tour, ...s.tours.filter(t => t.id !== id)] }));
+    mirrorApi(existing ? workflowApiService.updateTour(id, tour) : workflowApiService.createTour(tour));
+    pushNotif(set, 'tour_published', 'Walkthrough published', `${tour.roomName} · ${steps.length} stops is live`, `/tours/${id}`);
+    pushAudit(set, 'tour_published', 'tour', id, tour.roomName, tour.projectId, `Published walkthrough (${steps.length} pins) for ${tour.floorLabel}`);
+    return [id];
+  },
+  deleteCapturePin(id) {
+    const pin = get().capturePins.find(p => p.id === id);
+    if (!pin) return;
+    // Remove the pin, its backing room (cascades captures via deleteRoom), then
+    // resequence the remaining pins on the same floor plan so numbering stays 1..N.
+    get().deleteRoom(pin.roomId);
+    set(s => {
+      const remaining = s.capturePins
+        .filter(p => p.id !== id)
+        .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+      let seq = 0;
+      const resequenced = remaining.map(p => {
+        if (p.floorPlanId !== pin.floorPlanId) return p;
+        seq += 1;
+        return p.sequenceNumber === seq ? p : { ...p, sequenceNumber: seq };
+      });
+      return { capturePins: resequenced };
+    });
+    mirrorApi(workflowApiService.deleteCapturePin(id));
+    // Mirror any sequence changes for pins on the same plan.
+    get().capturePins
+      .filter(p => p.floorPlanId === pin.floorPlanId)
+      .forEach(p => mirrorApi(workflowApiService.updateCapturePin(p.id, { sequenceNumber: p.sequenceNumber })));
   },
 
   createDefect(d) {
@@ -878,6 +1067,7 @@ export const useWorkflowStore = create<WorkflowState>()(
         captures: s.captures,
         tours: s.tours,
         floorPlans: s.floorPlans,
+        capturePins: s.capturePins,
         defects: s.defects,
         notifications: s.notifications,
         auditLogs: s.auditLogs,

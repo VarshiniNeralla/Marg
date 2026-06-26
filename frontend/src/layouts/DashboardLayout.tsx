@@ -89,12 +89,14 @@ const ENGINEER_NAV: NavSection[] = [
     items: [
       { label: 'Capture Workflow',  path: '/capture-workflow', icon: <PhotoCameraRounded /> },
       { label: 'Capture History',   path: '/my-captures',      icon: <HistoryRounded /> },
+      { label: 'Publish Tours',     path: '/publish-tours',    icon: <ViewInArRounded /> },
     ],
   },
   {
     heading: 'View',
     items: [
-      { label: 'Floor Plans', path: '/floor-plans', icon: <MapRounded /> },
+      { label: 'Floor Plans',   path: '/floor-plans', icon: <MapRounded /> },
+      { label: 'Virtual Tours', path: '/tours',       icon: <ViewInArRounded /> },
     ],
   },
 ];

@@ -4,7 +4,7 @@ import type {
   ReviewStatus, CaptureSnapshot, RoomHistory,
 } from '@/data/mockData';
 import { statusConfig } from '@/data/mockData';
-import type { ProjectArchived, WfFlat, WfFloor, WfRoom } from './workflowStore';
+import type { ProjectArchived, WfCapturePin, WfFlat, WfFloor, WfRoom } from './workflowStore';
 
 export { statusConfig };
 
@@ -17,6 +17,7 @@ export interface WorkflowData {
   captures: MockCapture[];
   tours: MockTour[];
   floorPlans: MockFloorPlan[];
+  capturePins?: WfCapturePin[];
   defects: MockDefect[];
   notifications: MockNotification[];
   auditLogs: MockAuditLog[];
@@ -59,6 +60,36 @@ export function getTourById(tours: MockTour[], id: string) {
 
 export function getFloorPlanByFloor(floorPlans: MockFloorPlan[], towerId: string, floorId: string) {
   return floorPlans.find(fp => fp.towerId === towerId && fp.floorId === floorId);
+}
+
+export function getCapturePinsByFloorPlan(pins: WfCapturePin[], floorPlanId: string) {
+  return [...pins.filter(p => p.floorPlanId === floorPlanId)].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+}
+
+export function getPinForCapture(pins: WfCapturePin[], captureId: string) {
+  return pins.find(p => p.captureIds.includes(captureId));
+}
+
+/**
+ * Real capture timeline for the pin that owns `captureId`. Returns every capture
+ * attached to that pin, sorted oldest → newest by real recorded timestamp. If the
+ * capture isn't on a pin (legacy / non-pin capture), returns just that capture.
+ */
+export function getPinCaptureTimeline(
+  pins: WfCapturePin[],
+  captures: MockCapture[],
+  captureId: string,
+): MockCapture[] {
+  const pin = getPinForCapture(pins, captureId);
+  const ids = pin ? pin.captureIds : [captureId];
+  const list = ids
+    .map(id => captures.find(c => c.id === id))
+    .filter((c): c is MockCapture => !!c);
+  return list.sort((a, b) => {
+    const ta = (a as MockCapture & { capturedAt?: string }).capturedAt ?? '';
+    const tb = (b as MockCapture & { capturedAt?: string }).capturedAt ?? '';
+    return ta.localeCompare(tb);
+  });
 }
 
 export function getCapturesByProject(captures: MockCapture[], projectId: string) {

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Typography, Grid, LinearProgress } from '@mui/material';
+import { Box, Typography, Grid } from '@mui/material';
 import {
   FolderRounded, PeopleRounded, CameraAltRounded, RateReviewRounded,
   ViewInArRounded, AddRounded, MapRounded, BarChartRounded,
@@ -64,8 +64,6 @@ export default function AdminDashboard() {
   }, []);
 
   const stats = computeDashboardStats({ projects, towers, floors, flats, rooms, captures, tours, floorPlans, defects, notifications, auditLogs, users: [] });
-  const activeProjects = projects.filter(p => !p.archived);
-
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
 
@@ -98,35 +96,8 @@ export default function AdminDashboard() {
       </Grid>
 
       <Grid container spacing={3}>
-        {/* Project Progress */}
-        <Grid size={{ xs: 12, md: 7 }}>
-          <Box sx={{ p: 3, borderRadius: '16px', border: `1px solid ${colors.border}`, backgroundColor: colors.card }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2.5 }}>
-              <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em' }}>Project Progress</Typography>
-              <Box component={Link} to="/projects" sx={{ fontSize: '0.8125rem', color: colors.primary, textDecoration: 'none', fontWeight: 500 }}>View all →</Box>
-            </Box>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              {activeProjects.length === 0 ? (
-                <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted, py: 2 }}>No active projects yet.</Typography>
-              ) : activeProjects.slice(0, 5).map(p => (
-                <Box key={p.id}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.75 }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: p.accent }} />
-                      <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong }}>{p.name}</Typography>
-                    </Box>
-                    <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, fontWeight: 600 }}>{p.progress}%</Typography>
-                  </Box>
-                  <LinearProgress variant="determinate" value={p.progress} sx={{ height: 6, borderRadius: 3, backgroundColor: colors.bgDeep, '& .MuiLinearProgress-bar': { borderRadius: 3, backgroundColor: p.accent } }} />
-                  <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, mt: 0.5 }}>{p.captures} captures · {p.towers} towers</Typography>
-                </Box>
-              ))}
-            </Box>
-          </Box>
-        </Grid>
-
         {/* Quick Actions */}
-        <Grid size={{ xs: 12, md: 5 }}>
+        <Grid size={{ xs: 12 }}>
           <Box sx={{ p: 3, borderRadius: '16px', border: `1px solid ${colors.border}`, backgroundColor: colors.card }}>
             <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em', mb: 2 }}>Quick Actions</Typography>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>

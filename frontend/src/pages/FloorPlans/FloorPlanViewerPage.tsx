@@ -1,16 +1,24 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { Box, Typography, Chip, IconButton, Tooltip, useMediaQuery, useTheme, Drawer } from '@mui/material';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
+import { Box, Typography, Chip, IconButton, Tooltip, useMediaQuery, useTheme, Drawer, Snackbar, Alert } from '@mui/material';
 import {
   ArrowBackRounded, ZoomInRounded, ZoomOutRounded, FullscreenRounded,
   FullscreenExitRounded, CenterFocusStrongRounded, UploadFileRounded,
   LayersRounded, RoomRounded, CameraAltRounded, ViewInArRounded, ArrowForwardRounded,
-  CloudOffRounded, KeyboardArrowDownRounded,
+  CloudOffRounded, KeyboardArrowDownRounded, AddLocationAltRounded, CheckRounded,
+  PublishRounded,
 } from '@mui/icons-material';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, isFieldEngineer } from '@store/authStore';
-import { getFloorPlanByFloor, getFloorsByTower } from '@store/workflowSelectors';
+import { getFloorPlanByFloor, getFloorsByTower, getCapturePinsByFloorPlan } from '@store/workflowSelectors';
 import type { MockRoomMarker } from '@/data/mockData';
+import type { WfCapturePin } from '@store/workflowStore';
+import { useDeviceType, usesCameraCapture } from '@/hooks/useDeviceType';
+import { uploadCaptureFiles } from '@/services/uploadService';
+import CapturePinMarker from '@features/capturePins/CapturePinMarker';
+import PinActionPanel from '@features/capturePins/PinActionPanel';
+import CameraCaptureDialog from '@features/capturePins/CameraCaptureDialog';
+import PinUploadDialog from '@features/capturePins/PinUploadDialog';
 
 /* ── PDF.js (lazy-loaded so bundle stays small until a PDF is needed) ──── */
 type PdfViewport = { width: number; height: number };
@@ -145,9 +153,16 @@ function RoomActionPanel({ room, onClose, isMobile }: { room: MockRoomMarker; on
 ══════════════════════════════════════════════════════════════════════════ */
 export default function FloorPlanViewerPage() {
   const { projectId, towerId, floorId } = useParams<{ projectId: string; towerId: string; floorId: string }>();
+  const [searchParams] = useSearchParams();
+  // pinsOnly: a focused view (from Capture History) showing just the plan + pins —
+  // no floor switcher, room overlays/legend, capture-mode toggle, or upload button.
+  const pinsOnly = searchParams.get('pinsOnly') === '1';
+  const returnTo = searchParams.get('returnTo');
 
   const theme    = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const device   = useDeviceType();
+  const useCamera = usesCameraCapture(device);
 
   const user       = useAuthStore(s => s.user);
   const isEngineer = isFieldEngineer(user);
@@ -156,10 +171,20 @@ export default function FloorPlanViewerPage() {
   const tower      = useWorkflowStore(s => s.towers.find(t => t.id === towerId));
   const floors     = useWorkflowStore(s => s.floors);
   const floorPlans = useWorkflowStore(s => s.floorPlans);
+  const allPins    = useWorkflowStore(s => s.capturePins);
+  const captures   = useWorkflowStore(s => s.captures);
+  const createCapturePin     = useWorkflowStore(s => s.createCapturePin);
+  const attachCaptureToPin   = useWorkflowStore(s => s.attachCaptureToPin);
+  const deleteCapturePin     = useWorkflowStore(s => s.deleteCapturePin);
+  const publishFloorPlanTour = useWorkflowStore(s => s.publishFloorPlanTour);
 
   const towerFloors = [...getFloorsByTower(floors, towerId ?? '')].sort((a, b) => a.number - b.number);
   const floor       = towerFloors.find(f => f.id === floorId);
   const floorPlan   = getFloorPlanByFloor(floorPlans, towerId ?? '', floorId ?? '');
+  const pins        = floorPlan ? getCapturePinsByFloorPlan(allPins, floorPlan.id) : [];
+
+  // Pin-based capture workflow is the field engineer's job.
+  const canUsePins = isEngineer && !!floorPlan;
 
   // Derive image / PDF URLs before any early returns
   const planRecord  = floorPlan as (typeof floorPlan & Record<string, unknown>) | null;
@@ -185,6 +210,14 @@ export default function FloorPlanViewerPage() {
   const [fadeIn, setFadeIn]             = useState(false);
   const [floorSheetOpen, setFloorSheetOpen] = useState(false);
 
+  // ── Pin capture workflow state ──────────────────────────────────────────────
+  const [captureMode, setCaptureMode]     = useState(false);
+  const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
+  const [activePin, setActivePin]         = useState<WfCapturePin | null>(null); // pin being captured
+  const [publishToast, setPublishToast]   = useState('');
+  const selectedPin = pins.find(p => p.id === selectedPinId) ?? null;
+  const pinsWithCaptures = pins.filter(p => p.captureIds.length > 0).length;
+
   // SVG viewer state
   const [pageSize, setPageSize]                 = useState({ w: 0, h: 0 });
   const [renderedImageUrl, setRenderedImageUrl] = useState<string | null>(null);
@@ -205,6 +238,7 @@ export default function FloorPlanViewerPage() {
   const offsetRef       = useRef({ x: 0, y: 0 });
   const dragStartRef    = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
   const draggingRef     = useRef(false);
+  const movedRef        = useRef(false); // true once a drag actually pans, so a pan-release doesn't drop a pin
   const viewerRef       = useRef<HTMLDivElement>(null);
   const pdfDocRef       = useRef<PdfDoc | null>(null);
   const renderingRef    = useRef(false);
@@ -346,6 +380,7 @@ export default function FloorPlanViewerPage() {
       if (e.button !== 0) return;
       if ((e.target as HTMLElement).closest('button')) return;
       draggingRef.current = true;
+      movedRef.current = false;
       dragStartRef.current = { x: e.clientX, y: e.clientY, ox: offsetRef.current.x, oy: offsetRef.current.y };
       el.setPointerCapture(e.pointerId);
     };
@@ -353,6 +388,11 @@ export default function FloorPlanViewerPage() {
       if (!draggingRef.current) return;
       const nx = dragStartRef.current.ox + e.clientX - dragStartRef.current.x;
       const ny = dragStartRef.current.oy + e.clientY - dragStartRef.current.y;
+      // Mark as a real pan only past a small threshold so a tiny jitter on a tap
+      // still counts as a click (and places a pin in capture mode).
+      if (Math.hypot(e.clientX - dragStartRef.current.x, e.clientY - dragStartRef.current.y) > 4) {
+        movedRef.current = true;
+      }
       setOffset({ x: nx, y: ny });
       offsetRef.current = { x: nx, y: ny };
     };
@@ -407,6 +447,62 @@ export default function FloorPlanViewerPage() {
     return () => window.removeEventListener('keydown', h);
   }, [fullscreen]);
 
+  /* ── Pin placement: screen → page-space % ───────────────────────────── */
+  // The SVG viewBox is `${-offset.x/scale} ${-offset.y/scale} ${cw/scale} ${ch/scale}`
+  // with preserveAspectRatio="none", so a click at viewer-relative (mx,my) maps to
+  // page coords ((mx-offset.x)/scale, (my-offset.y)/scale). We store as % of the
+  // page so pins stay aligned at any zoom/pan.
+  const handlePlacePin = useCallback((e: React.MouseEvent<SVGElement>) => {
+    if (!captureMode || !floorPlan || !pageSize.w) return;
+    // A pan (drag that moved) ends in a click — don't drop a pin at the release point.
+    if (movedRef.current) { movedRef.current = false; return; }
+    // A click that landed on an existing pin selects/captures it — don't also
+    // drop a new pin underneath it. (pointer stopPropagation doesn't stop the
+    // synthesized click event, so we filter on the target here.)
+    if ((e.target as Element).closest?.('#layer-captures')) return;
+    const el = viewerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const pageX = (mx - offsetRef.current.x) / scaleRef.current;
+    const pageY = (my - offsetRef.current.y) / scaleRef.current;
+    // Ignore clicks outside the floor-plan sheet.
+    if (pageX < 0 || pageY < 0 || pageX > pageSize.w || pageY > pageSize.h) return;
+    const xPct = (pageX / pageSize.w) * 100;
+    const yPct = (pageY / pageSize.h) * 100;
+    const pinId = createCapturePin({
+      floorPlanId: floorPlan.id,
+      floorId: floor!.id,
+      towerId: tower!.id,
+      projectId: project!.id,
+      x: xPct, y: yPct,
+    });
+    setSelectedPinId(pinId);
+  }, [captureMode, floorPlan, pageSize.w, pageSize.h, createCapturePin, floor, tower, project]);
+
+  /* ── Begin capture for a pin (long-press or panel button) ───────────── */
+  const beginCapture = useCallback((pin: WfCapturePin) => {
+    setSelectedPinId(pin.id);
+    setActivePin(pin);
+  }, []);
+
+  /* ── Perform the upload via the EXISTING pipeline, attach to pin ────── */
+  const performAttach = useCallback(async (files: File[]) => {
+    if (!activePin) return;
+    const result = await uploadCaptureFiles(files);
+    attachCaptureToPin(activePin.id, result.count || files.length, result.files);
+  }, [activePin, attachCaptureToPin]);
+
+  /* ── Publish the pin-ordered walkthrough ────────────────────────────── */
+  const handlePublishWalkthrough = useCallback(() => {
+    if (!floorPlan) return;
+    const tourIds = publishFloorPlanTour(floorPlan.id);
+    setPublishToast(tourIds.length
+      ? `Published walkthrough · ${tourIds.length} tour${tourIds.length !== 1 ? 's' : ''} in pin order`
+      : 'No pins with captures to publish yet');
+  }, [floorPlan, publishFloorPlanTour]);
+
   if (!project || !tower || !floor) {
     return (
       <Box sx={{ p: 4 }}>
@@ -457,9 +553,10 @@ export default function FloorPlanViewerPage() {
       {/* ── SVG viewer: single coordinate system for floor plan + all layers ── */}
       {renderedImageUrl && pageSize.w > 0 && (
         <svg
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block', overflow: 'visible' }}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block', overflow: 'visible', cursor: captureMode ? 'crosshair' : undefined }}
           viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`}
           preserveAspectRatio="none"
+          onClick={handlePlacePin}
         >
           <defs>
             {/* Drop shadow filter for the floor plan sheet */}
@@ -484,7 +581,7 @@ export default function FloorPlanViewerPage() {
               All coordinates are % of pageSize, converted to page units.
               vectorEffect="non-scaling-stroke" keeps stroke widths at 1.5px visually
               regardless of zoom level — no thick borders at high zoom. */}
-          {floorPlan && floorPlan.rooms.length > 0 && (
+          {!pinsOnly && floorPlan && floorPlan.rooms.length > 0 && (
             <g id="layer-rooms">
               {floorPlan.rooms.map(room => {
                 const sc  = STATUS_COLOR[room.status] ?? STATUS_COLOR.not_started;
@@ -534,8 +631,23 @@ export default function FloorPlanViewerPage() {
             </g>
           )}
 
-          {/* Layer 2: Capture points — future */}
-          {/* <g id="layer-captures"> ... </g> */}
+          {/* Layer 2: Capture pins — numbered walkthrough markers */}
+          {pinsOnly && floorPlan && pins.length > 0 && (
+            <g id="layer-captures">
+              {pins.map(pin => (
+                <CapturePinMarker
+                  key={pin.id}
+                  pin={pin}
+                  pageW={pageSize.w}
+                  pageH={pageSize.h}
+                  scale={scale}
+                  selected={selectedPinId === pin.id}
+                  onActivate={canUsePins ? beginCapture : () => setSelectedPinId(pin.id)}
+                  onSelect={p => setSelectedPinId(p.id)}
+                />
+              ))}
+            </g>
+          )}
 
           {/* Layer 3: AI defect markers — future */}
           {/* <g id="layer-defects"> ... </g> */}
@@ -583,6 +695,16 @@ export default function FloorPlanViewerPage() {
               </Box>
             </Box>
           )}
+        </Box>
+      )}
+
+      {/* Capture-mode hint banner */}
+      {captureMode && (
+        <Box sx={{ position: 'absolute', top: fullscreen ? 56 : 12, left: '50%', transform: 'translateX(-50%)', zIndex: 15, display: 'flex', alignItems: 'center', gap: 0.875, px: 1.75, py: 0.875, borderRadius: '10px', backgroundColor: 'rgba(37,99,235,0.95)', backdropFilter: 'blur(8px)', boxShadow: '0 4px 16px rgba(37,99,235,0.35)', pointerEvents: 'none', maxWidth: '90%' }}>
+          <AddLocationAltRounded sx={{ fontSize: 16, color: '#fff', flexShrink: 0 }} />
+          <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#fff', lineHeight: 1.3 }}>
+            Tap the plan to place pin {pins.length + 1} · {useCamera ? 'long-press a pin to open the camera' : 'long-press a pin to upload'}
+          </Typography>
         </Box>
       )}
 
@@ -643,7 +765,39 @@ export default function FloorPlanViewerPage() {
       </Box>
 
       {selectedRoom && <RoomActionPanel room={selectedRoom} onClose={() => setSelectedRoom(null)} isMobile={isMobile} />}
+
+      {selectedPin && (
+        <PinActionPanel
+          pin={selectedPin}
+          captures={captures}
+          isMobile={isMobile}
+          canCapture={canUsePins}
+          usesCamera={useCamera}
+          onCapture={beginCapture}
+          onDelete={p => { deleteCapturePin(p.id); setSelectedPinId(null); }}
+          onClose={() => setSelectedPinId(null)}
+        />
+      )}
     </Box>
+  );
+
+  /* ── capture dialogs (shared across normal + fullscreen) ───────────── */
+  const captureDialogs = activePin && (
+    useCamera ? (
+      <CameraCaptureDialog
+        open={!!activePin}
+        pinLabel={`Pin ${activePin.sequenceNumber}`}
+        onCapture={file => performAttach([file])}
+        onClose={() => setActivePin(null)}
+      />
+    ) : (
+      <PinUploadDialog
+        open={!!activePin}
+        pinLabel={`Pin ${activePin.sequenceNumber}`}
+        onUpload={performAttach}
+        onClose={() => setActivePin(null)}
+      />
+    )
   );
 
   /* ── fullscreen overlay ─────────────────────────────────────────────── */
@@ -651,6 +805,7 @@ export default function FloorPlanViewerPage() {
     return (
       <Box sx={{ position: 'fixed', inset: 0, zIndex: 1400, backgroundColor: '#0d1117', display: 'flex', flexDirection: 'column' }}>
         {viewerBox}
+        {captureDialogs}
       </Box>
     );
   }
@@ -666,39 +821,41 @@ export default function FloorPlanViewerPage() {
       {/* Header */}
       <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 3, gap: 2, flexWrap: 'wrap' }}>
         <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, minWidth: 0, flex: 1 }}>
-          <Box component={Link} to={`/floor-plans?project=${projectId}&tower=${towerId}`}
+          <Box component={Link} to={returnTo ? returnTo : (pinsOnly ? (isEngineer ? '/my-captures' : '/captures') : `/floor-plans?project=${projectId}&tower=${towerId}`)}
             sx={{ mt: 0.5, width: 32, height: 32, borderRadius: '9px', border: `1.5px solid ${P.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: P.muted, textDecoration: 'none', flexShrink: 0, transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}>
             <ArrowBackRounded sx={{ fontSize: 16 }} />
           </Box>
           <Box sx={{ minWidth: 0 }}>
             <Typography sx={{ fontSize: '0.75rem', color: P.muted, mb: 0.25, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{project.name} · {tower.name}</Typography>
             <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.125rem', sm: '1.625rem' }, fontWeight: 800, color: P.strong, letterSpacing: '-0.045em', lineHeight: 1.1 }}>
-              {floor.label} — Floor Plan
+              {floor.label}{pinsOnly ? ' — Capture Pins' : ' — Floor Plan'}
             </Typography>
           </Box>
         </Box>
-        {!isEngineer && (
-          <Box component={Link} to={`/floor-plans/${projectId}/${towerId}/${floorId}/upload`}
-            sx={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              gap: { xs: 0, sm: 0.75 },
-              px: { xs: 0.875, sm: 1.75 }, py: 0.875,
-              minWidth: { xs: 36, sm: 'auto' }, width: { xs: 36, sm: 'auto' }, height: { xs: 36, sm: 'auto' },
-              borderRadius: '9px', border: `1.5px solid ${P.border}`,
-              color: P.muted, textDecoration: 'none', whiteSpace: 'nowrap', transition: T,
-              '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft },
-              flexShrink: 0,
-            }}>
-            <UploadFileRounded sx={{ fontSize: 15 }} />
-            <Typography component="span" sx={{ display: { xs: 'none', sm: 'inline' }, fontSize: '0.8125rem', fontWeight: 600, ml: 0.75 }}>
-              {floorPlan ? 'Replace Plan' : 'Upload Plan'}
-            </Typography>
-          </Box>
-        )}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
+          {!isEngineer && !pinsOnly && (
+            <Box component={Link} to={`/floor-plans/${projectId}/${towerId}/${floorId}/upload`}
+              sx={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                gap: { xs: 0, sm: 0.75 },
+                px: { xs: 0.875, sm: 1.75 }, py: 0.875,
+                minWidth: { xs: 36, sm: 'auto' }, width: { xs: 36, sm: 'auto' }, height: { xs: 36, sm: 'auto' },
+                borderRadius: '9px', border: `1.5px solid ${P.border}`,
+                color: P.muted, textDecoration: 'none', whiteSpace: 'nowrap', transition: T,
+                '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft },
+                flexShrink: 0,
+              }}>
+              <UploadFileRounded sx={{ fontSize: 15 }} />
+              <Typography component="span" sx={{ display: { xs: 'none', sm: 'inline' }, fontSize: '0.8125rem', fontWeight: 600, ml: 0.75 }}>
+                {floorPlan ? 'Replace Plan' : 'Upload Plan'}
+              </Typography>
+            </Box>
+          )}
+        </Box>
       </Box>
 
       {/* Legend strip */}
-      {statusCounts && floorPlan && floorPlan.rooms.length > 0 && (
+      {!pinsOnly && statusCounts && floorPlan && floorPlan.rooms.length > 0 && (
         <Box sx={{
           display: 'flex', gap: 1, mb: 2.5,
           overflowX: { xs: 'auto', sm: 'visible' },
@@ -723,7 +880,7 @@ export default function FloorPlanViewerPage() {
         <Box sx={{ flex: 1, minWidth: 0, width: '100%' }}>{viewerBox}</Box>
 
         {/* Floor switcher */}
-        {towerFloors.length > 1 && (
+        {!pinsOnly && towerFloors.length > 1 && (
           <>
             {/* Mobile: compact dropdown → bottom sheet */}
             <Box sx={{ display: { xs: 'block', md: 'none' }, width: '100%' }}>
@@ -833,6 +990,14 @@ export default function FloorPlanViewerPage() {
           </>
         )}
       </Box>
+
+      {captureDialogs}
+
+      <Snackbar open={!!publishToast} autoHideDuration={4000} onClose={() => setPublishToast('')} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
+        <Alert severity="success" onClose={() => setPublishToast('')} sx={{ borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>
+          {publishToast}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }

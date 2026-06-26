@@ -33,6 +33,7 @@ COLLECTIONS = {
     "captures": "captures",
     "tours": "tours",
     "floorPlans": "floor_plans",
+    "capturePins": "capture_pins",
     "defects": "defects",
     "notifications": "notifications",
     "auditLogs": "audit_logs",
@@ -79,6 +80,9 @@ def _with_tenant(payload: dict[str, Any], ctx: CallerContext, entity_id: Optiona
         "flatId": "flat_id",
         "roomId": "room_id",
         "captureId": "capture_id",
+        "floorPlanId": "floor_plan_id",
+        "sequenceNumber": "sequence_number",
+        "createdBy": "created_by",
         "uploadedBy": "uploaded_by",
         "reviewedBy": "reviewed_by",
         "assignedTo": "assigned_to",
@@ -479,6 +483,33 @@ async def create_floor_plan(payload: dict[str, Any], ctx: CallerContext, db: DB)
         height = asset.get("height")
         payload["dimensions"] = {"width": width, "height": height} if width and height else None
     return success_response(data=await _upsert(db, "floor_plans", payload, ctx), message="Floor plan uploaded")
+
+
+# ── Capture Pins ────────────────────────────────────────────────────────────
+@router.get("/floor-plans/{floor_plan_id}/pins", summary="List capture pins for a floor plan")
+async def list_capture_pins(floor_plan_id: str, ctx: CallerContext, db: DB):
+    return success_response(data=await _list(
+        db, "capture_pins", ctx,
+        extra_filter={"floorPlanId": floor_plan_id},
+        sort=[("sequenceNumber", 1)],
+    ))
+
+
+@router.post("/floor-plans/{floor_plan_id}/pins", status_code=status.HTTP_201_CREATED, summary="Create capture pin")
+async def create_capture_pin(floor_plan_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+    payload.setdefault("floorPlanId", floor_plan_id)
+    return success_response(data=await _upsert(db, "capture_pins", payload, ctx), message="Capture pin created")
+
+
+@router.put("/pins/{pin_id}", summary="Update capture pin")
+async def update_capture_pin(pin_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+    return success_response(data=await _patch(db, "capture_pins", pin_id, payload, ctx), message="Capture pin updated")
+
+
+@router.delete("/pins/{pin_id}", summary="Delete capture pin")
+async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB):
+    await _delete(db, "capture_pins", pin_id, ctx)
+    return success_response(message="Capture pin deleted")
 
 
 @router.get("/defects", summary="List defects")

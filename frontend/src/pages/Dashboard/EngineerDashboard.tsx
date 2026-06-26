@@ -34,14 +34,15 @@ export default function EngineerDashboard() {
   const user     = useAuthStore(s => s.user);
   const projects = useWorkflowStore(s => s.projects);
   const captures = useWorkflowStore(s => s.captures);
+  const tours    = useWorkflowStore(s => s.tours);
 
   const assignedIds = new Set(user?.assignedProjectIds ?? []);
   const myProjects  = assignedIds.size
     ? projects.filter(p => assignedIds.has(p.id) && !p.archived)
     : projects.filter(p => !p.archived).slice(0, 3);
 
-  const pending  = captures.filter(c => c.status === 'review');
-  const reviewed = captures.filter(c => c.status === 'processed');
+  const pendingTours  = tours.filter(t => t.status === 'published' && !(t as any).managerReviewed);
+  const reviewedTours = tours.filter(t => (t as any).managerReviewed);
 
   const hour     = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
@@ -120,8 +121,8 @@ export default function EngineerDashboard() {
         {[
           { label:'Assigned Projects', value: myProjects.length, sub:'active sites',      accent: P.blue    },
           { label:'Total Uploads',     value: captures.length,   sub:'captures uploaded', accent: P.strong  },
-          { label:'Pending Review',    value: pending.length,    sub:'awaiting manager',  accent: '#d97706' },
-          { label:'Reviewed',          value: reviewed.length,   sub:'captures reviewed', accent: '#16a34a' },
+          { label:'Pending Review',    value: pendingTours.length,    sub:'tours awaiting review',  accent: '#d97706' },
+          { label:'Reviewed',          value: reviewedTours.length,   sub:'tours reviewed', accent: '#16a34a' },
         ].map(({ label, value, sub, accent }) => (
           <Grid key={label} size={{ xs:6, md:3 }}>
             <Box sx={{

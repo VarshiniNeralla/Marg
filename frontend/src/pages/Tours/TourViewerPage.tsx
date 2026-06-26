@@ -16,6 +16,7 @@ import {
 } from '@/data/mockData';
 import CaptureTimeline from '@shared/components/CaptureTimeline/CaptureTimeline';
 import { useWorkflowStore } from '@store/workflowStore';
+import { useAuthStore } from '@store/authStore';
 
 // Placeholder equirectangular panoramas — one per tour, keyed by tourId.
 // Replace these with real Cloudinary secure_url values from the API.
@@ -29,6 +30,14 @@ const PANORAMA_MAP: Record<string, string> = {
 };
 
 const FALLBACK_PANORAMA = 'https://photo-sphere-viewer-data.netlify.app/assets/sphere.jpg';
+// Demo panoramas cycled per walkthrough step so navigation is visibly distinct
+// even before real Cloudinary panoramas are attached.
+const DEMO_PANORAMAS = [
+  'https://photo-sphere-viewer-data.netlify.app/assets/sphere.jpg',
+  'https://photo-sphere-viewer-data.netlify.app/assets/sphere-small.jpg',
+  'https://photo-sphere-viewer-data.netlify.app/assets/tour/key-biscayne-1.jpg',
+  'https://photo-sphere-viewer-data.netlify.app/assets/tour/key-biscayne-2.jpg',
+];
 
 const tourStatusFlow = ['draft', 'processing', 'in_review', 'published'] as const;
 
@@ -292,10 +301,18 @@ export default function TourViewerPage() {
   const tours = useWorkflowStore(s => s.tours);
   const captures = useWorkflowStore(s => s.captures);
   const publishTour = useWorkflowStore(s => s.publishTour);
+  const updateTour = useWorkflowStore(s => s.updateTour);
+  const floors = useWorkflowStore(s => s.floors);
+  const user = useAuthStore(s => s.user);
   const tour = tours.find(t => t.id === tourId) ?? getTourById(tourId ?? '');
 
   const [fullscreen, setFullscreen] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
+  const [stepIdx, setStepIdx] = useState(0);
+  const [isMarkedDone, setIsMarkedDone] = useState(false);
+
+  // Reset to the first stop whenever the tour changes.
+  useEffect(() => { setStepIdx(0); }, [tourId]);
 
   const currentIdx = tourId ? tours.findIndex(t => t.id === tourId) : 0;
   const tourMedia = tour as typeof tour & {
@@ -303,8 +320,20 @@ export default function TourViewerPage() {
     processed_panorama_url?: string | null;
     panoramaUrls?: string[];
     panorama_urls?: string[];
+    steps?: import('@/data/mockData').TourStep[];
   };
+
+  // Sequential walkthrough: one stop per pin (Pin 1 → 2 → 3 …). Prev/next arrows
+  // step through these. Falls back to a single-panorama tour for legacy tours.
+  const steps = tourMedia.steps ?? [];
+  const isWalkthrough = steps.length > 1;
+  const clampedStep = Math.min(stepIdx, Math.max(0, steps.length - 1));
+  const currentStep = steps[clampedStep];
+
   const panoramaUrl =
+    currentStep?.panoramaUrl ||
+    tourMedia.panoramaUrls?.[clampedStep] ||
+    (isWalkthrough ? DEMO_PANORAMAS[clampedStep % DEMO_PANORAMAS.length] : null) ||
     tourMedia.processedPanoramaUrl ||
     tourMedia.processed_panorama_url ||
     tourMedia.panoramaUrls?.[0] ||
@@ -336,8 +365,7 @@ export default function TourViewerPage() {
   const nextTour = currentIdx < tours.length - 1 ? tours[currentIdx + 1] : null;
   const capture = captures.find(c => c.id === tour.captureId) ?? mockCaptures.find(c => c.id === tour.captureId);
   const series = getCaptureSeriesForCapture(tour.captureId);
-  // roomId is "<tower>-<floor>-<room>", e.g. "t1-f14-r1" → floorId "t1-f14".
-  const floorId = tour.roomId.split('-').slice(0, 2).join('-');
+  const floorId = floors.find(f => f.towerId === tour.towerId && f.label === tour.floorLabel)?.id;
 
   const breadcrumb: { label: string; to?: string }[] = [
     { label: 'Home', to: '/dashboard' },
@@ -407,16 +435,50 @@ export default function TourViewerPage() {
         )}
       </Box>
 
-      {/* Prev/Next arrows */}
-      {prevTour && (
-        <Box component={Link} to={`/tours/${prevTour.id}`} sx={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', zIndex: 10, '&:hover': { backgroundColor: 'rgba(0,0,0,0.65)' } }}>
-          <NavigateBefore sx={{ fontSize: 20 }} />
+      {/* Walkthrough step indicator (Pin N of M) */}
+      {isWalkthrough && currentStep && (
+        <Box sx={{ position: 'absolute', bottom: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 10, px: 2, py: 0.875, borderRadius: '999px', backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: '#fff' }}>{currentStep.label}</Typography>
+          <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)' }}>{clampedStep + 1} of {steps.length}</Typography>
         </Box>
       )}
-      {nextTour && (
-        <Box component={Link} to={`/tours/${nextTour.id}`} sx={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', zIndex: 10, '&:hover': { backgroundColor: 'rgba(0,0,0,0.65)' } }}>
-          <NavigateNextRounded sx={{ fontSize: 20 }} />
+
+      {/* Step dots */}
+      {isWalkthrough && (
+        <Box sx={{ position: 'absolute', bottom: 48, left: '50%', transform: 'translateX(-50%)', zIndex: 10, display: 'flex', gap: 0.75 }}>
+          {steps.map((s, i) => (
+            <Box key={s.pinId} onClick={() => setStepIdx(i)} sx={{ width: i === clampedStep ? 22 : 8, height: 8, borderRadius: '999px', backgroundColor: i === clampedStep ? '#fff' : 'rgba(255,255,255,0.45)', cursor: 'pointer', transition: 'all 160ms', '&:hover': { backgroundColor: 'rgba(255,255,255,0.8)' } }} />
+          ))}
         </Box>
+      )}
+
+      {/* Prev/Next arrows — step through walkthrough stops, else navigate tours */}
+      {isWalkthrough ? (
+        <>
+          {clampedStep > 0 && (
+            <Box onClick={() => setStepIdx(i => Math.max(0, i - 1))} sx={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', color: '#fff', cursor: 'pointer', zIndex: 10, '&:hover': { backgroundColor: 'rgba(0,0,0,0.7)' } }}>
+              <NavigateBefore sx={{ fontSize: 24 }} />
+            </Box>
+          )}
+          {clampedStep < steps.length - 1 && (
+            <Box onClick={() => setStepIdx(i => Math.min(steps.length - 1, i + 1))} sx={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', color: '#fff', cursor: 'pointer', zIndex: 10, '&:hover': { backgroundColor: 'rgba(0,0,0,0.7)' } }}>
+              <NavigateNextRounded sx={{ fontSize: 24 }} />
+            </Box>
+          )}
+        </>
+      ) : (
+        <>
+          {prevTour && (
+            <Box component={Link} to={`/tours/${prevTour.id}`} sx={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', zIndex: 10, '&:hover': { backgroundColor: 'rgba(0,0,0,0.65)' } }}>
+              <NavigateBefore sx={{ fontSize: 20 }} />
+            </Box>
+          )}
+          {nextTour && (
+            <Box component={Link} to={`/tours/${nextTour.id}`} sx={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', zIndex: 10, '&:hover': { backgroundColor: 'rgba(0,0,0,0.65)' } }}>
+              <NavigateNextRounded sx={{ fontSize: 20 }} />
+            </Box>
+          )}
+        </>
       )}
     </Box>
   );
@@ -430,7 +492,7 @@ export default function TourViewerPage() {
     <Box>
       {/* ── Persistent breadcrumb bar ──────────────────────────────────────── */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2.5 }}>
-        <Box component={Link} to="/tours" sx={{ color: colors.textMuted, textDecoration: 'none', display: 'flex', alignItems: 'center', width: 30, height: 30, borderRadius: '8px', justifyContent: 'center', backgroundColor: colors.card, boxShadow: '0 1px 3px rgba(15,23,42,0.06)', '&:hover': { color: colors.textStrong } }}>
+        <Box component="button" onClick={() => navigate(-1)} sx={{ cursor: 'pointer', border: 'none', color: colors.textMuted, textDecoration: 'none', display: 'flex', alignItems: 'center', width: 30, height: 30, borderRadius: '8px', justifyContent: 'center', backgroundColor: colors.card, boxShadow: '0 1px 3px rgba(15,23,42,0.06)', '&:hover': { color: colors.textStrong } }}>
           <ArrowBackRounded sx={{ fontSize: 18 }} />
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', flex: 1 }}>
@@ -455,7 +517,6 @@ export default function TourViewerPage() {
 
         {/* Right rail — always-on panels */}
         <Box sx={{ width: { xs: '100%', lg: 320 }, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <RoomNavigationPanel tour={tour} />
 
           {/* Capture Timeline */}
           {series.length > 0 && (
@@ -477,9 +538,6 @@ export default function TourViewerPage() {
               {([
                 { label: 'Captures', value: `${tour.captures} panoramas` },
                 { label: 'Capture date', value: capture?.uploadedAt ?? tour.lastCapture },
-                { label: 'Reviewer', value: capture?.reviewedBy ?? 'Not assigned' },
-                { label: 'Views', value: `${tour.viewCount} views` },
-                { label: 'Hotspots', value: `${hotspots.filter(h => h.targetTourId).length} linked rooms` },
               ] as const).map(({ label, value }) => (
                 <Box key={label} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <Typography sx={{ fontSize: '0.75rem', color: colors.textSubdued }}>{label}</Typography>
@@ -489,14 +547,10 @@ export default function TourViewerPage() {
             </Box>
           </SidePanel>
 
-          {/* Review / Publishing status */}
-          <SidePanel title="Review Status" icon={<CheckCircleRounded sx={{ fontSize: 15 }} />}>
-            <PublishingStatus tour={tour} onPublish={handlePublish} />
-          </SidePanel>
 
           {/* Digital-twin link back to the floor plan (7D) */}
           {floorId && (
-            <Box component={Link} to={`/floor-plans/${tour.projectId}/${tour.towerId}/${floorId}`} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1.25, borderRadius: '12px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', textDecoration: 'none', '&:hover': { boxShadow: '0 6px 20px rgba(15,23,42,0.10)' }, transition: `box-shadow ${motion.durationFast}` }}>
+            <Box component={Link} to={`/floor-plans/${tour.projectId}/${tour.towerId}/${floorId}?pinsOnly=1&returnTo=/tours/${tour.id}`} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1.25, borderRadius: '12px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', textDecoration: 'none', '&:hover': { boxShadow: '0 6px 20px rgba(15,23,42,0.10)' }, transition: `box-shadow ${motion.durationFast}` }}>
               <Box sx={{ width: 32, height: 32, borderRadius: '9px', backgroundColor: colors.primarySoft, color: colors.primary, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                 <MapRounded sx={{ fontSize: 17 }} />
               </Box>
@@ -507,28 +561,36 @@ export default function TourViewerPage() {
               <NavigateNextRounded sx={{ fontSize: 18, color: colors.textSubdued }} />
             </Box>
           )}
-        </Box>
-      </Box>
 
-      {/* ── More tours strip ──────────────────────────────────────────────── */}
-      <Box sx={{ mt: 3 }}>
-        <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.08em', textTransform: 'uppercase', mb: 2 }}>More Tours</Typography>
-        <Box sx={{ display: 'flex', gap: 1.5, overflowX: 'auto', pb: 1 }}>
-          {mockTours.filter(t => t.id !== tour.id).map(t => {
-            const tStatus = (statusConfig.tour as Record<string, { label: string; color: string; bg: string }>)[t.status] ?? statusConfig.tour.draft;
-            return (
-              <Box key={t.id} component={Link} to={`/tours/${t.id}`} sx={{ flexShrink: 0, width: 140, borderRadius: '12px', overflow: 'hidden', textDecoration: 'none', boxShadow: '0 2px 8px rgba(15,23,42,0.05)', transition: `all ${motion.durationFast}`, '&:hover': { transform: 'translateY(-2px)', boxShadow: '0 6px 20px rgba(15,23,42,0.10)' } }}>
-                <Box sx={{ height: 80, background: t.gradient, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <ViewInArRounded sx={{ color: 'rgba(255,255,255,0.25)', fontSize: 28 }} />
-                  <Box sx={{ position: 'absolute', top: 6, right: 6, px: 0.875, py: 0.125, borderRadius: '4px', backgroundColor: tStatus.bg, fontSize: '0.5rem', fontWeight: 700, color: tStatus.color }}>{tStatus.label}</Box>
-                </Box>
-                <Box sx={{ p: 1.25, backgroundColor: colors.card }}>
-                  <Typography noWrap sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.textStrong }}>{t.roomName.split(' ').slice(-1)[0]}</Typography>
-                  <Typography noWrap sx={{ fontSize: '0.625rem', color: colors.textMuted }}>{t.projectName}</Typography>
-                </Box>
-              </Box>
-            );
-          })}
+          {/* Mark as Done Action */}
+          {(tour.status === 'in_review' || (user?.role === 'manager' && (!(tour as any).managerReviewed || isMarkedDone))) && (
+            <Box
+              component="button"
+              onClick={() => {
+                if (!isMarkedDone) {
+                  updateTour(tour.id, { status: 'published', managerReviewed: true } as any);
+                  setIsMarkedDone(true);
+                }
+              }}
+              sx={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1,
+                width: '100%', py: 1.5, borderRadius: '12px', cursor: isMarkedDone ? 'default' : 'pointer',
+                border: isMarkedDone ? 'none' : `1.5px solid ${colors.border}`,
+                backgroundColor: isMarkedDone ? '#10b981' : 'transparent',
+                color: isMarkedDone ? '#fff' : colors.textStrong,
+                fontSize: '0.9375rem', fontWeight: 600, transition: 'all 0.2s',
+                '&:hover': isMarkedDone ? {} : {
+                  borderColor: colors.primary,
+                  backgroundColor: colors.primarySoft,
+                  color: colors.primary
+                },
+                mt: 1
+              }}
+            >
+              {isMarkedDone ? <CheckCircleRounded sx={{ fontSize: 18 }} /> : <CheckCircleRounded sx={{ fontSize: 18, color: 'inherit' }} />}
+              {isMarkedDone ? 'Done' : 'Mark as done'}
+            </Box>
+          )}
         </Box>
       </Box>
     </Box>

@@ -98,6 +98,7 @@ export interface MockCapture {
   reviewStatus: ReviewStatus;
   uploadedBy: string;
   uploadedAt: string;
+  capturedAt?: string;       // real ISO timestamp recorded at upload — drives the timeline
   reviewedBy: string | null;
   reviewNotes: string | null;
   assignedTo: string | null;
@@ -109,6 +110,16 @@ export interface MockCapture {
 export const mockCaptures: MockCapture[] = [];
 
 // ── Tours ─────────────────────────────────────────────────────────────────────
+// One stop in a sequential walkthrough tour — a single pin's panorama.
+export interface TourStep {
+  pinId: string;
+  captureId: string;
+  sequenceNumber: number;   // pin order (1-based)
+  label: string;            // e.g. "Pin 1"
+  panoramaUrl: string | null;
+  thumbnailUrl?: string | null;
+}
+
 export interface MockTour {
   id: string;
   captureId: string;
@@ -124,6 +135,9 @@ export interface MockTour {
   lastCapture: string;
   gradient: string;
   viewCount: number;
+  // Sequential walkthrough steps — one per pin, in pin order (1 → 2 → 3 …).
+  // Each step is a panorama the viewer steps through with prev/next arrows.
+  steps?: TourStep[];
 }
 
 export const mockTours: MockTour[] = [];
