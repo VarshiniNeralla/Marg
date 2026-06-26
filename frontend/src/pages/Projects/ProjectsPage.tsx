@@ -25,10 +25,10 @@ export default function ProjectsPage() {
   const { user } = useAuthStore();
   const orgName = useSettingsStore(s => s.organization.name);
   const hasAdminRole = isAdmin(user);
-  const mockProjects = allProjects.filter(p => !p.archived);
+  const activeProjects = allProjects.filter(p => !p.archived);
 
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const projectToDelete = mockProjects.find(p => p.id === deleteTarget);
+  const projectToDelete = activeProjects.find(p => p.id === deleteTarget);
 
   function handleDelete() {
     if (deleteTarget) archiveProject(deleteTarget);
@@ -65,7 +65,7 @@ export default function ProjectsPage() {
             Projects
           </Typography>
           <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>
-            {mockProjects.length} project{mockProjects.length === 1 ? '' : 's'} · {orgName}
+            {activeProjects.length} project{activeProjects.length === 1 ? '' : 's'} · {orgName}
           </Typography>
         </Box>
         {hasAdminRole && (
@@ -98,7 +98,7 @@ export default function ProjectsPage() {
 
       {/* Project cards — visual-first */}
       <Grid container spacing={2.5}>
-        {mockProjects.map((project) => {
+        {activeProjects.map((project) => {
           const status = statusConfig[project.status] ?? statusConfig.draft;
           return (
             <Grid key={project.id} size={{ xs: 12, sm: 6 }}>

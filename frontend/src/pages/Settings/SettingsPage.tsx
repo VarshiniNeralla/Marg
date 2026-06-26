@@ -9,6 +9,7 @@ import { colors, motion } from '@theme/tokens';
 import { useAuthStore } from '@store/authStore';
 import { authService } from '@services/authService';
 import { useSettingsStore } from '@store/settingsStore';
+import { userService } from '@services/userService';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { resetApplicationData } from '@store/resetApplicationData';
 
@@ -87,11 +88,12 @@ function AccountTab({ onSaved }: { onSaved: () => void }) {
   const account = useSettingsStore(s => s.account);
   const patchAccount = useSettingsStore(s => s.patchAccount);
 
+  // Always seed from authStore user — never from stale settingsStore defaults
   const initial = {
-    name: account.name || user?.name || 'Ravi Kumar',
-    email: account.email || user?.email || 'admin@demo.com',
-    phone: account.phone,
-    designation: account.designation,
+    name: user?.name || '',
+    email: user?.email || '',
+    phone: account.phone || '',
+    designation: account.designation || '',
   };
 
   const [form, setForm] = useState(initial);
@@ -99,7 +101,7 @@ function AccountTab({ onSaved }: { onSaved: () => void }) {
   const [isEditing, setIsEditing] = useState(false);
   const isDirty = JSON.stringify(form) !== JSON.stringify(saved);
 
-  function handleSave() {
+  async function handleSave() {
     if (!isDirty) {
       setIsEditing(false);
       return;
@@ -107,6 +109,10 @@ function AccountTab({ onSaved }: { onSaved: () => void }) {
     patchAccount({ name: form.name, email: form.email, phone: form.phone, designation: form.designation });
     setSaved(form);
     updateUser({ name: form.name });
+    // Persist name to backend so it survives logout/login
+    if (user?.id) {
+      try { await userService.updateUser(user.id, { name: form.name }); } catch { /* non-fatal */ }
+    }
     setIsEditing(false);
     onSaved();
   }
@@ -169,6 +175,7 @@ function AccountTab({ onSaved }: { onSaved: () => void }) {
 // ── Organization Tab ──────────────────────────────────────────────────────────
 
 function OrganizationTab({ onSaved }: { onSaved: () => void }) {
+  const orgSlug = useAuthStore(s => s.user?.org_slug ?? '');
   const organization = useSettingsStore(s => s.organization);
   const patchOrganization = useSettingsStore(s => s.patchOrganization);
 
@@ -207,7 +214,7 @@ function OrganizationTab({ onSaved }: { onSaved: () => void }) {
           )}
         </FieldRow>
         <FieldRow label="Slug" helper="Used in URLs — cannot be changed after creation">
-          <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted, py: 1 }}>demo</Typography>
+          <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted, py: 1 }}>{orgSlug || '—'}</Typography>
         </FieldRow>
         <FieldRow label="Website">
           {isEditing ? (

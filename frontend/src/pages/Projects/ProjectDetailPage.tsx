@@ -96,14 +96,16 @@ export default function ProjectDetailPage() {
               </Typography>
             )}
           </Grid>
-          <Grid size={{ xs: 12, md: 4 }}>
-            <Box sx={{ display: 'flex', gap: 1, justifyContent: { xs: 'flex-start', md: 'flex-end' } }}>
-              <Box component={Link} to={`/projects/${project.id}/edit`}
-                sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 1, borderRadius: '8px', backgroundColor: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)', color: 'rgba(255,255,255,0.8)', fontSize: '0.875rem', fontWeight: 500, textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(255,255,255,0.18)' }, transition: `background ${motion.durationFast}` }}>
-                <EditRounded sx={{ fontSize: 15 }} /> Edit
+          {hasAdminRole && (
+            <Grid size={{ xs: 12, md: 4 }}>
+              <Box sx={{ display: 'flex', gap: 1, justifyContent: { xs: 'flex-start', md: 'flex-end' } }}>
+                <Box component={Link} to={`/projects/${project.id}/edit`}
+                  sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 1, borderRadius: '8px', backgroundColor: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)', color: 'rgba(255,255,255,0.8)', fontSize: '0.875rem', fontWeight: 500, textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(255,255,255,0.18)' }, transition: `background ${motion.durationFast}` }}>
+                  <EditRounded sx={{ fontSize: 15 }} /> Edit
+                </Box>
               </Box>
-            </Box>
-          </Grid>
+            </Grid>
+          )}
         </Grid>
 
         {/* Progress bar */}
