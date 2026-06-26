@@ -7,7 +7,7 @@ import {
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
-import { useAuthStore, isAdmin } from '@store/authStore';
+import { useAuthStore, isAdmin , getRoleLandingPath } from '@store/authStore';
 import { useSettingsStore } from '@store/settingsStore';
 
 const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
@@ -38,7 +38,7 @@ export default function ProjectsPage() {
   return (
     <Box>
       {/* Back to overview */}
-      <Box component={Link} to={`/dashboard/${user?.role === 'field_engineer' ? 'engineer' : user?.role ?? 'admin'}`} sx={{
+      <Box component={Link} to={getRoleLandingPath(user?.role)} sx={{
         display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
         px: 1.25, py: 0.625, borderRadius: '8px',
         border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,

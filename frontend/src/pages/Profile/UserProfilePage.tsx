@@ -32,12 +32,14 @@ export default function UserProfilePage() {
     : user?.role === 'manager' ? 'Site Manager'
     : 'Field Engineer';
 
+  // Always seed name/avatar from authStore (source of truth) — never from settingsStore
+  // which is a single shared store that bleeds across different logged-in users.
   const initial = {
-    name: profile.name || user?.name || '',
+    name: user?.name || '',
     designation: profile.designation || roleLabel,
     phone: profile.phone,
     bio: profile.bio,
-    avatarUrl: profile.avatarUrl,
+    avatarUrl: user?.avatar_url || profile.avatarUrl || '',
   };
 
   const [form, setForm] = useState(initial);
@@ -63,7 +65,7 @@ export default function UserProfilePage() {
 
   const initials = displayName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
 
-  function handleSave() {
+  async function handleSave() {
     patchProfile({
       name: form.name,
       designation: form.designation,
@@ -73,6 +75,14 @@ export default function UserProfilePage() {
     });
     setSaved(form);
     updateUser({ name: form.name, avatar_url: form.avatarUrl || null });
+    // Persist name to backend so it survives logout/login
+    if (user?.id) {
+      try {
+        await userService.updateUser(user.id, { name: form.name, avatar_url: form.avatarUrl || undefined });
+      } catch {
+        // non-fatal — local state already updated
+      }
+    }
     setToastOpen(true);
     setShowSavedState(true);
     setTimeout(() => setShowSavedState(false), 2000);

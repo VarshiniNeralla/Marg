@@ -8,7 +8,7 @@ import {
 import { colors, motion } from '@theme/tokens';
 import { statusConfig } from '@/data/mockData';
 import { useWorkflowStore } from '@store/workflowStore';
-import { useAuthStore } from '@store/authStore';
+import { useAuthStore , getRoleLandingPath } from '@store/authStore';
 
 const STATUS_DOT: Record<string, string> = {
   published:  colors.success,
@@ -62,7 +62,7 @@ export default function ToursPage() {
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
       {/* Back to overview (all roles) */}
-      <Box component={Link} to={`/dashboard/${user?.role === 'field_engineer' ? 'engineer' : user?.role ?? 'admin'}`} sx={{
+      <Box component={Link} to={getRoleLandingPath(user?.role)} sx={{
         display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
         px: 1.25, py: 0.625, borderRadius: '8px',
         border: `1.5px solid ${P.border}`, color: P.muted,

@@ -15,7 +15,7 @@ import PageHeader from '@shared/components/PageHeader/PageHeader';
 import Button from '@shared/components/Button/Button';
 import { userService } from '@services/userService';
 import { authService as backendAuth } from '@services/authService';
-import { useAuthStore } from '@store/authStore';
+import { useAuthStore , getRoleLandingPath } from '@store/authStore';
 import apiClient from '@services/apiClient';
 
 type AppRole = 'admin' | 'manager' | 'field_engineer';
@@ -216,7 +216,7 @@ export default function UserManagementPage() {
   return (
     <Box>
       {/* Back to overview */}
-      <Box component={Link} to={`/dashboard/${currentUser?.role === 'field_engineer' ? 'engineer' : currentUser?.role ?? 'admin'}`} sx={{
+      <Box component={Link} to={getRoleLandingPath(currentUser?.role)} sx={{
         display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
         px: 1.25, py: 0.625, borderRadius: '8px',
         border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,

@@ -7,7 +7,7 @@ import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { colors, motion } from '@theme/tokens';
 import { statusConfig } from '@store/workflowSelectors';
 import { useWorkflowStore } from '@store/workflowStore';
-import { useAuthStore } from '@store/authStore';
+import { useAuthStore , getRoleLandingPath } from '@store/authStore';
 import type { MockDefect } from '@/data/mockData';
 
 const severityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -137,7 +137,7 @@ export default function DefectsPage() {
   return (
     <Box>
       {/* Back to overview (all roles) */}
-      <Box component={Link} to={`/dashboard/${user?.role === 'field_engineer' ? 'engineer' : user?.role ?? 'admin'}`} sx={{
+      <Box component={Link} to={getRoleLandingPath(user?.role)} sx={{
         display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
         px: 1.25, py: 0.625, borderRadius: '8px',
         border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,

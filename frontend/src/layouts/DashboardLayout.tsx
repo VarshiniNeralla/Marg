@@ -438,7 +438,7 @@ export default function DashboardLayout() {
         </Box>
         <Divider sx={{ borderColor: colors.border }} />
         <Box sx={{ p: 0.75 }}>
-          <MenuItem onClick={() => { setAvatarAnchor(null); navigate('/profile'); }} sx={{ gap: 1.5, py: 0.875, borderRadius: '8px', '&:hover': { backgroundColor: colors.bg } }}>
+          <MenuItem onClick={() => { setAvatarAnchor(null); navigate(isAdmin(user) ? '/settings' : '/profile'); }} sx={{ gap: 1.5, py: 0.875, borderRadius: '8px', '&:hover': { backgroundColor: colors.bg } }}>
             <PersonRounded sx={{ fontSize: 16, color: colors.textMuted }} />
             <Typography sx={{ fontSize: '0.875rem', color: colors.textSecondary }}>Profile</Typography>
           </MenuItem>

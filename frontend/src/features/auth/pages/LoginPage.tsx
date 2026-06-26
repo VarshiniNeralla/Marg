@@ -8,6 +8,7 @@ import { loginSchema, type LoginFormValues } from '../schemas/authSchemas';
 import { authService } from '../services/authService';
 import { authService as backendAuth } from '@services/authService';
 import { useAuthStore, getRoleLandingPath } from '@store/authStore';
+import { useSettingsStore } from '@store/settingsStore';
 import { normaliseError } from '@services/apiClient';
 import AuthCard from '../components/AuthCard';
 import Input from '@shared/components/Input/Input';
@@ -88,6 +89,7 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const setAuth = useAuthStore((s) => s.setAuth);
+  const patchProfile = useSettingsStore((s) => s.patchProfile);
 
   const [serverError, setServerError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -115,6 +117,21 @@ export default function LoginPage() {
     try {
       const data = await authService.login({ email: values.email, password: values.password });
       const authedRole = data.user.role;
+
+      // Normalise: backend may return 'super_admin' which maps to 'admin' on the UI
+      const normalisedRole = (authedRole === 'super_admin' ? 'admin' : authedRole) as LoginFormValues['role'];
+
+      // Role mismatch — credentials belong to a different role than selected
+      if (normalisedRole !== values.role) {
+        const roleLabels: Record<string, string> = {
+          admin: 'Admin', manager: 'Manager', field_engineer: 'Field Engineer',
+        };
+        setServerError(
+          `These credentials belong to a ${roleLabels[normalisedRole] ?? normalisedRole} account. Please select the correct role and try again.`
+        );
+        return;
+      }
+
       setAuth(data.access_token, {
         id: data.user.id,
         name: data.user.name,
@@ -140,6 +157,8 @@ export default function LoginPage() {
       } catch {
         // partial data
       }
+      // Clear any stale profile data from a previously logged-in user
+      patchProfile({ name: '', designation: '', phone: '', bio: '', avatarUrl: '' });
       navigate(from ?? getRoleLandingPath(authedRole), { replace: true });
     } catch (err) {
       const e = normaliseError(err);

@@ -7,7 +7,7 @@ import {
   DomainRounded, KeyboardArrowDownRounded,
 } from '@mui/icons-material';
 import { useWorkflowStore } from '@store/workflowStore';
-import { useAuthStore, isFieldEngineer } from '@store/authStore';
+import { useAuthStore, isFieldEngineer , getRoleLandingPath } from '@store/authStore';
 import { getTowersByProject, getFloorsByTower, getFloorPlanByFloor, enrichFloorStats } from '@store/workflowSelectors';
 import EmptyState from '@shared/components/EmptyState/EmptyState';
 import { motion as m } from 'framer-motion';
@@ -110,7 +110,7 @@ export default function FloorPlansPage() {
       {/* ── Back to overview (all roles) ──────────────────────────────── */}
       <Box
         component={Link}
-        to={`/dashboard/${user?.role === 'field_engineer' ? 'engineer' : user?.role ?? 'admin'}`}
+        to={getRoleLandingPath(user?.role)}
         sx={{
             display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
             px: 1.25, py: 0.625, borderRadius: '20px',
