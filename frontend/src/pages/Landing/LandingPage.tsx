@@ -6,7 +6,7 @@ import {
   BugReportRounded, BarChartRounded, ArrowForwardRounded,
 } from '@mui/icons-material';
 import { colors, shadows, motion as themeMotion } from '@theme/tokens';
-import { motion as m, useScroll, useTransform } from 'framer-motion';
+import { motion as m, useScroll, useTransform, type Variants } from 'framer-motion';
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
 
@@ -267,7 +267,7 @@ const FEATURES = [
   { icon: <BarChartRounded />, title: 'Analytics Dashboard', desc: 'KPIs, charts, and team productivity across your full portfolio.', colSpan: 2, rowSpan: 1 },
 ];
 
-const containerVariants = {
+const containerVariants: Variants = {
   hidden: { opacity: 0 },
   show: {
     opacity: 1,
@@ -275,7 +275,7 @@ const containerVariants = {
   },
 };
 
-const itemVariants = {
+const itemVariants: Variants = {
   hidden: { opacity: 0, y: 30, scale: 0.95 },
   show: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring', stiffness: 100, damping: 20 } },
 };
