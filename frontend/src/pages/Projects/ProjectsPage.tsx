@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Box, Typography, Grid, Chip, LinearProgress, Dialog, DialogTitle, DialogContent, DialogActions, Button as MuiButton, Tooltip, IconButton } from '@mui/material';
 import {
   DomainRounded, LayersRounded, MeetingRoomRounded, CameraAltRounded,
-  ArrowForwardRounded, AddRounded, DeleteRounded, EditRounded,
+  ArrowForwardRounded, AddRounded, DeleteRounded, EditRounded, ArrowBackRounded
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
@@ -37,6 +37,17 @@ export default function ProjectsPage() {
 
   return (
     <Box>
+      {/* Back to overview */}
+      <Box component={Link} to={`/dashboard/${user?.role === 'field_engineer' ? 'engineer' : user?.role ?? 'admin'}`} sx={{
+        display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+        px: 1.25, py: 0.625, borderRadius: '8px',
+        border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+        fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+        transition: `all ${motion.durationFast}`, '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+      }}>
+        <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
+      </Box>
+
       {/* Page header */}
       <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 5 }}>
         <Box>

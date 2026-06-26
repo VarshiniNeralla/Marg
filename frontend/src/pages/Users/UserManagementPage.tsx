@@ -7,8 +7,9 @@ import {
 import {
   AddRounded, EditRounded, DeleteRounded, SearchRounded,
   PeopleRounded, EmailRounded, WorkOutlineRounded, CheckCircleRounded,
-  PersonOffRounded, RefreshRounded, ErrorRounded,
+  PersonOffRounded, RefreshRounded, ErrorRounded, ArrowBackRounded,
 } from '@mui/icons-material';
+import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import PageHeader from '@shared/components/PageHeader/PageHeader';
 import Button from '@shared/components/Button/Button';
@@ -24,6 +25,8 @@ const ROLE_OPTIONS: { value: AppRole; label: string; color: string; bg: string }
   { value: 'manager',        label: 'Manager',        color: '#7c3aed', bg: 'rgba(124,58,237,0.08)' },
   { value: 'field_engineer', label: 'Field Engineer', color: '#059669', bg: 'rgba(5,150,105,0.08)' },
 ];
+
+const DESIGNATION_OPTIONS = ['Site Manager', 'Site Engineer', 'Platform Admin'];
 
 function roleMeta(role: string) {
   return ROLE_OPTIONS.find(r => r.value === role || r.value === role.replace(' ', '_'))
@@ -53,10 +56,11 @@ interface EditForm {
   name: string;
   designation: string;
   role: AppRole;
+  newPassword: string;
 }
 
 const EMPTY_CREATE: CreateForm = { name: '', email: '', role: 'field_engineer', designation: '', password: 'Prangan@123' };
-const EMPTY_EDIT: EditForm = { name: '', designation: '', role: 'field_engineer' };
+const EMPTY_EDIT: EditForm = { name: '', designation: '', role: 'field_engineer', newPassword: '' };
 
 const inputSx = {
   width: '100%', px: 1.75, py: 1.25, borderRadius: '10px',
@@ -99,6 +103,7 @@ export default function UserManagementPage() {
   const [editForm, setEditForm]       = useState<EditForm>(EMPTY_EDIT);
   const [editErr, setEditErr]         = useState('');
   const [editing, setEditing]         = useState(false);
+  const [pwSuccess, setPwSuccess]     = useState(false);
 
   const [deleteTarget, setDeleteTarget] = useState<ApiUser | null>(null);
   const [deleting, setDeleting]         = useState(false);
@@ -160,8 +165,9 @@ export default function UserManagementPage() {
   // ── Edit ──────────────────────────────────────────────────────────────────────
   function openEdit(u: ApiUser) {
     setEditTarget(u);
-    setEditForm({ name: u.name, designation: u.designation ?? '', role: (u.role as AppRole) ?? 'field_engineer' });
+    setEditForm({ name: u.name, designation: u.designation ?? '', role: (u.role as AppRole) ?? 'field_engineer', newPassword: '' });
     setEditErr('');
+    setPwSuccess(false);
   }
 
   async function handleEdit() {
@@ -174,6 +180,10 @@ export default function UserManagementPage() {
         designation: editForm.designation.trim() || undefined,
         role: editForm.role,
       } as any);
+      if (editForm.newPassword.trim()) {
+        await apiClient.put(`/users/${editTarget.id}/password`, { new_password: editForm.newPassword.trim() });
+        setPwSuccess(true);
+      }
       setEditTarget(null);
       await load();
     } catch (e: any) {
@@ -205,6 +215,17 @@ export default function UserManagementPage() {
 
   return (
     <Box>
+      {/* Back to overview */}
+      <Box component={Link} to={`/dashboard/${currentUser?.role === 'field_engineer' ? 'engineer' : currentUser?.role ?? 'admin'}`} sx={{
+        display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+        px: 1.25, py: 0.625, borderRadius: '8px',
+        border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+        fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+        transition: `all ${motion.durationFast}`, '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+      }}>
+        <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
+      </Box>
+
       <PageHeader
         title="User Management"
         subtitle={`${users.length} members · ${activeCount} active`}
@@ -367,15 +388,30 @@ export default function UserManagementPage() {
             </Box>
 
             {([
-              { label: 'Full Name',   key: 'name' as const,        type: 'text',  placeholder: 'e.g. Rahul Sharma' },
-              { label: 'Email',       key: 'email' as const,       type: 'email', placeholder: 'e.g. rahul@myhomeconstructions.com' },
-              { label: 'Designation', key: 'designation' as const, type: 'text',  placeholder: 'e.g. Site Engineer (optional)' },
+              { label: 'Full Name', key: 'name' as const,  type: 'text',  placeholder: 'e.g. Rahul Sharma' },
+              { label: 'Email',     key: 'email' as const, type: 'email', placeholder: 'e.g. rahul@myhomeconstructions.com' },
             ] as const).map(field => (
               <Box key={field.key}>
                 <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>{field.label}</Typography>
                 <Box component="input" type={field.type} value={createForm[field.key]} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCreateForm(f => ({ ...f, [field.key]: e.target.value }))} placeholder={field.placeholder} sx={inputSx} />
               </Box>
             ))}
+
+            {/* Designation dropdown */}
+            <Box>
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Designation</Typography>
+              <Select
+                value={createForm.designation}
+                onChange={e => setCreateForm(f => ({ ...f, designation: e.target.value }))}
+                displayEmpty
+                size="small"
+                fullWidth
+                sx={{ borderRadius: '10px', fontSize: '0.9375rem', '.MuiOutlinedInput-notchedOutline': { borderColor: colors.border } }}
+              >
+                <MenuItem value=""><em style={{ color: colors.textMuted }}>Select designation… (optional)</em></MenuItem>
+                {DESIGNATION_OPTIONS.map(d => <MenuItem key={d} value={d}>{d}</MenuItem>)}
+              </Select>
+            </Box>
 
             {/* Password — shown as plain text so admin can verify what they're setting */}
             <Box>
@@ -404,15 +440,29 @@ export default function UserManagementPage() {
         <DialogContent sx={{ pt: 2.5 }}>
           {editErr && <ErrorBanner msg={editErr} />}
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
-            {([
-              { label: 'Full Name',   key: 'name' as const,        placeholder: '' },
-              { label: 'Designation', key: 'designation' as const, placeholder: '' },
-            ] as const).map(field => (
-              <Box key={field.key}>
-                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>{field.label}</Typography>
-                <Box component="input" value={editForm[field.key]} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditForm(f => ({ ...f, [field.key]: e.target.value }))} sx={inputSx} />
-              </Box>
-            ))}
+            {/* Full Name */}
+            <Box>
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Full Name</Typography>
+              <Box component="input" value={editForm.name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditForm(f => ({ ...f, name: e.target.value }))} sx={inputSx} />
+            </Box>
+
+            {/* Designation dropdown */}
+            <Box>
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Designation</Typography>
+              <Select
+                value={editForm.designation}
+                onChange={e => setEditForm(f => ({ ...f, designation: e.target.value }))}
+                displayEmpty
+                size="small"
+                fullWidth
+                sx={{ borderRadius: '10px', fontSize: '0.9375rem', '.MuiOutlinedInput-notchedOutline': { borderColor: colors.border } }}
+              >
+                <MenuItem value=""><em style={{ color: colors.textMuted }}>Select designation…</em></MenuItem>
+                {DESIGNATION_OPTIONS.map(d => <MenuItem key={d} value={d}>{d}</MenuItem>)}
+              </Select>
+            </Box>
+
+            {/* Role */}
             <Box>
               <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Role</Typography>
               <Box sx={{ display: 'flex', gap: 1 }}>
@@ -422,6 +472,13 @@ export default function UserManagementPage() {
                   </Box>
                 ))}
               </Box>
+            </Box>
+
+            {/* Change password */}
+            <Box sx={{ pt: 0.5, borderTop: `1px solid ${colors.borderLight}` }}>
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong, mb: 0.25 }}>Change Password</Typography>
+              <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mb: 0.875 }}>Leave blank to keep the current password unchanged.</Typography>
+              <Box component="input" type="password" value={editForm.newPassword} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditForm(f => ({ ...f, newPassword: e.target.value }))} placeholder="New password (min 8 chars)" sx={{ ...inputSx, fontFamily: 'monospace', letterSpacing: '0.04em' }} />
             </Box>
           </Box>
         </DialogContent>

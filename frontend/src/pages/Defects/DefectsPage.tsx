@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { Box, Typography, Grid, TextField, Select, MenuItem, Menu } from '@mui/material';
 import { Link } from 'react-router-dom';
-import { AddRounded, BugReportRounded, WarningRounded, DeleteOutlineRounded, KeyboardArrowDownRounded, CheckRounded, ArrowForwardRounded } from '@mui/icons-material';
+import { AddRounded, BugReportRounded, WarningRounded, DeleteOutlineRounded, KeyboardArrowDownRounded, CheckRounded, ArrowForwardRounded, ArrowBackRounded } from '@mui/icons-material';
 import EmptyState from '@shared/components/EmptyState/EmptyState';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { colors, motion } from '@theme/tokens';
 import { statusConfig } from '@store/workflowSelectors';
 import { useWorkflowStore } from '@store/workflowStore';
+import { useAuthStore } from '@store/authStore';
 import type { MockDefect } from '@/data/mockData';
 
 const severityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -106,6 +107,7 @@ function CreateDefectModal({ onClose, onSave }: { onClose: () => void; onSave: (
 }
 
 export default function DefectsPage() {
+  const user = useAuthStore(s => s.user);
   const defects = useWorkflowStore(s => s.defects);
   const createDefect = useWorkflowStore(s => s.createDefect);
   const updateDefect = useWorkflowStore(s => s.updateDefect);
@@ -134,6 +136,17 @@ export default function DefectsPage() {
 
   return (
     <Box>
+      {/* Back to overview (all roles) */}
+      <Box component={Link} to={`/dashboard/${user?.role === 'field_engineer' ? 'engineer' : user?.role ?? 'admin'}`} sx={{
+        display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+        px: 1.25, py: 0.625, borderRadius: '8px',
+        border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+        fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+        transition: `all ${motion.durationFast}`, '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+      }}>
+        <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
+      </Box>
+
       <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 4, flexWrap: 'wrap', gap: 2 }}>
         <Box>
           <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.5rem', md: '2rem' }, fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1, mb: 0.75 }}>

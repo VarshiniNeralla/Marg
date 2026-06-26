@@ -4,6 +4,7 @@ import { Box, Typography, Grid, Chip, Dialog, DialogTitle, DialogContent, Dialog
 import { ArrowBackRounded, CameraAltRounded, ViewInArRounded, AddRounded, UploadFileRounded, MapRounded, CheckCircleRounded, HomeWorkRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
+import { useAuthStore, isAdmin, isManager } from '@store/authStore';
 import { getProjectById, getRoomsByFloor, getTourForCapture } from '@store/workflowSelectors';
 import type { WfRoom } from '@store/workflowStore';
 
@@ -31,6 +32,9 @@ export default function RoomListPage() {
   const floorRooms = getRoomsByFloor(rooms, floorId ?? '');
   const floorFlats = flats.filter(f => f.floorId === floorId);
   const floorPlan = floorPlans.find(fp => fp.floorId === floorId);
+
+  const { user } = useAuthStore();
+  const hasAdminRole = isAdmin(user) || isManager(user);
 
   const [open, setOpen] = useState(false);
   const [roomForm, setRoomForm] = useState({ name: '', type: 'bedroom' as WfRoom['type'] });
@@ -138,8 +142,8 @@ export default function RoomListPage() {
         )}
       </Box>
 
-      {/* Rooms section */}
-      <Box>
+      {/* Rooms section — hidden for admin, only shown to engineers */}
+      {!hasAdminRole && <Box>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <CameraAltRounded sx={{ fontSize: 18, color: colors.textMuted }} />
@@ -224,9 +228,9 @@ export default function RoomListPage() {
             })}
           </>
         )}
-      </Box>
+      </Box>}
 
-      <Dialog open={open} onClose={() => setOpen(false)} slotProps={{ paper: { sx: { borderRadius: '16px', minWidth: 360 } } }}>
+      {!hasAdminRole && <Dialog open={open} onClose={() => setOpen(false)} slotProps={{ paper: { sx: { borderRadius: '16px', minWidth: 360 } } }}>
         <DialogTitle sx={{ fontSize: '1rem', fontWeight: 700, color: colors.textStrong }}>Add Room</DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: '8px !important' }}>
           <TextField label="Room Name" value={roomForm.name} onChange={e => setRoomForm(f => ({ ...f, name: e.target.value }))} fullWidth placeholder="e.g. Master Bedroom" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
@@ -238,7 +242,7 @@ export default function RoomListPage() {
           <Button onClick={() => setOpen(false)} sx={{ borderRadius: '8px', textTransform: 'none', color: colors.textMuted }}>Cancel</Button>
           <Button onClick={handleAddRoom} variant="contained" sx={{ borderRadius: '8px', textTransform: 'none', background: colors.primaryGradient, boxShadow: 'none' }}>Add Room</Button>
         </DialogActions>
-      </Dialog>
+      </Dialog>}
     </Box>
   );
 }

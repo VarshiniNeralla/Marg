@@ -18,14 +18,7 @@ const maxCount = Math.max(...captureWeeks.map(w => w.count));
 const reviewTrend = [42, 38, 55, 47, 62, 58, 71, 78];
 const maxRev = Math.max(...reviewTrend);
 
-const teamStats = [
-  { name: 'Ravi Kumar',  role: 'Site Manager',      uploads: 42, approved: 38, rejected: 2,  avgTime: '3.8h' },
-  { name: 'Anil P',      role: 'QA Reviewer',       uploads: 29, approved: 25, rejected: 3,  avgTime: '4.2h' },
-  { name: 'Kiran Desai', role: 'Field Coordinator', uploads: 18, approved: 17, rejected: 1,  avgTime: '2.9h' },
-  { name: 'Meena R',     role: 'Documentation',     uploads: 12, approved: 11, rejected: 0,  avgTime: '5.1h' },
-];
-
-const TABS = ['Overview', 'Captures', 'Reviews', 'Projects', 'Team'] as const;
+const TABS = ['Overview', 'Captures', 'Reviews', 'Projects'] as const;
 type Tab = typeof TABS[number];
 
 // ── Reusable surface ───────────────────────────────────────────────────────────
@@ -143,36 +136,6 @@ function ProjectCompletion() {
   );
 }
 
-function TeamTable() {
-  return (
-    <Card title="Team Productivity" subtitle="Uploads and review outcomes per member">
-      <Box sx={{ borderRadius: '12px', border: `1px solid ${colors.borderLight}`, overflow: 'hidden' }}>
-        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 80px 80px 80px 80px', px: 2.5, py: 1.5, borderBottom: `1px solid ${colors.borderLight}`, backgroundColor: colors.bg }}>
-          {['Member', 'Uploads', 'Approved', 'Rejected', 'Avg Time'].map(h => (
-            <Typography key={h} sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.07em', textTransform: 'uppercase', textAlign: h === 'Member' ? 'left' : 'center' }}>{h}</Typography>
-          ))}
-        </Box>
-        {teamStats.map((m, i) => (
-          <Box key={i} sx={{ display: 'grid', gridTemplateColumns: '1fr 80px 80px 80px 80px', px: 2.5, py: 1.75, borderBottom: i < teamStats.length - 1 ? `1px solid ${colors.borderLight}` : 'none', alignItems: 'center', '&:hover': { backgroundColor: colors.bg } }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Box sx={{ width: 32, height: 32, borderRadius: '50%', background: colors.primaryGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: '#fff' }}>{m.name[0]}</Typography>
-              </Box>
-              <Box>
-                <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong }}>{m.name}</Typography>
-                <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>{m.role}</Typography>
-              </Box>
-            </Box>
-            <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, textAlign: 'center' }}>{m.uploads}</Typography>
-            <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: '#16a34a', textAlign: 'center' }}>{m.approved}</Typography>
-            <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: m.rejected > 0 ? '#dc2626' : colors.textSubdued, textAlign: 'center' }}>{m.rejected}</Typography>
-            <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textSecondary, textAlign: 'center' }}>{m.avgTime}</Typography>
-          </Box>
-        ))}
-      </Box>
-    </Card>
-  );
-}
 
 export default function AnalyticsPage() {
   const [activeTab, setActiveTab] = useState<Tab>('Overview');
@@ -274,8 +237,6 @@ export default function AnalyticsPage() {
         )}
 
         {activeTab === 'Projects' && <ProjectCompletion />}
-
-        {activeTab === 'Team' && <TeamTable />}
       </Box>
     </Box>
   );

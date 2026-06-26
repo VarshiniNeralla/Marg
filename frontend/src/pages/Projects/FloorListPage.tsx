@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Box, Typography, Chip, LinearProgress, Dialog, DialogTitle, DialogContent, DialogActions, Button, Tooltip, IconButton, Menu, MenuItem } from '@mui/material';
-import { ArrowBackRounded, LayersRounded, MeetingRoomRounded, ViewInArRounded, ArrowForwardRounded, DeleteRounded, UploadFileRounded, AddRounded, SortRounded, ArrowUpwardRounded, ArrowDownwardRounded } from '@mui/icons-material';
+import { Box, Typography, Chip, LinearProgress, Dialog, DialogTitle, DialogContent, DialogActions, Button, Tooltip, IconButton, Menu, MenuItem, TextField } from '@mui/material';
+import { ArrowBackRounded, LayersRounded, MeetingRoomRounded, ViewInArRounded, ArrowForwardRounded, DeleteRounded, UploadFileRounded, AddRounded, SortRounded, ArrowUpwardRounded, ArrowDownwardRounded, EditRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, isAdmin } from '@store/authStore';
@@ -19,6 +19,7 @@ export default function FloorListPage() {
   const floorPlans = useWorkflowStore(s => s.floorPlans);
   const deleteFloor = useWorkflowStore(s => s.deleteFloor);
   const createFloor = useWorkflowStore(s => s.createFloor);
+  const updateFloor = useWorkflowStore(s => s.updateFloor);
   const { user } = useAuthStore();
   const hasAdminRole = isAdmin(user);
 
@@ -28,12 +29,15 @@ export default function FloorListPage() {
   const dataSlice = { flats, rooms, captures, tours, floorPlans };
 
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [editTarget, setEditTarget]     = useState<string | null>(null);
+  const [editLabel, setEditLabel]       = useState('');
   const [addOpen, setAddOpen] = useState(false);
   const [newFloorLabel, setNewFloorLabel] = useState('');
   const [sortField, setSortField] = useState<'number' | 'progress' | 'rooms'>('number');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [sortAnchor, setSortAnchor] = useState<null | HTMLElement>(null);
   const floorToDelete = towerFloors.find(f => f.id === deleteTarget);
+  const floorToEdit   = towerFloors.find(f => f.id === editTarget);
 
   function applySort(a: typeof towerFloors[0], b: typeof towerFloors[0]): number {
     const statsA = enrichFloorStats(a, dataSlice);
@@ -61,6 +65,18 @@ export default function FloorListPage() {
   function handleDeleteFloor() {
     if (deleteTarget) deleteFloor(deleteTarget);
     setDeleteTarget(null);
+  }
+
+  function openEdit(floorId: string, currentLabel: string) {
+    setEditTarget(floorId);
+    setEditLabel(currentLabel);
+  }
+
+  function handleEditFloor() {
+    if (!editTarget || !editLabel.trim()) return;
+    updateFloor(editTarget, { label: editLabel.trim() });
+    setEditTarget(null);
+    setEditLabel('');
   }
 
   function handleAddFloor() {
@@ -193,6 +209,15 @@ export default function FloorListPage() {
                         <UploadFileRounded sx={{ fontSize: 14 }} />
                       </IconButton>
                     </Tooltip>
+                    <Tooltip title="Edit floor">
+                      <IconButton
+                        size="small"
+                        onClick={() => openEdit(floor.id, floor.label)}
+                        sx={{ width: 28, height: 28, backgroundColor: 'rgba(100,116,139,0.08)', color: colors.textSecondary, '&:hover': { backgroundColor: 'rgba(100,116,139,0.18)', color: colors.textStrong } }}
+                      >
+                        <EditRounded sx={{ fontSize: 14 }} />
+                      </IconButton>
+                    </Tooltip>
                     <Tooltip title="Delete floor">
                       <IconButton
                         size="small"
@@ -228,6 +253,30 @@ export default function FloorListPage() {
         <DialogActions sx={{ px: 3, pb: 3, gap: 1 }}>
           <Button onClick={() => setAddOpen(false)} sx={{ borderRadius: '8px', textTransform: 'none', color: colors.textMuted }}>Cancel</Button>
           <Button onClick={handleAddFloor} variant="contained" sx={{ borderRadius: '8px', textTransform: 'none', background: colors.primaryGradient, boxShadow: 'none' }}>Add Floor</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Edit Floor dialog */}
+      <Dialog open={!!editTarget} onClose={() => setEditTarget(null)} slotProps={{ paper: { sx: { borderRadius: '16px', minWidth: 360 } } }}>
+        <DialogTitle sx={{ fontSize: '1rem', fontWeight: 700, color: colors.textStrong }}>Edit Floor</DialogTitle>
+        <DialogContent sx={{ pt: '8px !important' }}>
+          <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, mb: 1.5 }}>
+            Editing <strong style={{ color: colors.textStrong }}>{floorToEdit?.label}</strong>
+          </Typography>
+          <TextField
+            label="Floor Label"
+            value={editLabel}
+            onChange={e => setEditLabel(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleEditFloor(); }}
+            fullWidth
+            autoFocus
+            placeholder="e.g. Floor 3 or Ground Floor"
+            sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 3, gap: 1 }}>
+          <Button onClick={() => setEditTarget(null)} sx={{ borderRadius: '8px', textTransform: 'none', color: colors.textMuted }}>Cancel</Button>
+          <Button onClick={handleEditFloor} variant="contained" sx={{ borderRadius: '8px', textTransform: 'none', background: colors.primaryGradient, boxShadow: 'none' }}>Save</Button>
         </DialogActions>
       </Dialog>
 

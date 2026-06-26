@@ -3,11 +3,12 @@ import { Link } from 'react-router-dom';
 import { Box, Typography, InputBase, Menu, MenuItem } from '@mui/material';
 import {
   ViewInArRounded, PlayArrowRounded, CameraAltRounded,
-  KeyboardArrowDownRounded, CheckRounded, SearchRounded,
+  KeyboardArrowDownRounded, CheckRounded, SearchRounded, ArrowBackRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { statusConfig } from '@/data/mockData';
 import { useWorkflowStore } from '@store/workflowStore';
+import { useAuthStore } from '@store/authStore';
 
 const STATUS_DOT: Record<string, string> = {
   published:  colors.success,
@@ -29,6 +30,7 @@ const P = {
 };
 
 export default function ToursPage() {
+  const user = useAuthStore(s => s.user);
   const [projectId, setProjectId]     = useState<string>('all');
   const [query, setQuery]             = useState('');
   const [menuAnchor, setMenuAnchor]   = useState<null | HTMLElement>(null);
@@ -59,6 +61,17 @@ export default function ToursPage() {
 
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
+      {/* Back to overview (all roles) */}
+      <Box component={Link} to={`/dashboard/${user?.role === 'field_engineer' ? 'engineer' : user?.role ?? 'admin'}`} sx={{
+        display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+        px: 1.25, py: 0.625, borderRadius: '8px',
+        border: `1.5px solid ${P.border}`, color: P.muted,
+        fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+        transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft },
+      }}>
+        <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
+      </Box>
+
       {/* Heading */}
       <Box sx={{ mb: 4 }}>
         <Typography sx={{

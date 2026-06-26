@@ -107,12 +107,11 @@ export default function FloorPlansPage() {
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
 
-      {/* ── Back to overview (engineer only) ──────────────────────────────── */}
-      {isEngineer && (
-        <Box
-          component={Link}
-          to="/dashboard/engineer"
-          sx={{
+      {/* ── Back to overview (all roles) ──────────────────────────────── */}
+      <Box
+        component={Link}
+        to={`/dashboard/${user?.role === 'field_engineer' ? 'engineer' : user?.role ?? 'admin'}`}
+        sx={{
             display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
             px: 1.25, py: 0.625, borderRadius: '20px',
             border: `1.5px solid ${P.border}`, color: P.muted,
@@ -123,7 +122,6 @@ export default function FloorPlansPage() {
         >
           <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
         </Box>
-      )}
 
       {/* ── Page heading ──────────────────────────────────────────────────── */}
       <Box sx={{ mb: 4 }}>
@@ -270,10 +268,9 @@ export default function FloorPlansPage() {
           ) : (
             /* Desktop: horizontal scrollable cards */
             <Box sx={{
-              display: 'flex', gap: 1,
-              overflowX: 'auto', pt: 0.5, pb: 1.5, px: 0.5, mx: -0.5,
-              '&::-webkit-scrollbar': { display: 'none' },
-              scrollbarWidth: 'none',
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))',
+              gap: 1.5, pt: 0.5, pb: 1.5,
             }}>
               {projectTowers.map(t => {
                 const isActive = tower?.id === t.id;

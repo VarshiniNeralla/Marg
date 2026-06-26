@@ -6,7 +6,7 @@ import {
 import {
   GridViewRounded, FolderOpenRounded, CameraAltRounded, ViewInArRounded,
   MapRounded, BarChartRounded, PeopleRounded, TuneRounded,
-  VpnKeyRounded, LogoutRounded, PersonRounded, MenuRounded,
+  LogoutRounded, PersonRounded, MenuRounded,
   CloudUploadRounded, StorageRounded, RateReviewRounded,
   PhotoCameraRounded, ChevronLeftRounded, ChevronRightRounded, HistoryRounded,
 } from '@mui/icons-material';
@@ -46,8 +46,7 @@ const ADMIN_NAV: NavSection[] = [
     heading: 'Administration',
     items: [
       { label: 'Users',    path: '/users',    icon: <PeopleRounded /> },
-      { label: 'Access',   path: '/access',   icon: <VpnKeyRounded /> },
-      { label: 'Media',         path: '/admin/media',   icon: <StorageRounded /> },
+{ label: 'Media',         path: '/admin/media',   icon: <StorageRounded /> },
       { label: 'Settings',      path: '/settings',      icon: <TuneRounded /> },
     ],
   },

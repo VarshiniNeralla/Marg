@@ -194,8 +194,8 @@ export default function UserProfilePage() {
                 { icon: <CameraAltRounded sx={{ fontSize: 18, color: '#2563eb' }} />, bg: 'rgba(37,99,235,0.1)', label: 'Captures uploaded', value: myCaptures },
                 { icon: <CheckCircleRounded sx={{ fontSize: 18, color: '#16a34a' }} />, bg: 'rgba(22,163,74,0.1)', label: 'Reviews completed', value: captures.filter(c => c.status === 'processed').length },
                 { icon: <AccessTimeRounded sx={{ fontSize: 18, color: '#d97706' }} />, bg: 'rgba(217,119,6,0.1)', label: 'Pending reviews',   value: pending },
-                { icon: <ViewInArRounded sx={{ fontSize: 18, color: '#7c3aed' }} />, bg: 'rgba(124,58,237,0.1)', label: 'Tours published',   value: myTours },
-              ].map(({ icon, bg, label, value }) => (
+                { icon: <ViewInArRounded sx={{ fontSize: 18, color: '#7c3aed' }} />, bg: 'rgba(124,58,237,0.1)', label: 'Tours published',   value: myTours, hideForManager: true },
+              ].filter(stat => !(user?.role === 'manager' && stat.hideForManager)).map(({ icon, bg, label, value }) => (
                 <Grid size={{ xs: 12, sm: 6 }} key={label}>
                   <Box sx={{ display: 'flex', alignItems: 'center', p: 1.5, borderRadius: '12px', border: `1px solid ${colors.borderLight}` }}>
                     <Box sx={{ width: 36, height: 36, borderRadius: '10px', backgroundColor: bg, display: 'flex', alignItems: 'center', justifyContent: 'center', mr: 1.5 }}>{icon}</Box>

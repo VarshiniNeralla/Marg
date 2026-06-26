@@ -6,6 +6,7 @@ import { colors, motion } from '@theme/tokens';
 import { statusConfig, getRoomHistory } from '@store/workflowSelectors';
 import type { MockCapture } from '@/data/mockData';
 import { useWorkflowStore } from '@store/workflowStore';
+import { useAuthStore } from '@store/authStore';
 
 // Capture gallery — project-wise selection, calm minimal cards.
 
@@ -83,6 +84,7 @@ function CaptureCard({ capture, hasTour }: { capture: MockCapture; hasTour: bool
 export default function CapturesPage() {
   const location = useLocation();
   const isEngineerView = location.pathname === '/my-captures';
+  const user = useAuthStore(s => s.user);
 
   const [projectId, setProjectId] = useState<string>('all');
   const [filter, setFilter] = useState<StatusFilter>('All');
@@ -137,18 +139,16 @@ export default function CapturesPage() {
 
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
-      {/* Back to overview — only shown for field engineer route */}
-      {isEngineerView && (
-        <Box component={Link} to="/dashboard/engineer" sx={{
-          display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
-          px: 1.25, py: 0.625, borderRadius: '8px',
-          border: `1.5px solid ${P.border}`, color: P.muted,
-          fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
-          transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft },
-        }}>
-          <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
-        </Box>
-      )}
+      {/* Back to overview — available for all roles */}
+      <Box component={Link} to={`/dashboard/${user?.role === 'field_engineer' ? 'engineer' : user?.role ?? 'admin'}`} sx={{
+        display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+        px: 1.25, py: 0.625, borderRadius: '8px',
+        border: `1.5px solid ${P.border}`, color: P.muted,
+        fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+        transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft },
+      }}>
+        <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
+      </Box>
 
       {/* ── Heading ───────────────────────────────────────────────────────── */}
       <Box sx={{ mb: 4 }}>

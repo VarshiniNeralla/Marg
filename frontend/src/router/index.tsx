@@ -65,7 +65,6 @@ const DefectsPage     = lazy(() => import('@/pages/Defects/DefectsPage'));
 // ── Admin-only ────────────────────────────────────────────────────────────────
 const UserManagementPage = lazy(() => import('@/pages/Users/UserManagementPage'));
 const OrganizationsPage  = lazy(() => import('@/pages/Organizations/OrganizationsPage'));
-const AccessPage         = lazy(() => import('@/pages/Access/AccessPage'));
 const MediaPage          = lazy(() => import('@/pages/Admin/MediaPage'));
 
 // ── Manager-only ──────────────────────────────────────────────────────────────
@@ -171,7 +170,6 @@ const router = createBrowserRouter([
           { path: '/workflow',                          element: <PageSuspense><WorkflowPage /></PageSuspense> },
           { path: '/users',                             element: <PageSuspense><UserManagementPage /></PageSuspense> },
           { path: '/organizations',                     element: <PageSuspense><OrganizationsPage /></PageSuspense> },
-          { path: '/access',                            element: <PageSuspense><AccessPage /></PageSuspense> },
           { path: '/admin/media',                       element: <PageSuspense><MediaPage /></PageSuspense> },
           { path: '/settings',                          element: <PageSuspense><SettingsPage /></PageSuspense> },
           { path: '/captures/upload',                   element: <PageSuspense><CaptureUploadPage /></PageSuspense> },
