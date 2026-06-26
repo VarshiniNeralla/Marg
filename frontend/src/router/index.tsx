@@ -156,6 +156,8 @@ const router = createBrowserRouter([
           { path: '/defects',   element: <PageSuspense><DefectsPage /></PageSuspense> },
           { path: '/tours',     element: <PageSuspense><ToursPage /></PageSuspense> },
           { path: '/tours/:tourId', element: <PageSuspense><TourViewerPage /></PageSuspense> },
+          { path: '/captures',                element: <PageSuspense><CapturesPage /></PageSuspense> },
+          { path: '/captures/:captureId',     element: <PageSuspense><CaptureDetailPage /></PageSuspense> },
         ],
       },
 
@@ -172,9 +174,7 @@ const router = createBrowserRouter([
           { path: '/access',                            element: <PageSuspense><AccessPage /></PageSuspense> },
           { path: '/admin/media',                       element: <PageSuspense><MediaPage /></PageSuspense> },
           { path: '/settings',                          element: <PageSuspense><SettingsPage /></PageSuspense> },
-          { path: '/captures',                          element: <PageSuspense><CapturesPage /></PageSuspense> },
           { path: '/captures/upload',                   element: <PageSuspense><CaptureUploadPage /></PageSuspense> },
-          { path: '/captures/:captureId',               element: <PageSuspense><CaptureDetailPage /></PageSuspense> },
         ],
       },
 
@@ -182,9 +182,7 @@ const router = createBrowserRouter([
       {
         element: <ManagerRoute><Outlet /></ManagerRoute>,
         children: [
-          { path: '/reviews',   element: <PageSuspense><ReviewsPage /></PageSuspense> },
-          { path: '/captures',  element: <PageSuspense><CapturesPage /></PageSuspense> },
-          { path: '/captures/:captureId', element: <PageSuspense><CaptureDetailPage /></PageSuspense> },
+          { path: '/reviews', element: <PageSuspense><ReviewsPage /></PageSuspense> },
         ],
       },
 

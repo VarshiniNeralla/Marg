@@ -10,6 +10,7 @@ import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, isFieldEngineer } from '@store/authStore';
 import { getTowersByProject, getFloorsByTower, getFloorPlanByFloor, enrichFloorStats } from '@store/workflowSelectors';
 import EmptyState from '@shared/components/EmptyState/EmptyState';
+import { motion as m } from 'framer-motion';
 
 /* ── palette ────────────────────────────────────────────────────────────── */
 const P = {
@@ -104,7 +105,7 @@ export default function FloorPlansPage() {
   }
 
   return (
-    <Box sx={{ maxWidth: 860, mx: 'auto', pb: 6 }}>
+    <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
 
       {/* ── Back to overview (engineer only) ──────────────────────────────── */}
       {isEngineer && (
@@ -270,7 +271,7 @@ export default function FloorPlansPage() {
             /* Desktop: horizontal scrollable cards */
             <Box sx={{
               display: 'flex', gap: 1,
-              overflowX: 'auto', pb: 1,
+              overflowX: 'auto', pt: 0.5, pb: 1.5, px: 0.5, mx: -0.5,
               '&::-webkit-scrollbar': { display: 'none' },
               scrollbarWidth: 'none',
             }}>
@@ -284,21 +285,33 @@ export default function FloorPlansPage() {
                     onClick={() => setTowerId(t.id)}
                     sx={{
                       minWidth: 110, flexShrink: 0, borderRadius: '14px',
-                      border: isActive ? 'none' : `1.5px solid ${P.border}`,
-                      backgroundColor: isActive ? P.ink : P.white,
-                      cursor: 'pointer', transition: T,
+                      position: 'relative',
+                      border: `1.5px solid ${isActive ? 'transparent' : P.border}`,
+                      backgroundColor: P.white,
+                      cursor: 'pointer', 
+                      transition: 'transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s, box-shadow 0.2s',
                       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                       px: 1.5, py: 1.75, gap: 0.5,
+                      transform: 'translateY(0) scale(1)',
                       '&:hover': isActive ? {} : { borderColor: P.blue, transform: 'translateY(-2px)', boxShadow: '0 4px 16px rgba(37,99,235,0.10)' },
+                      '&:active': { transform: 'scale(0.96)' },
                     }}
                   >
-                    <Box sx={{ width: 44, height: 44, borderRadius: '10px', backgroundColor: isActive ? 'rgba(255,255,255,0.12)' : P.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 0.25 }}>
-                      <DomainRounded sx={{ fontSize: 22, color: isActive ? P.white : P.blue }} />
+                    {isActive && (
+                      <Box
+                        component={m.div}
+                        layoutId="activeTowerFloorPlan"
+                        transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
+                        sx={{ position: 'absolute', inset: 0, backgroundColor: P.ink, borderRadius: '14px', zIndex: 0 }}
+                      />
+                    )}
+                    <Box sx={{ position: 'relative', zIndex: 1, width: 44, height: 44, borderRadius: '10px', backgroundColor: isActive ? 'rgba(255,255,255,0.12)' : P.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 0.25, transition: 'background-color 0.3s' }}>
+                      <DomainRounded sx={{ fontSize: 22, color: isActive ? P.white : P.blue, transition: 'color 0.3s' }} />
                     </Box>
-                    <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, lineHeight: 1.2, color: isActive ? P.white : P.strong, textAlign: 'center' }}>
+                    <Typography sx={{ position: 'relative', zIndex: 1, fontSize: '0.8125rem', fontWeight: 700, lineHeight: 1.2, color: isActive ? P.white : P.strong, textAlign: 'center', transition: 'color 0.3s' }}>
                       {t.name}
                     </Typography>
-                    <Typography sx={{ fontSize: '0.6875rem', color: isActive ? 'rgba(255,255,255,0.55)' : P.subtle, textAlign: 'center' }}>
+                    <Typography sx={{ position: 'relative', zIndex: 1, fontSize: '0.6875rem', color: isActive ? 'rgba(255,255,255,0.55)' : P.subtle, textAlign: 'center', transition: 'color 0.3s' }}>
                       {tFloors.length} floor{tFloors.length !== 1 ? 's' : ''}{tMapped > 0 ? ` · ${tMapped} plan${tMapped !== 1 ? 's' : ''}` : ''}
                     </Typography>
                   </Box>

@@ -144,57 +144,55 @@ export default function EngineerDashboard() {
       </Grid>
 
       {/* ════════════════════════════════════════════════════════════════════
-          CAPTURE WORKFLOW — primary nav card
-      ════════════════════════════════════════════════════════════════════ */}
-      <Box
-        component={Link}
-        to="/capture-workflow"
-        sx={{
-          display:'flex', alignItems:'center', gap:3,
-          px:{ xs:2.5, md:3.5 }, py:2.75, mb:1.5,
-          borderRadius:'16px',
-          backgroundColor: P.white,
-          border:`1.5px solid ${P.border}`,
-          textDecoration:'none',
-          transition: T,
-          boxShadow:'0 1px 3px rgba(0,0,0,0.04)',
-          '&:hover':{ borderColor: P.blueRing, boxShadow:`0 6px 24px rgba(37,99,235,0.1)`, transform:'translateY(-1px)' },
-          '&:hover .arrow-icon':{ transform:'translateX(3px)', color: P.blue },
-        }}
-      >
-        {/* Icon */}
-        <Box sx={{
-          width:50, height:50, borderRadius:'14px', flexShrink:0,
-          background:`linear-gradient(135deg, ${P.blue} 0%, ${P.blueHover} 100%)`,
-          display:'flex', alignItems:'center', justifyContent:'center',
-          boxShadow:`0 4px 16px rgba(37,99,235,0.35)`,
-        }}>
-          <PhotoCameraRounded sx={{ fontSize:24, color:P.white }} />
-        </Box>
-
-        {/* Text */}
-        <Box sx={{ flex:1 }}>
-          <Typography sx={{ fontSize:'1rem', fontWeight:700, color:P.strong, letterSpacing:'-0.02em', mb:0.25 }}>
-            Capture Workflow
-          </Typography>
-          <Typography sx={{ fontSize:'0.8125rem', color:P.muted }}>
-          Choose Project, Tower, Floor, and capture the image.
-          </Typography>
-        </Box>
-
-        {/* Pill badge */}
-        <Box sx={{ px:1.5, py:0.5, borderRadius:'8px', backgroundColor: P.blueSoft,
-          fontSize:'0.6875rem', fontWeight:700, color: P.blue, flexShrink:0, display:{ xs:'none', sm:'block' } }}>
-          Primary
-        </Box>
-
-        <ArrowForwardRounded className="arrow-icon" sx={{ fontSize:18, color:P.subtle, flexShrink:0, transition: T }} />
-      </Box>
-
-      {/* ════════════════════════════════════════════════════════════════════
-          SECONDARY NAV — 2 cards
+          NAV CARDS — all three in one Grid so widths are identical
       ════════════════════════════════════════════════════════════════════ */}
       <Grid container spacing={1.5} sx={{ mb: 3 }}>
+        {/* Capture Workflow — full width */}
+        <Grid size={{ xs:12 }}>
+          <Box
+            component={Link}
+            to="/capture-workflow"
+            sx={{
+              display:'flex', alignItems:'center', gap:3,
+              px:2.5, py:2.75,
+              borderRadius:'16px',
+              backgroundColor: P.white,
+              border:`1.5px solid ${P.border}`,
+              textDecoration:'none',
+              transition: T,
+              boxShadow:'0 1px 3px rgba(0,0,0,0.04)',
+              '&:hover':{ borderColor: P.blueRing, boxShadow:`0 6px 24px rgba(37,99,235,0.1)`, transform:'translateY(-1px)' },
+              '&:hover .arrow-icon':{ transform:'translateX(3px)', color: P.blue },
+            }}
+          >
+            <Box sx={{
+              width:50, height:50, borderRadius:'14px', flexShrink:0,
+              background:`linear-gradient(135deg, ${P.blue} 0%, ${P.blueHover} 100%)`,
+              display:'flex', alignItems:'center', justifyContent:'center',
+              boxShadow:`0 4px 16px rgba(37,99,235,0.35)`,
+            }}>
+              <PhotoCameraRounded sx={{ fontSize:24, color:P.white }} />
+            </Box>
+
+            <Box sx={{ flex:1 }}>
+              <Typography sx={{ fontSize:'1rem', fontWeight:700, color:P.strong, letterSpacing:'-0.02em', mb:0.25 }}>
+                Capture Workflow
+              </Typography>
+              <Typography sx={{ fontSize:'0.8125rem', color:P.muted }}>
+                Choose Project, Tower, Floor, and capture the image.
+              </Typography>
+            </Box>
+
+            <Box sx={{ px:1.5, py:0.5, borderRadius:'8px', backgroundColor: P.blueSoft,
+              fontSize:'0.6875rem', fontWeight:700, color: P.blue, flexShrink:0, display:{ xs:'none', sm:'block' } }}>
+              Primary
+            </Box>
+
+            <ArrowForwardRounded className="arrow-icon" sx={{ fontSize:18, color:P.subtle, flexShrink:0, transition: T }} />
+          </Box>
+        </Grid>
+
+        {/* Capture History + Floor Plans — half width each */}
         {[
           { to:'/my-captures', icon:<HistoryRounded sx={{ fontSize:20 }} />, label:'Capture History',
             desc:'View all your uploaded captures', accent: P.strong },

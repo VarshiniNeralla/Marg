@@ -1,8 +1,8 @@
 import React from 'react';
-import { Box, Typography, Grid, Chip } from '@mui/material';
+import { Box, Typography, Grid, LinearProgress } from '@mui/material';
 import {
-  RateReviewRounded, CheckCircleRounded, AccessTimeRounded,
-  ViewInArRounded, BugReportRounded, ArrowForwardRounded,
+  RateReviewRounded, CheckCircleRounded, CameraAltRounded,
+  ViewInArRounded, ArrowForwardRounded, FolderOpenRounded,
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
@@ -10,34 +10,63 @@ import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
 import PageHeader from '@shared/components/PageHeader/PageHeader';
 
-const statusConfig: Record<string, { label: string; color: string; bg: string; icon: React.ReactNode }> = {
-  uploaded:  { label: 'Uploaded',  color: '#64748b', bg: 'rgba(100,116,139,0.08)', icon: <AccessTimeRounded sx={{ fontSize: 13 }} /> },
-  review:    { label: 'Pending Review', color: '#d97706', bg: 'rgba(217,119,6,0.08)', icon: <RateReviewRounded sx={{ fontSize: 13 }} /> },
-  reviewing: { label: 'Reviewing', color: '#d97706', bg: 'rgba(217,119,6,0.08)',   icon: <RateReviewRounded sx={{ fontSize: 13 }} /> },
-  processed: { label: 'Reviewed',  color: '#059669', bg: 'rgba(5,150,105,0.08)',   icon: <CheckCircleRounded sx={{ fontSize: 13 }} /> },
-  published: { label: 'Published', color: '#2563eb', bg: 'rgba(37,99,235,0.08)',   icon: <ViewInArRounded sx={{ fontSize: 13 }} /> },
-};
-
 export default function ManagerDashboard() {
-  const user = useAuthStore((s) => s.user);
+  const user      = useAuthStore((s) => s.user);
   const projects  = useWorkflowStore(s => s.projects);
   const captures  = useWorkflowStore(s => s.captures);
   const tours     = useWorkflowStore(s => s.tours);
-  const defects   = useWorkflowStore(s => s.defects);
 
-  // Manager sees assigned projects (or all if no filter)
   const assignedIds = new Set(user?.assignedProjectIds ?? []);
-  const myProjects = assignedIds.size
+  const myProjects = (assignedIds.size
     ? projects.filter(p => assignedIds.has(p.id) && !p.archived)
-    : projects.filter(p => !p.archived);
+    : projects.filter(p => !p.archived)
+  );
 
-  const pendingReviews  = captures.filter(c => c.status === 'review');
-  const reviewed        = captures.filter(c => c.status === 'processed');
-  const unpublishedTours = tours.filter(t => t.status !== 'published');
-  const openDefects      = defects.filter(d => d.status === 'open' || d.status === 'in_progress');
+  const pendingReviews = captures.filter(c => c.status === 'review');
+  const reviewed       = captures.filter(c => c.status === 'processed');
+  const publishedTours = tours.filter(t => t.status === 'published');
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+
+  const kpis = [
+    {
+      label: 'Pending Reviews',
+      value: pendingReviews.length,
+      sub: 'awaiting your action',
+      color: '#d97706',
+      bg: 'rgba(217,119,6,0.08)',
+      icon: <RateReviewRounded />,
+      to: '/reviews',
+    },
+    {
+      label: 'Reviewed',
+      value: reviewed.length,
+      sub: 'captures processed',
+      color: '#059669',
+      bg: 'rgba(5,150,105,0.08)',
+      icon: <CheckCircleRounded />,
+      to: '/captures',
+    },
+    {
+      label: 'Published Tours',
+      value: publishedTours.length,
+      sub: 'live for clients',
+      color: '#2563eb',
+      bg: 'rgba(37,99,235,0.08)',
+      icon: <ViewInArRounded />,
+      to: '/tours',
+    },
+    {
+      label: 'Total Captures',
+      value: captures.length,
+      sub: 'across all projects',
+      color: '#7c3aed',
+      bg: 'rgba(124,58,237,0.08)',
+      icon: <CameraAltRounded />,
+      to: '/captures',
+    },
+  ];
 
   return (
     <Box>
@@ -46,27 +75,48 @@ export default function ManagerDashboard() {
         subtitle="Review queue and project progress"
         breadcrumbs={[{ label: 'Overview' }]}
         actions={
-          <Box component={Link} to="/reviews" sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 1, borderRadius: '10px', background: 'linear-gradient(135deg,#7c3aed,#6d28d9)', color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none' }}>
-            <RateReviewRounded sx={{ fontSize: 18 }} /> Open Reviews
+          <Box
+            component={Link}
+            to="/reviews"
+            sx={{
+              display: 'flex', alignItems: 'center', gap: 0.75,
+              px: 2.5, py: 1, borderRadius: '10px',
+              background: 'linear-gradient(135deg,#7c3aed,#6d28d9)',
+              color: '#fff', fontSize: '0.875rem', fontWeight: 600,
+              textDecoration: 'none', boxShadow: '0 4px 14px rgba(124,58,237,0.28)',
+            }}
+          >
+            <RateReviewRounded sx={{ fontSize: 17 }} /> Open Reviews
           </Box>
         }
       />
 
       {/* KPI row */}
       <Grid container spacing={2} sx={{ mb: 4 }}>
-        {[
-          { label: 'Pending Reviews', value: String(pendingReviews.length), sub: 'awaiting your action', color: '#d97706', icon: <RateReviewRounded /> },
-          { label: 'Reviewed', value: String(reviewed.length), sub: 'captures reviewed', color: '#059669', icon: <CheckCircleRounded /> },
-          { label: 'Unpublished Tours', value: String(unpublishedTours.length), sub: 'ready to publish', color: '#2563eb', icon: <ViewInArRounded /> },
-          { label: 'Open Defects', value: String(openDefects.length), sub: 'needs attention', color: '#dc2626', icon: <BugReportRounded /> },
-        ].map((s) => (
-          <Grid key={s.label} size={{ xs: 12, sm: 6, md: 3 }}>
-            <Box sx={{ p: 2.5, borderRadius: '16px', border: `1px solid ${colors.border}`, backgroundColor: colors.card, display: 'flex', gap: 2, alignItems: 'flex-start' }}>
-              <Box sx={{ width: 44, height: 44, borderRadius: '12px', backgroundColor: s.color + '14', color: s.color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, '& svg': { fontSize: 22 } }}>{s.icon}</Box>
+        {kpis.map((s) => (
+          <Grid key={s.label} size={{ xs: 12, sm: 6, lg: 3 }}>
+            <Box
+              component={Link}
+              to={s.to}
+              sx={{
+                display: 'flex', gap: 2, alignItems: 'flex-start',
+                p: 2.5, borderRadius: '16px',
+                border: `1px solid ${colors.border}`,
+                backgroundColor: colors.card,
+                textDecoration: 'none',
+                transition: `box-shadow ${motion.durationFast}, transform ${motion.durationFast}`,
+                '&:hover': { boxShadow: '0 6px 24px rgba(15,23,42,0.08)', transform: 'translateY(-2px)' },
+              }}
+            >
+              <Box sx={{ width: 44, height: 44, borderRadius: '12px', backgroundColor: s.bg, color: s.color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, '& svg': { fontSize: 22 } }}>
+                {s.icon}
+              </Box>
               <Box>
-                <Typography sx={{ fontSize: '1.5rem', fontWeight: 800, color: colors.textStrong, lineHeight: 1, letterSpacing: '-0.04em' }}>{s.value}</Typography>
+                <Typography sx={{ fontSize: '1.625rem', fontWeight: 800, color: colors.textStrong, lineHeight: 1, letterSpacing: '-0.04em' }}>
+                  {s.value}
+                </Typography>
                 <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textSecondary, mt: 0.25 }}>{s.label}</Typography>
-                <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.25 }}>{s.sub}</Typography>
+                <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.125 }}>{s.sub}</Typography>
               </Box>
             </Box>
           </Grid>
@@ -76,43 +126,55 @@ export default function ManagerDashboard() {
       <Grid container spacing={3}>
         {/* Pending review queue */}
         <Grid size={{ xs: 12, md: 7 }}>
-          <Box sx={{ p: 3, borderRadius: '16px', border: `1px solid ${colors.border}`, backgroundColor: colors.card }}>
+          <Box sx={{ p: 3, borderRadius: '16px', border: `1px solid ${colors.border}`, backgroundColor: colors.card, height: '100%' }}>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2.5 }}>
-              <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em' }}>
-                Review Queue
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em' }}>
+                  Review Queue
+                </Typography>
                 {pendingReviews.length > 0 && (
-                  <Box component="span" sx={{ ml: 1, px: 1, py: 0.25, borderRadius: '6px', backgroundColor: 'rgba(217,119,6,0.1)', color: '#d97706', fontSize: '0.75rem', fontWeight: 700 }}>{pendingReviews.length}</Box>
+                  <Box sx={{ px: 1, py: 0.25, borderRadius: '6px', backgroundColor: 'rgba(217,119,6,0.1)', color: '#d97706', fontSize: '0.75rem', fontWeight: 700 }}>
+                    {pendingReviews.length}
+                  </Box>
                 )}
-              </Typography>
-              <Box component={Link} to="/reviews" sx={{ fontSize: '0.8125rem', color: colors.primary, textDecoration: 'none', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              </Box>
+              <Box component={Link} to="/reviews" sx={{ fontSize: '0.8125rem', color: colors.primary, textDecoration: 'none', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 0.5, '&:hover': { opacity: 0.75 } }}>
                 See all <ArrowForwardRounded sx={{ fontSize: 14 }} />
               </Box>
             </Box>
+
             {pendingReviews.length === 0 ? (
-              <Box sx={{ py: 4, textAlign: 'center' }}>
-                <CheckCircleRounded sx={{ fontSize: 40, color: colors.success, mb: 1 }} />
-                <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600, color: colors.textSecondary }}>All clear! No pending reviews.</Typography>
+              <Box sx={{ py: 5, textAlign: 'center' }}>
+                <CheckCircleRounded sx={{ fontSize: 44, color: colors.success, mb: 1 }} />
+                <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600, color: colors.textSecondary }}>All clear — no pending reviews.</Typography>
+                <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, mt: 0.5 }}>New uploads will appear here.</Typography>
               </Box>
             ) : (
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-                {pendingReviews.slice(0, 7).map((c, i) => {
-                  const sc = statusConfig[c.status] ?? statusConfig.review;
-                  return (
-                    <Box key={c.id} component={Link} to={`/captures/${c.id}`} sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 1.5, borderBottom: i < Math.min(pendingReviews.length, 7) - 1 ? `1px solid ${colors.borderLight}` : 'none', textDecoration: 'none', borderRadius: '8px', mx: -1, px: 1, '&:hover': { backgroundColor: colors.bg } }}>
-                      <Box sx={{ width: 36, height: 36, borderRadius: '8px', background: c.gradient, flexShrink: 0 }} />
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong }}>{c.roomName}</Typography>
-                        <Typography noWrap sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{c.projectName} · {c.floorLabel}</Typography>
-                      </Box>
-                      <Chip
-                        icon={sc.icon as React.ReactElement}
-                        label={sc.label}
-                        size="small"
-                        sx={{ height: 22, fontSize: '0.6875rem', fontWeight: 600, color: sc.color, backgroundColor: sc.bg, borderRadius: '6px', '& .MuiChip-icon': { color: 'inherit', ml: '6px', mr: '-2px' } }}
-                      />
+              <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+                {pendingReviews.slice(0, 8).map((c, i) => (
+                  <Box
+                    key={c.id}
+                    component={Link}
+                    to={`/captures/${c.id}`}
+                    sx={{
+                      display: 'flex', alignItems: 'center', gap: 2,
+                      py: 1.5, mx: -1, px: 1, borderRadius: '10px',
+                      borderBottom: i < Math.min(pendingReviews.length, 8) - 1 ? `1px solid ${colors.borderLight}` : 'none',
+                      textDecoration: 'none',
+                      '&:hover': { backgroundColor: colors.bg },
+                      transition: `background ${motion.durationFast}`,
+                    }}
+                  >
+                    <Box sx={{ width: 38, height: 38, borderRadius: '9px', background: c.gradient, flexShrink: 0 }} />
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong }}>{c.roomName}</Typography>
+                      <Typography noWrap sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{c.towerName} · {c.floorLabel} · {c.uploadedAt}</Typography>
                     </Box>
-                  );
-                })}
+                    <Box sx={{ px: 1.25, py: 0.375, borderRadius: '6px', backgroundColor: 'rgba(217,119,6,0.08)', color: '#d97706', fontSize: '0.6875rem', fontWeight: 700, flexShrink: 0 }}>
+                      Pending
+                    </Box>
+                  </Box>
+                ))}
               </Box>
             )}
           </Box>
@@ -120,41 +182,102 @@ export default function ManagerDashboard() {
 
         {/* Right column */}
         <Grid size={{ xs: 12, md: 5 }}>
-          {/* Assigned projects */}
-          <Box sx={{ p: 3, borderRadius: '16px', border: `1px solid ${colors.border}`, backgroundColor: colors.card, mb: 2.5 }}>
-            <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em', mb: 2 }}>
-              Assigned Projects
-            </Typography>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
-              {myProjects.slice(0, 4).map(p => (
-                <Box key={p.id} component={Link} to={`/projects/${p.id}`} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, p: 1.5, borderRadius: '10px', border: `1px solid ${colors.border}`, textDecoration: 'none', '&:hover': { borderColor: p.accent + '55', backgroundColor: colors.bg } }}>
-                  <Box sx={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: p.accent, flexShrink: 0 }} />
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong }}>{p.name}</Typography>
-                    <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{p.towers} towers · {p.progress}% done</Typography>
-                  </Box>
-                  <ArrowForwardRounded sx={{ fontSize: 16, color: colors.textSubdued }} />
-                </Box>
-              ))}
+          {/* Projects */}
+          <Box sx={{ p: 3, borderRadius: '16px', border: `1px solid ${colors.border}`, backgroundColor: colors.card, mb: 3 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+              <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em' }}>
+                Projects
+              </Typography>
+              <Box component={Link} to="/projects" sx={{ fontSize: '0.8125rem', color: colors.primary, textDecoration: 'none', fontWeight: 500, '&:hover': { opacity: 0.75 } }}>
+                All projects →
+              </Box>
             </Box>
+
+            {myProjects.length === 0 ? (
+              <Box sx={{ py: 3, textAlign: 'center' }}>
+                <FolderOpenRounded sx={{ fontSize: 36, color: colors.textSubdued, mb: 0.75 }} />
+                <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted }}>No projects assigned yet.</Typography>
+              </Box>
+            ) : (
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+                {myProjects.slice(0, 4).map(p => (
+                  <Box
+                    key={p.id}
+                    component={Link}
+                    to={`/projects/${p.id}`}
+                    sx={{
+                      p: 1.75, borderRadius: '12px', border: `1px solid ${colors.borderLight}`,
+                      textDecoration: 'none', backgroundColor: colors.bg,
+                      transition: `border-color ${motion.durationFast}`,
+                      '&:hover': { borderColor: p.accent + '60' },
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 1 }}>
+                      <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: p.accent, flexShrink: 0 }} />
+                      <Typography noWrap sx={{ flex: 1, fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong }}>
+                        {p.name}
+                      </Typography>
+                      <ArrowForwardRounded sx={{ fontSize: 14, color: colors.textSubdued }} />
+                    </Box>
+                    <LinearProgress
+                      variant="determinate"
+                      value={p.progress}
+                      sx={{
+                        height: 3, borderRadius: '99px',
+                        backgroundColor: p.accent + '18',
+                        '& .MuiLinearProgress-bar': { borderRadius: '99px', background: p.accent },
+                      }}
+                    />
+                    <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, mt: 0.5 }}>
+                      {p.progress}% complete · {p.towers} tower{p.towers !== 1 ? 's' : ''}
+                    </Typography>
+                  </Box>
+                ))}
+              </Box>
+            )}
           </Box>
 
-          {/* Tours to publish */}
+          {/* Published Tours */}
           <Box sx={{ p: 3, borderRadius: '16px', border: `1px solid ${colors.border}`, backgroundColor: colors.card }}>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-              <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em' }}>Tours Ready</Typography>
-              <Box component={Link} to="/tours" sx={{ fontSize: '0.8125rem', color: colors.primary, textDecoration: 'none', fontWeight: 500 }}>All tours →</Box>
+              <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em' }}>
+                Published Tours
+              </Typography>
+              <Box component={Link} to="/tours" sx={{ fontSize: '0.8125rem', color: colors.primary, textDecoration: 'none', fontWeight: 500, '&:hover': { opacity: 0.75 } }}>
+                All tours →
+              </Box>
             </Box>
-            {unpublishedTours.length === 0 ? (
-              <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted }}>No tours awaiting publish.</Typography>
+
+            {publishedTours.length === 0 ? (
+              <Box sx={{ py: 3, textAlign: 'center' }}>
+                <ViewInArRounded sx={{ fontSize: 36, color: colors.textSubdued, mb: 0.75 }} />
+                <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted }}>No published tours yet.</Typography>
+              </Box>
             ) : (
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                {unpublishedTours.slice(0, 3).map(t => (
-                  <Box key={t.id} component={Link} to={`/tours/${t.id}`} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, p: 1.25, borderRadius: '8px', border: `1px solid ${colors.border}`, textDecoration: 'none', '&:hover': { backgroundColor: colors.bg } }}>
-                    <ViewInArRounded sx={{ fontSize: 18, color: '#2563eb' }} />
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                {publishedTours.slice(0, 4).map(t => (
+                  <Box
+                    key={t.id}
+                    component={Link}
+                    to={`/tours/${t.id}`}
+                    sx={{
+                      display: 'flex', alignItems: 'center', gap: 1.5,
+                      p: 1.25, borderRadius: '10px',
+                      border: `1px solid ${colors.borderLight}`,
+                      textDecoration: 'none',
+                      '&:hover': { backgroundColor: colors.bg },
+                      transition: `background ${motion.durationFast}`,
+                    }}
+                  >
+                    <Box sx={{ width: 32, height: 32, borderRadius: '8px', background: t.gradient, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <ViewInArRounded sx={{ fontSize: 15, color: 'rgba(255,255,255,0.8)' }} />
+                    </Box>
                     <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography noWrap sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textStrong }}>{t.roomName}</Typography>
-                      <Typography noWrap sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{t.projectName}</Typography>
+                      <Typography noWrap sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong }}>{t.roomName}</Typography>
+                      <Typography noWrap sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{t.towerName} · {t.floorLabel}</Typography>
+                    </Box>
+                    <Box sx={{ px: 1, py: 0.25, borderRadius: '5px', backgroundColor: 'rgba(37,99,235,0.08)', color: '#2563eb', fontSize: '0.6875rem', fontWeight: 700, flexShrink: 0 }}>
+                      Live
                     </Box>
                   </Box>
                 ))}

@@ -8,7 +8,7 @@ import {
   MapRounded, BarChartRounded, PeopleRounded, TuneRounded,
   VpnKeyRounded, LogoutRounded, PersonRounded, MenuRounded,
   CloudUploadRounded, StorageRounded, RateReviewRounded,
-  PhotoCameraRounded, ChevronLeftRounded, ChevronRightRounded,
+  PhotoCameraRounded, ChevronLeftRounded, ChevronRightRounded, HistoryRounded,
 } from '@mui/icons-material';
 import { useTheme } from '@mui/material/styles';
 import { colors, motion, zIndex } from '@theme/tokens';
@@ -89,7 +89,7 @@ const ENGINEER_NAV: NavSection[] = [
     heading: 'Capture',
     items: [
       { label: 'Capture Workflow',  path: '/capture-workflow', icon: <PhotoCameraRounded /> },
-      { label: 'Capture History',   path: '/my-captures',      icon: <CameraAltRounded /> },
+      { label: 'Capture History',   path: '/my-captures',      icon: <HistoryRounded /> },
     ],
   },
   {
@@ -201,7 +201,7 @@ export default function DashboardLayout() {
               component="img"
               src="/assets/new_logo.png"
               alt="logo"
-              sx={{ width: 28, height: 28, objectFit: 'contain', mt: 0.5 }}
+              sx={{ width: 40, height: 40, objectFit: 'contain', mt: 0.5 }}
             />
             {/* Collapse toggle */}
             {!isMobile && (
@@ -272,11 +272,11 @@ export default function DashboardLayout() {
       <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', py: 1.5, px: 1.5, overflow: 'hidden' }}>
         {/* Logo row + collapse toggle */}
         <Box sx={{ pt: 0.5, pb: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 0.5, gap: 1 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, minWidth: 0, flex: 1 }}>
-            <Box component="img" src="/assets/new_logo.png" alt="My Home Constructions" sx={{ width: 28, height: 28, objectFit: 'contain', flexShrink: 0 }} />
-            <Box sx={{ minWidth: 0 }}>
-              <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontWeight: 700, fontSize: '0.875rem', color: colors.textStrong, letterSpacing: '-0.025em', lineHeight: 1.1 }}>Prāṅgaṇ</Typography>
-              <Typography sx={{ fontSize: '0.625rem', color: colors.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase', fontWeight: 500 }}>by SiteSureLabs</Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0, flex: 1 }}>
+            <Box component="img" src="/assets/new_logo.png" alt="My Home Constructions" sx={{ width: 44, height: 44, objectFit: 'contain', flexShrink: 0 }} />
+            <Box sx={{ minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+              <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontWeight: 800, fontSize: '1.05rem', color: colors.textStrong, letterSpacing: '-0.03em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
+              <Typography sx={{ fontSize: '0.55rem', color: colors.textMuted, letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600, mt: 0.3 }}>BY SITESURELABS</Typography>
             </Box>
           </Box>
           {/* Collapse toggle — only on desktop */}
@@ -298,16 +298,6 @@ export default function DashboardLayout() {
               </IconButton>
             </Tooltip>
           )}
-        </Box>
-
-        {/* Role badge */}
-        <Box sx={{ mb: 2, px: 0.5 }}>
-          <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 1.25, py: 0.5, borderRadius: '8px', backgroundColor: badge.bg }}>
-            <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: badge.color }} />
-            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: badge.color, letterSpacing: '0.02em' }}>
-              {badge.label}
-            </Typography>
-          </Box>
         </Box>
 
         {/* Nav sections */}
@@ -333,8 +323,22 @@ export default function DashboardLayout() {
             {user?.name?.[0]?.toUpperCase()}
           </Avatar>
           <Box sx={{ minWidth: 0, flex: 1 }}>
-            <Typography noWrap sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textStrong, lineHeight: 1.2 }}>{user?.name}</Typography>
-            <Typography noWrap sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>{user?.org_name}</Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography noWrap sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textStrong, lineHeight: 1.2 }}>{user?.name}</Typography>
+              <Box sx={{ 
+                width: 6, height: 6, borderRadius: '50%', backgroundColor: badge.color, flexShrink: 0,
+                position: 'relative',
+                '&::after': {
+                  content: '""', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                  borderRadius: '50%', backgroundColor: badge.color,
+                  animation: 'ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite',
+                },
+                '@keyframes ping': {
+                  '75%, 100%': { transform: 'scale(2.5)', opacity: 0 },
+                }
+              }} />
+            </Box>
+            <Typography noWrap sx={{ fontSize: '0.6875rem', color: badge.color, fontWeight: 600 }}>{badge.label}</Typography>
           </Box>
         </Box>
       </Box>

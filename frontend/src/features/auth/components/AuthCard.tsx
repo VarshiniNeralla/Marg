@@ -2,7 +2,8 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { Box, Typography } from '@mui/material';
 import { ArrowBackRounded } from '@mui/icons-material';
-import { colors, motion } from '@theme/tokens';
+import { colors, motion as themeMotion } from '@theme/tokens';
+import { motion as m } from 'framer-motion';
 
 interface AuthCardProps {
   title: string;
@@ -23,142 +24,99 @@ export default function AuthCard({ title, subtitle, children, footer }: AuthCard
       py: 3,
       position: 'relative',
       overflow: 'hidden',
-      backgroundColor: '#fafafa',
+      backgroundColor: '#000', // Deep dark theme for premium feel
+      color: '#fff',
     }}>
       {/* ── Subtle background treatment ─────────────────────────────────────── */}
-      {/* Faint grid */}
       <Box sx={{
         position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none',
-        backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(15,23,42,0.025) 1px, transparent 0)',
+        backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(255,255,255,0.05) 1px, transparent 0)',
         backgroundSize: '36px 36px',
       }} />
-      {/* Soft radial glow behind the card */}
       <Box sx={{
         position: 'absolute', top: '50%', left: '50%', zIndex: 0, pointerEvents: 'none',
-        width: 720, height: 720, transform: 'translate(-50%, -50%)',
-        background: 'radial-gradient(circle, rgba(37,99,235,0.06) 0%, transparent 60%)',
-        filter: 'blur(20px)',
+        width: '100%', maxWidth: 800, height: 800, transform: 'translate(-50%, -50%)',
+        background: 'radial-gradient(circle, rgba(37,99,235,0.15) 0%, transparent 60%)',
+        filter: 'blur(60px)',
       }} />
 
       {/* ── Centered column ─────────────────────────────────────────────────── */}
       <Box sx={{
         position: 'relative', zIndex: 1,
-        width: '100%', maxWidth: 640,
-        display: 'flex', flexDirection: 'column', alignItems: 'stretch',
+        width: '100%', maxWidth: 600, // Increased width
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
       }}>
         {/* Top bar: back link */}
-        <Box sx={{ display: 'flex', mb: 1.5 }}>
+        <Box sx={{ display: 'flex', width: '100%', mb: 3 }}>
           <Box
             component={Link}
             to="/"
             sx={{
               display: 'inline-flex',
               alignItems: 'center',
-              gap: 0.875,
-              pl: 0.5,
-              pr: 1.5,
-              py: 0.5,
+              gap: 1,
+              px: 1.5,
+              py: 0.75,
               borderRadius: '999px',
-              fontSize: '0.8125rem',
-              fontWeight: 600,
-              color: colors.textMuted,
+              fontSize: '0.875rem',
+              fontWeight: 500,
+              color: '#a1a1aa',
               textDecoration: 'none',
-              border: '1px solid transparent',
-              transition: `all ${motion.durationNormal} ${motion.easeOut}`,
-              '& .back-icon': {
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: 24,
-                height: 24,
-                borderRadius: '50%',
-                backgroundColor: '#fff',
-                border: '1px solid rgba(15,23,42,0.08)',
-                boxShadow: '0 1px 2px rgba(15,23,42,0.06)',
-                transition: `all ${motion.durationNormal} ${motion.easeOut}`,
-              },
-              '& .back-icon svg': {
-                fontSize: 15,
-                transition: `transform ${motion.durationNormal} ${motion.easeOut}`,
-              },
+              transition: 'all 0.2s ease',
               '&:hover': {
-                color: colors.textStrong,
-                borderColor: 'rgba(15,23,42,0.08)',
-                backgroundColor: 'rgba(15,23,42,0.02)',
-              },
-              '&:hover .back-icon': {
-                backgroundColor: colors.textStrong,
-                borderColor: colors.textStrong,
                 color: '#fff',
+                backgroundColor: 'rgba(255,255,255,0.05)',
               },
-              '&:hover .back-icon svg': {
-                transform: 'translateX(-2px)',
-              },
+              '&:hover svg': {
+                transform: 'translateX(-4px)',
+              }
             }}
           >
-            <Box className="back-icon">
-              <ArrowBackRounded />
-            </Box>
+            <ArrowBackRounded sx={{ fontSize: 18, transition: 'transform 0.2s ease' }} />
             Back to Home
           </Box>
         </Box>
 
         {/* Card */}
-        <Box sx={{
-          width: '100%',
-          backgroundColor: '#fff',
-          border: '1px solid rgba(15,23,42,0.07)',
-          borderRadius: '20px',
-          boxShadow: '0 1px 2px rgba(15,23,42,0.04), 0 12px 40px rgba(15,23,42,0.06)',
-          px: { xs: 3.5, sm: 5.5 },
-          py: { xs: 2.5, sm: 3 },
-        }}>
-          {/* Brand — inside the card, centered, at the very top */}
-          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mb: 1.75 }}>
-            <Box component="img" src="/assets/new_logo.png" alt="My Home Group"
-              sx={{ height: 30, width: 'auto', objectFit: 'contain', mb: 1 }} />
-            <Typography sx={{
-              fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
-              fontWeight: 800, fontSize: '1.125rem', color: colors.textStrong,
-              letterSpacing: '-0.04em', lineHeight: 1.1,
-            }}>
-              Prāṅgaṇ
-            </Typography>
-            <Typography sx={{
-              fontSize: '0.5625rem', fontWeight: 500, color: colors.textSubdued,
-              letterSpacing: '0.12em', textTransform: 'uppercase', mt: 0.25,
-            }}>
-              by SiteSureLabs
-            </Typography>
-          </Box>
+        <m.div
+          initial={{ opacity: 0, y: 20, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+          style={{ width: '100%' }}
+        >
+          <Box sx={{
+            width: '100%',
+            backgroundColor: 'rgba(255,255,255,0.02)',
+            backdropFilter: 'blur(20px)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: '24px',
+            boxShadow: '0 0 0 1px rgba(255,255,255,0.02), 0 30px 60px rgba(0,0,0,0.5)',
+            px: { xs: 3.5, sm: 5 },
+            py: { xs: 3, sm: 3.5 },
+          }}>
+            {/* Brand */}
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mb: 3 }}>
+              <Box component="img" src="/assets/new_logo_white.png" alt="My Home Group"
+                sx={{ height: 42, width: 'auto', objectFit: 'contain', mb: 1.5 }} />
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <Typography sx={{ fontSize: '1.5rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.03em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
+                <Typography sx={{ fontSize: '0.65rem', fontWeight: 700, color: '#a1a1aa', letterSpacing: '0.15em', mt: 0.5 }}>BY SITESURELABS</Typography>
+              </Box>
+            </Box>
 
-          {/* Heading block — centered */}
-          <Box sx={{ mb: 3, textAlign: 'center' }}>
-            <Typography sx={{
-              fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
-              fontWeight: 700, fontSize: '1.375rem',
-              color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.15, mb: subtitle ? 0.5 : 0,
-            }}>
-              {title}
-            </Typography>
-            {subtitle && (
-              <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted, lineHeight: 1.5 }}>
-                {subtitle}
-              </Typography>
+            {/* Form content */}
+            {children}
+
+            {/* Footer */}
+            {footer && (
+              <Box sx={{ mt: 4, pt: 3, borderTop: '1px solid rgba(255,255,255,0.08)', textAlign: 'center', fontSize: '0.875rem', color: '#71717a' }}>
+                {footer}
+              </Box>
             )}
           </Box>
-
-          {/* Form content */}
-          {children}
-
-          {/* Footer */}
-          {footer && (
-            <Box sx={{ mt: 2.5, pt: 2.5, borderTop: '1px solid rgba(15,23,42,0.06)', textAlign: 'center', fontSize: '0.875rem', color: colors.textMuted }}>
-              {footer}
-            </Box>
-          )}
-        </Box>
+        </m.div>
       </Box>
     </Box>
   );
 }
+

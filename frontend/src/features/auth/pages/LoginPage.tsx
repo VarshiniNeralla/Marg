@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Box, Typography, MenuItem, Select, FormControl, FormHelperText } from '@mui/material';
+import { Box, Typography, FormHelperText } from '@mui/material';
 import { EngineeringRounded, ManageAccountsRounded, AdminPanelSettingsRounded, ErrorRounded } from '@mui/icons-material';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { loginSchema, type LoginFormValues, APP_ROLES } from '../schemas/authSchemas';
+import { loginSchema, type LoginFormValues } from '../schemas/authSchemas';
 import { authService } from '../services/authService';
 import { authService as backendAuth } from '@services/authService';
 import { useAuthStore, getRoleLandingPath } from '@store/authStore';
@@ -13,34 +13,42 @@ import AuthCard from '../components/AuthCard';
 import Input from '@shared/components/Input/Input';
 import Button from '@shared/components/Button/Button';
 import { colors } from '@theme/tokens';
+import { motion as m } from 'framer-motion';
 
 const labelSx = {
   display: 'block',
   fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
   fontSize: '0.875rem',
   fontWeight: 500,
-  color: '#374151',
-  mb: '6px',
+  color: '#e4e4e7',
+  mb: '8px',
 };
 
 const inputSx = {
   '& .MuiOutlinedInput-root': {
     borderRadius: '12px',
     height: '52px',
-    backgroundColor: '#fff',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    color: '#fff',
     fontSize: '0.9375rem',
     fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
-    transition: 'border-color 140ms, box-shadow 140ms',
-    '& .MuiOutlinedInput-notchedOutline': { borderColor: '#e5e7eb' },
-    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#d1d5db' },
-    '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#9ca3af', borderWidth: '1px' },
-    '&.Mui-focused': { boxShadow: '0 0 0 4px rgba(15,23,42,0.05)' },
+    transition: 'border-color 140ms, box-shadow 140ms, background-color 140ms',
+    '& .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(255,255,255,0.1)' },
+    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(255,255,255,0.2)' },
+    '&:hover': { backgroundColor: 'rgba(255,255,255,0.05)' },
+    '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#fff', borderWidth: '1px' },
+    '&.Mui-focused': { boxShadow: '0 0 0 4px rgba(255,255,255,0.1)', backgroundColor: 'rgba(255,255,255,0.05)' },
   },
   '& .MuiInputLabel-root': { display: 'none' },
   '& .MuiInputBase-input': {
     fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
     py: 0,
-    '&::placeholder': { color: '#9ca3af', opacity: 1 },
+    '&::placeholder': { color: '#71717a', opacity: 1 },
+    '&:-webkit-autofill': {
+      WebkitBoxShadow: '0 0 0 1000px #09090b inset',
+      WebkitTextFillColor: '#fff',
+      transition: 'background-color 5000s ease-in-out 0s',
+    },
   },
 };
 
@@ -48,32 +56,32 @@ const ROLE_OPTIONS = [
   {
     value: 'admin',
     label: 'Admin',
-    desc: 'Platform administration & configuration',
-    icon: <AdminPanelSettingsRounded sx={{ fontSize: 18 }} />,
-    color: '#2563eb',
-    bg: 'rgba(37,99,235,0.06)',
+    desc: 'Platform administration',
+    icon: <AdminPanelSettingsRounded sx={{ fontSize: 20 }} />,
+    color: '#3b82f6',
+    activeColor: '#60a5fa',
   },
   {
     value: 'manager',
     label: 'Manager',
-    desc: 'Review captures & monitor progress',
-    icon: <ManageAccountsRounded sx={{ fontSize: 18 }} />,
-    color: '#7c3aed',
-    bg: 'rgba(124,58,237,0.06)',
+    desc: 'Review captures',
+    icon: <ManageAccountsRounded sx={{ fontSize: 20 }} />,
+    color: '#8b5cf6',
+    activeColor: '#a78bfa',
   },
   {
     value: 'field_engineer',
     label: 'Field Engineer',
-    desc: 'Capture & upload site photos',
-    icon: <EngineeringRounded sx={{ fontSize: 18 }} />,
-    color: '#059669',
-    bg: 'rgba(5,150,105,0.06)',
+    desc: 'Upload site photos',
+    icon: <EngineeringRounded sx={{ fontSize: 20 }} />,
+    color: '#10b981',
+    activeColor: '#34d399',
   },
 ] as const;
 
 const DEMO_CREDENTIALS = [
-  { role: 'admin',          roleLabel: 'Admin',          email: 'admin@myhomeconstructions.com',    password: 'Prangan@123', color: '#2563eb' },
-  { role: 'manager',        roleLabel: 'Manager',        email: 'manager@myhomeconstructions.com',  password: 'Prangan@123', color: '#7c3aed' },
+  { role: 'admin',          roleLabel: 'Admin',          email: 'admin@myhomeconstructions.com',    password: 'Prangan@123', color: '#3b82f6' },
+  { role: 'manager',        roleLabel: 'Manager',        email: 'manager@myhomeconstructions.com',  password: 'Prangan@123', color: '#8b5cf6' },
 ];
 
 export default function LoginPage() {
@@ -106,7 +114,6 @@ export default function LoginPage() {
     setIsLoading(true);
     try {
       const data = await authService.login({ email: values.email, password: values.password });
-      // Use the role returned by the auth response — never the UI role picker.
       const authedRole = data.user.role;
       setAuth(data.access_token, {
         id: data.user.id,
@@ -118,7 +125,6 @@ export default function LoginPage() {
         org_slug: 'myhome',
         avatar_url: data.user.avatar_url,
       });
-      // Enrich with /auth/me to get org_slug and other full profile fields.
       try {
         const me = await backendAuth.me();
         setAuth(data.access_token, {
@@ -132,7 +138,7 @@ export default function LoginPage() {
           avatar_url: me.avatar_url,
         });
       } catch {
-        // /me failed — continue with partial data, org_slug defaults to 'myhome'
+        // partial data
       }
       navigate(from ?? getRoleLandingPath(authedRole), { replace: true });
     } catch (err) {
@@ -154,22 +160,24 @@ export default function LoginPage() {
     >
       <Box component="form" onSubmit={handleSubmit(onSubmit)} noValidate sx={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
         {serverError && (
-          <Box sx={{
-            display: 'flex', alignItems: 'flex-start', gap: 1.25,
-            px: 2, py: 1.5, mb: 2, borderRadius: '10px',
-            backgroundColor: '#fef2f2', border: '1px solid #fecaca',
-          }}>
-            <ErrorRounded sx={{ fontSize: 18, color: '#dc2626', flexShrink: 0, mt: '1px' }} />
-            <Typography sx={{ fontSize: '0.875rem', color: '#b91c1c', lineHeight: 1.5 }}>
-              {serverError}
-            </Typography>
-          </Box>
+          <m.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}>
+            <Box sx={{
+              display: 'flex', alignItems: 'flex-start', gap: 1.25,
+              px: 2, py: 1.5, mb: 3, borderRadius: '12px',
+              backgroundColor: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)',
+            }}>
+              <ErrorRounded sx={{ fontSize: 18, color: '#ef4444', flexShrink: 0, mt: '2px' }} />
+              <Typography sx={{ fontSize: '0.875rem', color: '#fca5a5', lineHeight: 1.5 }}>
+                {serverError}
+              </Typography>
+            </Box>
+          </m.div>
         )}
 
         {/* Role selector */}
-        <Box sx={{ mb: '20px' }}>
+        <Box sx={{ mb: '24px' }}>
           <Typography component="label" sx={labelSx}>Sign in as</Typography>
-          <Box sx={{ display: 'flex', gap: 1 }}>
+          <Box sx={{ display: 'flex', gap: 1.5 }}>
             {ROLE_OPTIONS.map((opt) => {
               const isActive = selectedRole === opt.value;
               return (
@@ -181,22 +189,27 @@ export default function LoginPage() {
                     <Box
                       onClick={() => field.onChange(opt.value)}
                       sx={{
-                        flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5,
-                        py: 1.5, px: 1, borderRadius: '12px', cursor: 'pointer',
-                        border: `1.5px solid ${isActive ? opt.color : '#e5e7eb'}`,
-                        backgroundColor: isActive ? opt.bg : '#fff',
-                        transition: 'all 150ms',
-                        '&:hover': { borderColor: opt.color, backgroundColor: opt.bg },
+                        flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1,
+                        py: 2, px: 1, borderRadius: '16px', cursor: 'pointer',
+                        border: `1px solid ${isActive ? opt.activeColor : 'rgba(255,255,255,0.1)'}`,
+                        backgroundColor: isActive ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.02)',
+                        boxShadow: isActive ? `0 0 20px ${opt.color}22 inset` : 'none',
+                        transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+                        '&:hover': { 
+                          borderColor: isActive ? opt.activeColor : 'rgba(255,255,255,0.2)', 
+                          backgroundColor: 'rgba(255,255,255,0.04)',
+                          transform: 'translateY(-2px)'
+                        },
                       }}
                     >
-                      <Box sx={{ color: isActive ? opt.color : '#9ca3af', transition: 'color 150ms' }}>
+                      <Box sx={{ color: isActive ? opt.activeColor : '#71717a', transition: 'color 0.2s' }}>
                         {opt.icon}
                       </Box>
                       <Typography sx={{
-                        fontSize: '0.6875rem', fontWeight: 600, lineHeight: 1.2, textAlign: 'center',
-                        color: isActive ? opt.color : '#6b7280',
+                        fontSize: '0.75rem', fontWeight: 600, lineHeight: 1.2, textAlign: 'center',
+                        color: isActive ? '#fff' : '#a1a1aa',
                         fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
-                        transition: 'color 150ms',
+                        transition: 'color 0.2s',
                       }}>
                         {opt.label}
                       </Typography>
@@ -206,21 +219,16 @@ export default function LoginPage() {
               );
             })}
           </Box>
-          {roleOption && (
-            <Typography sx={{ mt: 1, fontSize: '0.75rem', color: '#9ca3af', textAlign: 'center' }}>
-              {roleOption.desc}
-            </Typography>
-          )}
-          {errors.role && <FormHelperText error>{errors.role.message}</FormHelperText>}
+          {errors.role && <FormHelperText error sx={{ color: '#ef4444' }}>{errors.role.message}</FormHelperText>}
         </Box>
 
         {/* Email */}
-        <Box sx={{ mb: '20px' }}>
+        <Box sx={{ mb: '24px' }}>
           <Typography component="label" htmlFor="login-email" sx={labelSx}>Email</Typography>
           <Input
             id="login-email"
             type="email"
-            placeholder="Enter your email"
+            placeholder="name@company.com"
             autoComplete="email"
             autoFocus
             error={!!errors.email}
@@ -231,13 +239,13 @@ export default function LoginPage() {
         </Box>
 
         {/* Password */}
-        <Box sx={{ mb: '24px' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: '6px' }}>
+        <Box sx={{ mb: '32px' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: '8px' }}>
             <Typography component="label" htmlFor="login-password" sx={{ ...labelSx, mb: 0 }}>Password</Typography>
             <Box
               component="a"
               href="/forgot-password"
-              sx={{ fontSize: '0.8125rem', color: colors.primary, fontWeight: 500, textDecoration: 'none', cursor: 'pointer' }}
+              sx={{ fontSize: '0.8125rem', color: '#a1a1aa', fontWeight: 500, textDecoration: 'none', cursor: 'pointer', transition: 'color 0.2s', '&:hover': { color: '#fff' } }}
             >
               Forgot password?
             </Box>
@@ -245,7 +253,7 @@ export default function LoginPage() {
           <Input
             id="login-password"
             isPassword
-            placeholder="Password"
+            placeholder="••••••••"
             autoComplete="current-password"
             error={!!errors.password}
             helperText={errors.password?.message}
@@ -263,22 +271,23 @@ export default function LoginPage() {
             height: '52px', borderRadius: '12px', fontSize: '1rem',
             fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
             fontWeight: 600, letterSpacing: '-0.01em',
-            background: roleOption?.color ?? '#111827',
-            boxShadow: '0 1px 2px rgba(15,23,42,0.12)',
-            transition: 'transform 140ms, box-shadow 140ms, background-color 140ms',
-            '&:hover': { filter: 'brightness(0.92)', boxShadow: '0 6px 18px rgba(15,23,42,0.18)', transform: 'translateY(-1px)' },
+            background: '#fff',
+            color: '#000',
+            boxShadow: '0 4px 14px rgba(255,255,255,0.1)',
+            transition: 'transform 0.2s, box-shadow 0.2s, background-color 0.2s',
+            '&:hover': { background: '#e4e4e7', boxShadow: '0 6px 20px rgba(255,255,255,0.15)', transform: 'translateY(-1px)' },
             '&:active': { transform: 'translateY(0)' },
           }}
         >
-          Sign in as {roleOption?.label ?? 'User'}
+          Sign in
         </Button>
 
         {/* Demo credentials panel */}
-        <Box sx={{ mt: 2.5, pt: 2.5, borderTop: '1px solid rgba(15,23,42,0.06)' }}>
-          <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em', textAlign: 'center', mb: 1.25 }}>
+        <Box sx={{ mt: 4, pt: 3, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+          <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: '#71717a', textTransform: 'uppercase', letterSpacing: '0.08em', textAlign: 'center', mb: 2 }}>
             Demo Credentials
           </Typography>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
             {DEMO_CREDENTIALS.map((cred) => (
               <Box
                 key={cred.role}
@@ -289,16 +298,16 @@ export default function LoginPage() {
                 }}
                 sx={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  px: 1.5, py: 1, borderRadius: '10px', cursor: 'pointer',
-                  border: '1px solid rgba(15,23,42,0.06)', backgroundColor: 'rgba(15,23,42,0.02)',
-                  transition: 'all 140ms',
-                  '&:hover': { borderColor: cred.color + '55', backgroundColor: cred.color + '08' },
+                  px: 2, py: 1.5, borderRadius: '12px', cursor: 'pointer',
+                  border: '1px solid rgba(255,255,255,0.05)', backgroundColor: 'rgba(255,255,255,0.02)',
+                  transition: 'all 0.2s',
+                  '&:hover': { borderColor: 'rgba(255,255,255,0.15)', backgroundColor: 'rgba(255,255,255,0.05)', transform: 'translateX(2px)' },
                 }}
               >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: cred.color, flexShrink: 0 }} />
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                  <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: cred.color, flexShrink: 0, boxShadow: `0 0 10px ${cred.color}` }} />
                   <Box>
-                    <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: '#374151', lineHeight: 1.2 }}>
+                    <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: '#e4e4e7', lineHeight: 1.2 }}>
                       {cred.email}
                     </Typography>
                   </Box>
@@ -307,16 +316,10 @@ export default function LoginPage() {
                   <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: cred.color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                     {cred.roleLabel}
                   </Typography>
-                  <Typography sx={{ fontSize: '0.6875rem', color: '#9ca3af', fontFamily: 'monospace' }}>
-                    {cred.password}
-                  </Typography>
                 </Box>
               </Box>
             ))}
           </Box>
-          <Typography sx={{ fontSize: '0.6875rem', color: '#c4c9d4', textAlign: 'center', mt: 1 }}>
-            Click any row to auto-fill
-          </Typography>
         </Box>
       </Box>
     </AuthCard>

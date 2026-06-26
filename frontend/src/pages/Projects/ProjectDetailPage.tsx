@@ -13,7 +13,6 @@ import {
 } from '@store/workflowSelectors';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, isAdmin } from '@store/authStore';
-import ActivityFeed from '@shared/components/ActivityFeed/ActivityFeed';
 
 const ROLE_COLORS: Record<string, { color: string; bg: string }> = {
   admin:          { color: '#2563eb', bg: 'rgba(37,99,235,0.08)' },
@@ -33,7 +32,6 @@ export default function ProjectDetailPage() {
   const rooms       = useWorkflowStore(s => s.rooms);
   const captures    = useWorkflowStore(s => s.captures);
   const users       = useWorkflowStore(s => s.users);
-  const auditLogs   = useWorkflowStore(s => s.auditLogs);
   const addUserToProject    = useWorkflowStore(s => s.addUserToProject);
   const removeUserFromProject = useWorkflowStore(s => s.removeUserFromProject);
   const { user: currentUser } = useAuthStore();
@@ -141,17 +139,18 @@ export default function ProjectDetailPage() {
       <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 3, borderBottom: `1px solid ${colors.borderLight}`, '& .MuiTab-root': { fontSize: '0.875rem', fontWeight: 500, textTransform: 'none', minWidth: 0, px: 2 }, '& .Mui-selected': { color: colors.primary }, '& .MuiTabs-indicator': { backgroundColor: colors.primary } }}>
         <Tab label="Towers" />
         <Tab label="Team" />
-        <Tab label="Activity" />
       </Tabs>
 
       {/* Towers tab */}
       {tab === 0 && (
         <Box>
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
-            <Box component={Link} to={`/projects/${project.id}/towers`} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 0.875, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none', boxShadow: '0 4px 14px rgba(37,99,235,0.28)' }}>
-              <AddRounded sx={{ fontSize: 16 }} /> Add Tower
+          {hasAdminRole && (
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
+              <Box component={Link} to={`/projects/${project.id}/towers`} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 0.875, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none', boxShadow: '0 4px 14px rgba(37,99,235,0.28)' }}>
+                <AddRounded sx={{ fontSize: 16 }} /> Add Tower
+              </Box>
             </Box>
-          </Box>
+          )}
           <Grid container spacing={2}>
             {projectTowers.map(tower => (
               <Grid key={tower.id} size={{ xs: 12, sm: 6, md: 4 }}>
@@ -249,12 +248,6 @@ export default function ProjectDetailPage() {
         </Box>
       )}
 
-      {/* Activity tab */}
-      {tab === 2 && (
-        <Box sx={{ borderRadius: '20px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', p: 3 }}>
-          <ActivityFeed logs={auditLogs.filter(l => l.projectId === projectId)} />
-        </Box>
-      )}
 
       {/* Add Member dialog */}
       <Dialog open={addOpen} onClose={() => setAddOpen(false)} maxWidth="sm" fullWidth slotProps={{ paper: { sx: { borderRadius: '20px' } } }}>
