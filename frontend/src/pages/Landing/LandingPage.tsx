@@ -15,7 +15,7 @@ const NAV_H = 64;
 function GradientText({ children, sx = {} }: { children: React.ReactNode; sx?: object }) {
   return (
     <Box component="span" sx={{
-      background: 'linear-gradient(135deg, #fff 0%, #a1a1aa 100%)',
+      background: 'linear-gradient(135deg, #18181b 0%, #71717a 100%)',
       WebkitBackgroundClip: 'text',
       WebkitTextFillColor: 'transparent',
       backgroundClip: 'text',
@@ -36,10 +36,10 @@ function Pill({ children }: { children: React.ReactNode }) {
       <Box sx={{
         display: 'inline-flex', alignItems: 'center', gap: 0.75,
         px: 1.5, py: 0.5, borderRadius: '999px',
-        border: '1px solid rgba(255,255,255,0.1)',
-        backgroundColor: 'rgba(255,255,255,0.03)',
+        border: '1px solid rgba(0,0,0,0.1)',
+        backgroundColor: 'rgba(0,0,0,0.02)',
         backdropFilter: 'blur(10px)',
-        fontSize: '0.75rem', fontWeight: 600, color: '#e4e4e7',
+        fontSize: '0.75rem', fontWeight: 600, color: '#3f3f46',
         letterSpacing: '0.02em',
       }}>
         {children}
@@ -59,8 +59,8 @@ function CTAButton({ children, to, variant = 'primary', onClick }: {
     letterSpacing: '-0.01em',
   };
   const styles = variant === 'primary'
-    ? { ...base, background: '#fff', color: '#000', '&:hover': { transform: 'scale(1.02)', background: '#e4e4e7' } }
-    : { ...base, color: '#fff', border: `1px solid rgba(255,255,255,0.1)`, backgroundColor: 'rgba(255,255,255,0.02)', '&:hover': { borderColor: 'rgba(255,255,255,0.2)', backgroundColor: 'rgba(255,255,255,0.06)' } };
+    ? { ...base, background: '#18181b', color: '#fff', '&:hover': { transform: 'scale(1.02)', background: '#27272a' } }
+    : { ...base, color: '#18181b', border: `1px solid rgba(0,0,0,0.1)`, backgroundColor: 'rgba(0,0,0,0.02)', '&:hover': { borderColor: 'rgba(0,0,0,0.08)', backgroundColor: 'rgba(0,0,0,0.06)' } };
   
   if (to) return <Box component={Link} to={to} sx={styles}>{children}</Box>;
   return <Box onClick={onClick} sx={styles}>{children}</Box>;
@@ -84,14 +84,14 @@ function Navbar() {
       height: NAV_H, display: 'flex', alignItems: 'center',
       px: { xs: 2, md: 6 },
       backdropFilter: scrolled ? 'blur(12px) saturate(180%)' : 'none',
-      backgroundColor: scrolled ? 'rgba(0,0,0,0.6)' : 'transparent',
-      borderBottom: scrolled ? `1px solid rgba(255,255,255,0.06)` : '1px solid transparent',
+      backgroundColor: scrolled ? 'rgba(255,255,255,0.85)' : 'transparent',
+      borderBottom: scrolled ? `1px solid rgba(0,0,0,0.06)` : '1px solid transparent',
       transition: `all ${themeMotion.durationNormal}`,
     }}>
       <Box component={Link} to="/" sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mr: 'auto', textDecoration: 'none' }}>
-        <Box component="img" src="/assets/new_logo_white.png" alt="My Home Group" sx={{ height: 36, width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
+        <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 36, width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
         <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-          <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.04em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
+          <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.04em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
           <Typography sx={{ fontSize: '0.55rem', fontWeight: 600, color: '#71717a', letterSpacing: '0.12em', mt: 0.3 }}>BY SITESURELABS</Typography>
         </Box>
       </Box>
@@ -103,7 +103,7 @@ function Navbar() {
       {/* Mobile hamburger */}
       <Box onClick={() => setMenuOpen(v => !v)} sx={{ display: { xs: 'flex', md: 'none' }, flexDirection: 'column', gap: 0.5, p: 1, cursor: 'pointer' }}>
         {[0, 1, 2].map(i => (
-          <Box key={i} sx={{ width: 22, height: 2, borderRadius: '2px', backgroundColor: '#fff', transition: `all ${themeMotion.durationFast}`,
+          <Box key={i} sx={{ width: 22, height: 2, borderRadius: '2px', backgroundColor: '#18181b', transition: `all ${themeMotion.durationFast}`,
             ...(menuOpen && i === 0 && { transform: 'rotate(45deg) translate(3px, 3px)' }),
             ...(menuOpen && i === 1 && { opacity: 0 }),
             ...(menuOpen && i === 2 && { transform: 'rotate(-45deg) translate(3px, -3px)' }),
@@ -113,8 +113,8 @@ function Navbar() {
 
       {/* Mobile menu */}
       {menuOpen && (
-        <Box sx={{ position: 'absolute', top: NAV_H, left: 0, right: 0, backgroundColor: '#09090b', borderBottom: `1px solid rgba(255,255,255,0.1)`, p: 2, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-          <Box component={Link} to="/login" onClick={() => setMenuOpen(false)} sx={{ px: 2, py: 1.25, borderRadius: '8px', fontSize: '0.9375rem', color: '#a1a1aa', textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(255,255,255,0.05)', color: '#fff' } }}>
+        <Box sx={{ position: 'absolute', top: NAV_H, left: 0, right: 0, backgroundColor: '#ffffff', borderBottom: `1px solid rgba(0,0,0,0.1)`, p: 2, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+          <Box component={Link} to="/login" onClick={() => setMenuOpen(false)} sx={{ px: 2, py: 1.25, borderRadius: '8px', fontSize: '0.9375rem', color: '#52525b', textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(0,0,0,0.05)', color: '#18181b' } }}>
             Sign in
           </Box>
         </Box>
@@ -134,11 +134,13 @@ function Hero() {
       {/* Background elements */}
       <Box sx={{
         position: 'absolute', inset: 0, zIndex: 0,
-        backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(255,255,255,0.05) 1px, transparent 0)',
+        backgroundColor: '#f8fafc', // Very subtle cool off-white
+        backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(0,0,0,0.04) 1px, transparent 0)',
         backgroundSize: '40px 40px',
-        maskImage: 'radial-gradient(ellipse 70% 50% at 50% 0%, black 0%, transparent 80%)',
+        maskImage: 'radial-gradient(ellipse 70% 50% at 50% 0%, black 0%, transparent 90%)',
       }} />
-      <Box sx={{ position: 'absolute', top: '-10%', left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 800, height: 500, borderRadius: '50%', background: 'radial-gradient(ellipse, rgba(37,99,235,0.2) 0%, transparent 70%)', filter: 'blur(60px)', pointerEvents: 'none' }} />
+      <Box sx={{ position: 'absolute', top: '-20%', left: '15%', width: '60%', height: 600, borderRadius: '50%', background: 'radial-gradient(ellipse, rgba(37,99,235,0.07) 0%, transparent 60%)', filter: 'blur(80px)', pointerEvents: 'none', zIndex: 0 }} />
+      <Box sx={{ position: 'absolute', top: '-10%', right: '10%', width: '50%', height: 500, borderRadius: '50%', background: 'radial-gradient(ellipse, rgba(124,58,237,0.06) 0%, transparent 60%)', filter: 'blur(80px)', pointerEvents: 'none', zIndex: 0 }} />
 
       <Box sx={{ position: 'relative', zIndex: 1, maxWidth: 960, mx: 'auto' }}>
         <m.div
@@ -150,7 +152,7 @@ function Hero() {
             fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
             fontSize: { xs: '3rem', sm: '4rem', md: '5.5rem' },
             fontWeight: 800, lineHeight: 1.05, letterSpacing: '-0.05em',
-            color: '#fff', mb: 3,
+            color: '#18181b', mb: 3,
           }}>
             Construct with <br />
             <Box component="span" sx={{
@@ -167,7 +169,7 @@ function Hero() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1], delay: 0.2 }}
         >
-          <Typography sx={{ fontSize: { xs: '1rem', md: '1.25rem' }, color: '#a1a1aa', maxWidth: 640, mx: 'auto', lineHeight: 1.6, mb: 5 }}>
+          <Typography sx={{ fontSize: { xs: '1rem', md: '1.25rem' }, color: '#52525b', maxWidth: 640, mx: 'auto', lineHeight: 1.6, mb: 5 }}>
             360° virtual tours, floor plan mapping, capture reviews, and real-time analytics. The visual operating system for your site.
           </Typography>
         </m.div>
@@ -197,26 +199,26 @@ function Hero() {
         <Box sx={{ mt: 10, maxWidth: 1100, mx: 'auto', position: 'relative', zIndex: 1, perspective: '1000px' }}>
           <Box sx={{ 
             borderRadius: '24px', overflow: 'hidden', 
-            border: '1px solid rgba(255,255,255,0.1)',
-            backgroundColor: '#09090b',
-            boxShadow: '0 0 0 1px rgba(255,255,255,0.05), 0 30px 60px rgba(0,0,0,0.5)',
+            border: '1px solid rgba(0,0,0,0.08)',
+            backgroundColor: '#ffffff',
+            boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05), 0 30px 60px -15px rgba(0,0,0,0.1)',
             transform: 'rotateX(5deg) scale(0.95)',
             transformOrigin: 'top center',
             transition: 'transform 0.5s cubic-bezier(0.16, 1, 0.3, 1)',
             '&:hover': { transform: 'rotateX(0deg) scale(1)' }
           }}>
             {/* Browser chrome */}
-            <Box sx={{ height: 48, backgroundColor: '#18181b', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', px: 2, gap: 1.5 }}>
+            <Box sx={{ height: 48, backgroundColor: '#f4f4f5', borderBottom: '1px solid rgba(0,0,0,0.05)', display: 'flex', alignItems: 'center', px: 2, gap: 1.5 }}>
               {['#ef4444','#f59e0b','#10b981'].map((c, i) => <Box key={i} sx={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: c, opacity: 0.8 }} />)}
             </Box>
             {/* Dashboard preview */}
-            <Box sx={{ display: 'flex', height: 520, background: '#000' }}>
+            <Box sx={{ display: 'flex', height: 520, background: '#ffffff' }}>
               {/* Sidebar */}
-              <Box sx={{ width: 220, borderRight: '1px solid rgba(255,255,255,0.05)', p: 2, flexShrink: 0 }}>
+              <Box sx={{ width: 220, borderRight: '1px solid rgba(0,0,0,0.05)', p: 2, flexShrink: 0 }}>
                 {['Dashboard','Projects','Captures','Tours','Floor Plans','Analytics'].map((item, i) => (
-                  <Box key={item} sx={{ px: 2, py: 1.25, borderRadius: '8px', mb: 0.5, backgroundColor: i === 0 ? 'rgba(255,255,255,0.05)' : 'transparent', display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                    <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: i === 0 ? '#fff' : 'rgba(255,255,255,0.2)' }} />
-                    <Typography sx={{ fontSize: '0.875rem', color: i === 0 ? '#fff' : '#71717a', fontWeight: i === 0 ? 500 : 400 }}>{item}</Typography>
+                  <Box key={item} sx={{ px: 2, py: 1.25, borderRadius: '8px', mb: 0.5, backgroundColor: i === 0 ? 'rgba(0,0,0,0.04)' : 'transparent', display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                    <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: i === 0 ? '#18181b' : 'rgba(0,0,0,0.15)' }} />
+                    <Typography sx={{ fontSize: '0.875rem', color: i === 0 ? '#18181b' : '#71717a', fontWeight: i === 0 ? 600 : 400 }}>{item}</Typography>
                   </Box>
                 ))}
               </Box>
@@ -228,20 +230,20 @@ function Hero() {
                     { label: 'Total Captures', value: '1,284', trend: '+14%' },
                     { label: 'Reviews Pending', value: '23', trend: '-5' },
                   ].map(({ label, value, trend }) => (
-                    <Box key={label} sx={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '16px', p: 3 }}>
-                      <Typography sx={{ fontSize: '0.875rem', color: '#a1a1aa', mb: 1 }}>{label}</Typography>
+                    <Box key={label} sx={{ backgroundColor: 'rgba(0,0,0,0.02)', border: '1px solid rgba(0,0,0,0.05)', borderRadius: '16px', p: 3 }}>
+                      <Typography sx={{ fontSize: '0.875rem', color: '#52525b', mb: 1 }}>{label}</Typography>
                       <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5 }}>
-                        <Typography sx={{ fontSize: '2rem', fontWeight: 700, color: '#fff', lineHeight: 1 }}>{value}</Typography>
+                        <Typography sx={{ fontSize: '2rem', fontWeight: 700, color: '#18181b', lineHeight: 1 }}>{value}</Typography>
                         <Typography sx={{ fontSize: '0.875rem', color: trend.startsWith('+') ? '#10b981' : '#a1a1aa' }}>{trend}</Typography>
                       </Box>
                     </Box>
                   ))}
                 </Box>
-                <Box sx={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '16px', p: 3, height: 280 }}>
-                  <Typography sx={{ fontSize: '1rem', fontWeight: 500, color: '#fff', mb: 3 }}>Capture Volume</Typography>
+                <Box sx={{ backgroundColor: 'rgba(0,0,0,0.02)', border: '1px solid rgba(0,0,0,0.05)', borderRadius: '16px', p: 3, height: 280 }}>
+                  <Typography sx={{ fontSize: '1rem', fontWeight: 500, color: '#18181b', mb: 3 }}>Capture Volume</Typography>
                   <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 180, pt: 2 }}>
                     {[40, 65, 50, 80, 70, 90, 75, 100].map((h, i) => (
-                      <Box key={i} sx={{ flex: 1, borderRadius: '4px 4px 0 0', background: i === 7 ? 'linear-gradient(180deg, #2563eb 0%, rgba(37,99,235,0.2) 100%)' : 'rgba(255,255,255,0.1)', height: `${h}%`, transition: 'height 0.5s ease', '&:hover': { background: '#2563eb' } }} />
+                      <Box key={i} sx={{ flex: 1, borderRadius: '4px 4px 0 0', background: i === 7 ? 'linear-gradient(180deg, #2563eb 0%, rgba(37,99,235,0.2) 100%)' : 'rgba(0,0,0,0.1)', height: `${h}%`, transition: 'height 0.5s ease', '&:hover': { background: '#2563eb' } }} />
                     ))}
                   </Box>
                 </Box>
@@ -288,10 +290,10 @@ function FeaturesSection() {
         transition={{ duration: 0.8 }}
       >
         <Box sx={{ textAlign: 'center', mb: { xs: 8, md: 12 } }}>
-          <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '2.5rem', md: '3.5rem' }, fontWeight: 800, letterSpacing: '-0.04em', color: '#fff', mb: 2 }}>
+          <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '2.5rem', md: '3.5rem' }, fontWeight: 800, letterSpacing: '-0.04em', color: '#18181b', mb: 2 }}>
             Powerful features. <br /> Elegant experience.
           </Typography>
-          <Typography sx={{ fontSize: '1.125rem', color: '#a1a1aa', maxWidth: 540, mx: 'auto', lineHeight: 1.6 }}>
+          <Typography sx={{ fontSize: '1.125rem', color: '#52525b', maxWidth: 540, mx: 'auto', lineHeight: 1.6 }}>
             Everything you need to manage your site digitally, engineered for performance and precision.
           </Typography>
         </Box>
@@ -315,7 +317,7 @@ function FeaturesSection() {
                 gridColumn: { xs: 'span 1', md: `span ${f.colSpan}` },
                 gridRow: { xs: 'span 1', md: `span ${f.rowSpan}` },
                 p: { xs: 4, md: 5 }, borderRadius: '32px', 
-                border: '1px solid rgba(255,255,255,0.08)', 
+                border: '1px solid rgba(0,0,0,0.08)', 
                 backgroundColor: 'rgba(255,255,255,0.02)',
                 backdropFilter: 'blur(20px)',
                 height: '100%',
@@ -323,35 +325,35 @@ function FeaturesSection() {
                 transition: 'all 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
                 position: 'relative', overflow: 'hidden',
                 '&:hover': {
-                  borderColor: 'rgba(255,255,255,0.2)',
+                  borderColor: 'rgba(0,0,0,0.08)',
                   backgroundColor: 'rgba(255,255,255,0.04)',
                   transform: 'translateY(-4px)',
                   boxShadow: '0 20px 40px rgba(0,0,0,0.4)',
                 },
                 '&::after': { // subtle inner glow
                   content: '""', position: 'absolute', inset: 0,
-                  background: 'radial-gradient(circle at 50% 0%, rgba(255,255,255,0.06) 0%, transparent 70%)',
+                  background: 'radial-gradient(circle at 50% 0%, rgba(0,0,0,0.06) 0%, transparent 70%)',
                   opacity: 0, transition: 'opacity 0.4s', pointerEvents: 'none',
                 },
                 '&:hover::after': { opacity: 1 },
               }}>
                 <Box sx={{ 
                   width: 56, height: 56, borderRadius: '16px', 
-                  backgroundColor: 'rgba(255,255,255,0.06)', color: '#fff', 
+                  backgroundColor: 'rgba(0,0,0,0.06)', color: '#18181b', 
                   display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 4,
-                  border: '1px solid rgba(255,255,255,0.1)',
+                  border: '1px solid rgba(0,0,0,0.1)',
                   boxShadow: '0 4px 12px rgba(0,0,0,0.2) inset',
                 }}>
                   {React.cloneElement(f.icon, { sx: { fontSize: 28 } })}
                 </Box>
                 <Typography sx={{ 
                   fontSize: f.colSpan === 2 ? '1.5rem' : '1.25rem', 
-                  fontWeight: 700, color: '#fff', mb: 2, letterSpacing: '-0.03em' 
+                  fontWeight: 700, color: '#18181b', mb: 2, letterSpacing: '-0.03em' 
                 }}>
                   {f.title}
                 </Typography>
                 <Typography sx={{ 
-                  fontSize: '1rem', color: '#a1a1aa', lineHeight: 1.6, 
+                  fontSize: '1rem', color: '#52525b', lineHeight: 1.6, 
                   maxWidth: f.colSpan === 2 ? '80%' : '100%' 
                 }}>
                   {f.desc}
@@ -370,7 +372,7 @@ function FeaturesSection() {
 function WorkflowSection() {
   const steps = ['Capture', 'Review', 'Publish', 'Explore'];
   return (
-    <Box sx={{ py: { xs: 10, md: 16 }, borderTop: '1px solid rgba(255,255,255,0.05)', backgroundColor: '#050505', position: 'relative', overflow: 'hidden' }}>
+    <Box sx={{ py: { xs: 10, md: 16 }, borderTop: '1px solid rgba(0,0,0,0.05)', backgroundColor: '#fafafa', position: 'relative', overflow: 'hidden' }}>
       <Box sx={{ px: { xs: 3, md: 6 }, maxWidth: 1200, mx: 'auto', position: 'relative', zIndex: 1 }}>
         <m.div
           initial={{ opacity: 0, y: 20 }}
@@ -379,7 +381,7 @@ function WorkflowSection() {
           transition={{ duration: 0.8 }}
         >
           <Box sx={{ textAlign: 'center', mb: { xs: 8, md: 12 } }}>
-            <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '2rem', md: '3rem' }, fontWeight: 800, letterSpacing: '-0.04em', color: '#fff', mb: 2 }}>
+            <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '2rem', md: '3rem' }, fontWeight: 800, letterSpacing: '-0.04em', color: '#18181b', mb: 2 }}>
               A seamless flow.
             </Typography>
           </Box>
@@ -397,12 +399,12 @@ function WorkflowSection() {
               >
                 <Box sx={{ 
                   p: 3, borderRadius: '20px', 
-                  border: '1px solid rgba(255,255,255,0.05)', 
-                  backgroundColor: 'rgba(255,255,255,0.03)', 
+                  border: '1px solid rgba(0,0,0,0.05)', 
+                  backgroundColor: 'rgba(0,0,0,0.02)', 
                   textAlign: 'center'
                 }}>
                   <Typography sx={{ fontSize: '0.875rem', color: '#71717a', mb: 1 }}>Step 0{i + 1}</Typography>
-                  <Typography sx={{ fontSize: '1.25rem', fontWeight: 600, color: '#fff' }}>{step}</Typography>
+                  <Typography sx={{ fontSize: '1.25rem', fontWeight: 600, color: '#18181b' }}>{step}</Typography>
                 </Box>
               </m.div>
               {i < steps.length - 1 && (
@@ -423,8 +425,8 @@ function WorkflowSection() {
 
 function CTABanner() {
   return (
-    <Box sx={{ py: { xs: 12, md: 20 }, px: { xs: 3, md: 6 }, textAlign: 'center', background: '#000', position: 'relative', overflow: 'hidden' }}>
-      <Box sx={{ position: 'absolute', inset: 0, backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(255,255,255,0.05) 1px, transparent 0)', backgroundSize: '32px 32px' }} />
+    <Box sx={{ py: { xs: 12, md: 20 }, px: { xs: 3, md: 6 }, textAlign: 'center', background: '#ffffff', position: 'relative', overflow: 'hidden' }}>
+      <Box sx={{ position: 'absolute', inset: 0, backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(0,0,0,0.05) 1px, transparent 0)', backgroundSize: '32px 32px' }} />
       <Box sx={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '100%', maxWidth: 600, height: 300, background: 'radial-gradient(ellipse, rgba(37,99,235,0.15) 0%, transparent 70%)', filter: 'blur(50px)' }} />
       <Box sx={{ position: 'relative', zIndex: 1 }}>
         <m.div
@@ -433,7 +435,7 @@ function CTABanner() {
           viewport={{ once: true }}
           transition={{ duration: 0.8 }}
         >
-          <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '2.5rem', md: '4rem' }, fontWeight: 800, letterSpacing: '-0.04em', color: '#fff', mb: 3 }}>
+          <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '2.5rem', md: '4rem' }, fontWeight: 800, letterSpacing: '-0.04em', color: '#18181b', mb: 3 }}>
             Ready to build?
           </Typography>
           <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center' }}>
@@ -451,18 +453,18 @@ function CTABanner() {
 
 function Footer() {
   return (
-    <Box component="footer" sx={{ backgroundColor: '#000', borderTop: '1px solid rgba(255,255,255,0.05)', pt: 12, pb: 6, px: { xs: 3, md: 6 } }}>
+    <Box component="footer" sx={{ backgroundColor: '#ffffff', borderTop: '1px solid rgba(0,0,0,0.05)', pt: 12, pb: 6, px: { xs: 3, md: 6 } }}>
       <Box sx={{ maxWidth: 1200, mx: 'auto' }}>
         <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, justifyContent: 'space-between', gap: { xs: 6, md: 2 }, mb: 10 }}>
           <Box sx={{ maxWidth: 320 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 3 }}>
-              <Box component="img" src="/assets/new_logo_white.png" alt="My Home Group" sx={{ height: 32, width: 'auto', objectFit: 'contain' }} />
+              <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 32, width: 'auto', objectFit: 'contain' }} />
               <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-                <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.03em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
-                <Typography sx={{ fontSize: '0.65rem', fontWeight: 700, color: '#a1a1aa', letterSpacing: '0.15em', mt: 0.5 }}>BY SITESURELABS</Typography>
+                <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.03em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
+                <Typography sx={{ fontSize: '0.65rem', fontWeight: 700, color: '#52525b', letterSpacing: '0.15em', mt: 0.5 }}>BY SITESURELABS</Typography>
               </Box>
             </Box>
-            <Typography sx={{ fontSize: '0.9375rem', color: '#a1a1aa', lineHeight: 1.7 }}>
+            <Typography sx={{ fontSize: '0.9375rem', color: '#52525b', lineHeight: 1.7 }}>
               The visual operating system for modern construction teams.
             </Typography>
           </Box>
@@ -473,9 +475,9 @@ function Footer() {
               { title: 'Legal', links: ['Privacy', 'Terms', 'Security'] },
             ].map(col => (
               <Box key={col.title}>
-                <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: '#fff', mb: 3 }}>{col.title}</Typography>
+                <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: '#18181b', mb: 3 }}>{col.title}</Typography>
                 {col.links.map(label => (
-                  <Box key={label} component={Link} to="#" sx={{ display: 'block', mb: 2, fontSize: '0.9375rem', color: '#a1a1aa', textDecoration: 'none', transition: 'color 0.2s', '&:hover': { color: '#fff' } }}>
+                  <Box key={label} component={Link} to="#" sx={{ display: 'block', mb: 2, fontSize: '0.9375rem', color: '#52525b', textDecoration: 'none', transition: 'color 0.2s', '&:hover': { color: '#18181b' } }}>
                     {label}
                   </Box>
                 ))}
@@ -483,7 +485,7 @@ function Footer() {
             ))}
           </Box>
         </Box>
-        <Box sx={{ borderTop: '1px solid rgba(255,255,255,0.05)', pt: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Box sx={{ borderTop: '1px solid rgba(0,0,0,0.05)', pt: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Typography sx={{ fontSize: '0.875rem', color: '#71717a' }}>© 2026 SiteSureLabs</Typography>
         </Box>
       </Box>
@@ -495,7 +497,7 @@ function Footer() {
 
 export default function LandingPage() {
   return (
-    <Box sx={{ minHeight: '100vh', backgroundColor: '#000', color: '#fff', '& ::selection': { background: 'rgba(255,255,255,0.2)' } }}>
+    <Box sx={{ minHeight: '100vh', backgroundColor: '#ffffff', color: '#18181b', '& ::selection': { background: 'rgba(0,0,0,0.08)' } }}>
       <Navbar />
       <Hero />
       <FeaturesSection />

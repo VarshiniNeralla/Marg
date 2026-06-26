@@ -20,7 +20,7 @@ const labelSx = {
   fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
   fontSize: '0.875rem',
   fontWeight: 500,
-  color: '#e4e4e7',
+  color: '#3f3f46',
   mb: '8px',
 };
 
@@ -28,16 +28,16 @@ const inputSx = {
   '& .MuiOutlinedInput-root': {
     borderRadius: '12px',
     height: '52px',
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    color: '#fff',
+    backgroundColor: 'rgba(0,0,0,0.02)',
+    color: '#18181b',
     fontSize: '0.9375rem',
     fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
     transition: 'border-color 140ms, box-shadow 140ms, background-color 140ms',
-    '& .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(255,255,255,0.1)' },
-    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(255,255,255,0.2)' },
-    '&:hover': { backgroundColor: 'rgba(255,255,255,0.05)' },
-    '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#fff', borderWidth: '1px' },
-    '&.Mui-focused': { boxShadow: '0 0 0 4px rgba(255,255,255,0.1)', backgroundColor: 'rgba(255,255,255,0.05)' },
+    '& .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(0,0,0,0.1)' },
+    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(0,0,0,0.08)' },
+    '&:hover': { backgroundColor: 'rgba(0,0,0,0.05)' },
+    '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#18181b', borderWidth: '1.5px' },
+    '&.Mui-focused': { boxShadow: '0 0 0 4px rgba(0,0,0,0.05)', backgroundColor: '#fff' },
   },
   '& .MuiInputLabel-root': { display: 'none' },
   '& .MuiInputBase-input': {
@@ -45,8 +45,8 @@ const inputSx = {
     py: 0,
     '&::placeholder': { color: '#71717a', opacity: 1 },
     '&:-webkit-autofill': {
-      WebkitBoxShadow: '0 0 0 1000px #09090b inset',
-      WebkitTextFillColor: '#fff',
+      WebkitBoxShadow: '0 0 0 1000px #ffffff inset',
+      WebkitTextFillColor: '#18181b',
       transition: 'background-color 5000s ease-in-out 0s',
     },
   },
@@ -191,13 +191,13 @@ export default function LoginPage() {
                       sx={{
                         flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1,
                         py: 2, px: 1, borderRadius: '16px', cursor: 'pointer',
-                        border: `1px solid ${isActive ? opt.activeColor : 'rgba(255,255,255,0.1)'}`,
-                        backgroundColor: isActive ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.02)',
+                        border: `1px solid ${isActive ? opt.activeColor : 'rgba(0,0,0,0.1)'}`,
+                        backgroundColor: isActive ? 'rgba(0,0,0,0.04)' : '#ffffff',
                         boxShadow: isActive ? `0 0 20px ${opt.color}22 inset` : 'none',
                         transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
                         '&:hover': { 
-                          borderColor: isActive ? opt.activeColor : 'rgba(255,255,255,0.2)', 
-                          backgroundColor: 'rgba(255,255,255,0.04)',
+                          borderColor: isActive ? opt.activeColor : 'rgba(0,0,0,0.15)', 
+                          backgroundColor: 'rgba(0,0,0,0.02)',
                           transform: 'translateY(-2px)'
                         },
                       }}
@@ -207,7 +207,7 @@ export default function LoginPage() {
                       </Box>
                       <Typography sx={{
                         fontSize: '0.75rem', fontWeight: 600, lineHeight: 1.2, textAlign: 'center',
-                        color: isActive ? '#fff' : '#a1a1aa',
+                        color: isActive ? opt.activeColor : '#52525b',
                         fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
                         transition: 'color 0.2s',
                       }}>
@@ -245,7 +245,7 @@ export default function LoginPage() {
             <Box
               component="a"
               href="/forgot-password"
-              sx={{ fontSize: '0.8125rem', color: '#a1a1aa', fontWeight: 500, textDecoration: 'none', cursor: 'pointer', transition: 'color 0.2s', '&:hover': { color: '#fff' } }}
+              sx={{ fontSize: '0.8125rem', color: '#52525b', fontWeight: 500, textDecoration: 'none', cursor: 'pointer', transition: 'color 0.2s', '&:hover': { color: '#18181b' } }}
             >
               Forgot password?
             </Box>
@@ -271,11 +271,11 @@ export default function LoginPage() {
             height: '52px', borderRadius: '12px', fontSize: '1rem',
             fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
             fontWeight: 600, letterSpacing: '-0.01em',
-            background: '#fff',
-            color: '#000',
-            boxShadow: '0 4px 14px rgba(255,255,255,0.1)',
+            background: '#18181b',
+            color: '#ffffff',
+            boxShadow: '0 4px 14px rgba(0,0,0,0.15)',
             transition: 'transform 0.2s, box-shadow 0.2s, background-color 0.2s',
-            '&:hover': { background: '#e4e4e7', boxShadow: '0 6px 20px rgba(255,255,255,0.15)', transform: 'translateY(-1px)' },
+            '&:hover': { background: '#27272a', boxShadow: '0 6px 20px rgba(0,0,0,0.2)', transform: 'translateY(-1px)' },
             '&:active': { transform: 'translateY(0)' },
           }}
         >
@@ -283,7 +283,7 @@ export default function LoginPage() {
         </Button>
 
         {/* Demo credentials panel */}
-        <Box sx={{ mt: 4, pt: 3, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+        <Box sx={{ mt: 4, pt: 3, borderTop: '1px solid rgba(0,0,0,0.08)' }}>
           <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: '#71717a', textTransform: 'uppercase', letterSpacing: '0.08em', textAlign: 'center', mb: 2 }}>
             Demo Credentials
           </Typography>
@@ -299,15 +299,15 @@ export default function LoginPage() {
                 sx={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                   px: 2, py: 1.5, borderRadius: '12px', cursor: 'pointer',
-                  border: '1px solid rgba(255,255,255,0.05)', backgroundColor: 'rgba(255,255,255,0.02)',
+                  border: '1px solid rgba(0,0,0,0.05)', backgroundColor: 'rgba(255,255,255,0.02)',
                   transition: 'all 0.2s',
-                  '&:hover': { borderColor: 'rgba(255,255,255,0.15)', backgroundColor: 'rgba(255,255,255,0.05)', transform: 'translateX(2px)' },
+                  '&:hover': { borderColor: 'rgba(255,255,255,0.15)', backgroundColor: 'rgba(0,0,0,0.05)', transform: 'translateX(2px)' },
                 }}
               >
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                   <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: cred.color, flexShrink: 0, boxShadow: `0 0 10px ${cred.color}` }} />
                   <Box>
-                    <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: '#e4e4e7', lineHeight: 1.2 }}>
+                    <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: '#3f3f46', lineHeight: 1.2 }}>
                       {cred.email}
                     </Typography>
                   </Box>

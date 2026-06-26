@@ -24,13 +24,13 @@ export default function AuthCard({ title, subtitle, children, footer }: AuthCard
       py: 3,
       position: 'relative',
       overflow: 'hidden',
-      backgroundColor: '#000', // Deep dark theme for premium feel
-      color: '#fff',
+      backgroundColor: '#ffffff', // Deep dark theme for premium feel
+      color: '#18181b',
     }}>
       {/* ── Subtle background treatment ─────────────────────────────────────── */}
       <Box sx={{
         position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none',
-        backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(255,255,255,0.05) 1px, transparent 0)',
+        backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(0,0,0,0.05) 1px, transparent 0)',
         backgroundSize: '36px 36px',
       }} />
       <Box sx={{
@@ -60,12 +60,12 @@ export default function AuthCard({ title, subtitle, children, footer }: AuthCard
               borderRadius: '999px',
               fontSize: '0.875rem',
               fontWeight: 500,
-              color: '#a1a1aa',
+              color: '#52525b',
               textDecoration: 'none',
               transition: 'all 0.2s ease',
               '&:hover': {
-                color: '#fff',
-                backgroundColor: 'rgba(255,255,255,0.05)',
+                color: '#18181b',
+                backgroundColor: 'rgba(0,0,0,0.05)',
               },
               '&:hover svg': {
                 transform: 'translateX(-4px)',
@@ -86,21 +86,20 @@ export default function AuthCard({ title, subtitle, children, footer }: AuthCard
         >
           <Box sx={{
             width: '100%',
-            backgroundColor: 'rgba(255,255,255,0.02)',
-            backdropFilter: 'blur(20px)',
-            border: '1px solid rgba(255,255,255,0.08)',
+            backgroundColor: '#ffffff',
+            border: '1px solid rgba(0,0,0,0.06)',
             borderRadius: '24px',
-            boxShadow: '0 0 0 1px rgba(255,255,255,0.02), 0 30px 60px rgba(0,0,0,0.5)',
+            boxShadow: '0 20px 40px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04)',
             px: { xs: 3.5, sm: 5 },
             py: { xs: 3, sm: 3.5 },
           }}>
             {/* Brand */}
             <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mb: 3 }}>
-              <Box component="img" src="/assets/new_logo_white.png" alt="My Home Group"
-                sx={{ height: 42, width: 'auto', objectFit: 'contain', mb: 1.5 }} />
+              <Box component="img" src="/assets/new_logo.png" alt="My Home Group"
+                sx={{ height: 32, width: 'auto', objectFit: 'contain', mb: 1.5 }} />
               <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <Typography sx={{ fontSize: '1.5rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.03em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
-                <Typography sx={{ fontSize: '0.65rem', fontWeight: 700, color: '#a1a1aa', letterSpacing: '0.15em', mt: 0.5 }}>BY SITESURELABS</Typography>
+                <Typography sx={{ fontSize: '1.5rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.03em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
+                <Typography sx={{ fontSize: '0.65rem', fontWeight: 700, color: '#52525b', letterSpacing: '0.15em', mt: 0.5 }}>BY SITESURELABS</Typography>
               </Box>
             </Box>
 
@@ -109,7 +108,7 @@ export default function AuthCard({ title, subtitle, children, footer }: AuthCard
 
             {/* Footer */}
             {footer && (
-              <Box sx={{ mt: 4, pt: 3, borderTop: '1px solid rgba(255,255,255,0.08)', textAlign: 'center', fontSize: '0.875rem', color: '#71717a' }}>
+              <Box sx={{ mt: 4, pt: 3, borderTop: '1px solid rgba(0,0,0,0.08)', textAlign: 'center', fontSize: '0.875rem', color: '#71717a' }}>
                 {footer}
               </Box>
             )}
