@@ -490,6 +490,7 @@ export type AuditEventType =
   | 'capture_approved'
   | 'capture_rejected'
   | 'tour_published'
+  | 'tour_deleted'
   | 'tour_draft'
   | 'defect_created'
   | 'defect_resolved'

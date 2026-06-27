@@ -368,9 +368,9 @@ export default function TourViewerPage() {
   const floorId = floors.find(f => f.towerId === tour.towerId && f.label === tour.floorLabel)?.id;
 
   const breadcrumb: { label: string; to?: string }[] = [
-    { label: 'Home', to: '/dashboard' },
-    { label: tour.projectName, to: `/projects/${tour.projectId}` },
-    { label: tour.towerName, to: `/projects/${tour.projectId}/towers/${tour.towerId}` },
+    { label: 'Virtual Tours', to: '/tours' },
+    { label: tour.projectName },
+    { label: tour.towerName },
     { label: tour.floorLabel },
     { label: tour.roomName },
   ];
@@ -492,7 +492,7 @@ export default function TourViewerPage() {
     <Box>
       {/* ── Persistent breadcrumb bar ──────────────────────────────────────── */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2.5 }}>
-        <Box component="button" onClick={() => navigate(-1)} sx={{ cursor: 'pointer', border: 'none', color: colors.textMuted, textDecoration: 'none', display: 'flex', alignItems: 'center', width: 30, height: 30, borderRadius: '8px', justifyContent: 'center', backgroundColor: colors.card, boxShadow: '0 1px 3px rgba(15,23,42,0.06)', '&:hover': { color: colors.textStrong } }}>
+        <Box component={Link} to="/tours" sx={{ cursor: 'pointer', border: 'none', color: colors.textMuted, textDecoration: 'none', display: 'flex', alignItems: 'center', width: 30, height: 30, borderRadius: '8px', justifyContent: 'center', backgroundColor: colors.card, boxShadow: '0 1px 3px rgba(15,23,42,0.06)', '&:hover': { color: colors.textStrong } }}>
           <ArrowBackRounded sx={{ fontSize: 18 }} />
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', flex: 1 }}>

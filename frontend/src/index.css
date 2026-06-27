@@ -5,6 +5,12 @@
     Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+/* Reserve the scrollbar gutter so content never shifts horizontally when the
+   vertical scrollbar appears/disappears between pages or filter changes. */
+html {
+  scrollbar-gutter: stable;
+}
+
 * {
   box-sizing: border-box;
 }

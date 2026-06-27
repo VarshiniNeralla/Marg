@@ -196,25 +196,25 @@ function Hero() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 1, ease: [0.16, 1, 0.3, 1], delay: 0.4 }}
       >
-        <Box sx={{ mt: 10, maxWidth: 1100, mx: 'auto', position: 'relative', zIndex: 1, perspective: '1000px' }}>
-          <Box sx={{ 
-            borderRadius: '24px', overflow: 'hidden', 
+        <Box sx={{ mt: { xs: 6, md: 10 }, maxWidth: 1100, mx: 'auto', position: 'relative', zIndex: 1, perspective: '1000px' }}>
+          <Box sx={{
+            borderRadius: { xs: '16px', md: '24px' }, overflow: 'hidden',
             border: '1px solid rgba(0,0,0,0.08)',
             backgroundColor: '#ffffff',
             boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05), 0 30px 60px -15px rgba(0,0,0,0.1)',
-            transform: 'rotateX(5deg) scale(0.95)',
+            transform: { xs: 'none', md: 'rotateX(5deg) scale(0.95)' },
             transformOrigin: 'top center',
             transition: 'transform 0.5s cubic-bezier(0.16, 1, 0.3, 1)',
-            '&:hover': { transform: 'rotateX(0deg) scale(1)' }
+            '&:hover': { transform: { md: 'rotateX(0deg) scale(1)' } }
           }}>
             {/* Browser chrome */}
             <Box sx={{ height: 48, backgroundColor: '#f4f4f5', borderBottom: '1px solid rgba(0,0,0,0.05)', display: 'flex', alignItems: 'center', px: 2, gap: 1.5 }}>
               {['#ef4444','#f59e0b','#10b981'].map((c, i) => <Box key={i} sx={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: c, opacity: 0.8 }} />)}
             </Box>
             {/* Dashboard preview */}
-            <Box sx={{ display: 'flex', height: 520, background: '#ffffff' }}>
-              {/* Sidebar */}
-              <Box sx={{ width: 220, borderRight: '1px solid rgba(0,0,0,0.05)', p: 2, flexShrink: 0 }}>
+            <Box sx={{ display: 'flex', height: { xs: 380, sm: 460, md: 520 }, background: '#ffffff' }}>
+              {/* Sidebar — hidden on mobile where there's no room */}
+              <Box sx={{ display: { xs: 'none', sm: 'block' }, width: { sm: 180, md: 220 }, borderRight: '1px solid rgba(0,0,0,0.05)', p: 2, flexShrink: 0 }}>
                 {['Dashboard','Projects','Captures','Tours','Floor Plans','Analytics'].map((item, i) => (
                   <Box key={item} sx={{ px: 2, py: 1.25, borderRadius: '8px', mb: 0.5, backgroundColor: i === 0 ? 'rgba(0,0,0,0.04)' : 'transparent', display: 'flex', alignItems: 'center', gap: 1.5 }}>
                     <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: i === 0 ? '#18181b' : 'rgba(0,0,0,0.15)' }} />
@@ -223,25 +223,25 @@ function Hero() {
                 ))}
               </Box>
               {/* Main content */}
-              <Box sx={{ flex: 1, p: 4, overflowY: 'hidden' }}>
-                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 3, mb: 3 }}>
+              <Box sx={{ flex: 1, minWidth: 0, p: { xs: 2, sm: 3, md: 4 }, overflowY: 'hidden' }}>
+                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(3, 1fr)' }, gap: { xs: 1.25, sm: 2, md: 3 }, mb: { xs: 2, md: 3 } }}>
                   {[
                     { label: 'Active Projects', value: '12', trend: '+2' },
                     { label: 'Total Captures', value: '1,284', trend: '+14%' },
                     { label: 'Reviews Pending', value: '23', trend: '-5' },
                   ].map(({ label, value, trend }) => (
-                    <Box key={label} sx={{ backgroundColor: 'rgba(0,0,0,0.02)', border: '1px solid rgba(0,0,0,0.05)', borderRadius: '16px', p: 3 }}>
-                      <Typography sx={{ fontSize: '0.875rem', color: '#52525b', mb: 1 }}>{label}</Typography>
-                      <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5 }}>
-                        <Typography sx={{ fontSize: '2rem', fontWeight: 700, color: '#18181b', lineHeight: 1 }}>{value}</Typography>
-                        <Typography sx={{ fontSize: '0.875rem', color: trend.startsWith('+') ? '#10b981' : '#a1a1aa' }}>{trend}</Typography>
+                    <Box key={label} sx={{ backgroundColor: 'rgba(0,0,0,0.02)', border: '1px solid rgba(0,0,0,0.05)', borderRadius: { xs: '10px', md: '16px' }, p: { xs: 1.5, sm: 2, md: 3 }, minWidth: 0 }}>
+                      <Typography noWrap sx={{ fontSize: { xs: '0.625rem', sm: '0.75rem', md: '0.875rem' }, color: '#52525b', mb: { xs: 0.5, md: 1 } }}>{label}</Typography>
+                      <Box sx={{ display: 'flex', alignItems: 'baseline', gap: { xs: 0.5, md: 1.5 }, flexWrap: 'wrap' }}>
+                        <Typography sx={{ fontSize: { xs: '1.125rem', sm: '1.5rem', md: '2rem' }, fontWeight: 700, color: '#18181b', lineHeight: 1 }}>{value}</Typography>
+                        <Typography sx={{ fontSize: { xs: '0.625rem', md: '0.875rem' }, color: trend.startsWith('+') ? '#10b981' : '#a1a1aa' }}>{trend}</Typography>
                       </Box>
                     </Box>
                   ))}
                 </Box>
-                <Box sx={{ backgroundColor: 'rgba(0,0,0,0.02)', border: '1px solid rgba(0,0,0,0.05)', borderRadius: '16px', p: 3, height: 280 }}>
-                  <Typography sx={{ fontSize: '1rem', fontWeight: 500, color: '#18181b', mb: 3 }}>Capture Volume</Typography>
-                  <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 180, pt: 2 }}>
+                <Box sx={{ backgroundColor: 'rgba(0,0,0,0.02)', border: '1px solid rgba(0,0,0,0.05)', borderRadius: { xs: '10px', md: '16px' }, p: { xs: 2, md: 3 }, height: { xs: 200, sm: 240, md: 280 } }}>
+                  <Typography sx={{ fontSize: { xs: '0.875rem', md: '1rem' }, fontWeight: 500, color: '#18181b', mb: { xs: 2, md: 3 } }}>Capture Volume</Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: { xs: 1, md: 2 }, height: { xs: 110, sm: 150, md: 180 }, pt: 2 }}>
                     {[40, 65, 50, 80, 70, 90, 75, 100].map((h, i) => (
                       <Box key={i} sx={{ flex: 1, borderRadius: '4px 4px 0 0', background: i === 7 ? 'linear-gradient(180deg, #2563eb 0%, rgba(37,99,235,0.2) 100%)' : 'rgba(0,0,0,0.1)', height: `${h}%`, transition: 'height 0.5s ease', '&:hover': { background: '#2563eb' } }} />
                     ))}
@@ -282,18 +282,18 @@ const itemVariants: Variants = {
 
 function FeaturesSection() {
   return (
-    <Box sx={{ py: { xs: 10, md: 16 }, px: { xs: 3, md: 6 }, maxWidth: 1200, mx: 'auto' }}>
+    <Box sx={{ py: { xs: 8, md: 16 }, px: { xs: 3, md: 6 }, maxWidth: 1200, mx: 'auto' }}>
       <m.div
         initial={{ opacity: 0, y: 20 }}
         whileInView={{ opacity: 1, y: 0 }}
         viewport={{ once: true, margin: '-100px' }}
         transition={{ duration: 0.8 }}
       >
-        <Box sx={{ textAlign: 'center', mb: { xs: 8, md: 12 } }}>
-          <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '2.5rem', md: '3.5rem' }, fontWeight: 800, letterSpacing: '-0.04em', color: '#18181b', mb: 2 }}>
+        <Box sx={{ textAlign: 'center', mb: { xs: 5, md: 12 } }}>
+          <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.875rem', sm: '2.5rem', md: '3.5rem' }, fontWeight: 800, letterSpacing: '-0.04em', color: '#18181b', mb: 2 }}>
             Powerful features. <br /> Elegant experience.
           </Typography>
-          <Typography sx={{ fontSize: '1.125rem', color: '#52525b', maxWidth: 540, mx: 'auto', lineHeight: 1.6 }}>
+          <Typography sx={{ fontSize: { xs: '0.9375rem', md: '1.125rem' }, color: '#52525b', maxWidth: 540, mx: 'auto', lineHeight: 1.6 }}>
             Everything you need to manage your site digitally, engineered for performance and precision.
           </Typography>
         </Box>
@@ -308,15 +308,15 @@ function FeaturesSection() {
         <Box sx={{
           display: 'grid',
           gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', md: 'repeat(3, 1fr)' },
-          gridAutoRows: 'minmax(220px, auto)',
-          gap: 3,
+          gridAutoRows: { xs: 'auto', md: 'minmax(220px, auto)' },
+          gap: { xs: 2, md: 3 },
         }}>
           {FEATURES.map((f, i) => (
             <m.div key={f.title} variants={itemVariants} style={{ height: '100%' }}>
               <Box sx={{
                 gridColumn: { xs: 'span 1', md: `span ${f.colSpan}` },
                 gridRow: { xs: 'span 1', md: `span ${f.rowSpan}` },
-                p: { xs: 4, md: 5 }, borderRadius: '32px', 
+                p: { xs: 2.5, sm: 3.5, md: 5 }, borderRadius: { xs: '20px', md: '32px' },
                 border: '1px solid rgba(0,0,0,0.08)', 
                 backgroundColor: 'rgba(255,255,255,0.02)',
                 backdropFilter: 'blur(20px)',
@@ -337,24 +337,24 @@ function FeaturesSection() {
                 },
                 '&:hover::after': { opacity: 1 },
               }}>
-                <Box sx={{ 
-                  width: 56, height: 56, borderRadius: '16px', 
-                  backgroundColor: 'rgba(0,0,0,0.06)', color: '#18181b', 
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 4,
+                <Box sx={{
+                  width: { xs: 44, md: 56 }, height: { xs: 44, md: 56 }, borderRadius: { xs: '12px', md: '16px' },
+                  backgroundColor: 'rgba(0,0,0,0.06)', color: '#18181b',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', mb: { xs: 2, md: 4 },
                   border: '1px solid rgba(0,0,0,0.1)',
                   boxShadow: '0 4px 12px rgba(0,0,0,0.2) inset',
                 }}>
-                  {React.cloneElement(f.icon, { sx: { fontSize: 28 } })}
+                  {React.cloneElement(f.icon, { sx: { fontSize: { xs: 22, md: 28 } } })}
                 </Box>
-                <Typography sx={{ 
-                  fontSize: f.colSpan === 2 ? '1.5rem' : '1.25rem', 
-                  fontWeight: 700, color: '#18181b', mb: 2, letterSpacing: '-0.03em' 
+                <Typography sx={{
+                  fontSize: { xs: '1.0625rem', md: f.colSpan === 2 ? '1.5rem' : '1.25rem' },
+                  fontWeight: 700, color: '#18181b', mb: { xs: 1, md: 2 }, letterSpacing: '-0.03em'
                 }}>
                   {f.title}
                 </Typography>
-                <Typography sx={{ 
-                  fontSize: '1rem', color: '#52525b', lineHeight: 1.6, 
-                  maxWidth: f.colSpan === 2 ? '80%' : '100%' 
+                <Typography sx={{
+                  fontSize: { xs: '0.875rem', md: '1rem' }, color: '#52525b', lineHeight: 1.6,
+                  maxWidth: { xs: '100%', md: f.colSpan === 2 ? '80%' : '100%' }
                 }}>
                   {f.desc}
                 </Typography>
@@ -497,7 +497,7 @@ function Footer() {
 
 export default function LandingPage() {
   return (
-    <Box sx={{ minHeight: '100vh', backgroundColor: '#ffffff', color: '#18181b', '& ::selection': { background: 'rgba(0,0,0,0.08)' } }}>
+    <Box sx={{ minHeight: '100vh', overflowX: 'hidden', backgroundColor: '#ffffff', color: '#18181b', '& ::selection': { background: 'rgba(0,0,0,0.08)' } }}>
       <Navbar />
       <Hero />
       <FeaturesSection />

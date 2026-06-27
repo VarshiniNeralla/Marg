@@ -199,6 +199,7 @@ export function computeDashboardStats(data: WorkflowData) {
     captureCount: data.captures.length,
     tourCount: data.tours.length,
     publishedTourCount: data.tours.filter(t => t.status === 'published').length,
+    toursPendingPublish: data.tours.filter(t => t.status !== 'published').length,
     pendingReviews,
     defectOpenCount: data.defects.filter(d => d.status === 'open' || d.status === 'in_progress').length,
   };

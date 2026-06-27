@@ -36,20 +36,21 @@ export default function ProjectsPage() {
   }
 
   return (
-    <Box>
+    <Box sx={{ maxWidth: 800, mx: 'auto' }}>
       {/* Back to overview */}
       <Box component={Link} to={getRoleLandingPath(user?.role)} sx={{
-        display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
-        px: 1.25, py: 0.625, borderRadius: '8px',
-        border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
-        fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
-        transition: `all ${motion.durationFast}`, '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
-      }}>
-        <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
-      </Box>
+          display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+          px: 1.25, py: 0.625, borderRadius: '8px',
+          border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+          fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+          transition: `all ${motion.durationFast} ${motion.easeOut}`,
+          '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+        }}>
+          <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
+        </Box>
 
       {/* Page header */}
-      <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 5 }}>
+      <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, alignItems: { xs: 'stretch', sm: 'flex-start' }, justifyContent: 'space-between', gap: 2, mb: { xs: 3.5, sm: 5 } }}>
         <Box>
           <Typography
             sx={{
@@ -73,7 +74,8 @@ export default function ProjectsPage() {
             component={Link}
             to="/projects/new"
             sx={{
-              display: 'flex',
+              display: 'inline-flex',
+              alignSelf: { xs: 'flex-start', sm: 'auto' },
               alignItems: 'center',
               gap: 0.75,
               px: 2,
@@ -271,7 +273,7 @@ export default function ProjectsPage() {
       <Dialog
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
-        slotProps={{ paper: { sx: { borderRadius: '16px', minWidth: 360 } } }}
+        slotProps={{ paper: { sx: { borderRadius: '16px', width: { xs: 'calc(100% - 32px)', sm: 'auto' }, minWidth: { xs: 0, sm: 360 }, m: { xs: 2, sm: 4 } } } }}
       >
         <DialogTitle sx={{ fontSize: '1rem', fontWeight: 700, color: colors.textStrong }}>
           Delete Project

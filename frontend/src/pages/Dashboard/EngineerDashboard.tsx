@@ -3,6 +3,7 @@ import { Box, Typography, Grid } from '@mui/material';
 import {
   PhotoCameraRounded, ArrowForwardRounded,
   MapRounded, HistoryRounded,
+  FolderOpenRounded, CloudUploadRounded, HourglassTopRounded, CheckCircleRounded,
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '@store/authStore';
@@ -49,7 +50,7 @@ export default function EngineerDashboard() {
   const name     = user?.name?.split(' ')[0] ?? 'Engineer';
 
   return (
-    <Box sx={{ maxWidth: 960, mx: 'auto', pb: 6 }}>
+    <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
 
       {/* ════════════════════════════════════════════════════════════════════
           HERO — dark ink card, full width
@@ -117,28 +118,30 @@ export default function EngineerDashboard() {
       {/* ════════════════════════════════════════════════════════════════════
           KPI STRIP
       ════════════════════════════════════════════════════════════════════ */}
-      <Grid container spacing={1.5} sx={{ mb: 3 }}>
+      <Grid container spacing={2} sx={{ mb: 3 }}>
         {[
-          { label:'Assigned Projects', value: myProjects.length, sub:'active sites',      accent: P.blue    },
-          { label:'Total Uploads',     value: captures.length,   sub:'captures uploaded', accent: P.strong  },
-          { label:'Pending Review',    value: pendingTours.length,    sub:'tours awaiting review',  accent: '#d97706' },
-          { label:'Reviewed',          value: reviewedTours.length,   sub:'tours reviewed', accent: '#16a34a' },
-        ].map(({ label, value, sub, accent }) => (
+          { label:'Assigned Projects', value: myProjects.length,     sub:'active sites',          color: P.blue,    bg: 'rgba(37,99,235,0.08)',   icon: <FolderOpenRounded /> },
+          { label:'Total Uploads',     value: captures.length,       sub:'captures uploaded',     color: '#0891b2', bg: 'rgba(8,145,178,0.08)',   icon: <CloudUploadRounded /> },
+          { label:'Pending Review',    value: pendingTours.length,   sub:'tours awaiting review', color: '#d97706', bg: 'rgba(217,119,6,0.08)',   icon: <HourglassTopRounded /> },
+          { label:'Reviewed',          value: reviewedTours.length,  sub:'tours reviewed',        color: '#16a34a', bg: 'rgba(22,163,74,0.08)',   icon: <CheckCircleRounded /> },
+        ].map(({ label, value, sub, color, bg, icon }) => (
           <Grid key={label} size={{ xs:6, md:3 }}>
             <Box sx={{
-              px:2.5, py:2.5, borderRadius:'16px',
+              position: 'relative', overflow: 'hidden',
+              p: { xs: 2, sm: 2.25 }, borderRadius: '16px',
               backgroundColor: P.white,
-              border:`1.5px solid ${P.border}`,
-              boxShadow:'0 1px 3px rgba(0,0,0,0.04)',
+              border: `1px solid ${P.border}`,
               transition: T,
-              '&:hover':{ borderColor: accent + '55', boxShadow:`0 4px 16px ${accent}14` },
+              '&:hover': { transform: 'translateY(-1px)', boxShadow: `0 4px 16px rgba(0,0,0,0.07)` },
             }}>
-              <Typography sx={{ fontSize:'2rem', fontWeight:800, color: accent === P.strong ? P.strong : accent,
-                letterSpacing:'-0.06em', lineHeight:1, mb:0.5 }}>
-                {value}
-              </Typography>
-              <Typography sx={{ fontSize:'0.8125rem', fontWeight:600, color:P.strong, mb:0.125 }}>{label}</Typography>
-              <Typography sx={{ fontSize:'0.6875rem', color:P.subtle }}>{sub}</Typography>
+              {/* top accent bar */}
+              <Box sx={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, borderRadius: '16px 16px 0 0', backgroundColor: color, opacity: 0.7 }} />
+              <Box sx={{ width: 36, height: 36, borderRadius: '10px', backgroundColor: bg, color, display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 1.5, '& svg': { fontSize: 18 } }}>
+                {icon}
+              </Box>
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: P.muted, mb: 0.375 }}>{label}</Typography>
+              <Typography sx={{ fontSize: '1.5rem', fontWeight: 800, color: P.strong, lineHeight: 1, letterSpacing: '-0.03em' }}>{value}</Typography>
+              <Typography sx={{ fontSize: '0.75rem', color: P.subtle, mt: 0.375 }}>{sub}</Typography>
             </Box>
           </Grid>
         ))}

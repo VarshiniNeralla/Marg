@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Box, Typography, TextField, Switch, Select, MenuItem, Snackbar, Alert, InputAdornment, IconButton } from '@mui/material';
 import {
   PersonRounded,
   LockRounded, CheckRounded, WarningAmberRounded, StorageRounded,
-  VisibilityRounded, VisibilityOffRounded,
+  VisibilityRounded, VisibilityOffRounded, ArrowBackRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { useAuthStore } from '@store/authStore';
+import { useAuthStore, getRoleLandingPath } from '@store/authStore';
 import { authService } from '@services/authService';
 import { useSettingsStore } from '@store/settingsStore';
 import { userService } from '@services/userService';
@@ -44,12 +45,12 @@ function SectionCard({ title, children }: { title: string; children: React.React
 
 function FieldRow({ label, helper, children }: { label: string; helper?: string; children: React.ReactNode }) {
   return (
-    <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 3, py: 2, borderBottom: `1px solid ${colors.borderLight}`, '&:last-child': { borderBottom: 'none' } }}>
-      <Box sx={{ width: 200, flexShrink: 0, pt: 0.5 }}>
+    <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, alignItems: { xs: 'stretch', md: 'flex-start' }, gap: { xs: 1, md: 3 }, py: 2, borderBottom: `1px solid ${colors.borderLight}`, '&:last-child': { borderBottom: 'none' } }}>
+      <Box sx={{ width: { xs: '100%', md: 200 }, flexShrink: 0, pt: { md: 0.5 } }}>
         <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong }}>{label}</Typography>
         {helper && <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.25 }}>{helper}</Typography>}
       </Box>
-      <Box sx={{ flex: 1 }}>{children}</Box>
+      <Box sx={{ flex: 1, minWidth: 0 }}>{children}</Box>
     </Box>
   );
 }
@@ -316,7 +317,7 @@ function SecurityTab({ onSaved }: { onSaved: () => void }) {
         <PwField label="Confirm new password" value={form.confirm} onChange={v => setForm(f => ({ ...f, confirm: v }))} />
       </SectionCard>
       <SectionCard title="Two-Factor Authentication">
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, alignItems: { xs: 'flex-start', sm: 'center' }, justifyContent: 'space-between', gap: { xs: 1.5, sm: 0 } }}>
           <Box>
             <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong }}>Authenticator app</Typography>
             <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>Use Google Authenticator or similar</Typography>
@@ -377,6 +378,7 @@ function AdvancedTab() {
 export default function SettingsPage() {
   const [active, setActive] = useState('account');
   const [toastOpen, setToastOpen] = useState(false);
+  const user = useAuthStore(s => s.user);
 
   function handleSaved() { setToastOpen(true); }
 
@@ -387,22 +389,42 @@ export default function SettingsPage() {
   };
 
   return (
-    <Box>
+    <Box sx={{ maxWidth: 800, mx: 'auto' }}>
       <Box sx={{ mb: 5 }}>
+        <Box component={Link} to={getRoleLandingPath(user?.role)} sx={{
+          display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+          px: 1.25, py: 0.625, borderRadius: '8px',
+          border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+          fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+          transition: `all ${motion.durationFast} ${motion.easeOut}`,
+          '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+        }}>
+          <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
+        </Box>
         <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.5rem', md: '2rem' }, fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1, mb: 0.75 }}>
           Settings
         </Typography>
         <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>Manage your account, team, and preferences</Typography>
       </Box>
 
-      <Box sx={{ display: 'flex', gap: 4, alignItems: 'flex-start' }}>
-        <Box sx={{ width: 200, flexShrink: 0 }}>
+      <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: { xs: 2, md: 4 }, alignItems: 'flex-start' }}>
+        <Box sx={{
+          width: { xs: '100%', md: 200 }, flexShrink: 0,
+          display: 'flex', flexDirection: { xs: 'row', md: 'column' },
+          gap: { xs: 0.5, md: 0 },
+          overflowX: { xs: 'auto', md: 'visible' },
+          pb: { xs: 0.5, md: 0 },
+          // hide scrollbar on the mobile tab strip
+          '&::-webkit-scrollbar': { display: 'none' }, scrollbarWidth: 'none',
+        }}>
           {tabs.map(t => (
             <Box key={t.key} onClick={() => setActive(t.key)} sx={{
-              display: 'flex', alignItems: 'center', gap: 1.25, px: 1.5, py: 1, borderRadius: '8px', cursor: 'pointer', mb: 0.25,
+              display: 'flex', alignItems: 'center', gap: 1.25, px: 1.5, py: 1, borderRadius: '8px', cursor: 'pointer', mb: { md: 0.25 },
+              flexShrink: 0, whiteSpace: 'nowrap',
               backgroundColor: active === t.key ? colors.primarySoft : 'transparent',
               color: active === t.key ? colors.primary : colors.textSecondary,
               fontSize: '0.875rem', fontWeight: active === t.key ? 600 : 400,
+              border: { xs: `1px solid ${active === t.key ? colors.primary : colors.border}`, md: 'none' },
               transition: `all ${motion.durationFast}`,
               '&:hover': { backgroundColor: active === t.key ? colors.primarySoft : colors.bg, color: colors.textStrong },
             }}>
@@ -411,7 +433,7 @@ export default function SettingsPage() {
           ))}
         </Box>
 
-        <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Box sx={{ flex: 1, minWidth: 0, width: '100%' }}>
           {tabContent[active]}
         </Box>
       </Box>

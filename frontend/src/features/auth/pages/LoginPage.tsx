@@ -196,7 +196,7 @@ export default function LoginPage() {
         {/* Role selector */}
         <Box sx={{ mb: '24px' }}>
           <Typography component="label" sx={labelSx}>Sign in as</Typography>
-          <Box sx={{ display: 'flex', gap: 1.5 }}>
+          <Box sx={{ display: 'flex', gap: { xs: 1, sm: 1.5 } }}>
             {ROLE_OPTIONS.map((opt) => {
               const isActive = selectedRole === opt.value;
               return (
@@ -208,8 +208,8 @@ export default function LoginPage() {
                     <Box
                       onClick={() => field.onChange(opt.value)}
                       sx={{
-                        flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1,
-                        py: 2, px: 1, borderRadius: '16px', cursor: 'pointer',
+                        flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1,
+                        py: { xs: 1.5, sm: 2 }, px: { xs: 0.5, sm: 1 }, borderRadius: '16px', cursor: 'pointer',
                         border: `1px solid ${isActive ? opt.activeColor : 'rgba(0,0,0,0.1)'}`,
                         backgroundColor: isActive ? 'rgba(0,0,0,0.04)' : '#ffffff',
                         boxShadow: isActive ? `0 0 20px ${opt.color}22 inset` : 'none',
@@ -323,15 +323,15 @@ export default function LoginPage() {
                   '&:hover': { borderColor: 'rgba(255,255,255,0.15)', backgroundColor: 'rgba(0,0,0,0.05)', transform: 'translateX(2px)' },
                 }}
               >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0, flex: 1 }}>
                   <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: cred.color, flexShrink: 0, boxShadow: `0 0 10px ${cred.color}` }} />
-                  <Box>
-                    <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: '#3f3f46', lineHeight: 1.2 }}>
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography noWrap sx={{ fontSize: { xs: '0.75rem', sm: '0.8125rem' }, fontWeight: 600, color: '#3f3f46', lineHeight: 1.2 }}>
                       {cred.email}
                     </Typography>
                   </Box>
                 </Box>
-                <Box sx={{ textAlign: 'right' }}>
+                <Box sx={{ textAlign: 'right', flexShrink: 0, pl: 1 }}>
                   <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: cred.color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                     {cred.roleLabel}
                   </Typography>

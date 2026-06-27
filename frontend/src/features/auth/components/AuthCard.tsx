@@ -20,7 +20,7 @@ export default function AuthCard({ title, subtitle, children, footer }: AuthCard
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      px: 3,
+      px: { xs: 2, sm: 3 },
       py: 3,
       position: 'relative',
       overflow: 'hidden',
@@ -90,7 +90,7 @@ export default function AuthCard({ title, subtitle, children, footer }: AuthCard
             border: '1px solid rgba(0,0,0,0.06)',
             borderRadius: '24px',
             boxShadow: '0 20px 40px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04)',
-            px: { xs: 3.5, sm: 5 },
+            px: { xs: 2.5, sm: 5 },
             py: { xs: 3, sm: 3.5 },
           }}>
             {/* Brand */}

@@ -8,6 +8,7 @@ import {
   AddRounded, EditRounded, DeleteRounded, SearchRounded,
   PeopleRounded, EmailRounded, WorkOutlineRounded, CheckCircleRounded,
   PersonOffRounded, RefreshRounded, ErrorRounded, ArrowBackRounded,
+  AdminPanelSettingsRounded, ManageAccountsRounded, EngineeringRounded, VerifiedUserRounded,
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
@@ -15,14 +16,14 @@ import PageHeader from '@shared/components/PageHeader/PageHeader';
 import Button from '@shared/components/Button/Button';
 import { userService } from '@services/userService';
 import { authService as backendAuth } from '@services/authService';
-import { useAuthStore , getRoleLandingPath } from '@store/authStore';
+import { useAuthStore, getRoleLandingPath } from '@store/authStore';
 import apiClient from '@services/apiClient';
 
 type AppRole = 'admin' | 'manager' | 'field_engineer';
 
 const ROLE_OPTIONS: { value: AppRole; label: string; color: string; bg: string }[] = [
-  { value: 'admin',          label: 'Admin',          color: '#2563eb', bg: 'rgba(37,99,235,0.08)' },
-  { value: 'manager',        label: 'Manager',        color: '#7c3aed', bg: 'rgba(124,58,237,0.08)' },
+  { value: 'admin', label: 'Admin', color: '#2563eb', bg: 'rgba(37,99,235,0.08)' },
+  { value: 'manager', label: 'Manager', color: '#7c3aed', bg: 'rgba(124,58,237,0.08)' },
   { value: 'field_engineer', label: 'Field Engineer', color: '#059669', bg: 'rgba(5,150,105,0.08)' },
 ];
 
@@ -87,26 +88,26 @@ function ErrorBanner({ msg }: { msg: string }) {
 export default function UserManagementPage() {
   const currentUser = useAuthStore(s => s.user);
 
-  const [users, setUsers]             = useState<ApiUser[]>([]);
-  const [loading, setLoading]         = useState(true);
-  const [error, setError]             = useState('');
-  const [search, setSearch]           = useState('');
-  const [roleFilter, setRoleFilter]   = useState('all');
+  const [users, setUsers] = useState<ApiUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const [roleFilter, setRoleFilter] = useState('all');
 
-  const [createOpen, setCreateOpen]   = useState(false);
-  const [createForm, setCreateForm]   = useState<CreateForm>(EMPTY_CREATE);
-  const [createErr, setCreateErr]     = useState('');
-  const [creating, setCreating]       = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createForm, setCreateForm] = useState<CreateForm>(EMPTY_CREATE);
+  const [createErr, setCreateErr] = useState('');
+  const [creating, setCreating] = useState(false);
   const [createdInfo, setCreatedInfo] = useState<{ name: string; email: string; password: string } | null>(null);
 
-  const [editTarget, setEditTarget]   = useState<ApiUser | null>(null);
-  const [editForm, setEditForm]       = useState<EditForm>(EMPTY_EDIT);
-  const [editErr, setEditErr]         = useState('');
-  const [editing, setEditing]         = useState(false);
-  const [pwSuccess, setPwSuccess]     = useState(false);
+  const [editTarget, setEditTarget] = useState<ApiUser | null>(null);
+  const [editForm, setEditForm] = useState<EditForm>(EMPTY_EDIT);
+  const [editErr, setEditErr] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [pwSuccess, setPwSuccess] = useState(false);
 
   const [deleteTarget, setDeleteTarget] = useState<ApiUser | null>(null);
-  const [deleting, setDeleting]         = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -125,7 +126,7 @@ export default function UserManagementPage() {
 
   const filtered = users.filter(u => {
     const matchSearch = u.name.toLowerCase().includes(search.toLowerCase()) ||
-                        u.email.toLowerCase().includes(search.toLowerCase());
+      u.email.toLowerCase().includes(search.toLowerCase());
     const matchRole = roleFilter === 'all' || u.role === roleFilter;
     return matchSearch && matchRole;
   });
@@ -214,17 +215,18 @@ export default function UserManagementPage() {
   const activeCount = users.filter(u => u.is_active !== false).length;
 
   return (
-    <Box>
+    <Box sx={{ maxWidth: 800, mx: 'auto' }}>
       {/* Back to overview */}
       <Box component={Link} to={getRoleLandingPath(currentUser?.role)} sx={{
-        display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
-        px: 1.25, py: 0.625, borderRadius: '8px',
-        border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
-        fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
-        transition: `all ${motion.durationFast}`, '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
-      }}>
-        <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
-      </Box>
+          display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+          px: 1.25, py: 0.625, borderRadius: '8px',
+          border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+          fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+          transition: `all ${motion.durationFast} ${motion.easeOut}`,
+          '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+        }}>
+          <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
+        </Box>
 
       <PageHeader
         title="User Management"
@@ -264,29 +266,40 @@ export default function UserManagementPage() {
       )}
 
       {/* Summary cards */}
-      <Grid container spacing={2} sx={{ mb: 3 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2,1fr)', sm: 'repeat(4,1fr)' }, gap: { xs: 1, sm: 1.5 }, mb: 3 }}>
         {[
-          { label: 'Admins',          value: adminCount,   color: '#2563eb' },
-          { label: 'Managers',        value: managerCount, color: '#7c3aed' },
-          { label: 'Field Engineers', value: engCount,     color: '#059669' },
-          { label: 'Active',          value: activeCount,  color: '#0891b2' },
+          { label: 'Admins',          value: adminCount,   color: '#2563eb', icon: <AdminPanelSettingsRounded /> },
+          { label: 'Managers',        value: managerCount, color: '#7c3aed', icon: <ManageAccountsRounded /> },
+          { label: 'Field Engineers', value: engCount,     color: '#059669', icon: <EngineeringRounded /> },
+          { label: 'Active',          value: activeCount,  color: '#0891b2', icon: <VerifiedUserRounded /> },
         ].map(s => (
-          <Grid key={s.label} size={{ xs: 6, sm: 3 }}>
-            <Box sx={{ p: 2, borderRadius: '12px', border: `1px solid ${colors.border}`, backgroundColor: colors.card, textAlign: 'center' }}>
-              <Typography sx={{ fontSize: '1.625rem', fontWeight: 800, color: s.color, letterSpacing: '-0.04em', lineHeight: 1 }}>{s.value}</Typography>
-              <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.375, fontWeight: 500 }}>{s.label}</Typography>
+          <Box key={s.label} sx={{
+            borderRadius: '16px', backgroundColor: colors.card, border: `1px solid ${colors.borderLight}`,
+            p: { xs: 2, md: 2.25 }, overflow: 'hidden', position: 'relative',
+            display: 'flex', flexDirection: { xs: 'row', sm: 'column' },
+            alignItems: { xs: 'center', sm: 'flex-start' },
+            gap: { xs: 1.75, sm: 1.25 },
+            transition: `box-shadow 150ms, transform 150ms`,
+            '&:hover': { boxShadow: `0 4px 16px rgba(0,0,0,0.07)`, transform: 'translateY(-1px)' },
+          }}>
+            {/* colored top accent bar */}
+            <Box sx={{ display: { xs: 'none', sm: 'block' }, position: 'absolute', top: 0, left: 0, right: 0, height: 3, borderRadius: '16px 16px 0 0', backgroundColor: s.color, opacity: 0.7 }} />
+            <Box sx={{ width: 36, height: 36, borderRadius: '10px', backgroundColor: s.color + '18', color: s.color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, '& svg': { fontSize: 18 } }}>{s.icon}</Box>
+            <Box sx={{ flex: 1, display: 'flex', flexDirection: { xs: 'row', sm: 'column' }, alignItems: { xs: 'center', sm: 'flex-start' }, justifyContent: { xs: 'space-between', sm: 'flex-start' }, gap: { xs: 0, sm: 0.375 }, width: { sm: '100%' }, minWidth: 0 }}>
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textMuted }}>{s.label}</Typography>
+              <Typography sx={{ fontSize: { xs: '1.25rem', sm: '1.5rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.03em', lineHeight: 1 }}>{s.value}</Typography>
             </Box>
-          </Grid>
+          </Box>
         ))}
-      </Grid>
+      </Box>
 
       {/* Search + filter */}
       <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
-        <Box sx={{ flex: 1, minWidth: 200, display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.875, borderRadius: '10px', border: `1px solid ${colors.border}`, backgroundColor: colors.card }}>
+        <Box sx={{ flex: 1, minWidth: { xs: '100%', sm: 200 }, display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.875, borderRadius: '10px', border: `1px solid ${colors.border}`, backgroundColor: colors.card }}>
           <SearchRounded sx={{ fontSize: 18, color: colors.textMuted }} />
-          <Box component="input" value={search} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)} placeholder="Search by name or email…" sx={{ border: 'none', outline: 'none', background: 'transparent', fontSize: '0.875rem', color: colors.textStrong, flex: 1, fontFamily: 'inherit', '&::placeholder': { color: colors.textSubdued } }} />
+          <Box component="input" value={search} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)} placeholder="Search by name or email…" sx={{ border: 'none', outline: 'none', background: 'transparent', fontSize: '0.875rem', color: colors.textStrong, flex: 1, minWidth: 0, fontFamily: 'inherit', '&::placeholder': { color: colors.textSubdued } }} />
         </Box>
-        <Select value={roleFilter} onChange={e => setRoleFilter(e.target.value)} size="small" sx={{ borderRadius: '10px', fontSize: '0.875rem', minWidth: 160, '.MuiOutlinedInput-notchedOutline': { borderColor: colors.border } }}>
+        <Select value={roleFilter} onChange={e => setRoleFilter(e.target.value)} size="small" sx={{ borderRadius: '10px', fontSize: '0.875rem', minWidth: { xs: '100%', sm: 160 }, '.MuiOutlinedInput-notchedOutline': { borderColor: colors.border } }}>
           <MenuItem value="all">All roles</MenuItem>
           <MenuItem value="admin">Admin</MenuItem>
           <MenuItem value="manager">Manager</MenuItem>
@@ -378,7 +391,7 @@ export default function UserManagementPage() {
             {/* Role selector */}
             <Box>
               <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Role</Typography>
-              <Box sx={{ display: 'flex', gap: 1 }}>
+              <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1 }}>
                 {ROLE_OPTIONS.map(opt => (
                   <Box key={opt.value} onClick={() => setCreateForm(f => ({ ...f, role: opt.value }))} sx={{ flex: 1, p: 1.5, borderRadius: '10px', border: `1.5px solid ${createForm.role === opt.value ? opt.color : colors.border}`, backgroundColor: createForm.role === opt.value ? opt.bg : 'transparent', cursor: 'pointer', textAlign: 'center', transition: 'all 140ms', '&:hover': { borderColor: opt.color } }}>
                     <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: createForm.role === opt.value ? opt.color : colors.textMuted }}>{opt.label}</Typography>
@@ -388,8 +401,8 @@ export default function UserManagementPage() {
             </Box>
 
             {([
-              { label: 'Full Name', key: 'name' as const,  type: 'text',  placeholder: 'e.g. Rahul Sharma' },
-              { label: 'Email',     key: 'email' as const, type: 'email', placeholder: 'e.g. rahul@myhomeconstructions.com' },
+              { label: 'Full Name', key: 'name' as const, type: 'text', placeholder: 'e.g. Rahul Sharma' },
+              { label: 'Email', key: 'email' as const, type: 'email', placeholder: 'e.g. rahul@myhomeconstructions.com' },
             ] as const).map(field => (
               <Box key={field.key}>
                 <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>{field.label}</Typography>
@@ -465,7 +478,7 @@ export default function UserManagementPage() {
             {/* Role */}
             <Box>
               <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Role</Typography>
-              <Box sx={{ display: 'flex', gap: 1 }}>
+              <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1 }}>
                 {ROLE_OPTIONS.map(opt => (
                   <Box key={opt.value} onClick={() => setEditForm(f => ({ ...f, role: opt.value }))} sx={{ flex: 1, p: 1.25, borderRadius: '10px', border: `1.5px solid ${editForm.role === opt.value ? opt.color : colors.border}`, backgroundColor: editForm.role === opt.value ? opt.bg : 'transparent', cursor: 'pointer', textAlign: 'center', transition: 'all 140ms' }}>
                     <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: editForm.role === opt.value ? opt.color : colors.textMuted }}>{opt.label}</Typography>

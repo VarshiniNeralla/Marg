@@ -359,7 +359,7 @@ export default function DashboardLayout() {
 
       {/* Mobile drawer */}
       {isMobile && (
-        <Drawer open={mobileOpen} onClose={() => setMobileOpen(false)} slotProps={{ paper: { sx: { width: SIDEBAR_W, backgroundColor: colors.card, boxShadow: 'none', border: 'none' } } }}>
+        <Drawer open={mobileOpen} onClose={() => setMobileOpen(false)} slotProps={{ paper: { sx: { width: { xs: '82vw', sm: SIDEBAR_W }, maxWidth: SIDEBAR_W, backgroundColor: colors.card, boxShadow: 'none', border: 'none' } } }}>
           <SidebarInner collapsed={false} />
         </Drawer>
       )}
@@ -367,7 +367,7 @@ export default function DashboardLayout() {
       {/* Main content */}
       <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {/* Top bar */}
-        <Box sx={{ height: NAV_H, display: 'flex', alignItems: 'center', px: { xs: 2, md: 4, lg: 5 }, gap: 1.5, backgroundColor: colors.navBg, backdropFilter: 'blur(20px) saturate(180%)', position: 'sticky', top: 0, zIndex: zIndex.nav, boxShadow: '0 1px 0 rgba(15,23,42,0.06)' }}>
+        <Box sx={{ height: NAV_H, display: 'flex', alignItems: 'center', px: { xs: 1.75, sm: 3, md: 4, lg: 5 }, gap: 1.5, backgroundColor: colors.navBg, backdropFilter: 'blur(20px) saturate(180%)', position: 'sticky', top: 0, zIndex: zIndex.nav, boxShadow: '0 1px 0 rgba(15,23,42,0.06)' }}>
           {isMobile && (
             <IconButton size="small" onClick={(e) => { setMobileOpen(true); e.currentTarget.blur(); }} sx={{ color: colors.textMuted, mr: 0.5 }}>
               <MenuRounded />
@@ -413,7 +413,7 @@ export default function DashboardLayout() {
           key={location.pathname}
           sx={{
             flex: 1, width: '100%', maxWidth: 1280, mx: 'auto',
-            px: { xs: 2, md: 4, lg: 5 }, py: { xs: 3, md: 5 },
+            px: { xs: 1.75, sm: 3, md: 4, lg: 5 }, py: { xs: 2.5, md: 5 },
             animation: 'pageFadeIn 200ms ease-out',
             '@keyframes pageFadeIn': { from: { opacity: 0, transform: 'translateY(6px)' }, to: { opacity: 1, transform: 'translateY(0)' } },
           }}

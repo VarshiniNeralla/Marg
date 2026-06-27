@@ -138,14 +138,15 @@ export default function DefectsPage() {
     <Box>
       {/* Back to overview (all roles) */}
       <Box component={Link} to={getRoleLandingPath(user?.role)} sx={{
-        display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
-        px: 1.25, py: 0.625, borderRadius: '8px',
-        border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
-        fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
-        transition: `all ${motion.durationFast}`, '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
-      }}>
-        <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
-      </Box>
+          display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+          px: 1.25, py: 0.625, borderRadius: '8px',
+          border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+          fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+          transition: `all ${motion.durationFast} ${motion.easeOut}`,
+          '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+        }}>
+          <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
+        </Box>
 
       <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 4, flexWrap: 'wrap', gap: 2 }}>
         <Box>

@@ -204,14 +204,15 @@ export default function CapturesPage() {
     <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
       {/* Back to overview — available for all roles */}
       <Box component={Link} to={getRoleLandingPath(user?.role)} sx={{
-        display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
-        px: 1.25, py: 0.625, borderRadius: '8px',
-        border: `1.5px solid ${P.border}`, color: P.muted,
-        fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
-        transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft },
-      }}>
-        <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
-      </Box>
+          display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+          px: 1.25, py: 0.625, borderRadius: '8px',
+          border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+          fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+          transition: `all ${motion.durationFast} ${motion.easeOut}`,
+          '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+        }}>
+          <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
+        </Box>
 
       {/* ── Heading ───────────────────────────────────────────────────────── */}
       <Box sx={{ mb: 4 }}>
@@ -407,15 +408,15 @@ export default function CapturesPage() {
                 <Box sx={{ width: 30, height: 30, borderRadius: '8px', backgroundColor: P.blueSoft, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                   <LayersRounded sx={{ fontSize: 17, color: P.blue }} />
                 </Box>
-                <Box sx={{ minWidth: 0 }}>
-                  <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, letterSpacing: '-0.02em', lineHeight: 1.2 }}>
+                <Box sx={{ minWidth: 0, mr: { xs: 'auto', sm: 0 } }}>
+                  <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, letterSpacing: '-0.02em', lineHeight: 1.2 }} noWrap>
                     {group.towerName} · {group.floorLabel}
                   </Typography>
                   <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
                     {group.captures.length} capture{group.captures.length !== 1 ? 's' : ''}
                   </Typography>
                 </Box>
-                <Box sx={{ flex: 1, height: 1, backgroundColor: P.border, mx: 1 }} />
+                <Box sx={{ flex: 1, height: 1, backgroundColor: P.border, mx: 1, display: { xs: 'none', sm: 'block' } }} />
                 {group.floorId && (
                   <Box
                     component={Link}

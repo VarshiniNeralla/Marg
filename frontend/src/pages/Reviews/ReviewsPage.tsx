@@ -2,11 +2,12 @@ import React, { useState } from 'react';
 import { Box, Typography, InputBase, Menu, MenuItem, Chip, Dialog, DialogTitle, DialogContent, DialogActions, Divider, Button as MuiButton } from '@mui/material';
 import {
   CheckCircleRounded, RateReviewRounded, ViewInArRounded,
-  ArrowForwardRounded, KeyboardArrowDownRounded, CheckRounded, SearchRounded,
+  ArrowForwardRounded, KeyboardArrowDownRounded, CheckRounded, SearchRounded, ArrowBackRounded,
 } from '@mui/icons-material';
 import { Link, useNavigate } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
+import { useAuthStore, getRoleLandingPath } from '@store/authStore';
 import Button from '@shared/components/Button/Button';
 
 type ReviewTab = 'pending' | 'reviewing';
@@ -29,6 +30,7 @@ const TAB_OPTIONS: { value: ReviewTab; label: string }[] = [
 ];
 
 export default function ReviewsPage() {
+  const user  = useAuthStore(s => s.user);
   const tours = useWorkflowStore(s => s.tours);
   const updateTour = useWorkflowStore(s => s.updateTour);
   const navigate = useNavigate();
@@ -68,6 +70,18 @@ export default function ReviewsPage() {
 
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
+      {/* Back to overview */}
+      <Box component={Link} to={getRoleLandingPath(user?.role)} sx={{
+          display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+          px: 1.25, py: 0.625, borderRadius: '8px',
+          border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+          fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+          transition: `all ${motion.durationFast} ${motion.easeOut}`,
+          '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+        }}>
+          <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
+        </Box>
+
       {/* Heading */}
       <Box sx={{ mb: 4 }}>
         <Typography sx={{
@@ -189,15 +203,15 @@ export default function ReviewsPage() {
               <Box
                 key={t.id}
                 sx={{
-                  display: 'flex', alignItems: 'center', gap: 2.5,
-                  px: 2.5, py: 2,
+                  display: 'flex', alignItems: 'center', gap: { xs: 1.5, sm: 2.5 },
+                  px: { xs: 1.5, sm: 2.5 }, py: 2,
                   borderBottom: i < displayed.length - 1 ? `1px solid ${P.border}` : 'none',
                   transition: `background ${motion.durationFast}`,
                   '&:hover': { backgroundColor: P.bg },
                 }}
               >
                 {/* Thumbnail */}
-                <Box sx={{ width: 52, height: 52, borderRadius: '12px', background: t.gradient, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Box sx={{ width: { xs: 40, sm: 52 }, height: { xs: 40, sm: 52 }, borderRadius: '12px', background: t.gradient, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <ViewInArRounded sx={{ color: 'rgba(255,255,255,0.7)', fontSize: 22 }} />
                 </Box>
 
@@ -207,7 +221,7 @@ export default function ReviewsPage() {
                     <Chip
                       label={sm.label}
                       size="small"
-                      sx={{ height: 20, fontSize: '0.6875rem', fontWeight: 600, color: sm.color, backgroundColor: sm.bg, borderRadius: '5px', flexShrink: 0 }}
+                      sx={{ height: 20, fontSize: '0.6875rem', fontWeight: 600, color: sm.color, backgroundColor: sm.bg, borderRadius: '5px', flexShrink: 0, display: { xs: 'none', sm: 'flex' } }}
                     />
                   </Box>
                   <Typography noWrap sx={{ fontSize: '0.8125rem', color: P.muted }}>
@@ -229,7 +243,8 @@ export default function ReviewsPage() {
                       onClick={() => startReview(t)}
                       sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 1.5, height: 34, borderRadius: '8px', border: `1px solid rgba(124,58,237,0.3)`, color: '#7c3aed', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', transition: T, '&:hover': { backgroundColor: 'rgba(124,58,237,0.06)' } }}
                     >
-                      <RateReviewRounded sx={{ fontSize: 15 }} /> Review
+                      <RateReviewRounded sx={{ fontSize: 15 }} />
+                      <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>Review</Box>
                     </Box>
                   )}
                 </Box>

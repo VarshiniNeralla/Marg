@@ -1,11 +1,13 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { Box, Typography, Grid } from '@mui/material';
 import {
   CameraAltRounded, ViewInArRounded, CheckCircleRounded,
-  AccessTimeRounded
+  AccessTimeRounded, ArrowBackRounded
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
+import { useAuthStore, getRoleLandingPath } from '@store/authStore';
 
 // ── Reusable surface ───────────────────────────────────────────────────────────
 function Card({ title, subtitle, right, children }: { title?: string; subtitle?: string; right?: React.ReactNode; children: React.ReactNode }) {
@@ -25,13 +27,24 @@ function Card({ title, subtitle, right, children }: { title?: string; subtitle?:
   );
 }
 
-function StatTile({ icon, label, value, sub, color, bg }: { icon: React.ReactNode; label: string; value: React.ReactNode; sub: string; color: string; bg: string }) {
+function StatTile({ icon, label, value, color, bg }: { icon: React.ReactNode; label: string; value: React.ReactNode; sub: string; color: string; bg: string }) {
   return (
-    <Box sx={{ p: 2.5, borderRadius: '16px', backgroundColor: colors.card, border: `1px solid ${colors.borderLight}`, transition: `transform ${motion.durationFast} ${motion.easeOut}, box-shadow ${motion.durationFast}`, '&:hover': { transform: 'translateY(-2px)', boxShadow: `0 4px 12px rgba(0,0,0,0.05)` } }}>
-      <Box sx={{ width: 38, height: 38, borderRadius: '10px', backgroundColor: bg, display: 'flex', alignItems: 'center', justifyContent: 'center', color, mb: 2, '& svg': { fontSize: 20 } }}>{icon}</Box>
-      <Typography sx={{ fontSize: '1.875rem', fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1, mb: 0.5 }}>{value}</Typography>
-      <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textSecondary }}>{label}</Typography>
-      {sub && <Typography sx={{ fontSize: '0.75rem', color: colors.textSubdued, mt: 0.25 }}>{sub}</Typography>}
+    <Box sx={{
+      borderRadius: '16px', backgroundColor: colors.card, border: `1px solid ${colors.borderLight}`,
+      p: { xs: 2, md: 2.25 }, overflow: 'hidden', position: 'relative',
+      display: 'flex', flexDirection: { xs: 'row', md: 'column' },
+      alignItems: { xs: 'center', md: 'flex-start' },
+      gap: { xs: 1.75, md: 1.25 },
+      transition: `box-shadow 150ms, transform 150ms`,
+      '&:hover': { boxShadow: `0 4px 16px rgba(0,0,0,0.07)`, transform: 'translateY(-1px)' },
+    }}>
+      {/* colored top accent bar on desktop */}
+      <Box sx={{ display: { xs: 'none', md: 'block' }, position: 'absolute', top: 0, left: 0, right: 0, height: 3, borderRadius: '16px 16px 0 0', backgroundColor: color, opacity: 0.7 }} />
+      <Box sx={{ width: 36, height: 36, borderRadius: '10px', backgroundColor: bg, display: 'flex', alignItems: 'center', justifyContent: 'center', color, flexShrink: 0, '& svg': { fontSize: 18 } }}>{icon}</Box>
+      <Box sx={{ flex: 1, display: 'flex', flexDirection: { xs: 'row', md: 'column' }, alignItems: { xs: 'center', md: 'flex-start' }, justifyContent: { xs: 'space-between', md: 'flex-start' }, gap: { xs: 0, md: 0.375 }, width: { md: '100%' }, minWidth: 0 }}>
+        <Typography noWrap sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textMuted }}>{label}</Typography>
+        <Typography sx={{ fontSize: { xs: '1.25rem', md: '1.5rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.03em', lineHeight: 1 }}>{value}</Typography>
+      </Box>
     </Box>
   );
 }
@@ -65,12 +78,12 @@ function CaptureVolumeChart() {
 
   return (
     <Card title="Capture Volume" subtitle="8-week trend across all projects" right={<Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#16a34a', letterSpacing: '-0.03em' }}>{total} Total</Typography>}>
-      <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 1.5, height: 160 }}>
+      <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: { xs: 0.5, sm: 1.5 }, height: 160 }}>
         {weeks.map((w, i) => (
-          <Box key={i} sx={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+          <Box key={i} sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
             <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: colors.textSubdued }}>{w.count}</Typography>
             <Box sx={{ width: '100%', borderRadius: '6px 6px 0 0', height: `${(w.count / maxCount) * 110}px`, background: i === weeks.length - 1 ? colors.primaryGradient : 'rgba(37,99,235,0.16)', minHeight: 8, transition: `height ${motion.durationSlow} ${motion.easeOut}`, '&:hover': { filter: 'brightness(1.1)' } }} />
-            <Typography sx={{ fontSize: '0.625rem', color: colors.textSubdued, textAlign: 'center' }}>{w.week}</Typography>
+            <Typography sx={{ fontSize: { xs: '0.5rem', sm: '0.625rem' }, color: colors.textSubdued, textAlign: 'center', whiteSpace: 'nowrap' }}>{w.week}</Typography>
           </Box>
         ))}
       </Box>
@@ -114,7 +127,7 @@ function ApprovalTrendChart() {
 
   return (
     <Card title="Review Approval Rate" subtitle="First-pass weekly trend" right={<Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: colors.primary, letterSpacing: '-0.03em' }}>{overallRate}%</Typography>}>
-      <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 1, height: 140 }}>
+      <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: { xs: 0.5, sm: 1 }, height: 140 }}>
         {rates.map((v, i) => (
           <Box key={i} sx={{ flex: 1, height: `${(v / maxRev) * 118}px`, borderRadius: '4px 4px 0 0', backgroundColor: i === rates.length - 1 ? colors.primary : 'rgba(37,99,235,0.18)', minHeight: 6, transition: `height ${motion.durationSlow} ${motion.easeOut}`, '&:hover': { filter: 'brightness(1.1)' } }} />
         ))}
@@ -130,34 +143,41 @@ function ApprovalTrendChart() {
 export default function AnalyticsPage() {
   const captures = useWorkflowStore(s => s.captures);
   const tours = useWorkflowStore(s => s.tours);
+  const user = useAuthStore(s => s.user);
+  const overviewPath = getRoleLandingPath(user?.role);
 
   const totalCaptures = captures.length;
-  const approved = captures.filter(c => c.status === 'processed').length;
-  const pending  = captures.filter(c => c.status === 'review').length;
+  const pending  = tours.filter(t => t.status !== 'published').length;
   const publishedTours = tours.filter(t => t.status === 'published').length;
 
   const KPIs = [
     { key: 'captures', icon: <CameraAltRounded />,  label: 'Total Captures',  value: totalCaptures, sub: '', color: '#2563eb', bg: 'rgba(37,99,235,0.08)' },
-    { key: 'pending',  icon: <AccessTimeRounded />,  label: 'Pending Review',  value: pending,        sub: '', color: '#d97706', bg: 'rgba(217,119,6,0.08)' },
+    { key: 'pending',  icon: <AccessTimeRounded />,  label: 'Tours Pending',   value: pending,        sub: '', color: '#d97706', bg: 'rgba(217,119,6,0.08)' },
     { key: 'tours',    icon: <ViewInArRounded />,    label: 'Published Tours', value: publishedTours, sub: '', color: '#7c3aed', bg: 'rgba(124,58,237,0.08)' },
   ];
 
   return (
-    <Box sx={{ maxWidth: 1160, mx: 'auto', p: 1, animation: `fadeIn ${motion.durationNormal} ${motion.easeOut}`, '@keyframes fadeIn': { from: { opacity: 0, transform: 'translateY(10px)' }, to: { opacity: 1, transform: 'translateY(0)' } } }}>
+    <Box sx={{ maxWidth: 800, mx: 'auto', p: 1, animation: `fadeIn ${motion.durationNormal} ${motion.easeOut}`, '@keyframes fadeIn': { from: { opacity: 0, transform: 'translateY(10px)' }, to: { opacity: 1, transform: 'translateY(0)' } } }}>
       {/* Header */}
-      <Box sx={{ mb: 5 }}>
-        <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.75rem', md: '2.25rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1, mb: 1 }}>Dashboard Analytics</Typography>
-        <Typography sx={{ fontSize: '1rem', color: colors.textMuted }}>Your construction intelligence and operational performance at a glance.</Typography>
+      <Box sx={{ mb: { xs: 3.5, md: 5 } }}>
+        <Box component={Link} to={overviewPath} sx={{
+          display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+          px: 1.25, py: 0.625, borderRadius: '8px',
+          border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+          fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+          transition: `all ${motion.durationFast} ${motion.easeOut}`,
+          '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+        }}>
+          <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
+        </Box>
+        <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.5rem', md: '2.25rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1, mb: 1 }}>Dashboard Analytics</Typography>
+        <Typography sx={{ fontSize: { xs: '0.875rem', md: '1rem' }, color: colors.textMuted }}>Your construction intelligence and operational performance at a glance.</Typography>
       </Box>
 
       {/* KPI strip */}
-      <Grid container spacing={2.5} sx={{ mb: 4 }}>
-        {KPIs.map(k => (
-          <Grid key={k.key} size={{ xs: 12, sm: 4, md: 4 }}>
-            <StatTile {...k} />
-          </Grid>
-        ))}
-      </Grid>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3, 1fr)' }, gap: { xs: 1.25, md: 2 }, mb: 4 }}>
+        {KPIs.map(({ key, ...k }) => <StatTile key={key} {...k} />)}
+      </Box>
 
       {/* Charts Row */}
       <Grid container spacing={3}>
