@@ -39,4 +39,12 @@ export const userService = {
   async deactivateUser(userId: string): Promise<void> {
     await apiClient.delete(`/users/${userId}`);
   },
+
+  async setUserProjects(userId: string, projectIds: string[]): Promise<string[]> {
+    const { data } = await apiClient.put<ApiResponse<{ assigned_project_ids: string[] }>>(
+      `/users/${userId}/projects`,
+      { project_ids: projectIds },
+    );
+    return data.data?.assigned_project_ids ?? [];
+  },
 };

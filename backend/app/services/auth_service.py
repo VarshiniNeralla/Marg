@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from bson import ObjectId
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -89,6 +90,15 @@ class AuthService:
         user_id = await self._user_repo.create(user)
         user.id = user_id
 
+        # Assign to projects if requested
+        if payload.assigned_project_ids:
+            await self._create_project_assignments(
+                user_id=user_id,
+                org_id=str(org.id),
+                project_ids=payload.assigned_project_ids,
+                assigned_by=user_id,
+            )
+
         await self._write_audit_log(
             db=self._db,
             actor_id=user_id,
@@ -150,8 +160,10 @@ class AuthService:
             resource_id=user.id,
         )
 
+        assigned_project_ids = await self._get_assigned_project_ids(user.id, str(user.org_id))
+
         logger.info(f"User logged in: {user.email}")
-        return user, org, access_token, refresh_token
+        return user, org, access_token, refresh_token, assigned_project_ids
 
     # ── Refresh token ─────────────────────────────────────────────────────────
 
@@ -283,6 +295,8 @@ class AuthService:
         if not org:
             raise NotFoundException("Organization")
 
+        assigned_project_ids = await self._get_assigned_project_ids(user_id, org_id)
+
         return MeResponse(
             id=user.id,
             name=user.name,
@@ -294,9 +308,132 @@ class AuthService:
             avatar_url=user.avatar_url,
             last_login=user.last_login,
             created_at=user.created_at,
+            assigned_project_ids=assigned_project_ids,
         )
 
     # ── Private helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _id_variants(value: str) -> list:
+        """Returns [str] or [str, ObjectId] so queries match either storage form."""
+        variants: list = [value]
+        if ObjectId.is_valid(value):
+            variants.append(ObjectId(value))
+        return variants
+
+    async def _get_assigned_project_ids(self, user_id: str, org_id: str) -> list[str]:
+        """Returns project IDs where the user has an active assignment.
+
+        user_id and org_id may be stored as either a string or an ObjectId
+        depending on which code path created the assignment, so match both.
+        """
+        try:
+            cursor = self._db.user_projects.find(
+                {
+                    "user_id": {"$in": self._id_variants(user_id)},
+                    "org_id": {"$in": self._id_variants(org_id)},
+                    "is_active": True,
+                },
+                {"project_id": 1},
+            )
+            docs = await cursor.to_list(length=200)
+            return [str(d["project_id"]) for d in docs]
+        except Exception as exc:
+            logger.warning(f"Could not fetch assigned_project_ids for {user_id}: {exc}")
+            return []
+
+    async def set_user_project_assignments(
+        self, user_id: str, org_id: str, project_ids: list[str], assigned_by: str
+    ) -> list[str]:
+        """Replaces a user's active assignments with the given project set.
+
+        Revokes assignments not in the new set, creates the missing ones, and
+        returns the resulting list of assigned project IDs.
+        """
+        current = set(await self._get_assigned_project_ids(user_id, org_id))
+        desired = set(project_ids)
+
+        # Revoke assignments no longer wanted
+        to_revoke = current - desired
+        if to_revoke:
+            try:
+                await self._db.user_projects.update_many(
+                    {
+                        "user_id": {"$in": self._id_variants(user_id)},
+                        "org_id": {"$in": self._id_variants(org_id)},
+                        "project_id": {"$in": list(to_revoke)},
+                        "is_active": True,
+                    },
+                    {"$set": {"is_active": False, "revoked_at": datetime.now(timezone.utc)}},
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to revoke assignments for {user_id}: {exc}")
+
+        # Create the new ones
+        to_add = desired - current
+        if to_add:
+            await self._create_project_assignments(
+                user_id=user_id,
+                org_id=org_id,
+                project_ids=list(to_add),
+                assigned_by=assigned_by,
+            )
+
+        return await self._get_assigned_project_ids(user_id, org_id)
+
+    async def _create_project_assignments(
+        self, user_id: str, org_id: str, project_ids: list[str], assigned_by: str
+    ) -> None:
+        """Creates active user_projects assignments, inserting raw documents.
+
+        Bypasses UserProjectDocument because project IDs in this system are
+        often plain strings (e.g. "p72518") that the strict PyObjectId model
+        would reject. Projects store their org under "orgId" (camelCase, from
+        the workflow endpoints) or "org_id", as a string or ObjectId — match all.
+        """
+        org_variants = self._id_variants(org_id)
+        now = datetime.now(timezone.utc)
+        for project_id in project_ids:
+            try:
+                proj_doc = await self._db.projects.find_one({
+                    "_id": {"$in": self._id_variants(project_id)},
+                    "$or": [
+                        {"orgId": {"$in": org_variants}},
+                        {"org_id": {"$in": org_variants}},
+                    ],
+                })
+                if not proj_doc:
+                    logger.warning(
+                        f"Project {project_id} not found in org {org_id} — "
+                        f"skipping assignment for user {user_id}"
+                    )
+                    continue
+
+                resolved_pid = str(proj_doc.get("id") or proj_doc["_id"])
+
+                # Skip if an active assignment already exists
+                existing = await self._db.user_projects.find_one({
+                    "user_id": {"$in": self._id_variants(user_id)},
+                    "project_id": resolved_pid,
+                    "is_active": True,
+                })
+                if existing:
+                    continue
+
+                await self._db.user_projects.insert_one({
+                    "org_id": ObjectId(org_id) if ObjectId.is_valid(org_id) else org_id,
+                    "user_id": ObjectId(user_id) if ObjectId.is_valid(user_id) else user_id,
+                    "project_id": resolved_pid,
+                    "project_role": "contributor",
+                    "assigned_by": ObjectId(assigned_by) if ObjectId.is_valid(assigned_by) else assigned_by,
+                    "assigned_at": now,
+                    "is_active": True,
+                    "created_at": now,
+                    "updated_at": now,
+                })
+                logger.info(f"Assigned user {user_id} to project {resolved_pid}")
+            except Exception as exc:
+                logger.warning(f"Failed to assign user {user_id} to project {project_id}: {exc}")
 
     @staticmethod
     async def _write_audit_log(

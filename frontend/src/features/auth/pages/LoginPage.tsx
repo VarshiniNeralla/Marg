@@ -141,6 +141,7 @@ export default function LoginPage() {
         org_name: data.user.org_name,
         org_slug: 'myhome',
         avatar_url: data.user.avatar_url,
+        assignedProjectIds: data.user.assignedProjectIds,
       });
       try {
         const me = await backendAuth.me();
@@ -153,6 +154,7 @@ export default function LoginPage() {
           org_name: me.org_name,
           org_slug: me.org_slug,
           avatar_url: me.avatar_url,
+          assignedProjectIds: me.assigned_project_ids,
         });
       } catch {
         // partial data

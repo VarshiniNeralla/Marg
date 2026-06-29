@@ -64,21 +64,31 @@ class UserService:
 
         assigned_projects: list[AssignedProjectBrief] = []
         if include_projects:
-            assignments, _ = await self._up_repo.list_by_user(
-                user_id=user_id, org_id=org_id, active_only=True
-            )
-            for a in assignments:
-                # Fetch project name — denormalised join
+            # Query raw documents: project_id may be a plain string ("p72518")
+            # that the strict UserProjectDocument model would reject.
+            def _variants(v: str) -> list:
+                out: list = [v]
+                if ObjectId.is_valid(v):
+                    out.append(ObjectId(v))
+                return out
+
+            cursor = self._db.user_projects.find({
+                "user_id": {"$in": _variants(user_id)},
+                "org_id": {"$in": _variants(org_id)},
+                "is_active": True,
+            })
+            for a in await cursor.to_list(length=200):
+                pid = str(a["project_id"])
                 proj_doc = await self._db.projects.find_one(
-                    {"_id": ObjectId(a.project_id) if ObjectId.is_valid(a.project_id) else a.project_id},
+                    {"_id": ObjectId(pid) if ObjectId.is_valid(pid) else pid},
                     {"name": 1},
                 )
                 proj_name = proj_doc["name"] if proj_doc else "Unknown Project"
                 assigned_projects.append(AssignedProjectBrief(
-                    project_id=a.project_id,
+                    project_id=pid,
                     project_name=proj_name,
-                    project_role=a.project_role,
-                    assigned_at=a.assigned_at,
+                    project_role=a.get("project_role", "contributor"),
+                    assigned_at=a.get("assigned_at") or datetime.now(timezone.utc),
                 ))
 
         return UserDetailResponse(

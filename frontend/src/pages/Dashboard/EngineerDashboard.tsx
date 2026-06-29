@@ -42,8 +42,10 @@ export default function EngineerDashboard() {
     ? projects.filter(p => assignedIds.has(p.id) && !p.archived)
     : projects.filter(p => !p.archived).slice(0, 3);
 
-  const pendingTours  = tours.filter(t => t.status === 'published' && !(t as any).managerReviewed);
-  const reviewedTours = tours.filter(t => (t as any).managerReviewed);
+  const myProjectIds = new Set(myProjects.map(p => p.id));
+  const myCaptures    = captures.filter(c => myProjectIds.has(c.projectId));
+  const pendingTours  = tours.filter(t => myProjectIds.has(t.projectId) && t.status === 'published' && !(t as any).managerReviewed);
+  const reviewedTours = tours.filter(t => myProjectIds.has(t.projectId) && (t as any).managerReviewed);
 
   const hour     = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
@@ -121,7 +123,7 @@ export default function EngineerDashboard() {
       <Grid container spacing={2} sx={{ mb: 3 }}>
         {[
           { label:'Assigned Projects', value: myProjects.length,     sub:'active sites',          color: P.blue,    bg: 'rgba(37,99,235,0.08)',   icon: <FolderOpenRounded /> },
-          { label:'Total Uploads',     value: captures.length,       sub:'captures uploaded',     color: '#0891b2', bg: 'rgba(8,145,178,0.08)',   icon: <CloudUploadRounded /> },
+          { label:'Total Uploads',     value: myCaptures.length,     sub:'captures uploaded',     color: '#0891b2', bg: 'rgba(8,145,178,0.08)',   icon: <CloudUploadRounded /> },
           { label:'Pending Review',    value: pendingTours.length,   sub:'tours awaiting review', color: '#d97706', bg: 'rgba(217,119,6,0.08)',   icon: <HourglassTopRounded /> },
           { label:'Reviewed',          value: reviewedTours.length,  sub:'tours reviewed',        color: '#16a34a', bg: 'rgba(22,163,74,0.08)',   icon: <CheckCircleRounded /> },
         ].map(({ label, value, sub, color, bg, icon }) => (

@@ -61,6 +61,7 @@ export interface UserInfo {
   org_id: string;
   org_name: string;
   avatar_url: string | null;
+  assigned_project_ids?: string[];
 }
 
 export interface RegisterResponse {
@@ -94,6 +95,7 @@ export interface MeResponse {
   avatar_url: string | null;
   last_login: string | null;
   created_at: string;
+  assigned_project_ids?: string[];
 }
 
 // ── RBAC / Roles ──────────────────────────────────────────────────────────────

@@ -34,6 +34,7 @@ class UserInfo(BaseModel):
     org_id: str
     org_name: str
     avatar_url: Optional[str] = None
+    assigned_project_ids: list[str] = Field(default_factory=list)
 
 
 class OrgInfo(BaseModel):
@@ -52,6 +53,7 @@ class RegisterRequest(BaseModel):
     org_slug: str = Field(..., min_length=3, max_length=50)
     role: Optional[str] = Field(default=None)
     designation: Optional[str] = Field(default=None, max_length=120)
+    assigned_project_ids: list[str] = Field(default_factory=list)
 
     @field_validator("password")
     @classmethod
@@ -138,6 +140,7 @@ class MeResponse(BaseModel):
     avatar_url: Optional[str] = None
     last_login: Optional[datetime] = None
     created_at: datetime
+    assigned_project_ids: list[str] = Field(default_factory=list)
 
 
 # ── Standard API envelope ─────────────────────────────────────────────────────

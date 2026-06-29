@@ -75,6 +75,7 @@ export const authService = {
           ...data.user,
           org_slug: 'default',
           role: (data.user.role === 'user' ? 'field_engineer' : data.user.role) as AuthUser['role'],
+          assignedProjectIds: data.user.assigned_project_ids,
         } satisfies AuthUser,
       };
     } catch (err: unknown) {

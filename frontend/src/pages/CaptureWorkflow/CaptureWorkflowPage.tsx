@@ -828,7 +828,8 @@ export default function CaptureWorkflowPage() {
           ) : (
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
               {myProjects.map(p => (
-                <ProjectCard key={p.id} name={p.name} location={p.location} gradient={p.gradient} accent={p.accent} towers={p.towers}
+                <ProjectCard key={p.id} name={p.name} location={p.location} gradient={p.gradient} accent={p.accent}
+                  towers={towers.filter(t => t.projectId === p.id).length}
                   onClick={() => { setProject(p.id); setStep('tower'); }} />
               ))}
             </Box>

@@ -197,7 +197,7 @@ interface WorkflowState {
 
   nextId: (prefix: string) => string;
   resetToSeed: () => void;
-  hydrateFromApi: (data: Partial<WorkflowDataState>) => void;
+  hydrateFromApi: (data: Partial<WorkflowDataState>, options?: { replace?: boolean }) => void;
 
   // ── Projects ──
   createProject: (p: Partial<MockProject> & { name: string }) => string;
@@ -355,7 +355,7 @@ function ensureFlatHierarchy(data: Partial<WorkflowDataState>): WorkflowDataStat
     return { ...existing, flatId: flat?.id ?? defaultFlatId(existing.floorId) };
   });
 
-  return keepPrimaryProjectData({
+  return {
     ...seed,
     ...data,
     floors,
@@ -372,7 +372,7 @@ function ensureFlatHierarchy(data: Partial<WorkflowDataState>): WorkflowDataStat
     auditLogs: data.auditLogs ?? seed.auditLogs,
     users: data.users ?? seed.users,
     uidCounter: data.uidCounter ?? seed.uidCounter,
-  });
+  };
 }
 
 function mirrorApi<T>(job: Promise<T>) {
@@ -436,8 +436,13 @@ export const useWorkflowStore = create<WorkflowState>()(
         set(buildInitialWorkflowData());
       },
 
-      hydrateFromApi(data) {
+      hydrateFromApi(data, options) {
         const migrated = ensureFlatHierarchy(data);
+        // `replace` mode is used for project-scoped loads (e.g. a field engineer
+        // whose snapshot is filtered to their assigned projects). It treats the
+        // API payload as authoritative — no merge with stale local data, and no
+        // back-fill re-upload of records that belong to other projects.
+        const replace = options?.replace ?? false;
 
         // Merge helper: local entries fill gaps the API doesn't have (e.g. a capture
         // that was written locally but whose mirrorApi call got a 401). API wins on
@@ -453,7 +458,7 @@ export const useWorkflowStore = create<WorkflowState>()(
         // API pins if the API returned them, otherwise keep local state.
         const apiPins = migrated.capturePins;
         const localPins = get().capturePins;
-        const basePins = apiPins ?? localPins;
+        const basePins = replace ? (apiPins ?? []) : (apiPins ?? localPins);
         const cleanPins = basePins.map(p => ({
           ...p,
           captureIds: [...new Set(p.captureIds)],
@@ -474,29 +479,33 @@ export const useWorkflowStore = create<WorkflowState>()(
           notifications: migrated.notifications ?? s.notifications,
           auditLogs:     migrated.auditLogs     ?? s.auditLogs,
           users:         migrated.users         ?? s.users,
-          // Captures: merge so locally-created captures that failed to sync
-          // (401 before token refresh) are not lost on the next page load.
-          captures: mergeById(migrated.captures, s.captures),
+          // Captures: in replace mode, take only the (scoped) API set; otherwise
+          // merge so locally-created captures that failed to sync are not lost.
+          captures: replace ? (migrated.captures ?? []) : mergeById(migrated.captures, s.captures),
           capturePins: cleanPins,
         }));
 
-        // Back-fill: re-sync anything that exists locally but not on the backend.
-        const apiCaptureIds = new Set((migrated.captures ?? []).map(c => c.id));
-        for (const cap of get().captures) {
-          if (!apiCaptureIds.has(cap.id)) {
-            mirrorApi(workflowApiService.createCapture(cap as MockCapture));
+        // Back-fill re-syncs local-only records to the backend. Skip it entirely
+        // in replace mode — those records belong to projects outside this user's
+        // scope and must not be re-uploaded.
+        if (!replace) {
+          const apiCaptureIds = new Set((migrated.captures ?? []).map(c => c.id));
+          for (const cap of get().captures) {
+            if (!apiCaptureIds.has(cap.id)) {
+              mirrorApi(workflowApiService.createCapture(cap as MockCapture));
+            }
           }
-        }
 
-        // Pin back-fill: use the same `apiPins` source so the check is consistent.
-        const apiPinIds = new Set((apiPins ?? []).map(p => p.id));
-        for (const pin of cleanPins) {
-          if (!apiPinIds.has(pin.id)) {
-            mirrorApi(workflowApiService.createCapturePin(pin));
-          } else {
-            const apiPin = (apiPins ?? []).find(p => p.id === pin.id);
-            if (apiPin && pin.captureIds.length !== (apiPin.captureIds?.length ?? 0)) {
-              mirrorApi(workflowApiService.updateCapturePin(pin.id, { captureIds: pin.captureIds }));
+          // Pin back-fill: use the same `apiPins` source so the check is consistent.
+          const apiPinIds = new Set((apiPins ?? []).map(p => p.id));
+          for (const pin of cleanPins) {
+            if (!apiPinIds.has(pin.id)) {
+              mirrorApi(workflowApiService.createCapturePin(pin));
+            } else {
+              const apiPin = (apiPins ?? []).find(p => p.id === pin.id);
+              if (apiPin && pin.captureIds.length !== (apiPin.captureIds?.length ?? 0)) {
+                mirrorApi(workflowApiService.updateCapturePin(pin.id, { captureIds: pin.captureIds }));
+              }
             }
           }
         }

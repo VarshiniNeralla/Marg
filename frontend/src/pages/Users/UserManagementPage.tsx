@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   Box, Typography, Grid, Chip, Dialog, DialogTitle, DialogContent, DialogActions,
   Select, MenuItem, IconButton, Divider, Button as MuiButton, CircularProgress,
-  Tooltip,
+  Tooltip, OutlinedInput, ListItemText, Checkbox,
 } from '@mui/material';
 import {
   AddRounded, EditRounded, DeleteRounded, SearchRounded,
@@ -16,8 +16,10 @@ import PageHeader from '@shared/components/PageHeader/PageHeader';
 import Button from '@shared/components/Button/Button';
 import { userService } from '@services/userService';
 import { authService as backendAuth } from '@services/authService';
+import { projectService } from '@services/projectService';
 import { useAuthStore, getRoleLandingPath } from '@store/authStore';
 import apiClient from '@services/apiClient';
+import type { ProjectResponse } from '@/types/dto';
 
 type AppRole = 'admin' | 'manager' | 'field_engineer';
 
@@ -51,6 +53,7 @@ interface CreateForm {
   role: AppRole;
   designation: string;
   password: string;
+  assignedProjectIds: string[];
 }
 
 interface EditForm {
@@ -58,10 +61,11 @@ interface EditForm {
   designation: string;
   role: AppRole;
   newPassword: string;
+  assignedProjectIds: string[];
 }
 
-const EMPTY_CREATE: CreateForm = { name: '', email: '', role: 'field_engineer', designation: '', password: 'Prangan@123' };
-const EMPTY_EDIT: EditForm = { name: '', designation: '', role: 'field_engineer', newPassword: '' };
+const EMPTY_CREATE: CreateForm = { name: '', email: '', role: 'field_engineer', designation: '', password: 'Prangan@123', assignedProjectIds: [] };
+const EMPTY_EDIT: EditForm = { name: '', designation: '', role: 'field_engineer', newPassword: '', assignedProjectIds: [] };
 
 const inputSx = {
   width: '100%', px: 1.75, py: 1.25, borderRadius: '10px',
@@ -109,6 +113,21 @@ export default function UserManagementPage() {
   const [deleteTarget, setDeleteTarget] = useState<ApiUser | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  const [projects, setProjects] = useState<ProjectResponse[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+
+  const loadProjects = useCallback(async () => {
+    setProjectsLoading(true);
+    try {
+      const res = await projectService.listProjects({ limit: 200 });
+      setProjects(res.items ?? []);
+    } catch {
+      // non-fatal — project selector just shows empty
+    } finally {
+      setProjectsLoading(false);
+    }
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
@@ -149,6 +168,7 @@ export default function UserManagementPage() {
         org_slug: orgSlug,
         role: createForm.role,
         designation: createForm.designation.trim() || undefined,
+        assigned_project_ids: createForm.assignedProjectIds.length > 0 ? createForm.assignedProjectIds : undefined,
       });
       setCreatedInfo({ name: createForm.name.trim(), email: createForm.email.trim().toLowerCase(), password: createForm.password });
       setCreateOpen(false);
@@ -164,11 +184,20 @@ export default function UserManagementPage() {
   }
 
   // ── Edit ──────────────────────────────────────────────────────────────────────
-  function openEdit(u: ApiUser) {
+  async function openEdit(u: ApiUser) {
     setEditTarget(u);
-    setEditForm({ name: u.name, designation: u.designation ?? '', role: (u.role as AppRole) ?? 'field_engineer', newPassword: '' });
+    setEditForm({ name: u.name, designation: u.designation ?? '', role: (u.role as AppRole) ?? 'field_engineer', newPassword: '', assignedProjectIds: [] });
     setEditErr('');
     setPwSuccess(false);
+    loadProjects();
+    // Load this user's current project assignments
+    try {
+      const detail = await userService.getUser(u.id);
+      const ids = (detail.assigned_projects ?? []).map(p => p.project_id);
+      setEditForm(f => ({ ...f, assignedProjectIds: ids }));
+    } catch {
+      // non-fatal — selector starts empty
+    }
   }
 
   async function handleEdit() {
@@ -185,6 +214,8 @@ export default function UserManagementPage() {
         await apiClient.put(`/users/${editTarget.id}/password`, { new_password: editForm.newPassword.trim() });
         setPwSuccess(true);
       }
+      // Persist project assignments (only meaningful for field engineers)
+      await userService.setUserProjects(editTarget.id, editForm.role === 'field_engineer' ? editForm.assignedProjectIds : []);
       setEditTarget(null);
       await load();
     } catch (e: any) {
@@ -239,7 +270,7 @@ export default function UserManagementPage() {
                 <RefreshRounded sx={{ fontSize: 18 }} />
               </IconButton>
             </Tooltip>
-            <Button variant="primary" onClick={() => { setCreateForm(EMPTY_CREATE); setCreateErr(''); setCreateOpen(true); }} sx={{ gap: 0.75, height: 38, fontSize: '0.875rem' }}>
+            <Button variant="primary" onClick={() => { setCreateForm(EMPTY_CREATE); setCreateErr(''); setCreateOpen(true); loadProjects(); }} sx={{ gap: 0.75, height: 38, fontSize: '0.875rem' }}>
               <AddRounded sx={{ fontSize: 18 }} /> Create User
             </Button>
           </Box>
@@ -426,6 +457,52 @@ export default function UserManagementPage() {
               </Select>
             </Box>
 
+            {/* Project assignment — only for field_engineer */}
+            {createForm.role === 'field_engineer' && (
+              <Box>
+                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>
+                  Assign to Project
+                  <Typography component="span" sx={{ fontSize: '0.75rem', color: colors.textMuted, ml: 0.75 }}>(optional)</Typography>
+                </Typography>
+                {projectsLoading ? (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 1 }}>
+                    <CircularProgress size={14} />
+                    <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>Loading projects…</Typography>
+                  </Box>
+                ) : projects.length === 0 ? (
+                  <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, py: 1 }}>No projects available.</Typography>
+                ) : (
+                  <Select
+                    multiple
+                    value={createForm.assignedProjectIds}
+                    onChange={e => setCreateForm(f => ({ ...f, assignedProjectIds: e.target.value as string[] }))}
+                    displayEmpty
+                    size="small"
+                    fullWidth
+                    input={<OutlinedInput />}
+                    renderValue={(selected) => {
+                      if ((selected as string[]).length === 0) return <em style={{ color: colors.textMuted }}>Select project(s)… (optional)</em>;
+                      return (selected as string[]).map(id => projects.find(p => p.id === id)?.name ?? id).join(', ');
+                    }}
+                    sx={{ borderRadius: '10px', fontSize: '0.9375rem', '.MuiOutlinedInput-notchedOutline': { borderColor: colors.border } }}
+                  >
+                    {projects.map(p => (
+                      <MenuItem key={p.id} value={p.id} sx={{ gap: 1 }}>
+                        <Checkbox checked={createForm.assignedProjectIds.includes(p.id)} size="small" />
+                        <ListItemText
+                          primary={<Typography sx={{ fontSize: '0.875rem' }}>{p.name}</Typography>}
+                          secondary={<Typography sx={{ fontSize: '0.75rem' }}>{p.status}</Typography>}
+                        />
+                      </MenuItem>
+                    ))}
+                  </Select>
+                )}
+                <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.5 }}>
+                  The user will only see towers and floors from their assigned project(s).
+                </Typography>
+              </Box>
+            )}
+
             {/* Password — shown as plain text so admin can verify what they're setting */}
             <Box>
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.75 }}>
@@ -486,6 +563,49 @@ export default function UserManagementPage() {
                 ))}
               </Box>
             </Box>
+
+            {/* Project assignment — only for field_engineer */}
+            {editForm.role === 'field_engineer' && (
+              <Box>
+                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>
+                  Assigned Projects
+                  <Typography component="span" sx={{ fontSize: '0.75rem', color: colors.textMuted, ml: 0.75 }}>(controls what this user sees)</Typography>
+                </Typography>
+                {projectsLoading ? (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 1 }}>
+                    <CircularProgress size={14} />
+                    <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>Loading projects…</Typography>
+                  </Box>
+                ) : projects.length === 0 ? (
+                  <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, py: 1 }}>No projects available.</Typography>
+                ) : (
+                  <Select
+                    multiple
+                    value={editForm.assignedProjectIds}
+                    onChange={e => setEditForm(f => ({ ...f, assignedProjectIds: e.target.value as string[] }))}
+                    displayEmpty
+                    size="small"
+                    fullWidth
+                    input={<OutlinedInput />}
+                    renderValue={(selected) => {
+                      if ((selected as string[]).length === 0) return <em style={{ color: colors.textMuted }}>No projects assigned — user sees all</em>;
+                      return (selected as string[]).map(id => projects.find(p => p.id === id)?.name ?? id).join(', ');
+                    }}
+                    sx={{ borderRadius: '10px', fontSize: '0.9375rem', '.MuiOutlinedInput-notchedOutline': { borderColor: colors.border } }}
+                  >
+                    {projects.map(p => (
+                      <MenuItem key={p.id} value={p.id} sx={{ gap: 1 }}>
+                        <Checkbox checked={editForm.assignedProjectIds.includes(p.id)} size="small" />
+                        <ListItemText
+                          primary={<Typography sx={{ fontSize: '0.875rem' }}>{p.name}</Typography>}
+                          secondary={<Typography sx={{ fontSize: '0.75rem' }}>{p.status}</Typography>}
+                        />
+                      </MenuItem>
+                    ))}
+                  </Select>
+                )}
+              </Box>
+            )}
 
             {/* Change password */}
             <Box sx={{ pt: 0.5, borderTop: `1px solid ${colors.borderLight}` }}>

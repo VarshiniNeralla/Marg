@@ -106,7 +106,7 @@ async def login(payload: LoginRequest, response: Response, db: DB):
     - Sets refresh_token as httpOnly cookie (not accessible to JS).
     """
     service = AuthService(db)
-    user, org, access_token, refresh_token = await service.login(payload)
+    user, org, access_token, refresh_token, assigned_project_ids = await service.login(payload)
 
     _set_refresh_cookie(response, refresh_token)
 
@@ -122,6 +122,7 @@ async def login(payload: LoginRequest, response: Response, db: DB):
                 org_id=str(user.org_id),
                 org_name=org.name,
                 avatar_url=user.avatar_url,
+                assigned_project_ids=assigned_project_ids,
             ),
         ),
         message="Login successful",
