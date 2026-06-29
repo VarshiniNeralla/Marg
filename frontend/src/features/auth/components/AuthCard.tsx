@@ -15,13 +15,13 @@ interface AuthCardProps {
 export default function AuthCard({ title, subtitle, children, footer }: AuthCardProps) {
   return (
     <Box sx={{
-      minHeight: '100vh',
+      minHeight: '100dvh',
       width: '100%',
       display: 'flex',
-      alignItems: 'center',
+      alignItems: { xs: 'flex-start', sm: 'center' },
       justifyContent: 'center',
       px: { xs: 2, sm: 3 },
-      py: 3,
+      py: { xs: 1.5, sm: 3 },
       position: 'relative',
       overflow: 'hidden',
       backgroundColor: '#ffffff', 
@@ -47,7 +47,7 @@ export default function AuthCard({ title, subtitle, children, footer }: AuthCard
         display: 'flex', flexDirection: 'column', alignItems: 'center',
       }}>
         {/* Top bar: back link */}
-        <Box sx={{ display: 'flex', width: '100%', mb: 3 }}>
+        <Box sx={{ display: 'flex', width: '100%', mb: { xs: 1.5, sm: 3 } }}>
           <Box
             component={Link}
             to="/"
@@ -91,12 +91,12 @@ export default function AuthCard({ title, subtitle, children, footer }: AuthCard
             borderRadius: '24px',
             boxShadow: '0 20px 40px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04)',
             px: { xs: 2.5, sm: 5 },
-            py: { xs: 3, sm: 3.5 },
+            py: { xs: 2.5, sm: 3.5 },
           }}>
             {/* Brand */}
-            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mb: 3 }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mb: { xs: 2, sm: 3 } }}>
               <Box component="img" src="/assets/new_logo.png" alt="My Home Group"
-                sx={{ height: 32, width: 'auto', objectFit: 'contain', mb: 1.5 }} />
+                sx={{ height: { xs: 28, sm: 32 }, width: 'auto', objectFit: 'contain', mb: 1.5 }} />
               <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                 <Typography sx={{ fontSize: '1.5rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.03em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
                 <Typography sx={{ fontSize: '0.65rem', fontWeight: 700, color: '#52525b', letterSpacing: '0.15em', mt: 0.5 }}>BY SITESURELABS</Typography>

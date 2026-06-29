@@ -255,6 +255,7 @@ export default function FloorPlanViewerPage() {
   const pdfDocRef       = useRef<PdfDoc | null>(null);
   const renderingRef    = useRef(false);
   const lastRenderScale = useRef(0);
+  const attachingRef    = useRef(false);
 
   useEffect(() => { scaleRef.current  = scale;  }, [scale]);
   useEffect(() => { offsetRef.current = offset; }, [offset]);
@@ -532,9 +533,14 @@ export default function FloorPlanViewerPage() {
 
   /* ── Perform the upload via the EXISTING pipeline, attach to pin ────── */
   const performAttach = useCallback(async (files: File[]) => {
-    if (!activePin) return;
-    const result = await uploadCaptureFiles(files);
-    attachCaptureToPin(activePin.id, result.count || files.length, result.files);
+    if (!activePin || attachingRef.current) return;
+    attachingRef.current = true;
+    try {
+      const result = await uploadCaptureFiles(files);
+      attachCaptureToPin(activePin.id, result.count || files.length, result.files);
+    } finally {
+      attachingRef.current = false;
+    }
   }, [activePin, attachCaptureToPin]);
 
   /* ── Publish the pin-ordered walkthrough ────────────────────────────── */
@@ -582,8 +588,8 @@ export default function FloorPlanViewerPage() {
         position: 'relative',
         width: '100%',
         flex: fullscreen ? 1 : undefined,
-        height: fullscreen ? undefined : { xs: 260, sm: 400, md: 'calc(100vh - 280px)' },
-        minHeight: { xs: 260, md: 480 },
+        height: fullscreen ? undefined : { xs: pinsOnly ? 'calc(100dvh - 150px)' : 'calc(100dvh - 190px)', sm: 400, md: 'calc(100vh - 280px)' },
+        minHeight: { xs: 340, md: 480 },
         borderRadius: fullscreen ? 0 : '16px',
         overflow: 'hidden',
         backgroundColor: '#f1f3f7',
@@ -747,7 +753,7 @@ export default function FloorPlanViewerPage() {
         <Box sx={{ position: 'absolute', top: fullscreen ? 56 : 12, left: '50%', transform: 'translateX(-50%)', zIndex: 15, display: 'flex', alignItems: 'center', gap: 0.875, px: 1.75, py: 0.875, borderRadius: '10px', backgroundColor: 'rgba(37,99,235,0.95)', backdropFilter: 'blur(8px)', boxShadow: '0 4px 16px rgba(37,99,235,0.35)', pointerEvents: 'none', maxWidth: '90%' }}>
           <AddLocationAltRounded sx={{ fontSize: 16, color: '#fff', flexShrink: 0 }} />
           <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#fff', lineHeight: 1.3 }}>
-            Tap the plan to place pin {pins.length + 1} · {useCamera ? 'long-press a pin to open the camera' : 'long-press a pin to upload'}
+            Tap plan to place pin {pins.length + 1} · {useCamera ? 'double-tap pin to capture' : 'double-tap pin to upload'}
           </Typography>
         </Box>
       )}
@@ -882,52 +888,52 @@ export default function FloorPlanViewerPage() {
   /* ── normal page ────────────────────────────────────────────────────── */
   return (
     <Box sx={{
-      pb: 6,
+      pb: { xs: 2, sm: 6 },
       opacity: fadeIn ? 1 : 0,
       transform: fadeIn ? 'translateY(0)' : 'translateY(6px)',
       transition: 'opacity 220ms ease, transform 220ms ease',
     }}>
       {/* Header */}
-      <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 3, gap: 2, flexWrap: 'wrap' }}>
-        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, minWidth: 0, flex: 1 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: { xs: 1.5, sm: 3 }, gap: 1.5 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, minWidth: 0, flex: 1 }}>
           <Box component={Link} to={backDest}
-            sx={{ mt: 0.5, display: 'inline-flex', alignItems: 'center', gap: pinsOnly ? 0.625 : 0, px: pinsOnly ? 1.25 : 0, width: pinsOnly ? 'auto' : 32, height: 32, borderRadius: '9px', border: `1.5px solid ${P.border}`, justifyContent: 'center', color: P.muted, textDecoration: 'none', flexShrink: 0, transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}>
-            <ArrowBackRounded sx={{ fontSize: 16 }} />
-            {pinsOnly && <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, lineHeight: 1, color: 'inherit' }}>Back</Typography>}
+            sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.125, py: 0.625, borderRadius: '9px', border: `1.5px solid ${P.border}`, color: P.muted, textDecoration: 'none', flexShrink: 0, transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft }, whiteSpace: 'nowrap', fontSize: '0.8125rem', fontWeight: 600 }}>
+            <ArrowBackRounded sx={{ fontSize: 15 }} />
+            Back
           </Box>
           <Box sx={{ minWidth: 0 }}>
-            <Typography sx={{ fontSize: '0.75rem', color: P.muted, mb: 0.25, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{project.name} · {tower.name}</Typography>
-            <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.125rem', sm: '1.625rem' }, fontWeight: 800, color: P.strong, letterSpacing: '-0.045em', lineHeight: 1.1 }}>
+            <Typography sx={{ fontSize: '0.6875rem', color: P.muted, mb: 0.125, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: { xs: 'none', sm: 'block' } }}>{project.name} · {tower.name}</Typography>
+            <Typography sx={{ fontSize: { xs: '0.9375rem', sm: '1.375rem' }, fontWeight: 800, color: P.strong, letterSpacing: '-0.03em', lineHeight: 1.1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {floor.label}{pinsOnly ? ' — Capture Pins' : ' — Floor Plan'}
             </Typography>
+            {/* Mobile: project context below title */}
+            <Typography sx={{ fontSize: '0.6875rem', color: P.muted, display: { xs: 'block', sm: 'none' }, mt: 0.25 }}>{tower.name}</Typography>
           </Box>
         </Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
-          {!isEngineer && !pinsOnly && (
-            <Box component={Link} to={`/floor-plans/${projectId}/${towerId}/${floorId}/upload`}
-              sx={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                gap: { xs: 0, sm: 0.75 },
-                px: { xs: 0.875, sm: 1.75 }, py: 0.875,
-                minWidth: { xs: 36, sm: 'auto' }, width: { xs: 36, sm: 'auto' }, height: { xs: 36, sm: 'auto' },
-                borderRadius: '9px', border: `1.5px solid ${P.border}`,
-                color: P.muted, textDecoration: 'none', whiteSpace: 'nowrap', transition: T,
-                '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft },
-                flexShrink: 0,
-              }}>
-              <UploadFileRounded sx={{ fontSize: 15 }} />
-              <Typography component="span" sx={{ display: { xs: 'none', sm: 'inline' }, fontSize: '0.8125rem', fontWeight: 600, ml: 0.75 }}>
-                {floorPlan ? 'Replace Plan' : 'Upload Plan'}
-              </Typography>
-            </Box>
-          )}
-        </Box>
+        {!isEngineer && !pinsOnly && (
+          <Box component={Link} to={`/floor-plans/${projectId}/${towerId}/${floorId}/upload`}
+            sx={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              gap: { xs: 0, sm: 0.75 },
+              px: { xs: 0.75, sm: 1.5 }, py: 0.75,
+              minWidth: { xs: 34, sm: 'auto' }, height: { xs: 34, sm: 'auto' },
+              borderRadius: '9px', border: `1.5px solid ${P.border}`,
+              color: P.muted, textDecoration: 'none', whiteSpace: 'nowrap', transition: T,
+              '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft },
+              flexShrink: 0,
+            }}>
+            <UploadFileRounded sx={{ fontSize: 15 }} />
+            <Typography component="span" sx={{ display: { xs: 'none', sm: 'inline' }, fontSize: '0.8125rem', fontWeight: 600, ml: 0.75 }}>
+              {floorPlan ? 'Replace Plan' : 'Upload Plan'}
+            </Typography>
+          </Box>
+        )}
       </Box>
 
-      {/* Legend strip */}
+      {/* Legend strip — hidden on mobile to maximise viewer height */}
       {!pinsOnly && statusCounts && floorPlan && floorPlan.rooms.length > 0 && (
         <Box sx={{
-          display: 'flex', gap: 1, mb: 2.5,
+          display: { xs: 'none', sm: 'flex' }, gap: 1, mb: 2.5,
           overflowX: { xs: 'auto', sm: 'visible' },
           flexWrap: { xs: 'nowrap', sm: 'wrap' },
           pb: { xs: 0.5, sm: 0 },

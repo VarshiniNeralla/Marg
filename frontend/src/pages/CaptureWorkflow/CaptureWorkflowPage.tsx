@@ -506,7 +506,7 @@ function FloorPlanWithPin({
           {imageUrl ? (
             <Box ref={imgWrapRef} sx={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}>
               <Box component="img" src={imageUrl} alt="Floor plan" draggable={false}
-                sx={{ display: 'block', maxWidth: '88vw', maxHeight: '70vh', width: 'auto', height: 'auto' }} />
+                sx={{ display: 'block', maxWidth: '88vw', maxHeight: { xs: '48vh', sm: '70vh' }, width: 'auto', height: 'auto' }} />
 
               {/* Persisted, numbered pins */}
               {pins.map(p => {
@@ -521,11 +521,11 @@ function FloorPlanWithPin({
                     }}
                     sx={{ position: 'absolute', left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%,-100%)', cursor: 'pointer', zIndex: 5, touchAction: 'none' }}
                   >
-                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.5))', transition: T, '&:hover': { transform: 'scale(1.08)' } }}>
-                      <Box sx={{ width: 30, height: 30, borderRadius: '50% 50% 50% 0', backgroundColor: color, border: '3px solid #fff', transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <Typography sx={{ fontSize: '0.8125rem', fontWeight: 800, color: '#fff', transform: 'rotate(45deg)', lineHeight: 1 }}>{p.sequenceNumber}</Typography>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.5))', transition: T, '&:hover': { transform: 'scale(1.08)' } }}>
+                      <Box sx={{ width: { xs: 20, sm: 30 }, height: { xs: 20, sm: 30 }, borderRadius: '50% 50% 50% 0', backgroundColor: color, border: { xs: '2px solid #fff', sm: '3px solid #fff' }, transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <Typography sx={{ fontSize: { xs: '0.625rem', sm: '0.8125rem' }, fontWeight: 800, color: '#fff', transform: 'rotate(45deg)', lineHeight: 1 }}>{p.sequenceNumber}</Typography>
                       </Box>
-                      <Box sx={{ width: 2, height: 6, backgroundColor: color, mt: '-1px' }} />
+                      <Box sx={{ width: 2, height: { xs: 4, sm: 6 }, backgroundColor: color, mt: '-1px' }} />
                     </Box>
                   </Box>
                 );
@@ -534,12 +534,12 @@ function FloorPlanWithPin({
               {/* Pending pin */}
               {pin && (
                 <Box sx={{ position: 'absolute', left: `${pin.x}%`, top: `${pin.y}%`, transform: 'translate(-50%,-100%)', pointerEvents: 'none', zIndex: 6 }}>
-                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.5))' }}>
-                    <Box sx={{ width: 34, height: 34, borderRadius: '50% 50% 50% 0', backgroundColor: '#22c55e', border: '3px solid #fff', transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'pinpulse 1.2s ease-in-out infinite', '@keyframes pinpulse': { '0%,100%': { boxShadow: '0 0 0 0 rgba(34,197,94,0.5)' }, '50%': { boxShadow: '0 0 0 6px rgba(34,197,94,0)' } } }}>
-                      <MyLocationRounded sx={{ fontSize: 14, color: '#fff', transform: 'rotate(45deg)' }} />
+                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.5))' }}>
+                    <Box sx={{ width: { xs: 22, sm: 34 }, height: { xs: 22, sm: 34 }, borderRadius: '50% 50% 50% 0', backgroundColor: '#22c55e', border: { xs: '2px solid #fff', sm: '3px solid #fff' }, transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'pinpulse 1.2s ease-in-out infinite', '@keyframes pinpulse': { '0%,100%': { boxShadow: '0 0 0 0 rgba(34,197,94,0.5)' }, '50%': { boxShadow: '0 0 0 5px rgba(34,197,94,0)' } } }}>
+                      <MyLocationRounded sx={{ fontSize: { xs: 10, sm: 14 }, color: '#fff', transform: 'rotate(45deg)' }} />
                     </Box>
-                    <Box sx={{ width: 2, height: 8, backgroundColor: '#22c55e', mt: '-1px' }} />
-                    <Box sx={{ width: 5, height: 5, borderRadius: '50%', backgroundColor: '#22c55e', opacity: 0.4 }} />
+                    <Box sx={{ width: 2, height: { xs: 5, sm: 8 }, backgroundColor: '#22c55e', mt: '-1px' }} />
+                    <Box sx={{ width: { xs: 4, sm: 5 }, height: { xs: 4, sm: 5 }, borderRadius: '50%', backgroundColor: '#22c55e', opacity: 0.4 }} />
                   </Box>
                 </Box>
               )}
@@ -572,7 +572,14 @@ function FloorPlanWithPin({
   );
 
   if (!fullscreen) {
-    return <Box sx={{ aspectRatio: '16/9' }}>{viewer}</Box>;
+    return (
+      <Box sx={{
+        height: { xs: 'clamp(260px, 52vh, 380px)', sm: 'auto' },
+        aspectRatio: { xs: 'unset', sm: '16/9' },
+      }}>
+        {viewer}
+      </Box>
+    );
   }
   return (
     <Box sx={{ position: 'fixed', inset: 0, zIndex: 1400, backgroundColor: '#0a0c14' }}>

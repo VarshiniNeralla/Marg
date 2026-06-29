@@ -194,7 +194,7 @@ export default function LoginPage() {
         )}
 
         {/* Role selector */}
-        <Box sx={{ mb: '24px' }}>
+        <Box sx={{ mb: { xs: '16px', sm: '24px' } }}>
           <Typography component="label" sx={labelSx}>Sign in as</Typography>
           <Box sx={{ display: 'flex', gap: { xs: 1, sm: 1.5 } }}>
             {ROLE_OPTIONS.map((opt) => {
@@ -208,8 +208,8 @@ export default function LoginPage() {
                     <Box
                       onClick={() => field.onChange(opt.value)}
                       sx={{
-                        flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1,
-                        py: { xs: 1.5, sm: 2 }, px: { xs: 0.5, sm: 1 }, borderRadius: '16px', cursor: 'pointer',
+                        flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: { xs: 0.5, sm: 1 },
+                        py: { xs: 1, sm: 2 }, px: { xs: 0.5, sm: 1 }, borderRadius: '16px', cursor: 'pointer',
                         border: `1px solid ${isActive ? opt.activeColor : 'rgba(0,0,0,0.1)'}`,
                         backgroundColor: isActive ? 'rgba(0,0,0,0.04)' : '#ffffff',
                         boxShadow: isActive ? `0 0 20px ${opt.color}22 inset` : 'none',
@@ -242,7 +242,7 @@ export default function LoginPage() {
         </Box>
 
         {/* Email */}
-        <Box sx={{ mb: '24px' }}>
+        <Box sx={{ mb: { xs: '16px', sm: '24px' } }}>
           <Typography component="label" htmlFor="login-email" sx={labelSx}>Email</Typography>
           <Input
             id="login-email"
@@ -258,7 +258,7 @@ export default function LoginPage() {
         </Box>
 
         {/* Password */}
-        <Box sx={{ mb: '32px' }}>
+        <Box sx={{ mb: { xs: '16px', sm: '32px' } }}>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: '8px' }}>
             <Typography component="label" htmlFor="login-password" sx={{ ...labelSx, mb: 0 }}>Password</Typography>
             <Box
@@ -302,7 +302,7 @@ export default function LoginPage() {
         </Button>
 
         {/* Demo credentials panel */}
-        <Box sx={{ mt: 4, pt: 3, borderTop: '1px solid rgba(0,0,0,0.08)' }}>
+        <Box sx={{ mt: { xs: 2.5, sm: 4 }, pt: { xs: 2, sm: 3 }, borderTop: '1px solid rgba(0,0,0,0.08)' }}>
           <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: '#71717a', textTransform: 'uppercase', letterSpacing: '0.08em', textAlign: 'center', mb: 2 }}>
             Demo Credentials
           </Typography>

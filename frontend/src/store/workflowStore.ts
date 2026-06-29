@@ -438,24 +438,68 @@ export const useWorkflowStore = create<WorkflowState>()(
 
       hydrateFromApi(data) {
         const migrated = ensureFlatHierarchy(data);
+
+        // Merge helper: local entries fill gaps the API doesn't have (e.g. a capture
+        // that was written locally but whose mirrorApi call got a 401). API wins on
+        // same id so backend is always the source of truth for existing records.
+        const mergeById = <T extends { id: string }>(api: T[] | undefined, local: T[]): T[] => {
+          const map = new Map<string, T>();
+          for (const item of local) map.set(item.id, item);
+          for (const item of (api ?? [])) map.set(item.id, item);
+          return [...map.values()];
+        };
+
+        // Use a single consistent source for pins throughout this function:
+        // API pins if the API returned them, otherwise keep local state.
+        const apiPins = migrated.capturePins;
+        const localPins = get().capturePins;
+        const basePins = apiPins ?? localPins;
+        const cleanPins = basePins.map(p => ({
+          ...p,
+          captureIds: [...new Set(p.captureIds)],
+        }));
+
         set(s => ({
           ...s,
           ...migrated,
           uidCounter: s.uidCounter,
-          projects: migrated.projects ?? s.projects,
-          towers: migrated.towers ?? s.towers,
-          floors: migrated.floors ?? s.floors,
-          flats: migrated.flats ?? s.flats,
-          rooms: migrated.rooms ?? s.rooms,
-          captures: migrated.captures ?? s.captures,
-          tours: migrated.tours ?? s.tours,
-          floorPlans: migrated.floorPlans ?? s.floorPlans,
-          capturePins: migrated.capturePins ?? s.capturePins,
-          defects: migrated.defects ?? s.defects,
+          projects:      migrated.projects      ?? s.projects,
+          towers:        migrated.towers        ?? s.towers,
+          floors:        migrated.floors        ?? s.floors,
+          flats:         migrated.flats         ?? s.flats,
+          rooms:         migrated.rooms         ?? s.rooms,
+          tours:         migrated.tours         ?? s.tours,
+          floorPlans:    migrated.floorPlans    ?? s.floorPlans,
+          defects:       migrated.defects       ?? s.defects,
           notifications: migrated.notifications ?? s.notifications,
-          auditLogs: migrated.auditLogs ?? s.auditLogs,
-          users: migrated.users ?? s.users,
+          auditLogs:     migrated.auditLogs     ?? s.auditLogs,
+          users:         migrated.users         ?? s.users,
+          // Captures: merge so locally-created captures that failed to sync
+          // (401 before token refresh) are not lost on the next page load.
+          captures: mergeById(migrated.captures, s.captures),
+          capturePins: cleanPins,
         }));
+
+        // Back-fill: re-sync anything that exists locally but not on the backend.
+        const apiCaptureIds = new Set((migrated.captures ?? []).map(c => c.id));
+        for (const cap of get().captures) {
+          if (!apiCaptureIds.has(cap.id)) {
+            mirrorApi(workflowApiService.createCapture(cap as MockCapture));
+          }
+        }
+
+        // Pin back-fill: use the same `apiPins` source so the check is consistent.
+        const apiPinIds = new Set((apiPins ?? []).map(p => p.id));
+        for (const pin of cleanPins) {
+          if (!apiPinIds.has(pin.id)) {
+            mirrorApi(workflowApiService.createCapturePin(pin));
+          } else {
+            const apiPin = (apiPins ?? []).find(p => p.id === pin.id);
+            if (apiPin && pin.captureIds.length !== (apiPin.captureIds?.length ?? 0)) {
+              mirrorApi(workflowApiService.updateCapturePin(pin.id, { captureIds: pin.captureIds }));
+            }
+          }
+        }
       },
 
   // ── Projects ──────────────────────────────────────────────────────────────
@@ -698,7 +742,9 @@ export const useWorkflowStore = create<WorkflowState>()(
       previewUrl: firstAsset?.preview_url ?? firstAsset?.thumbnail_url,
     } as MockCapture & Record<string, unknown>;
     set(s => ({
-      captures: [capture, ...s.captures],
+      // Deduplicate by id so a double-call (camera double-fire, double-tap race) never
+      // produces two store entries with the same key, which would cause React key warnings.
+      captures: [capture, ...s.captures.filter(c => c.id !== id)],
       towers: s.towers.map(t => t.id === room.towerId ? { ...t, captures: t.captures + 1 } : t),
       projects: project ? s.projects.map(p => p.id === project.id ? { ...p, captures: p.captures + 1, lastUpdated: 'Just now' } : p) : s.projects,
     }));
@@ -897,7 +943,10 @@ export const useWorkflowStore = create<WorkflowState>()(
     const captureId = get().uploadCapture(pin.roomId, fileCount, mediaAssets);
     set(s => ({
       capturePins: s.capturePins.map(p =>
-        p.id === pinId ? { ...p, captureIds: [...p.captureIds, captureId] } : p
+        // Deduplicate captureIds — guard against a double-fire attaching the same id twice.
+        p.id === pinId && !p.captureIds.includes(captureId)
+          ? { ...p, captureIds: [...p.captureIds, captureId] }
+          : p
       ),
     }));
     const updated = get().capturePins.find(p => p.id === pinId);
@@ -1078,10 +1127,26 @@ export const useWorkflowStore = create<WorkflowState>()(
         uidCounter: s.uidCounter,
       }),
       migrate: (persisted, version) => {
-        if (!isValidWorkflowData(persisted) || version === 0) {
-          return ensureFlatHierarchy({ ...buildInitialWorkflowData(), ...(isValidWorkflowData(persisted) ? persisted : {}) });
+        const base = !isValidWorkflowData(persisted) || version === 0
+          ? ensureFlatHierarchy({ ...buildInitialWorkflowData(), ...(isValidWorkflowData(persisted) ? persisted : {}) })
+          : ensureFlatHierarchy(persisted as Partial<WorkflowDataState>);
+        // Scrub duplicate captureIds that may have been written by a double-fire
+        // bug in a previous session — prevents stale badge counts on the floor plan.
+        if (base.capturePins) {
+          base.capturePins = base.capturePins.map(p => ({
+            ...p,
+            captureIds: [...new Set(p.captureIds)],
+          }));
         }
-        return ensureFlatHierarchy(persisted as Partial<WorkflowDataState>);
+        if (base.captures) {
+          const seen = new Set<string>();
+          base.captures = base.captures.filter(c => {
+            if (seen.has(c.id)) return false;
+            seen.add(c.id);
+            return true;
+          });
+        }
+        return base;
       },
     },
   ),

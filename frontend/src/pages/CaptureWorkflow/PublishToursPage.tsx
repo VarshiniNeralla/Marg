@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { Box, Typography, Snackbar, Alert } from '@mui/material';
+import React, { useState, useMemo } from 'react';
+import { Box, Typography, Snackbar, Alert, useMediaQuery, useTheme } from '@mui/material';
 import {
   ArrowBackRounded, ArrowForwardRounded, ViewInArRounded, PublishRounded,
   CheckCircleRounded, RadioButtonUncheckedRounded, LayersRounded,
+  ChevronLeftRounded, ChevronRightRounded,
 } from '@mui/icons-material';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/authStore';
@@ -17,29 +18,36 @@ const P = {
 const T = `all 160ms cubic-bezier(0.4,0,0.2,1)`;
 
 const fieldSx = {
-  width: '100%', px: 1.75, py: 1.125, borderRadius: '10px',
+  width: '100%', px: 1.25, py: 0.875, borderRadius: '10px',
   border: `1.5px solid ${P.border}`, fontSize: '0.9375rem', fontFamily: 'inherit',
   color: P.strong, backgroundColor: P.white, outline: 'none', cursor: 'pointer',
   boxSizing: 'border-box' as const,
 };
 
+const fieldSxCompact = {
+  ...fieldSx,
+  px: 1, py: 0.625, fontSize: '0.875rem',
+};
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <Box sx={{ flex: 1, minWidth: 180 }}>
-      <Typography component="label" sx={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: P.subtle, textTransform: 'uppercase', letterSpacing: '0.06em', mb: 0.75 }}>{label}</Typography>
+    <Box sx={{ flex: 1, minWidth: 140 }}>
+      <Typography component="label" sx={{ display: 'block', fontSize: '0.6875rem', fontWeight: 700, color: P.subtle, textTransform: 'uppercase', letterSpacing: '0.06em', mb: 0.5 }}>{label}</Typography>
       {children}
     </Box>
   );
 }
 
 export default function PublishToursPage() {
+  const theme   = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+
   const user       = useAuthStore(s => s.user);
   const projects   = useWorkflowStore(s => s.projects);
   const towers     = useWorkflowStore(s => s.towers);
   const floors     = useWorkflowStore(s => s.floors);
   const floorPlans = useWorkflowStore(s => s.floorPlans);
   const allPins    = useWorkflowStore(s => s.capturePins);
-  const captures   = useWorkflowStore(s => s.captures);
   const tours      = useWorkflowStore(s => s.tours);
   const publishFloorPlanTour = useWorkflowStore(s => s.publishFloorPlanTour);
   const navigate = useNavigate();
@@ -49,6 +57,9 @@ export default function PublishToursPage() {
   const [floorId, setFloorId]     = useState('');
   const [toast, setToast]         = useState('');
   const [publishing, setPublishing] = useState(false);
+  const [pinPage, setPinPage]       = useState(0);
+
+  const PAGE_SIZE = 5;
 
   const assignedIds = new Set(user?.assignedProjectIds ?? []);
   const myProjects  = assignedIds.size
@@ -62,6 +73,12 @@ export default function PublishToursPage() {
   const pinsWithCapture = pins.filter(p => p.captureIds.length > 0);
   const canPublish = pinsWithCapture.length > 0 && !publishing;
 
+  const totalPinPages = Math.ceil(pins.length / PAGE_SIZE);
+  const visiblePins = useMemo(
+    () => pins.slice(pinPage * PAGE_SIZE, (pinPage + 1) * PAGE_SIZE),
+    [pins, pinPage, PAGE_SIZE],
+  );
+
   function handlePublish() {
     if (!floorPlan || !canPublish) return;
     setPublishing(true);
@@ -69,7 +86,6 @@ export default function PublishToursPage() {
     setPublishing(false);
     if (tourIds.length) {
       setToast(`Walkthrough published · ${pinsWithCapture.length} stops in pin order`);
-      // Open the published walkthrough so they can immediately step through it.
       setTimeout(() => navigate(`/tours/${tourIds[0]}`), 600);
     } else {
       setToast('No pins with captures to publish yet');
@@ -77,10 +93,12 @@ export default function PublishToursPage() {
   }
 
   return (
-    <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
-      {/* Back to overview */}
+    <Box sx={{ maxWidth: 800, mx: 'auto', pb: { xs: 3, sm: 6 } }}>
+
+      {/* ── Back link ── */}
       <Box component={Link} to="/dashboard/engineer" sx={{
-        display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+        display: 'inline-flex', alignItems: 'center', gap: 0.75,
+        mb: { xs: 2, sm: 3 },
         px: 1.25, py: 0.625, borderRadius: '8px',
         border: `1.5px solid ${P.border}`, color: P.muted,
         fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
@@ -89,8 +107,8 @@ export default function PublishToursPage() {
         <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
       </Box>
 
-      {/* Heading */}
-      <Box sx={{ mb: 4 }}>
+      {/* ── Heading ── */}
+      <Box sx={{ mb: { xs: 2, sm: 4 } }}>
         <Typography sx={{
           fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
           fontSize: { xs: '1.75rem', md: '2.25rem' }, fontWeight: 800,
@@ -101,99 +119,191 @@ export default function PublishToursPage() {
         </Typography>
       </Box>
 
-      {/* Selectors */}
-      <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', mb: 3, p: 2.5, borderRadius: '16px', border: `1.5px solid ${P.border}`, backgroundColor: P.white }}>
-        <Field label="Project">
-          <Box component="select" value={projectId} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setProjectId(e.target.value); setTowerId(''); setFloorId(''); }} sx={fieldSx}>
-            <option value="">Select project</option>
-            {myProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </Box>
-        </Field>
+      {/* ── Selectors ──
+          Mobile: compact grid (2 col top row, 1 col floor full-width)
+          Desktop: horizontal flex row                                    */}
+      <Box sx={{
+        display: 'grid',
+        gridTemplateColumns: { xs: '1fr 1fr', sm: '1fr 1fr 1fr' },
+        gap: { xs: 1, sm: 1.5 },
+        mb: { xs: 1.5, sm: 3 },
+        p: { xs: 1.5, sm: 2.5 },
+        borderRadius: '14px',
+        border: `1.5px solid ${P.border}`,
+        backgroundColor: P.white,
+      }}>
+        {/* Project — spans full width on mobile */}
+        <Box sx={{ gridColumn: { xs: '1 / -1', sm: 'auto' } }}>
+          <Field label="Project">
+            <Box component="select" value={projectId}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setProjectId(e.target.value); setTowerId(''); setFloorId(''); setPinPage(0); }}
+              sx={isMobile ? fieldSxCompact : fieldSx}>
+              <option value="">Select project</option>
+              {myProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </Box>
+          </Field>
+        </Box>
         <Field label="Tower">
-          <Box component="select" value={towerId} disabled={!projectId} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setTowerId(e.target.value); setFloorId(''); }} sx={{ ...fieldSx, opacity: projectId ? 1 : 0.5 }}>
+          <Box component="select" value={towerId} disabled={!projectId}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setTowerId(e.target.value); setFloorId(''); setPinPage(0); }}
+            sx={isMobile ? { ...fieldSxCompact, opacity: projectId ? 1 : 0.5 } : { ...fieldSx, opacity: projectId ? 1 : 0.5 }}>
             <option value="">Select tower</option>
             {myTowers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
           </Box>
         </Field>
         <Field label="Floor">
-          <Box component="select" value={floorId} disabled={!towerId} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setFloorId(e.target.value)} sx={{ ...fieldSx, opacity: towerId ? 1 : 0.5 }}>
+          <Box component="select" value={floorId} disabled={!towerId}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setFloorId(e.target.value); setPinPage(0); }}
+            sx={isMobile ? { ...fieldSxCompact, opacity: towerId ? 1 : 0.5 } : { ...fieldSx, opacity: towerId ? 1 : 0.5 }}>
             <option value="">Select floor</option>
             {myFloors.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
           </Box>
         </Field>
       </Box>
 
-      {/* Pin sequence preview */}
+      {/* ── Pin sequence / empty states ── */}
       {!floorId ? (
-        <Box sx={{ py: 8, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>
-          <ViewInArRounded sx={{ fontSize: 44, color: P.subtle, mb: 1.5 }} />
-          {/* <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong }}>Select a tower and floor to begin</Typography> */}
-          <Typography sx={{ fontSize: '0.875rem', color: P.muted, mt: 0.5 }}>Pick a project, tower and floor above.</Typography>
+        <Box sx={{ py: { xs: 5, sm: 8 }, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>
+          <ViewInArRounded sx={{ fontSize: { xs: 34, sm: 44 }, color: P.subtle, mb: 1 }} />
+          <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Pick a project, tower and floor above.</Typography>
         </Box>
       ) : !floorPlan ? (
-        <Box sx={{ py: 8, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>
-          <LayersRounded sx={{ fontSize: 44, color: P.subtle, mb: 1.5 }} />
-          <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong }}>No floor plan for this floor</Typography>
-          <Typography sx={{ fontSize: '0.875rem', color: P.muted, mt: 0.5 }}>A floor plan with capture pins is required to publish a tour.</Typography>
+        <Box sx={{ py: { xs: 5, sm: 8 }, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>
+          <LayersRounded sx={{ fontSize: { xs: 34, sm: 44 }, color: P.subtle, mb: 1 }} />
+          <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong }}>No floor plan for this floor</Typography>
+          <Typography sx={{ fontSize: '0.875rem', color: P.muted, mt: 0.5 }}>A floor plan with capture pins is required.</Typography>
         </Box>
       ) : pins.length === 0 ? (
-        <Box sx={{ py: 8, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>
-          <ViewInArRounded sx={{ fontSize: 44, color: P.subtle, mb: 1.5 }} />
-          <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong }}>No capture pins placed yet</Typography>
-          <Typography sx={{ fontSize: '0.875rem', color: P.muted, mt: 0.5 }}>Place pins and attach captures from the Capture Workflow first.</Typography>
+        <Box sx={{ py: { xs: 5, sm: 8 }, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>
+          <ViewInArRounded sx={{ fontSize: { xs: 34, sm: 44 }, color: P.subtle, mb: 1 }} />
+          <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong }}>No capture pins placed yet</Typography>
+          <Typography sx={{ fontSize: '0.875rem', color: P.muted, mt: 0.5 }}>Place pins and attach captures from Capture Workflow first.</Typography>
         </Box>
       ) : (
         <Box>
           {/* Walkthrough order */}
-          <Box sx={{ borderRadius: '16px', border: `1.5px solid ${P.border}`, backgroundColor: P.white, overflow: 'hidden', mb: 2.5 }}>
-            <Box sx={{ px: 2.5, py: 1.75, borderBottom: `1px solid ${P.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Box sx={{ borderRadius: '14px', border: `1.5px solid ${P.border}`, backgroundColor: P.white, overflow: 'hidden', mb: 2 }}>
+            {/* Header row */}
+            <Box sx={{ px: { xs: 1.75, sm: 2.5 }, py: { xs: 1.25, sm: 1.75 }, borderBottom: `1px solid ${P.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong }}>Walkthrough order</Typography>
-              <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>{pinsWithCapture.length} of {pins.length} pins ready</Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                <Typography sx={{ fontSize: '0.75rem', color: pinsWithCapture.length === pins.length ? '#16a34a' : P.muted, fontWeight: 600 }}>
+                  {pinsWithCapture.length} of {pins.length} ready
+                </Typography>
+                {pinsWithCapture.length === pins.length && (
+                  <CheckCircleRounded sx={{ fontSize: 14, color: '#16a34a' }} />
+                )}
+              </Box>
             </Box>
+            {/* Pin list — paginated, compact on mobile */}
             <Box>
-              {pins.map((pin, i) => {
+              {visiblePins.map((pin, i) => {
                 const ready = pin.captureIds.length > 0;
                 const latestCaptureId = pin.captureIds[pin.captureIds.length - 1];
+                const isLast = i === visiblePins.length - 1 && totalPinPages <= 1;
                 return (
                   <Box
                     key={pin.id}
                     onClick={() => latestCaptureId && navigate(`/captures/${latestCaptureId}`)}
-                    sx={{ display: 'flex', alignItems: 'center', gap: 1.5, px: 2.5, py: 1.5, borderBottom: i < pins.length - 1 ? `1px solid ${P.border}` : 'none', cursor: latestCaptureId ? 'pointer' : 'default', transition: T, '&:hover': latestCaptureId ? { backgroundColor: P.bg } : {} }}
+                    sx={{
+                      display: 'flex', alignItems: 'center', gap: { xs: 1.25, sm: 1.5 },
+                      px: { xs: 1.75, sm: 2.5 }, py: { xs: 1, sm: 1.5 },
+                      borderBottom: isLast ? 'none' : `1px solid ${P.border}`,
+                      cursor: latestCaptureId ? 'pointer' : 'default',
+                      transition: T, '&:hover': latestCaptureId ? { backgroundColor: P.bg } : {},
+                    }}
                   >
-                    <Box sx={{ width: 30, height: 30, borderRadius: '50%', backgroundColor: ready ? '#16a34a' : 'transparent', border: `2px ${ready ? 'solid' : 'dashed'} ${ready ? '#15803d' : P.subtle}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                      <Typography sx={{ fontSize: '0.8125rem', fontWeight: 800, color: ready ? '#fff' : P.subtle }}>{pin.sequenceNumber}</Typography>
+                    <Box sx={{
+                      width: { xs: 26, sm: 30 }, height: { xs: 26, sm: 30 }, borderRadius: '50%',
+                      backgroundColor: ready ? '#16a34a' : 'transparent',
+                      border: `2px ${ready ? 'solid' : 'dashed'} ${ready ? '#15803d' : P.subtle}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                    }}>
+                      <Typography sx={{ fontSize: '0.75rem', fontWeight: 800, color: ready ? '#fff' : P.subtle }}>{pin.sequenceNumber}</Typography>
                     </Box>
                     <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: P.strong }}>Pin {pin.sequenceNumber}</Typography>
-                      <Typography sx={{ fontSize: '0.75rem', color: ready ? P.muted : P.subtle }}>
-                        {ready ? `${pin.captureIds.length} capture${pin.captureIds.length !== 1 ? 's' : ''}` : 'Waiting for capture'}
+                      <Typography sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' }, fontWeight: 600, color: P.strong, lineHeight: 1.3 }}>
+                        Pin {pin.sequenceNumber}
+                      </Typography>
+                      <Typography sx={{ fontSize: '0.6875rem', color: ready ? P.muted : P.subtle, lineHeight: 1.3 }}>
+                        {ready ? `${pin.captureIds.length} capture${pin.captureIds.length !== 1 ? 's' : ''}` : 'No capture yet'}
                       </Typography>
                     </Box>
                     {ready
-                      ? <CheckCircleRounded sx={{ fontSize: 18, color: '#16a34a', flexShrink: 0 }} />
-                      : <RadioButtonUncheckedRounded sx={{ fontSize: 18, color: P.subtle, flexShrink: 0 }} />}
+                      ? <CheckCircleRounded sx={{ fontSize: { xs: 16, sm: 18 }, color: '#16a34a', flexShrink: 0 }} />
+                      : <RadioButtonUncheckedRounded sx={{ fontSize: { xs: 16, sm: 18 }, color: P.subtle, flexShrink: 0 }} />}
                   </Box>
                 );
               })}
             </Box>
+
+            {/* Pagination footer — only shown when pins exceed the page size */}
+            {totalPinPages > 1 && (
+              <Box sx={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                px: { xs: 1.75, sm: 2.5 }, py: { xs: 0.875, sm: 1.125 },
+                borderTop: `1px solid ${P.border}`,
+              }}>
+                <Box
+                  onClick={() => setPinPage(p => Math.max(0, p - 1))}
+                  sx={{
+                    display: 'flex', alignItems: 'center', gap: 0.5,
+                    px: 1, py: 0.5, borderRadius: '8px', cursor: pinPage === 0 ? 'default' : 'pointer',
+                    border: `1.5px solid ${pinPage === 0 ? P.border : P.border}`,
+                    color: pinPage === 0 ? P.subtle : P.strong,
+                    opacity: pinPage === 0 ? 0.4 : 1,
+                    transition: T, userSelect: 'none',
+                    '&:hover': pinPage > 0 ? { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } : {},
+                  }}
+                >
+                  <ChevronLeftRounded sx={{ fontSize: 16 }} />
+                  <Typography sx={{ fontSize: '0.75rem', fontWeight: 600 }}>Prev</Typography>
+                </Box>
+
+                <Typography sx={{ fontSize: '0.75rem', color: P.muted, fontWeight: 500 }}>
+                  Pins {pinPage * PAGE_SIZE + 1}–{Math.min((pinPage + 1) * PAGE_SIZE, pins.length)} of {pins.length}
+                </Typography>
+
+                <Box
+                  onClick={() => setPinPage(p => Math.min(totalPinPages - 1, p + 1))}
+                  sx={{
+                    display: 'flex', alignItems: 'center', gap: 0.5,
+                    px: 1, py: 0.5, borderRadius: '8px',
+                    cursor: pinPage === totalPinPages - 1 ? 'default' : 'pointer',
+                    border: `1.5px solid ${P.border}`,
+                    color: pinPage === totalPinPages - 1 ? P.subtle : P.strong,
+                    opacity: pinPage === totalPinPages - 1 ? 0.4 : 1,
+                    transition: T, userSelect: 'none',
+                    '&:hover': pinPage < totalPinPages - 1 ? { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } : {},
+                  }}
+                >
+                  <Typography sx={{ fontSize: '0.75rem', fontWeight: 600 }}>Next</Typography>
+                  <ChevronRightRounded sx={{ fontSize: 16 }} />
+                </Box>
+              </Box>
+            )}
           </Box>
 
           {/* Publish button */}
           <Box
             onClick={handlePublish}
-            sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, py: 1.375, borderRadius: '12px',
+            sx={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1,
+              py: { xs: 1.25, sm: 1.375 }, borderRadius: '12px',
               background: canPublish ? `linear-gradient(135deg, #16a34a 0%, #15803d 100%)` : P.bg,
               color: canPublish ? '#fff' : P.subtle,
-              fontSize: '0.9375rem', fontWeight: 700, cursor: canPublish ? 'pointer' : 'not-allowed',
-              boxShadow: canPublish ? '0 4px 14px rgba(22,163,74,0.3)' : 'none', transition: T,
-              '&:hover': canPublish ? { filter: 'brightness(1.05)' } : {} }}
+              fontSize: { xs: '0.875rem', sm: '0.9375rem' }, fontWeight: 700,
+              cursor: canPublish ? 'pointer' : 'not-allowed',
+              boxShadow: canPublish ? '0 4px 14px rgba(22,163,74,0.3)' : 'none',
+              transition: T, '&:hover': canPublish ? { filter: 'brightness(1.05)' } : {},
+            }}
           >
-            <PublishRounded sx={{ fontSize: 18 }} />
-            {publishing ? 'Publishing…' : `Generate & Publish Tour (${pinsWithCapture.length} ${pinsWithCapture.length === 1 ? 'pin' : 'pins'})`}
+            <PublishRounded sx={{ fontSize: 17 }} />
+            {publishing ? 'Publishing…' : `Generate & Publish Tour (${pinsWithCapture.length} pin${pinsWithCapture.length !== 1 ? 's' : ''})`}
           </Box>
           {pinsWithCapture.length < pins.length && (
-            <Typography sx={{ mt: 1.25, fontSize: '0.75rem', color: P.subtle, textAlign: 'center' }}>
-              Pins still waiting for a capture are skipped. The tour follows pin order 1 → {pins.length}.
+            <Typography sx={{ mt: 1, fontSize: '0.75rem', color: P.subtle, textAlign: 'center' }}>
+              Pins without captures are skipped. Tour follows pin order 1 → {pins.length}.
             </Typography>
           )}
 
@@ -204,7 +314,7 @@ export default function PublishToursPage() {
             );
             if (!floorTours.length) return null;
             return (
-              <Box sx={{ mt: 3 }}>
+              <Box sx={{ mt: 2.5 }}>
                 <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: P.strong, mb: 1 }}>Published tours for this floor</Typography>
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
                   {floorTours.map(t => (
