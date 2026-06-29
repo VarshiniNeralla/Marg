@@ -62,11 +62,11 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # ── Middleware — order matters: added last, executes first ─────────────────
-    # CORSMiddleware must be outermost so it handles OPTIONS preflights before
-    # any other middleware sees the request. Add it first so it wraps everything.
-    app.add_middleware(CORSMiddleware, **get_cors_kwargs())
+    # ── Middleware — order matters: last added = outermost = first to run ────────
+    # RequestLoggingMiddleware added first → innermost (runs after CORS).
+    # CORSMiddleware added last → outermost (intercepts OPTIONS preflights first).
     app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(CORSMiddleware, **get_cors_kwargs())
 
     # ── Exception handlers ────────────────────────────────────────────────────
     app.add_exception_handler(AppException, app_exception_handler)
