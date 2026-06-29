@@ -77,7 +77,7 @@ def create_app() -> FastAPI:
     app.include_router(api_router, prefix="/api/v1")
 
     # ── Root + health — no auth, no rate limiting ─────────────────────────────
-    @app.get("/", tags=["Meta"], include_in_schema=False)
+    @app.api_route("/", methods=["GET", "HEAD"], tags=["Meta"], include_in_schema=False)
     async def root():
         return {
             "status": "ok",
