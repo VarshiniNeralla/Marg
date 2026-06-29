@@ -766,6 +766,11 @@ export const useWorkflowStore = create<WorkflowState>()(
     const cap = get().captures.find(c => c.id === id);
     // Pins that referenced this capture in their timeline — unlink it.
     const affectedPins = get().capturePins.filter(p => p.captureIds.includes(id));
+    // Pins whose timeline becomes empty once this capture is removed are deleted
+    // entirely (and their successors renumbered) below via deleteCapturePin.
+    const emptiedPinIds = affectedPins
+      .filter(p => p.captureIds.filter(cid => cid !== id).length === 0)
+      .map(p => p.id);
     set(s => ({
       captures: s.captures.filter(c => c.id !== id),
       tours: s.tours.filter(t => t.captureId !== id),
@@ -775,11 +780,15 @@ export const useWorkflowStore = create<WorkflowState>()(
       towers: cap ? s.towers.map(t => t.id === cap.towerId ? { ...t, captures: Math.max(0, t.captures - 1) } : t) : s.towers,
     }));
     mirrorApi(workflowApiService.deleteCapture(id));
-    // Mirror the unlink on each affected pin so the backend timeline stays in sync.
+    // Mirror the unlink on each affected pin so the backend timeline stays in sync,
+    // but skip pins about to be deleted (deleteCapturePin handles their removal).
     affectedPins.forEach(p => {
+      if (emptiedPinIds.includes(p.id)) return;
       const remaining = p.captureIds.filter(cid => cid !== id);
       mirrorApi(workflowApiService.updateCapturePin(p.id, { captureIds: remaining }));
     });
+    // Remove any now-empty pins from the floor plan and resequence the rest to 1..N.
+    emptiedPinIds.forEach(pinId => get().deleteCapturePin(pinId));
   },
   replaceCapture(id, fileCount) {
     const patch = { fileCount, sizeMb: fileCount * 4, status: 'review' as const, reviewStatus: 'uploaded' as const, uploadedAt: 'Just now', reviewNotes: null, processingStatus: 'uploaded', processing_status: 'uploaded' };
