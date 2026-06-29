@@ -7,7 +7,7 @@ import {
   LayersRounded, NavigateNextRounded, NavigateBefore,
   CameraAltRounded, ThreeSixtyRounded, PlayArrowRounded, PauseRounded,
   CheckCircleRounded, PublishRounded, HomeRounded, MeetingRoomRounded,
-  PhotoCameraRounded, EventRounded, MapRounded, CompareRounded, CloseRounded,
+  EventRounded, MapRounded, CompareRounded, CloseRounded,
   HistoryRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
@@ -454,13 +454,16 @@ export default function TourViewerPage() {
 
   const viewer = (
     <Box sx={{
-      borderRadius: fullscreen ? 0 : '20px',
+      borderRadius: fullscreen ? 0 : { xs: '16px', md: '20px' },
       height: fullscreen ? '100vh' : '100%',
-      minHeight: fullscreen ? '100vh' : 560,
+      // Mobile: fill most of the viewport height so no scrolling is needed to see the panorama.
+      // Desktop: keep the 560px floor so the rail panels beside it have room.
+      minHeight: fullscreen ? '100vh' : { xs: 'min(56vw, 340px)', sm: 400, md: 560 },
+      maxHeight: fullscreen ? 'none' : { xs: 'min(56vw, 380px)', sm: 'none' },
       position: 'relative',
       overflow: 'hidden',
       backgroundColor: '#0f1929',
-      '& .psv-container': { borderRadius: fullscreen ? 0 : '20px' },
+      '& .psv-container': { borderRadius: fullscreen ? 0 : { xs: '16px', md: '20px' } },
     }}>
       <PanoramaViewer
         panoramaUrl={panoramaUrl}
@@ -470,19 +473,6 @@ export default function TourViewerPage() {
         hotspots={hotspots}
         onHotspotClick={handleHotspotClick}
       />
-
-      {/* Floating breadcrumb (always visible, even in fullscreen) */}
-      <Box sx={{ position: 'absolute', top: 12, left: 12, zIndex: 10, px: 1.5, py: 0.875, borderRadius: '10px', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', gap: 0.375, maxWidth: 'calc(100% - 220px)', overflow: 'hidden' }}>
-        <HomeRounded sx={{ fontSize: 13, color: 'rgba(255,255,255,0.6)', mr: 0.25 }} />
-        {breadcrumb.slice(1).map((b, i) => (
-          <React.Fragment key={i}>
-            {i > 0 && <NavigateNextRounded sx={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }} />}
-            <Typography noWrap sx={{ fontSize: '0.75rem', fontWeight: i === breadcrumb.length - 2 ? 700 : 500, color: i === breadcrumb.length - 2 ? '#fff' : 'rgba(255,255,255,0.65)' }}>
-              {b.label}
-            </Typography>
-          </React.Fragment>
-        ))}
-      </Box>
 
       {/* Top-right controls */}
       <Box sx={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 0.75, zIndex: 10 }}>
@@ -580,12 +570,14 @@ export default function TourViewerPage() {
 
   return (
     <Box>
-      {/* ── Persistent breadcrumb bar ──────────────────────────────────────── */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2.5 }}>
-        <Box component={Link} to="/tours" sx={{ cursor: 'pointer', border: 'none', color: colors.textMuted, textDecoration: 'none', display: 'flex', alignItems: 'center', width: 30, height: 30, borderRadius: '8px', justifyContent: 'center', backgroundColor: colors.card, boxShadow: '0 1px 3px rgba(15,23,42,0.06)', '&:hover': { color: colors.textStrong } }}>
+      {/* ── Header bar ────────────────────────────────────────────────────── */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: { xs: 1.5, md: 2.5 } }}>
+        <Box component={Link} to="/tours" sx={{ cursor: 'pointer', border: 'none', color: colors.textMuted, textDecoration: 'none', display: 'flex', alignItems: 'center', width: 30, height: 30, borderRadius: '8px', justifyContent: 'center', backgroundColor: colors.card, boxShadow: '0 1px 3px rgba(15,23,42,0.06)', '&:hover': { color: colors.textStrong }, flexShrink: 0 }}>
           <ArrowBackRounded sx={{ fontSize: 18 }} />
         </Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', flex: 1 }}>
+
+        {/* Mobile: show only tower + floor + room; Desktop: full breadcrumb */}
+        <Box sx={{ flex: 1, minWidth: 0, display: { xs: 'none', sm: 'flex' }, alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
           {breadcrumb.map((b, i) => (
             <React.Fragment key={i}>
               {i > 0 && <NavigateNextRounded sx={{ fontSize: 14, color: colors.textSubdued }} />}
@@ -597,16 +589,29 @@ export default function TourViewerPage() {
             </React.Fragment>
           ))}
         </Box>
-        <Chip label={ts.label} size="small" sx={{ height: 24, fontSize: '0.6875rem', fontWeight: 600, color: ts.color, backgroundColor: ts.bg, borderRadius: '6px' }} />
+
+        {/* Mobile condensed breadcrumb: Tower › Floor › Room */}
+        <Box sx={{ flex: 1, minWidth: 0, display: { xs: 'flex', sm: 'none' }, flexDirection: 'column', overflow: 'hidden' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.375, overflow: 'hidden' }}>
+            <Typography noWrap sx={{ fontSize: '0.6875rem', color: colors.textMuted, fontWeight: 500, flexShrink: 1, minWidth: 0 }}>
+              {tour.towerName} › {tour.floorLabel}
+            </Typography>
+          </Box>
+          <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 700, color: colors.textStrong, lineHeight: 1.2 }}>
+            {tour.roomName}
+          </Typography>
+        </Box>
+
+        <Chip label={ts.label} size="small" sx={{ height: 22, fontSize: '0.625rem', fontWeight: 600, color: ts.color, backgroundColor: ts.bg, borderRadius: '6px', flexShrink: 0 }} />
       </Box>
 
-      {/* ── Viewer (most of screen) + right rail ──────────────────────────── */}
+      {/* ── Viewer + right rail ───────────────────────────────────────────── */}
       <Box sx={{ display: 'flex', gap: 2.5, alignItems: 'stretch', flexDirection: { xs: 'column', lg: 'row' } }}>
         {/* Viewer — dominant */}
         <Box sx={{ flex: 1, minWidth: 0 }}>{viewer}</Box>
 
-        {/* Right rail — always-on panels */}
-        <Box sx={{ width: { xs: '100%', lg: 320 }, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {/* Right rail — hidden on mobile, shown on lg+ */}
+        <Box sx={{ width: { xs: '100%', lg: 320 }, flexShrink: 0, display: { xs: 'none', lg: 'flex' }, flexDirection: 'column', gap: 2 }}>
 
           {/* Progress Timeline — real pin history, inline panorama switching */}
           {pinTimeline.length > 0 && (() => {
@@ -824,6 +829,160 @@ export default function TourViewerPage() {
             </Box>
           )}
         </Box>
+      </Box>
+
+      {/* ── Mobile-only panel strip (lg+ hides this; right rail shows instead) ── */}
+      <Box sx={{ display: { xs: 'flex', lg: 'none' }, flexDirection: 'column', gap: 1.5, mt: 2 }}>
+
+        {/* Progress Timeline — full width card on mobile */}
+        {pinTimeline.length > 0 && (() => {
+          const isComparing = !!(compareIds[0] || compareIds[1]);
+          const bothSelected = !!(compareIds[0] && compareIds[1]);
+          const latestSnap = pinTimeline[pinTimeline.length - 1];
+          const isViewingHistory = !!(activeSnapId && activeSnapId !== latestSnap?.id);
+          const viewingSnap = isViewingHistory ? pinTimeline.find(s => s.id === activeSnapId) : null;
+          return (
+            <Box sx={{ borderRadius: '14px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', overflow: 'hidden' }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1.25, borderBottom: `1px solid ${colors.borderLight}` }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                  <HistoryRounded sx={{ fontSize: 14, color: colors.textMuted }} />
+                  <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: colors.textStrong }}>Progress Timeline</Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.375, ml: 0.5 }}>
+                    <Box sx={{ width: 5, height: 5, borderRadius: '50%', backgroundColor: '#16a34a' }} />
+                    <Typography sx={{ fontSize: '0.625rem', fontWeight: 700, color: '#16a34a' }}>
+                      {pinTimeline.length} capture{pinTimeline.length !== 1 ? 's' : ''}
+                    </Typography>
+                  </Box>
+                </Box>
+                {pinTimeline.length > 1 && (
+                  <Box
+                    onClick={() => setCompareIds(isComparing ? [null, null] : [latestSnap.id, null])}
+                    sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1, py: 0.25, borderRadius: '6px', cursor: 'pointer', fontSize: '0.625rem', fontWeight: 600, backgroundColor: isComparing ? 'rgba(124,58,237,0.1)' : colors.bg, color: isComparing ? '#7c3aed' : colors.textMuted, border: `1px solid ${isComparing ? '#7c3aed' : colors.borderLight}` }}
+                  >
+                    {isComparing ? <CloseRounded sx={{ fontSize: 11 }} /> : <CompareRounded sx={{ fontSize: 11 }} />}
+                    {isComparing ? 'Cancel' : 'Compare'}
+                  </Box>
+                )}
+              </Box>
+              <Box sx={{ p: 1.5 }}>
+                <CaptureTimeline
+                  series={pinTimeline}
+                  activeId={effectiveSnapId}
+                  onSelect={handleSnapSelect}
+                  compareIds={isComparing ? compareIds : undefined}
+                  compareMode={isComparing}
+                />
+                {/* Compare slots */}
+                {isComparing && (
+                  <Box sx={{ mt: 1.25, borderRadius: '10px', overflow: 'hidden', border: '1px solid rgba(124,58,237,0.18)', backgroundColor: 'rgba(124,58,237,0.04)' }}>
+                    <Box sx={{ px: 1.25, py: 0.875, borderBottom: '1px solid rgba(124,58,237,0.12)', display: 'flex', alignItems: 'center', gap: 0.625 }}>
+                      <CompareRounded sx={{ fontSize: 12, color: '#7c3aed', flexShrink: 0 }} />
+                      <Typography sx={{ fontSize: '0.6875rem', color: '#7c3aed', fontWeight: 600 }}>
+                        {!compareIds[0] ? 'Tap a node above to set A' : !compareIds[1] ? 'Now tap another node to set B' : 'Both selected'}
+                      </Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', gap: 1, p: 1 }}>
+                      {(['A', 'B'] as const).map((slot, idx) => {
+                        const slotId = compareIds[idx];
+                        const snap = slotId ? pinTimeline.find(s => s.id === slotId) : null;
+                        const snapIndex = snap ? pinTimeline.findIndex(s => s.id === snap.id) : -1;
+                        const slotColor = slot === 'A' ? '#7c3aed' : '#d97706';
+                        return (
+                          <Box key={slot} sx={{ flex: 1, borderRadius: '8px', border: `1.5px ${!slotId ? 'dashed' : 'solid'} ${!slotId ? colors.border : slotColor}`, backgroundColor: !slotId ? 'transparent' : slot === 'A' ? 'rgba(124,58,237,0.06)' : 'rgba(217,119,6,0.06)', p: 0.875, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.375 }}>
+                            <Box sx={{ width: 20, height: 20, borderRadius: '50%', backgroundColor: !slotId ? colors.borderLight : slotColor, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <Typography sx={{ fontSize: '0.625rem', fontWeight: 800, color: !slotId ? colors.textSubdued : '#fff' }}>{slot}</Typography>
+                            </Box>
+                            {snap ? (
+                              <>
+                                <Typography sx={{ fontSize: '0.625rem', fontWeight: 600, color: colors.textStrong, textAlign: 'center' }} noWrap>
+                                  {snap.isLatest ? 'Latest' : `Visit ${snapIndex + 1}`}
+                                </Typography>
+                                <Box onClick={() => { setActiveSnapId(slotId!); setPanoramaOverride(resolvePanorama(slotId!)); }} sx={{ px: 0.875, py: 0.25, borderRadius: '4px', backgroundColor: slotColor, color: '#fff', fontSize: '0.5625rem', fontWeight: 700, cursor: 'pointer' }}>
+                                  View {slot}
+                                </Box>
+                              </>
+                            ) : (
+                              <Typography sx={{ fontSize: '0.5625rem', color: colors.textSubdued, textAlign: 'center' }}>Tap node</Typography>
+                            )}
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                    {bothSelected && (
+                      <Box onClick={() => setCompareIds([null, null])} sx={{ mx: 1, mb: 0.875, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, py: 0.5, borderRadius: '6px', border: `1px solid ${colors.borderLight}`, color: colors.textMuted, fontSize: '0.625rem', fontWeight: 600, cursor: 'pointer' }}>
+                        <CloseRounded sx={{ fontSize: 11 }} /> Clear
+                      </Box>
+                    )}
+                  </Box>
+                )}
+                {isViewingHistory && !isComparing && (
+                  <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1, py: 0.625, borderRadius: '7px', backgroundColor: colors.warningBg, border: '1px solid rgba(217,119,6,0.2)' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                      <HistoryRounded sx={{ fontSize: 12, color: colors.warning }} />
+                      <Typography sx={{ fontSize: '0.625rem', color: colors.warning, fontWeight: 600 }} noWrap>{viewingSnap?.dateLabel ?? 'Historical view'}</Typography>
+                    </Box>
+                    <Box onClick={() => { setActiveSnapId(null); setPanoramaOverride(null); }} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.25, fontSize: '0.625rem', fontWeight: 600, color: colors.primary, cursor: 'pointer', ml: 1 }}>
+                      <CloseRounded sx={{ fontSize: 10 }} /> Latest
+                    </Box>
+                  </Box>
+                )}
+              </Box>
+            </Box>
+          );
+        })()}
+
+        {/* Tour meta */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0, px: 1.5, py: 1.125, borderRadius: '12px', backgroundColor: colors.card, border: `1px solid ${colors.borderLight}`, justifyContent: 'space-between' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.625, flexShrink: 0 }}>
+            <CameraAltRounded sx={{ fontSize: 14, color: colors.textSubdued }} />
+            <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: colors.textStrong }}>{tour.captures}</Typography>
+            <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>captures</Typography>
+          </Box>
+          <Box sx={{ flexShrink: 0, width: '1px', height: 14, backgroundColor: colors.borderLight, mx: 1.5 }} />
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.625, minWidth: 0 }}>
+            <EventRounded sx={{ fontSize: 14, color: colors.textSubdued, flexShrink: 0 }} />
+            <Typography noWrap sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>{capture?.uploadedAt ?? tour.lastCapture}</Typography>
+          </Box>
+        </Box>
+
+        {/* Floor plan link */}
+        {floorId && (
+          <Box component={Link} to={`/floor-plans/${tour.projectId}/${tour.towerId}/${floorId}?pinsOnly=1&returnTo=/tours/${tour.id}`} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1.25, borderRadius: '12px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', textDecoration: 'none' }}>
+            <Box sx={{ width: 30, height: 30, borderRadius: '8px', backgroundColor: colors.primarySoft, color: colors.primary, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <MapRounded sx={{ fontSize: 16 }} />
+            </Box>
+            <Box sx={{ flex: 1 }}>
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: colors.textStrong }}>View on floor plan</Typography>
+              <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>See this room in context</Typography>
+            </Box>
+            <NavigateNextRounded sx={{ fontSize: 18, color: colors.textSubdued }} />
+          </Box>
+        )}
+
+        {/* Mark as done */}
+        {(tour.status === 'in_review' || (user?.role === 'manager' && (!(tour as any).managerReviewed || isMarkedDone))) && (
+          <Box
+            component="button"
+            onClick={() => {
+              if (!isMarkedDone) {
+                updateTour(tour.id, { status: 'published', managerReviewed: true } as any);
+                setIsMarkedDone(true);
+              }
+            }}
+            sx={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1,
+              width: '100%', py: 1.375, borderRadius: '12px', cursor: isMarkedDone ? 'default' : 'pointer',
+              border: isMarkedDone ? 'none' : `1.5px solid ${colors.border}`,
+              backgroundColor: isMarkedDone ? '#10b981' : 'transparent',
+              color: isMarkedDone ? '#fff' : colors.textStrong,
+              fontSize: '0.9375rem', fontWeight: 600, transition: 'all 0.2s',
+              '&:hover': isMarkedDone ? {} : { borderColor: colors.primary, backgroundColor: colors.primarySoft, color: colors.primary },
+            }}
+          >
+            <CheckCircleRounded sx={{ fontSize: 18 }} />
+            {isMarkedDone ? 'Done' : 'Mark as done'}
+          </Box>
+        )}
       </Box>
     </Box>
   );

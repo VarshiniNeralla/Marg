@@ -1,6 +1,6 @@
 import React from 'react';
 import type { WfCapturePin } from '@store/workflowStore';
-import { useLongPress } from '@/hooks/useLongPress';
+import { useDoubleTap } from '@/hooks/useDoubleTap';
 
 interface CapturePinMarkerProps {
   pin: WfCapturePin;
@@ -8,9 +8,9 @@ interface CapturePinMarkerProps {
   pageH: number;
   scale: number;
   selected: boolean;
-  /** Long-press (mobile/tablet camera, or desktop) — begins capture. */
+  /** Double-tap/double-click — begins re-capture on the selected pin. */
   onActivate: (pin: WfCapturePin) => void;
-  /** Short tap — select to reveal the action panel. */
+  /** Single tap — select pin and reveal action panel. */
   onSelect: (pin: WfCapturePin) => void;
 }
 
@@ -23,11 +23,14 @@ interface CapturePinMarkerProps {
  * Two visual states:
  *   • Waiting for capture  → hollow ring, dashed, amber
  *   • Capture attached     → solid filled, green, with a count badge
+ *
+ * Interaction model (replaces long press):
+ *   • Single tap  → select pin (show action panel)
+ *   • Double tap  → activate capture directly (camera on mobile, upload on desktop)
  */
 export default function CapturePinMarker({ pin, pageW, pageH, scale, selected, onActivate, onSelect }: CapturePinMarkerProps) {
-  const { handlers, isPressing, progress } = useLongPress(() => onActivate(pin), {
-    threshold: 500,
-    onClick: () => onSelect(pin),
+  const { handlers } = useDoubleTap(() => onActivate(pin), {
+    onSingleTap: () => onSelect(pin),
   });
 
   const cx = (pin.x / 100) * pageW;
@@ -35,47 +38,28 @@ export default function CapturePinMarker({ pin, pageW, pageH, scale, selected, o
   const hasCapture = pin.captureIds.length > 0;
 
   // Constant on-screen size regardless of zoom.
-  const r = 13 / scale;
-  const ringR = 17 / scale;
+  const r      = 13 / scale;
+  const ringR  = 17 / scale;
   const fontSize = 14 / scale;
 
-  const fill = hasCapture ? '#16a34a' : '#ffffff';
-  const stroke = hasCapture ? '#15803d' : '#d97706';
-  const textFill = hasCapture ? '#ffffff' : '#d97706';
-
-  // Hold-progress arc (radial fill) while long-pressing.
-  const arcCirc = 2 * Math.PI * ringR;
+  const fill      = hasCapture ? '#16a34a' : '#ffffff';
+  const stroke    = hasCapture ? '#15803d' : '#d97706';
+  const textFill  = hasCapture ? '#ffffff' : '#d97706';
 
   return (
     <g
       {...handlers}
       style={{ cursor: 'pointer', touchAction: 'none' }}
     >
-      {/* Selection / hold halo */}
-      {(selected || isPressing) && (
+      {/* Selection halo */}
+      {selected && (
         <circle
           cx={cx} cy={cy} r={ringR}
-          fill={selected ? `${stroke}22` : 'transparent'}
+          fill={`${stroke}22`}
           stroke={stroke}
           strokeOpacity={0.5}
           strokeWidth={1.5}
           vectorEffect="non-scaling-stroke"
-        />
-      )}
-
-      {/* Hold-to-capture progress ring */}
-      {isPressing && progress > 0 && (
-        <circle
-          cx={cx} cy={cy} r={ringR}
-          fill="none"
-          stroke={stroke}
-          strokeWidth={3}
-          vectorEffect="non-scaling-stroke"
-          strokeLinecap="round"
-          strokeDasharray={arcCirc}
-          strokeDashoffset={arcCirc * (1 - progress)}
-          transform={`rotate(-90 ${cx} ${cy})`}
-          style={{ pointerEvents: 'none' }}
         />
       )}
 

@@ -6,12 +6,15 @@ import {
   CloudUploadRounded, AddLocationAltRounded, ZoomInRounded, ZoomOutRounded,
   CenterFocusStrongRounded, MyLocationRounded, FullscreenRounded, FullscreenExitRounded,
   AddAPhotoRounded, HistoryRounded, DeleteOutlineRounded, CloseRounded,
+  CameraAltRounded,
 } from '@mui/icons-material';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getFloorPlanByFloor, getFloorsByTower } from '@store/workflowSelectors';
 import { uploadCaptureFiles } from '@/services/uploadService';
+import { useDeviceType, usesCameraCapture } from '@/hooks/useDeviceType';
+import CameraCaptureDialog from '@/features/capturePins/CameraCaptureDialog';
 
 /* ── palette ────────────────────────────────────────────────────────────── */
 const P = {
@@ -52,7 +55,7 @@ function StepIndicator({
       {STEPS.map((s, i) => {
         const isDone   = i < currentIdx;
         const isActive = s.key === current;
-        const canClick = isDone; // only completed steps are clickable
+        const canClick = isDone;
         return (
           <React.Fragment key={s.key}>
             <Box
@@ -174,10 +177,7 @@ function TowerCard({ name, floors, index, onClick }: { name: string; floors: num
       '&:hover .tw-icon': { color: '#fff' },
       '&:hover .tw-name': { color: accent },
     }}>
-      {/* Subtle top accent bar */}
       <Box sx={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: `linear-gradient(90deg, ${accent} 0%, ${accent}44 100%)`, borderRadius: '16px 16px 0 0' }} />
-
-      {/* Icon */}
       <Box className="tw-icon-box" sx={{
         width: 40, height: 40, borderRadius: '11px', mb: 1.5,
         background: `${accent}14`, border: `1.5px solid ${accent}28`,
@@ -185,14 +185,10 @@ function TowerCard({ name, floors, index, onClick }: { name: string; floors: num
       }}>
         <DomainRounded className="tw-icon" sx={{ fontSize: 20, color: accent, transition: T }} />
       </Box>
-
-      {/* Name */}
       <Typography className="tw-name" sx={{
         fontSize: '0.9375rem', fontWeight: 700, color: P.strong,
         letterSpacing: '-0.02em', lineHeight: 1.2, mb: 0.375, transition: T,
       }}>{name}</Typography>
-
-      {/* Floor count */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>{floors} floors</Typography>
         <Box sx={{ px: 0.875, py: 0.25, borderRadius: '6px', backgroundColor: `${accent}12` }}>
@@ -203,7 +199,7 @@ function TowerCard({ name, floors, index, onClick }: { name: string; floors: num
   );
 }
 
-/* ── Floor card — 3-column grid, clean badge style ───────────────────────── */
+/* ── Floor card ───────────────────────────────────────────────────────────── */
 function FloorCard({ label, number, onClick }: { label: string; number: number; onClick: () => void }) {
   return (
     <Box onClick={onClick} sx={{
@@ -245,30 +241,55 @@ interface RenderPin {
   hasCapture: boolean;
 }
 
-/* ── Floor plan viewer with pin + fullscreen ─────────────────────────────── */
+/* ── Floor plan viewer with pin, fullscreen, pinch-to-zoom ──────────────── */
 function FloorPlanWithPin({
-  floorPlan, pin, pins, onPinPlace, onPinClick,
+  floorPlan, pin, pins, onPinPlace, onPinClick, onPinActivate,
 }: {
   floorPlan: Record<string, unknown> | null;
-  pin: { x: number; y: number } | null;       // pending pin being placed (not yet captured)
-  pins: RenderPin[];                            // persisted, numbered pins for this floor plan
+  pin: { x: number; y: number } | null;
+  pins: RenderPin[];
   onPinPlace: (x: number, y: number) => void;
   onPinClick: (pinId: string) => void;
+  onPinActivate: (pinId: string) => void;
 }) {
-  const [scale, setScale] = useState(1);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [scale, setScale]       = useState(1);
+  const [offset, setOffset]     = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
-  const dragStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
+  const dragStart  = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
-  // The IMAGE element is the single coordinate reference. Pins live INSIDE an
-  // overlay that is sized to exactly match the image box and shares the same
-  // pan/zoom transform — so pins never drift relative to the plan, at any
-  // container size, fullscreen state, or zoom level. Coordinates are stored as
-  // % of the image (identical model to FloorPlanViewerPage).
-  const imgWrapRef = useRef<HTMLDivElement>(null);
+  const imgWrapRef   = useRef<HTMLDivElement>(null);
 
-  const zoom = useCallback((dir: 1 | -1) => setScale(s => Math.min(4, Math.max(0.5, s + dir * 0.25))), []);
+  // Touch / pinch state
+  const touchesRef      = useRef<React.Touch[]>([]);
+  const pinchStartRef   = useRef<{ dist: number; scale: number; midX: number; midY: number } | null>(null);
+  const touchDragStart  = useRef({ ox: 0, oy: 0, mx: 0, my: 0 });
+  const touchMovedRef   = useRef(false);
+
+  // Double-tap zoom on empty floor plan space
+  const lastTapRef = useRef<{ t: number; x: number; y: number }>({ t: 0, x: 0, y: 0 });
+
+  const clampOffset = useCallback((ox: number, oy: number, s: number) => {
+    const el = containerRef.current;
+    if (!el) return { x: ox, y: oy };
+    const { width: cw, height: ch } = el.getBoundingClientRect();
+    const wrap = imgWrapRef.current;
+    if (!wrap) return { x: ox, y: oy };
+    const { width: iw, height: ih } = wrap.getBoundingClientRect();
+    const scaledW = iw * s / scale; // approximate — good enough for clamping
+    const scaledH = ih * s / scale;
+    const maxX = Math.max(0, (scaledW - cw) / 2 + 60);
+    const maxY = Math.max(0, (scaledH - ch) / 2 + 60);
+    return {
+      x: Math.max(-maxX, Math.min(maxX, ox)),
+      y: Math.max(-maxY, Math.min(maxY, oy)),
+    };
+  }, [scale]);
+
+  const zoom = useCallback((dir: 1 | -1) => {
+    setScale(s => Math.min(4, Math.max(0.5, +(s + dir * 0.25).toFixed(2))));
+  }, []);
+
   const resetView = useCallback(() => { setScale(1); setOffset({ x: 0, y: 0 }); }, []);
 
   useEffect(() => {
@@ -278,8 +299,10 @@ function FloorPlanWithPin({
     return () => window.removeEventListener('keydown', handler);
   }, [fullscreen]);
 
+  // ── Mouse pan (desktop) ─────────────────────────────────────────────────
   function onMouseDown(e: React.MouseEvent) {
     if (e.button !== 0) return;
+    if ((e.target as Element).closest?.('[data-pin-id]')) return;
     setIsDragging(true);
     dragStart.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
   }
@@ -289,19 +312,125 @@ function FloorPlanWithPin({
   }
   function onMouseUp() { setIsDragging(false); }
 
-  function onClick(e: React.MouseEvent) {
+  // ── Desktop click → place pin ───────────────────────────────────────────
+  function onCanvasClick(e: React.MouseEvent) {
     if (isDragging) return;
-    // Ignore clicks that landed on an existing numbered pin.
     if ((e.target as Element).closest?.('[data-pin-id]')) return;
     const wrap = imgWrapRef.current;
     if (!wrap) return;
-    // The wrapper IS the image box and carries the transform, so its live rect
-    // already reflects pan/zoom/fullscreen. Map the click into 0–100% of it.
     const rect = wrap.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
-    if (x < 0 || y < 0 || x > 100 || y > 100) return; // clicked outside the plan
+    if (x < 0 || y < 0 || x > 100 || y > 100) return;
+    onPinPlace(x, y);
+  }
+
+  // ── Touch handlers (pan, pinch-zoom, double-tap zoom, tap-to-place) ─────
+  function getTouchDist(t1: React.Touch, t2: React.Touch) {
+    return Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+  }
+  function getTouchMid(t1: React.Touch, t2: React.Touch) {
+    return { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+  }
+
+  function onTouchStart(e: React.TouchEvent) {
+    // Don't prevent default on pin elements — they need their pointer events.
+    if ((e.target as Element).closest?.('[data-pin-id]')) return;
+    touchMovedRef.current = false;
+    touchesRef.current = Array.from(e.touches) as unknown as React.Touch[];
+
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      const [t1, t2] = [e.touches[0], e.touches[1]] as unknown as [React.Touch, React.Touch];
+      pinchStartRef.current = { dist: getTouchDist(t1, t2), scale, midX: getTouchMid(t1, t2).x, midY: getTouchMid(t1, t2).y };
+    } else if (e.touches.length === 1) {
+      const t = e.touches[0];
+      touchDragStart.current = { ox: offset.x, oy: offset.y, mx: t.clientX, my: t.clientY };
+    }
+  }
+
+  function onTouchMove(e: React.TouchEvent) {
+    if ((e.target as Element).closest?.('[data-pin-id]')) return;
+    touchMovedRef.current = true;
+
+    if (e.touches.length === 2 && pinchStartRef.current) {
+      e.preventDefault();
+      const [t1, t2] = [e.touches[0], e.touches[1]] as unknown as [React.Touch, React.Touch];
+      const newDist = getTouchDist(t1, t2);
+      const rawScale = (newDist / pinchStartRef.current.dist) * pinchStartRef.current.scale;
+      const newScale = Math.min(4, Math.max(0.5, +rawScale.toFixed(3)));
+      setScale(newScale);
+      // Pan offset so the pinch midpoint stays fixed.
+      const { midX, midY } = pinchStartRef.current;
+      const mid = getTouchMid(t1, t2);
+      setOffset(prev => ({
+        x: prev.x + (mid.x - midX) * 0.4,
+        y: prev.y + (mid.y - midY) * 0.4,
+      }));
+    } else if (e.touches.length === 1 && !pinchStartRef.current) {
+      const t = e.touches[0];
+      const dx = t.clientX - touchDragStart.current.mx;
+      const dy = t.clientY - touchDragStart.current.my;
+      setOffset({ x: touchDragStart.current.ox + dx, y: touchDragStart.current.oy + dy });
+    }
+  }
+
+  function onTouchEnd(e: React.TouchEvent) {
+    if ((e.target as Element).closest?.('[data-pin-id]')) return;
+
+    if (e.touches.length < 2) pinchStartRef.current = null;
+
+    // Double-tap to zoom in/out on empty floor plan space
+    if (e.changedTouches.length === 1 && !touchMovedRef.current) {
+      const t = e.changedTouches[0];
+      const now = performance.now();
+      const last = lastTapRef.current;
+      const elapsed = now - last.t;
+      const dist = Math.hypot(t.clientX - last.x, t.clientY - last.y);
+
+      if (elapsed < 300 && dist < 40) {
+        // Double tap — zoom in if near 1×, zoom out if zoomed in
+        if (scale < 1.4) {
+          setScale(2);
+          // Center on the tap point
+          const wrap = imgWrapRef.current;
+          if (wrap) {
+            const rect = wrap.getBoundingClientRect();
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            setOffset({ x: -(t.clientX - cx) * 0.8, y: -(t.clientY - cy) * 0.8 });
+          }
+        } else {
+          resetView();
+        }
+        lastTapRef.current = { t: 0, x: 0, y: 0 };
+      } else {
+        lastTapRef.current = { t: now, x: t.clientX, y: t.clientY };
+      }
+      return;
+    }
+  }
+
+  function onTouchCancel() {
+    pinchStartRef.current = null;
+    touchMovedRef.current = false;
+  }
+
+  // ── Touch tap on pin → place pin if nothing selected ────────────────────
+  function onTouchPinPlace(e: React.TouchEvent) {
+    if (touchMovedRef.current) return;
+    if ((e.target as Element).closest?.('[data-pin-id]')) return;
+    if (e.changedTouches.length !== 1) return;
+
+    const wrap = imgWrapRef.current;
+    if (!wrap) return;
+    const rect = wrap.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const t = e.changedTouches[0];
+    const x = ((t.clientX - rect.left) / rect.width) * 100;
+    const y = ((t.clientY - rect.top) / rect.height) * 100;
+    if (x < 0 || y < 0 || x > 100 || y > 100) return;
     onPinPlace(x, y);
   }
 
@@ -342,32 +471,55 @@ function FloorPlanWithPin({
           )}
           <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: pin ? '#22c55e' : '#f59e0b', boxShadow: pin ? '0 0 6px #22c55e' : '0 0 6px #f59e0b', flexShrink: 0 }} />
           <Typography sx={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.95)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {pin ? 'Point placed' : 'Select location'}
+            {pin ? 'Point placed' : 'Tap to drop pin'}
           </Typography>
         </Box>
         {controls}
       </Box>
 
-      {/* Canvas — a centered flex stage holds the pan/zoom transform; the image
-          wrapper shrink-wraps the plan exactly so pins (its % children) never drift. */}
-      <Box ref={containerRef} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp} onClick={onClick}
-        sx={{ width: '100%', height: '100%', overflow: 'hidden', cursor: isDragging ? 'grabbing' : 'crosshair', position: 'relative', userSelect: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <Box sx={{ transform: `translate(${offset.x}px,${offset.y}px) scale(${scale})`, transition: isDragging ? 'none' : 'transform 0.1s', display: 'flex', alignItems: 'center', justifyContent: 'center', maxWidth: '100%', maxHeight: '100%' }}>
+      {/* Canvas */}
+      <Box
+        ref={containerRef}
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseUp={onMouseUp}
+        onMouseLeave={onMouseUp}
+        onClick={onCanvasClick}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={(e) => { onTouchEnd(e); onTouchPinPlace(e); }}
+        onTouchCancel={onTouchCancel}
+        sx={{
+          width: '100%', height: '100%', overflow: 'hidden',
+          cursor: isDragging ? 'grabbing' : 'crosshair',
+          position: 'relative', userSelect: 'none',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          touchAction: 'none',
+        }}
+      >
+        <Box sx={{
+          transform: `translate(${offset.x}px,${offset.y}px) scale(${scale})`,
+          transition: isDragging ? 'none' : 'transform 0.1s',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          maxWidth: '100%', maxHeight: '100%',
+        }}>
           {imageUrl ? (
-            /* Wrapper sized to the rendered image; pins are % of THIS box. */
             <Box ref={imgWrapRef} sx={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}>
               <Box component="img" src={imageUrl} alt="Floor plan" draggable={false}
                 sx={{ display: 'block', maxWidth: '88vw', maxHeight: '70vh', width: 'auto', height: 'auto' }} />
 
-              {/* Persisted, numbered pins — % of the image, so zero drift */}
+              {/* Persisted, numbered pins */}
               {pins.map(p => {
                 const color = p.hasCapture ? '#16a34a' : '#d97706';
                 return (
                   <Box
                     key={p.id}
                     data-pin-id={p.id}
-                    onClick={(e) => { e.stopPropagation(); onPinClick(p.id); }}
-                    sx={{ position: 'absolute', left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%,-100%)', cursor: 'pointer', zIndex: 5 }}
+                    onPointerUp={(e) => {
+                      e.stopPropagation();
+                      onPinClick(p.id);
+                    }}
+                    sx={{ position: 'absolute', left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%,-100%)', cursor: 'pointer', zIndex: 5, touchAction: 'none' }}
                   >
                     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.5))', transition: T, '&:hover': { transform: 'scale(1.08)' } }}>
                       <Box sx={{ width: 30, height: 30, borderRadius: '50% 50% 50% 0', backgroundColor: color, border: '3px solid #fff', transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -379,7 +531,7 @@ function FloorPlanWithPin({
                 );
               })}
 
-              {/* Pending pin being placed (before its image is attached) */}
+              {/* Pending pin */}
               {pin && (
                 <Box sx={{ position: 'absolute', left: `${pin.x}%`, top: `${pin.y}%`, transform: 'translate(-50%,-100%)', pointerEvents: 'none', zIndex: 6 }}>
                   <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.5))' }}>
@@ -411,21 +563,17 @@ function FloorPlanWithPin({
         </Box>
       )}
 
-      {/* Escape hint — fullscreen only */}
       {fullscreen && (
         <Box sx={{ position: 'absolute', bottom: 16, right: 16, px: 1.25, py: 0.5, borderRadius: '8px', backgroundColor: 'rgba(255,255,255,0.07)', backdropFilter: 'blur(8px)', zIndex: 10 }}>
-          <Typography sx={{ fontSize: '0.6875rem', color: 'rgba(255,255,255,0.4)', fontWeight: 500, letterSpacing: '0.02em' }}>Press Esc to exit</Typography>
+          <Typography sx={{ fontSize: '0.6875rem', color: 'rgba(255,255,255,0.4)', fontWeight: 500, letterSpacing: '0.02em' }}>Press Esc or Back to exit</Typography>
         </Box>
       )}
     </Box>
   );
 
-  /* Normal aspect-ratio wrapper */
   if (!fullscreen) {
     return <Box sx={{ aspectRatio: '16/9' }}>{viewer}</Box>;
   }
-
-  /* Full-screen overlay */
   return (
     <Box sx={{ position: 'fixed', inset: 0, zIndex: 1400, backgroundColor: '#0a0c14' }}>
       {viewer}
@@ -452,18 +600,28 @@ export default function CaptureWorkflowPage() {
   const deleteCapturePin   = useWorkflowStore(s => s.deleteCapturePin);
   const navigate = useNavigate();
 
+  const deviceType  = useDeviceType();
+  const isMobile    = usesCameraCapture(deviceType);
+
   const [step, setStep]               = useState<Step>('project');
   const [selectedProject, setProject] = useState<string>('');
   const [selectedTower, setTower]     = useState<string>('');
   const [selectedFloor, setFloor]     = useState<string>('');
   const [pinPos, setPinPos]           = useState<{ x: number; y: number } | null>(null);
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
-  // When set, the next upload appends to this existing pin instead of creating a new one.
   const [activeCapturePinId, setActiveCapturePinId] = useState<string | null>(null);
+
+  // Desktop upload state
   const [dragging, setDragging]       = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
-  const [toast, setToast]             = useState('');
+
+  // Mobile camera state
+  const [cameraOpen, setCameraOpen]   = useState(false);
+  // Hidden file input for mobile fallback (capture="environment")
+  const mobileInputRef = useRef<HTMLInputElement>(null);
+
+  const [toast, setToast] = useState('');
 
   const assignedIds = new Set(user?.assignedProjectIds ?? []);
   const myProjects  = assignedIds.size
@@ -478,17 +636,26 @@ export default function CaptureWorkflowPage() {
 
   const floorPlan = getFloorPlanByFloor(floorPlans, selectedTower, selectedFloor);
 
-  // Persisted, numbered pins for the current floor plan — kept visible on the plan.
   const floorPins: RenderPin[] = floorPlan
     ? [...allPins.filter(p => p.floorPlanId === floorPlan.id)]
         .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
         .map(p => ({ id: p.id, sequenceNumber: p.sequenceNumber, x: p.x, y: p.y, hasCapture: p.captureIds.length > 0 }))
     : [];
 
-  // Click a numbered pin → open action panel (never auto-navigate).
   function handlePinClick(pinId: string) {
     setSelectedPinId(prev => (prev === pinId ? null : pinId));
-    setPinPos(null); // clear any pending drop so upload zone resets
+    setPinPos(null);
+  }
+
+  // Double-tap on an existing selected pin → immediate capture
+  function handlePinActivate(pinId: string) {
+    setActiveCapturePinId(pinId);
+    setSelectedPinId(null);
+    setPinPos(null);
+    if (isMobile) {
+      setCameraOpen(true);
+    }
+    // Desktop: the upload zone below becomes active, user clicks Browse
   }
 
   const selectedPinObj = selectedPinId ? allPins.find(p => p.id === selectedPinId) ?? null : null;
@@ -504,10 +671,9 @@ export default function CaptureWorkflowPage() {
     floor:   selectedFloorObj?.label,
   };
 
-  /* navigate back via step indicator or Back button */
   function jumpToStep(target: Step) {
     const targetIdx = STEPS.findIndex(s => s.key === target);
-    if (targetIdx >= stepIdx) return; // can't jump forward
+    if (targetIdx >= stepIdx) return;
     setStep(target);
     if (targetIdx <= 0) { setProject(''); setTower(''); setFloor(''); setPinPos(null); setActiveCapturePinId(null); }
     else if (targetIdx <= 1) { setTower(''); setFloor(''); setPinPos(null); setActiveCapturePinId(null); }
@@ -519,10 +685,9 @@ export default function CaptureWorkflowPage() {
     if (prev) jumpToStep(prev.key);
   }
 
-  /* ── Real upload — runs the actual Cloudinary + store pipeline ─────────── */
-  async function handleCaptureFiles(fileList: FileList | null) {
-    const files = fileList ? Array.from(fileList) : [];
-    // Need files + either an existing pin to re-capture OR a new pin position dropped.
+  /* ── Core upload pipeline ───────────────────────────────────────────── */
+  async function handleCaptureFiles(fileList: FileList | File[] | null) {
+    const files = fileList ? Array.from(fileList as FileList) : [];
     if (!files.length || (!activeCapturePinId && !pinPos) || !selectedFloor || isUploading) return;
     setUploadError('');
     setIsUploading(true);
@@ -531,14 +696,12 @@ export default function CaptureWorkflowPage() {
       const fileCount = result.count || files.length;
 
       if (activeCapturePinId) {
-        // RE-CAPTURE: append to an existing pin — never create a new pin.
         const existingPin = allPins.find(p => p.id === activeCapturePinId);
         attachCaptureToPin(activeCapturePinId, fileCount, result.files);
         setToast(`New capture attached to Pin ${existingPin?.sequenceNumber ?? ''} · sent for review`);
         setActiveCapturePinId(null);
         setPinPos(null);
       } else if (floorPlan && pinPos) {
-        // NEW PIN: engineer dropped a fresh point on the plan.
         const pinId = createCapturePin({
           floorPlanId: floorPlan.id,
           floorId: selectedFloor,
@@ -552,7 +715,6 @@ export default function CaptureWorkflowPage() {
         setToast(`Image attached to Pin ${seq} · sent for review`);
         setPinPos(null);
       } else if (pinPos) {
-        // No floor plan — create a plain capture against a room on this floor.
         const flat = flats.find(f => f.floorId === selectedFloor);
         const flatId = flat?.id ?? `${selectedFloor}-flat-a`;
         const seq = rooms.filter(r => r.floorId === selectedFloor).length + 1;
@@ -566,6 +728,34 @@ export default function CaptureWorkflowPage() {
     } finally {
       setIsUploading(false);
     }
+  }
+
+  /* ── Mobile camera capture ──────────────────────────────────────────── */
+  async function handleCameraCapture(file: File) {
+    await handleCaptureFiles([file]);
+  }
+
+  /* ── Mobile file-input fallback (capture="environment") ─────────────── */
+  async function handleMobileFileInput(e: React.ChangeEvent<HTMLInputElement>) {
+    if (e.target.files?.length) {
+      await handleCaptureFiles(e.target.files);
+    }
+    e.target.value = '';
+  }
+
+  function openMobileCapture() {
+    // Try getUserMedia first (CameraCaptureDialog); if not available the input fallback handles it.
+    setCameraOpen(true);
+  }
+
+  /* ── "Take Picture" button — places pin + opens camera ─────────────── */
+  function handleTakePicture(pinObj: NonNullable<typeof selectedPinObj> | null) {
+    if (pinObj) {
+      setActiveCapturePinId(pinObj.id);
+      setSelectedPinId(null);
+    }
+    setPinPos(pinPos); // keep pending pin if set
+    openMobileCapture();
   }
 
   const BackBtn = step !== 'project' ? (
@@ -609,7 +799,6 @@ export default function CaptureWorkflowPage() {
         {BackBtn}
       </Box>
 
-      {/* Step indicator — clickable */}
       <StepIndicator current={step} selections={selections} onStepClick={jumpToStep} />
 
       {/* ── PROJECT ─────────────────────────────────────────────────────── */}
@@ -684,17 +873,21 @@ export default function CaptureWorkflowPage() {
             { label: 'Tower',   value: selectedTowerObj?.name },
             { label: 'Floor',   value: selectedFloorObj?.label },
           ]} />
-          {/* Pin count + history link */}
+
+          {/* Instruction row */}
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5, gap: 1, flexWrap: 'wrap' }}>
             <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
               {floorPins.length > 0
-                ? `${floorPins.length} pin${floorPins.length !== 1 ? 's' : ''} placed · tap a pin to capture again or view history`
+                ? isMobile
+                  ? `${floorPins.length} pin${floorPins.length !== 1 ? 's' : ''} · tap pin to select · double-tap to capture`
+                  : `${floorPins.length} pin${floorPins.length !== 1 ? 's' : ''} placed · tap a pin to capture again or view history`
                 : 'No pins yet — tap the plan to place your first capture point'}
             </Typography>
             <Box component={Link} to="/my-captures" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.5, py: 0.625, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none', transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}>
               View History <ArrowForwardRounded sx={{ fontSize: 13 }} />
             </Box>
           </Box>
+
           <Box sx={{ mb: selectedPinObj ? 1.5 : 2.5 }}>
             <FloorPlanWithPin
               floorPlan={(floorPlan as unknown) as Record<string, unknown> | null}
@@ -702,10 +895,11 @@ export default function CaptureWorkflowPage() {
               pins={floorPins}
               onPinPlace={(x, y) => { setPinPos({ x, y }); setSelectedPinId(null); setActiveCapturePinId(null); }}
               onPinClick={handlePinClick}
+              onPinActivate={handlePinActivate}
             />
           </Box>
 
-          {/* Pin action panel — shown when an existing pin is selected */}
+          {/* Pin action panel */}
           {selectedPinObj && (
             <Box sx={{ mb: 2.5, p: 2, borderRadius: '14px', border: `1.5px solid ${P.border}`, backgroundColor: P.white, display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
               {/* Pin badge */}
@@ -722,12 +916,23 @@ export default function CaptureWorkflowPage() {
               </Box>
               {/* Actions */}
               <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', flexShrink: 0 }}>
-                <Box
-                  onClick={() => { setActiveCapturePinId(selectedPinObj.id); setPinPos(null); setSelectedPinId(null); }}
-                  sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
-                >
-                  <AddAPhotoRounded sx={{ fontSize: 15 }} /> Capture Again
-                </Box>
+                {isMobile ? (
+                  /* Mobile/Tablet: Take Picture button */
+                  <Box
+                    onClick={() => handleTakePicture(selectedPinObj)}
+                    sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
+                  >
+                    <CameraAltRounded sx={{ fontSize: 15 }} /> Take Picture
+                  </Box>
+                ) : (
+                  /* Desktop: Capture Again → activates upload zone */
+                  <Box
+                    onClick={() => { setActiveCapturePinId(selectedPinObj.id); setPinPos(null); setSelectedPinId(null); }}
+                    sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
+                  >
+                    <AddAPhotoRounded sx={{ fontSize: 15 }} /> Capture Again
+                  </Box>
+                )}
                 {selectedPinObj.captureIds.length > 0 && (
                   <Box
                     onClick={() => navigate(`/captures/${selectedPinObj.captureIds[selectedPinObj.captureIds.length - 1]}`)}
@@ -748,8 +953,54 @@ export default function CaptureWorkflowPage() {
               </Box>
             </Box>
           )}
-          {/* Upload zone */}
-          {(() => {
+
+          {/* Mobile: "Take Picture" CTA when a pin is placed and no pin is selected */}
+          {isMobile && pinPos && !selectedPinObj && (
+            <Box sx={{ mb: 2.5 }}>
+              <Box
+                onClick={() => openMobileCapture()}
+                sx={{ borderRadius: '16px', p: 3, textAlign: 'center', border: `2px solid ${P.blue}55`, backgroundColor: 'rgba(37,99,235,0.03)', cursor: 'pointer', transition: T, '&:active': { backgroundColor: P.blueSoft } }}
+              >
+                <Box sx={{ width: 52, height: 52, borderRadius: '14px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 1.5, boxShadow: '0 6px 18px rgba(37,99,235,0.3)' }}>
+                  <CameraAltRounded sx={{ fontSize: 26, color: P.white }} />
+                </Box>
+                <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>Take Picture</Typography>
+                <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Opens your rear camera</Typography>
+              </Box>
+            </Box>
+          )}
+
+          {/* Mobile: prompt to place pin first */}
+          {isMobile && !pinPos && !selectedPinObj && !activeCapturePinId && (
+            <Box sx={{ mb: 2.5, borderRadius: '16px', p: 3, textAlign: 'center', border: `2px dashed ${P.border}`, backgroundColor: P.bg }}>
+              <Box sx={{ width: 52, height: 52, borderRadius: '14px', backgroundColor: P.bg, border: `1.5px solid ${P.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 1.5 }}>
+                <AddLocationAltRounded sx={{ fontSize: 26, color: P.subtle }} />
+              </Box>
+              <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>Tap the floor plan</Typography>
+              <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Drop a pin where you're standing, then take a picture</Typography>
+            </Box>
+          )}
+
+          {/* Mobile: re-capture active (no pin panel shown, camera will open) */}
+          {isMobile && activeCapturePinId && !cameraOpen && (
+            <Box sx={{ mb: 2.5 }}>
+              <Box
+                onClick={() => openMobileCapture()}
+                sx={{ borderRadius: '16px', p: 3, textAlign: 'center', border: `2px solid ${P.blue}55`, backgroundColor: 'rgba(37,99,235,0.03)', cursor: 'pointer', transition: T, '&:active': { backgroundColor: P.blueSoft } }}
+              >
+                <Box sx={{ width: 52, height: 52, borderRadius: '14px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 1.5, boxShadow: '0 6px 18px rgba(37,99,235,0.3)' }}>
+                  <CameraAltRounded sx={{ fontSize: 26, color: P.white }} />
+                </Box>
+                <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>
+                  {`Recapture Pin ${allPins.find(p => p.id === activeCapturePinId)?.sequenceNumber ?? ''}`}
+                </Typography>
+                <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Tap to open camera</Typography>
+              </Box>
+            </Box>
+          )}
+
+          {/* Desktop upload zone — hidden on mobile/tablet */}
+          {!isMobile && (() => {
             const ready = !!(pinPos || activeCapturePinId);
             const recapPin = activeCapturePinId ? allPins.find(p => p.id === activeCapturePinId) : null;
             return (
@@ -777,7 +1028,7 @@ export default function CaptureWorkflowPage() {
                     <Box component="label" htmlFor="capture-file-input" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.75, py: 1.125, borderRadius: '10px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, cursor: isUploading ? 'default' : 'pointer', fontSize: '0.875rem', fontWeight: 700, color: P.white, boxShadow: '0 4px 14px rgba(37,99,235,0.3)', opacity: isUploading ? 0.7 : 1, '&:hover': { opacity: isUploading ? 0.7 : 0.9 } }}>
                       <PhotoCameraRounded sx={{ fontSize: 17 }} /> {isUploading ? 'Uploading…' : 'Browse & Upload'}
                     </Box>
-                    <Box component="input" id="capture-file-input" type="file" multiple accept=".jpg,.jpeg,.png,.dng,.insp" disabled={isUploading} onChange={(e: React.ChangeEvent<HTMLInputElement>) => { void handleCaptureFiles(e.target.files); e.target.value = ''; }} sx={{ display: 'none' }} />
+                    <Box component="input" id="capture-file-input" type="file" multiple accept=".jpg,.jpeg,.png,.dng,.insp" disabled={isUploading} onChange={(e: React.ChangeEvent<HTMLInputElement>) => { void handleCaptureFiles(e.target.files); (e.target as HTMLInputElement).value = ''; }} sx={{ display: 'none' }} />
                     {uploadError && <Typography sx={{ mt: 1.75, fontSize: '0.8125rem', color: P.red }}>{uploadError}</Typography>}
                   </>
                 ) : (
@@ -795,7 +1046,35 @@ export default function CaptureWorkflowPage() {
         </Box>
       )}
 
-      {/* Attach-success toast — floor plan stays in place behind it */}
+      {/* Mobile camera dialog (full-screen getUserMedia) */}
+      <CameraCaptureDialog
+        open={cameraOpen}
+        pinLabel={
+          activeCapturePinId
+            ? `Pin ${allPins.find(p => p.id === activeCapturePinId)?.sequenceNumber ?? ''} — Re-capture`
+            : pinPos ? 'New Capture Point' : 'Capture'
+        }
+        onCapture={handleCameraCapture}
+        onClose={() => {
+          setCameraOpen(false);
+          // If camera was for a new pin but no image taken, clear the pending pin
+          // so the user isn't stuck with a pin they can't complete.
+        }}
+      />
+
+      {/* Hidden file input for mobile fallback when getUserMedia is blocked */}
+      <Box
+        ref={mobileInputRef}
+        component="input"
+        type="file"
+        accept="image/*"
+        // @ts-ignore — capture is a valid HTML attribute but not in React's typedefs
+        capture="environment"
+        onChange={handleMobileFileInput}
+        sx={{ display: 'none' }}
+      />
+
+      {/* Toast */}
       <Snackbar open={!!toast} autoHideDuration={3500} onClose={() => setToast('')} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
         <Alert severity="success" icon={<CheckCircleRounded sx={{ fontSize: 20 }} />} onClose={() => setToast('')} sx={{ borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.16)', fontWeight: 600 }}>
           {toast}
