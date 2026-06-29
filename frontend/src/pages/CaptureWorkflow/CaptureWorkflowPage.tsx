@@ -615,6 +615,11 @@ export default function CaptureWorkflowPage() {
   const [dragging, setDragging]       = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
+  // Synchronous re-entry guard — React batches setIsUploading(true), so a rapid
+  // second call (double-tap "Use Photo", double file-input fire) could read a
+  // stale isUploading===false and create a duplicate capture. The ref flips
+  // immediately, before any await, so the second call is rejected at once.
+  const uploadingRef = useRef(false);
 
   // Mobile camera state
   const [cameraOpen, setCameraOpen]   = useState(false);
@@ -688,7 +693,8 @@ export default function CaptureWorkflowPage() {
   /* ── Core upload pipeline ───────────────────────────────────────────── */
   async function handleCaptureFiles(fileList: FileList | File[] | null) {
     const files = fileList ? Array.from(fileList as FileList) : [];
-    if (!files.length || (!activeCapturePinId && !pinPos) || !selectedFloor || isUploading) return;
+    if (!files.length || (!activeCapturePinId && !pinPos) || !selectedFloor || isUploading || uploadingRef.current) return;
+    uploadingRef.current = true;
     setUploadError('');
     setIsUploading(true);
     try {
@@ -727,6 +733,7 @@ export default function CaptureWorkflowPage() {
       setUploadError('Upload failed. Please check your connection and try again.');
     } finally {
       setIsUploading(false);
+      uploadingRef.current = false;
     }
   }
 

@@ -13,8 +13,33 @@ interface CaptureTimelineProps {
   compareMode?: boolean;
 }
 
-export default function CaptureTimeline({ series, activeId, onSelect, compareIds, compareMode }: CaptureTimelineProps) {
+export default function CaptureTimeline({ series: rawSeries, activeId, onSelect, compareIds, compareMode }: CaptureTimelineProps) {
+  // Defensive: never render duplicate capture nodes. The timeline is one node per
+  // distinct capture id — if the upstream array ever contains a repeated id (e.g.
+  // a double-fired append), collapse it so the rail count always matches the real
+  // capture history.
+  const seen = new Set<string>();
+  const series = rawSeries.filter(s => (seen.has(s.id) ? false : (seen.add(s.id), true)));
+
   if (!series.length) return null;
+
+  // Single capture → no scrubber, just a compact "Latest" badge.
+  if (series.length === 1) {
+    const only = series[0];
+    return (
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, px: 1.5, py: 1.25, borderRadius: '12px', backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0' }}>
+        <Box sx={{ width: 32, height: 32, borderRadius: '50%', backgroundColor: '#16a34a', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, boxShadow: '0 2px 8px rgba(22,163,74,0.3)' }}>
+          <CheckCircleRounded sx={{ fontSize: 18, color: '#fff' }} />
+        </Box>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: '#15803d', lineHeight: 1.2 }}>Latest capture</Typography>
+          <Typography noWrap sx={{ fontSize: '0.6875rem', color: colors.textMuted, lineHeight: 1.3 }}>
+            {only.dateLabel || 'Just captured'}
+          </Typography>
+        </Box>
+      </Box>
+    );
+  }
 
   return (
     <Box sx={{ position: 'relative' }}>

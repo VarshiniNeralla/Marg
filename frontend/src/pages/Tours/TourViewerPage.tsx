@@ -390,8 +390,17 @@ export default function TourViewerPage() {
     });
   }, [currentStep?.pinId, capturePins, captures]);
 
-  // The snapshot currently shown (defaults to latest).
-  const effectiveSnapId = activeSnapId ?? (pinTimeline.length > 0 ? pinTimeline[pinTimeline.length - 1].id : '');
+  // The snapshot currently shown (defaults to latest). Validate against the
+  // current pin's timeline so a stale selection from a previously-viewed pin
+  // (the reset effect runs post-commit, one render later) can never highlight a
+  // node that doesn't belong to this step.
+  const timelineIds = useMemo(() => new Set(pinTimeline.map(s => s.id)), [pinTimeline]);
+  const validActiveSnapId = activeSnapId && timelineIds.has(activeSnapId) ? activeSnapId : null;
+  const validCompareIds: [string | null, string | null] = [
+    compareIds[0] && timelineIds.has(compareIds[0]) ? compareIds[0] : null,
+    compareIds[1] && timelineIds.has(compareIds[1]) ? compareIds[1] : null,
+  ];
+  const effectiveSnapId = validActiveSnapId ?? (pinTimeline.length > 0 ? pinTimeline[pinTimeline.length - 1].id : '');
 
   const resolvePanorama = useCallback((captureId: string): string | null => {
     const cap = captures.find(c => c.id === captureId) as (MockCapture & Record<string, unknown>) | undefined;
@@ -503,11 +512,11 @@ export default function TourViewerPage() {
       </Box>
 
       {/* History mode indicator — shown inside the viewer when viewing a past snapshot */}
-      {activeSnapId && activeSnapId !== pinTimeline[pinTimeline.length - 1]?.id && (
+      {validActiveSnapId && validActiveSnapId !== pinTimeline[pinTimeline.length - 1]?.id && (
         <Box sx={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 15, display: 'flex', alignItems: 'center', gap: 0.75, px: 1.5, py: 0.75, borderRadius: '999px', backgroundColor: 'rgba(217,119,6,0.9)', backdropFilter: 'blur(8px)', boxShadow: '0 4px 12px rgba(0,0,0,0.3)' }}>
           <HistoryRounded sx={{ fontSize: 13, color: '#fff' }} />
           <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#fff' }}>
-            {pinTimeline.find(s => s.id === activeSnapId)?.dateLabel ?? 'Historical view'}
+            {pinTimeline.find(s => s.id === validActiveSnapId)?.dateLabel ?? 'Historical view'}
           </Typography>
           <Box onClick={() => { setActiveSnapId(null); setPanoramaOverride(null); }} sx={{ display: 'flex', alignItems: 'center', ml: 0.5, cursor: 'pointer', opacity: 0.85, '&:hover': { opacity: 1 } }}>
             <CloseRounded sx={{ fontSize: 13, color: '#fff' }} />
@@ -615,6 +624,10 @@ export default function TourViewerPage() {
 
           {/* Progress Timeline — real pin history, inline panorama switching */}
           {pinTimeline.length > 0 && (() => {
+            // Use timeline-validated selections so stale state from a previously
+            // viewed pin never highlights the wrong nodes.
+            const compareIds = validCompareIds;
+            const activeSnapId = validActiveSnapId;
             const isComparing = !!(compareIds[0] || compareIds[1]);
             const bothSelected = !!(compareIds[0] && compareIds[1]);
             const latestSnap = pinTimeline[pinTimeline.length - 1];
@@ -836,6 +849,9 @@ export default function TourViewerPage() {
 
         {/* Progress Timeline — full width card on mobile */}
         {pinTimeline.length > 0 && (() => {
+          // Timeline-validated selections (see desktop rail note above).
+          const compareIds = validCompareIds;
+          const activeSnapId = validActiveSnapId;
           const isComparing = !!(compareIds[0] || compareIds[1]);
           const bothSelected = !!(compareIds[0] && compareIds[1]);
           const latestSnap = pinTimeline[pinTimeline.length - 1];
