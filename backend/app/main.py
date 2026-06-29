@@ -76,10 +76,20 @@ def create_app() -> FastAPI:
     # ── Routers ───────────────────────────────────────────────────────────────
     app.include_router(api_router, prefix="/api/v1")
 
-    # ── Health check ──────────────────────────────────────────────────────────
-    @app.get("/health", tags=["Health"], include_in_schema=False)
+    # ── Root + health — no auth, no rate limiting ─────────────────────────────
+    @app.get("/", tags=["Meta"], include_in_schema=False)
+    async def root():
+        return {
+            "status": "ok",
+            "service": settings.APP_NAME,
+            "environment": settings.APP_ENV,
+            "docs": "/docs",
+            "health": "/health",
+        }
+
+    @app.get("/health", tags=["Meta"], include_in_schema=False)
     async def health_check():
-        return {"status": "ok", "app": settings.APP_NAME, "env": settings.APP_ENV}
+        return {"status": "healthy"}
 
     return app
 
