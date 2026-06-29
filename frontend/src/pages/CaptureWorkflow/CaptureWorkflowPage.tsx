@@ -5,6 +5,7 @@ import {
   CheckCircleRounded, ArrowForwardRounded, ArrowBackRounded,
   CloudUploadRounded, AddLocationAltRounded, ZoomInRounded, ZoomOutRounded,
   CenterFocusStrongRounded, MyLocationRounded, FullscreenRounded, FullscreenExitRounded,
+  AddAPhotoRounded, HistoryRounded, DeleteOutlineRounded, CloseRounded,
 } from '@mui/icons-material';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/authStore';
@@ -448,6 +449,7 @@ export default function CaptureWorkflowPage() {
   const uploadCapture      = useWorkflowStore(s => s.uploadCapture);
   const createCapturePin   = useWorkflowStore(s => s.createCapturePin);
   const attachCaptureToPin = useWorkflowStore(s => s.attachCaptureToPin);
+  const deleteCapturePin   = useWorkflowStore(s => s.deleteCapturePin);
   const navigate = useNavigate();
 
   const [step, setStep]               = useState<Step>('project');
@@ -455,6 +457,9 @@ export default function CaptureWorkflowPage() {
   const [selectedTower, setTower]     = useState<string>('');
   const [selectedFloor, setFloor]     = useState<string>('');
   const [pinPos, setPinPos]           = useState<{ x: number; y: number } | null>(null);
+  const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
+  // When set, the next upload appends to this existing pin instead of creating a new one.
+  const [activeCapturePinId, setActiveCapturePinId] = useState<string | null>(null);
   const [dragging, setDragging]       = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
@@ -480,13 +485,13 @@ export default function CaptureWorkflowPage() {
         .map(p => ({ id: p.id, sequenceNumber: p.sequenceNumber, x: p.x, y: p.y, hasCapture: p.captureIds.length > 0 }))
     : [];
 
-  // Click a numbered pin → open its latest capture image.
-  function openPinCapture(pinId: string) {
-    const pin = allPins.find(p => p.id === pinId);
-    const captureId = pin?.captureIds[pin.captureIds.length - 1];
-    if (captureId) navigate(`/captures/${captureId}`);
-    else setToast('This pin has no capture yet — drop a point and upload to attach one.');
+  // Click a numbered pin → open action panel (never auto-navigate).
+  function handlePinClick(pinId: string) {
+    setSelectedPinId(prev => (prev === pinId ? null : pinId));
+    setPinPos(null); // clear any pending drop so upload zone resets
   }
+
+  const selectedPinObj = selectedPinId ? allPins.find(p => p.id === selectedPinId) ?? null : null;
 
   const stepIdx = STEPS.findIndex(s => s.key === step);
   const selectedProjectObj = projects.find(p => p.id === selectedProject);
@@ -504,9 +509,9 @@ export default function CaptureWorkflowPage() {
     const targetIdx = STEPS.findIndex(s => s.key === target);
     if (targetIdx >= stepIdx) return; // can't jump forward
     setStep(target);
-    if (targetIdx <= 0) { setProject(''); setTower(''); setFloor(''); setPinPos(null); }
-    else if (targetIdx <= 1) { setTower(''); setFloor(''); setPinPos(null); }
-    else if (targetIdx <= 2) { setFloor(''); setPinPos(null); }
+    if (targetIdx <= 0) { setProject(''); setTower(''); setFloor(''); setPinPos(null); setActiveCapturePinId(null); }
+    else if (targetIdx <= 1) { setTower(''); setFloor(''); setPinPos(null); setActiveCapturePinId(null); }
+    else if (targetIdx <= 2) { setFloor(''); setPinPos(null); setActiveCapturePinId(null); }
   }
 
   function goBack() {
@@ -517,17 +522,23 @@ export default function CaptureWorkflowPage() {
   /* ── Real upload — runs the actual Cloudinary + store pipeline ─────────── */
   async function handleCaptureFiles(fileList: FileList | null) {
     const files = fileList ? Array.from(fileList) : [];
-    if (!files.length || !pinPos || !selectedFloor || isUploading) return;
+    // Need files + either an existing pin to re-capture OR a new pin position dropped.
+    if (!files.length || (!activeCapturePinId && !pinPos) || !selectedFloor || isUploading) return;
     setUploadError('');
     setIsUploading(true);
     try {
-      // 1) Upload to Cloudinary via the existing service.
       const result = await uploadCaptureFiles(files);
       const fileCount = result.count || files.length;
 
-      // 2) If this floor has a plan, place a permanent capture pin at the dropped
-      //    location and attach the capture to it (shows up in the floor-plan viewer).
-      if (floorPlan) {
+      if (activeCapturePinId) {
+        // RE-CAPTURE: append to an existing pin — never create a new pin.
+        const existingPin = allPins.find(p => p.id === activeCapturePinId);
+        attachCaptureToPin(activeCapturePinId, fileCount, result.files);
+        setToast(`New capture attached to Pin ${existingPin?.sequenceNumber ?? ''} · sent for review`);
+        setActiveCapturePinId(null);
+        setPinPos(null);
+      } else if (floorPlan && pinPos) {
+        // NEW PIN: engineer dropped a fresh point on the plan.
         const pinId = createCapturePin({
           floorPlanId: floorPlan.id,
           floorId: selectedFloor,
@@ -537,22 +548,19 @@ export default function CaptureWorkflowPage() {
           y: pinPos.y,
         });
         attachCaptureToPin(pinId, fileCount, result.files);
-        const seq = (floorPlan ? allPins.filter(p => p.floorPlanId === floorPlan.id).length : 0) + 1;
+        const seq = allPins.filter(p => p.floorPlanId === floorPlan.id).length + 1;
         setToast(`Image attached to Pin ${seq} · sent for review`);
-      } else {
-        // 3) No floor plan yet — still create a real capture against a room on
-        //    this floor so it reaches review + history.
+        setPinPos(null);
+      } else if (pinPos) {
+        // No floor plan — create a plain capture against a room on this floor.
         const flat = flats.find(f => f.floorId === selectedFloor);
         const flatId = flat?.id ?? `${selectedFloor}-flat-a`;
         const seq = rooms.filter(r => r.floorId === selectedFloor).length + 1;
         const roomId = createRoom(flatId, `Capture Point ${seq}`, 'custom');
         uploadCapture(roomId, fileCount, result.files);
         setToast('Capture uploaded · sent for review');
+        setPinPos(null);
       }
-
-      // Keep the floor plan + its numbered pins visible; just clear the pending pin
-      // so the engineer can immediately place the next point.
-      setPinPos(null);
     } catch {
       setUploadError('Upload failed. Please check your connection and try again.');
     } finally {
@@ -680,58 +688,110 @@ export default function CaptureWorkflowPage() {
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5, gap: 1, flexWrap: 'wrap' }}>
             <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
               {floorPins.length > 0
-                ? `${floorPins.length} pin${floorPins.length !== 1 ? 's' : ''} placed · tap a pin to view its capture`
+                ? `${floorPins.length} pin${floorPins.length !== 1 ? 's' : ''} placed · tap a pin to capture again or view history`
                 : 'No pins yet — tap the plan to place your first capture point'}
             </Typography>
             <Box component={Link} to="/my-captures" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.5, py: 0.625, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none', transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}>
               View History <ArrowForwardRounded sx={{ fontSize: 13 }} />
             </Box>
           </Box>
-          <Box sx={{ mb: 2.5 }}>
+          <Box sx={{ mb: selectedPinObj ? 1.5 : 2.5 }}>
             <FloorPlanWithPin
               floorPlan={(floorPlan as unknown) as Record<string, unknown> | null}
               pin={pinPos}
               pins={floorPins}
-              onPinPlace={(x, y) => setPinPos({ x, y })}
-              onPinClick={openPinCapture}
+              onPinPlace={(x, y) => { setPinPos({ x, y }); setSelectedPinId(null); setActiveCapturePinId(null); }}
+              onPinClick={handlePinClick}
             />
           </Box>
+
+          {/* Pin action panel — shown when an existing pin is selected */}
+          {selectedPinObj && (
+            <Box sx={{ mb: 2.5, p: 2, borderRadius: '14px', border: `1.5px solid ${P.border}`, backgroundColor: P.white, display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+              {/* Pin badge */}
+              <Box sx={{ width: 32, height: 32, borderRadius: '50%', backgroundColor: selectedPinObj.captureIds.length > 0 ? '#16a34a' : 'transparent', border: `2px ${selectedPinObj.captureIds.length > 0 ? 'solid #15803d' : 'dashed #d97706'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: selectedPinObj.captureIds.length > 0 ? '#fff' : '#d97706' }}>{selectedPinObj.sequenceNumber}</Typography>
+              </Box>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong }}>Pin {selectedPinObj.sequenceNumber}</Typography>
+                <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
+                  {selectedPinObj.captureIds.length > 0
+                    ? `${selectedPinObj.captureIds.length} capture${selectedPinObj.captureIds.length !== 1 ? 's' : ''} attached`
+                    : 'No capture yet'}
+                </Typography>
+              </Box>
+              {/* Actions */}
+              <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', flexShrink: 0 }}>
+                <Box
+                  onClick={() => { setActiveCapturePinId(selectedPinObj.id); setPinPos(null); setSelectedPinId(null); }}
+                  sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
+                >
+                  <AddAPhotoRounded sx={{ fontSize: 15 }} /> Capture Again
+                </Box>
+                {selectedPinObj.captureIds.length > 0 && (
+                  <Box
+                    onClick={() => navigate(`/captures/${selectedPinObj.captureIds[selectedPinObj.captureIds.length - 1]}`)}
+                    sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}
+                  >
+                    <HistoryRounded sx={{ fontSize: 15 }} /> View History
+                  </Box>
+                )}
+                <Box
+                  onClick={() => { deleteCapturePin(selectedPinObj.id); setSelectedPinId(null); }}
+                  sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.125, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', cursor: 'pointer', '&:hover': { borderColor: '#ef4444', color: '#ef4444', backgroundColor: 'rgba(239,68,68,0.05)' } }}
+                >
+                  <DeleteOutlineRounded sx={{ fontSize: 15 }} />
+                </Box>
+                <Box onClick={() => setSelectedPinId(null)} sx={{ display: 'inline-flex', alignItems: 'center', px: 0.75, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, cursor: 'pointer', '&:hover': { color: P.strong } }}>
+                  <CloseRounded sx={{ fontSize: 15 }} />
+                </Box>
+              </Box>
+            </Box>
+          )}
           {/* Upload zone */}
-          <Box
-            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => { e.preventDefault(); setDragging(false); if (pinPos && !isUploading) void handleCaptureFiles(e.dataTransfer.files); }}
-            sx={{
-              borderRadius: '16px', p: { xs: 2.5, sm: 3.5 }, textAlign: 'center',
-              border: `2px dashed ${dragging ? P.blue : pinPos ? P.blue + '55' : P.border}`,
-              backgroundColor: dragging ? P.blueSoft : pinPos ? 'rgba(37,99,235,0.02)' : P.bg,
-              transition: T, cursor: pinPos ? 'pointer' : 'default',
-            }}
-          >
-            {pinPos ? (
-              <>
-                <Box sx={{ width: 52, height: 52, borderRadius: '14px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 1.5, boxShadow: '0 6px 18px rgba(37,99,235,0.3)' }}>
-                  <CloudUploadRounded sx={{ fontSize: 26, color: P.white }} />
-                </Box>
-                <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>Upload Capture Image</Typography>
-                <Typography sx={{ fontSize: '0.875rem', color: P.muted, mb: 1.75 }}>Drag & drop or click to browse</Typography>
-                <Typography sx={{ fontSize: '0.75rem', color: P.subtle, mb: 2.5 }}>Supported: .jpg .jpeg .png .dng .insp</Typography>
-                <Box component="label" htmlFor="capture-file-input" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.75, py: 1.125, borderRadius: '10px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, cursor: isUploading ? 'default' : 'pointer', fontSize: '0.875rem', fontWeight: 700, color: P.white, boxShadow: '0 4px 14px rgba(37,99,235,0.3)', opacity: isUploading ? 0.7 : 1, '&:hover': { opacity: isUploading ? 0.7 : 0.9 } }}>
-                  <PhotoCameraRounded sx={{ fontSize: 17 }} /> {isUploading ? 'Uploading…' : 'Browse & Upload'}
-                </Box>
-                <Box component="input" id="capture-file-input" type="file" multiple accept=".jpg,.jpeg,.png,.dng,.insp" disabled={isUploading} onChange={(e: React.ChangeEvent<HTMLInputElement>) => { void handleCaptureFiles(e.target.files); e.target.value = ''; }} sx={{ display: 'none' }} />
-                {uploadError && <Typography sx={{ mt: 1.75, fontSize: '0.8125rem', color: P.red }}>{uploadError}</Typography>}
-              </>
-            ) : (
-              <>
-                <Box sx={{ width: 52, height: 52, borderRadius: '14px', backgroundColor: P.bg, border: `1.5px solid ${P.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 1.5 }}>
-                  <AddLocationAltRounded sx={{ fontSize: 26, color: P.subtle }} />
-                </Box>
-                <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>Place a capture point first</Typography>
-                <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Tap anywhere on the floor plan above to mark your location</Typography>
-              </>
-            )}
-          </Box>
+          {(() => {
+            const ready = !!(pinPos || activeCapturePinId);
+            const recapPin = activeCapturePinId ? allPins.find(p => p.id === activeCapturePinId) : null;
+            return (
+              <Box
+                onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={(e) => { e.preventDefault(); setDragging(false); if (ready && !isUploading) void handleCaptureFiles(e.dataTransfer.files); }}
+                sx={{
+                  borderRadius: '16px', p: { xs: 2.5, sm: 3.5 }, textAlign: 'center',
+                  border: `2px dashed ${dragging ? P.blue : ready ? P.blue + '55' : P.border}`,
+                  backgroundColor: dragging ? P.blueSoft : ready ? 'rgba(37,99,235,0.02)' : P.bg,
+                  transition: T, cursor: ready ? 'pointer' : 'default',
+                }}
+              >
+                {ready ? (
+                  <>
+                    <Box sx={{ width: 52, height: 52, borderRadius: '14px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 1.5, boxShadow: '0 6px 18px rgba(37,99,235,0.3)' }}>
+                      <CloudUploadRounded sx={{ fontSize: 26, color: P.white }} />
+                    </Box>
+                    <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>
+                      {recapPin ? `Attach new capture to Pin ${recapPin.sequenceNumber}` : 'Upload Capture Image'}
+                    </Typography>
+                    <Typography sx={{ fontSize: '0.875rem', color: P.muted, mb: 1.75 }}>Drag & drop or click to browse</Typography>
+                    <Typography sx={{ fontSize: '0.75rem', color: P.subtle, mb: 2.5 }}>Supported: .jpg .jpeg .png .dng .insp</Typography>
+                    <Box component="label" htmlFor="capture-file-input" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.75, py: 1.125, borderRadius: '10px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, cursor: isUploading ? 'default' : 'pointer', fontSize: '0.875rem', fontWeight: 700, color: P.white, boxShadow: '0 4px 14px rgba(37,99,235,0.3)', opacity: isUploading ? 0.7 : 1, '&:hover': { opacity: isUploading ? 0.7 : 0.9 } }}>
+                      <PhotoCameraRounded sx={{ fontSize: 17 }} /> {isUploading ? 'Uploading…' : 'Browse & Upload'}
+                    </Box>
+                    <Box component="input" id="capture-file-input" type="file" multiple accept=".jpg,.jpeg,.png,.dng,.insp" disabled={isUploading} onChange={(e: React.ChangeEvent<HTMLInputElement>) => { void handleCaptureFiles(e.target.files); e.target.value = ''; }} sx={{ display: 'none' }} />
+                    {uploadError && <Typography sx={{ mt: 1.75, fontSize: '0.8125rem', color: P.red }}>{uploadError}</Typography>}
+                  </>
+                ) : (
+                  <>
+                    <Box sx={{ width: 52, height: 52, borderRadius: '14px', backgroundColor: P.bg, border: `1.5px solid ${P.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 1.5 }}>
+                      <AddLocationAltRounded sx={{ fontSize: 26, color: P.subtle }} />
+                    </Box>
+                    <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>Place a capture point first</Typography>
+                    <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Tap anywhere on the floor plan above to mark your location</Typography>
+                  </>
+                )}
+              </Box>
+            );
+          })()}
         </Box>
       )}
 

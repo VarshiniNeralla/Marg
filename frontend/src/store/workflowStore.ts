@@ -280,19 +280,22 @@ function keepPrimaryProjectData(data: WorkflowDataState): WorkflowDataState {
   const projectIds = primaryProjectIds(data.projects);
   const towerIds = new Set(data.towers.filter(t => projectIds.has(t.projectId)).map(t => t.id));
   const floorIds = new Set(data.floors.filter(f => towerIds.has(f.towerId)).map(f => f.id));
-  const flatIds = new Set(data.flats.filter(f => projectIds.has(f.projectId) && floorIds.has(f.floorId)).map(f => f.id));
-  const roomIds = new Set(data.rooms.filter(r => projectIds.has(r.projectId) && flatIds.has(r.flatId)).map(r => r.id));
-  const captureIds = new Set(data.captures.filter(c => projectIds.has(c.projectId) && roomIds.has(c.roomId)).map(c => c.id));
-
+  // Flats and rooms may have empty projectId when created as pin-backing rooms —
+  // include them if their floor is in scope to avoid cascading false-drops.
+  const flatIds = new Set(data.flats.filter(f => floorIds.has(f.floorId)).map(f => f.id));
+  const roomIds = new Set(data.rooms.filter(r => flatIds.has(r.flatId) || floorIds.has(r.floorId)).map(r => r.id));
   return {
     ...data,
     projects: data.projects.filter(p => projectIds.has(p.id)),
     towers: data.towers.filter(t => projectIds.has(t.projectId)),
     floors: data.floors.filter(f => towerIds.has(f.towerId)),
-    flats: data.flats.filter(f => projectIds.has(f.projectId) && floorIds.has(f.floorId)),
-    rooms: data.rooms.filter(r => projectIds.has(r.projectId) && flatIds.has(r.flatId)),
-    captures: data.captures.filter(c => projectIds.has(c.projectId) && roomIds.has(c.roomId)),
-    tours: data.tours.filter(t => projectIds.has(t.projectId) && roomIds.has(t.roomId) && captureIds.has(t.captureId)),
+    flats: data.flats.filter(f => floorIds.has(f.floorId)),
+    rooms: data.rooms.filter(r => flatIds.has(r.flatId) || floorIds.has(r.floorId)),
+    captures: data.captures.filter(c => projectIds.has(c.projectId) || roomIds.has(c.roomId)),
+    // Tours are kept by projectId only — their roomId points to a pin-backing room
+    // which may have an empty projectId on its parent flat (created via createRoom).
+    // Filtering by roomId here would silently drop valid published tours.
+    tours: data.tours.filter(t => projectIds.has(t.projectId)),
     floorPlans: data.floorPlans.filter(fp => projectIds.has(fp.projectId) && towerIds.has(fp.towerId) && floorIds.has(fp.floorId)),
     capturePins: (data.capturePins ?? []).filter(pin => projectIds.has(pin.projectId) && floorIds.has(pin.floorId)),
     defects: data.defects.filter(d => projectIds.has(d.projectId)),

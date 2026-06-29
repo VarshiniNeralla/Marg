@@ -140,15 +140,11 @@ async def upload_media(
     uploaded_at = result.get("created_at") or datetime.now(timezone.utc).isoformat()
     resource = result.get("resource_type", "image")
 
-    # For PDFs, override the original_url with a direct image render URL
-    # so the frontend can display it as a plain <img> without auth issues
+    # For PDFs uploaded as resource_type="image", Cloudinary already converts them.
+    # original_url points to the PNG render (public, no auth). raw_pdf_url would
+    # require a signed request on most plans — omit it to avoid 401s in the browser.
     is_pdf = _is_pdf(filename, fmt)
-    if is_pdf:
-        preview_url = _pdf_image_url(public_id)
-        raw_pdf_url = _pdf_raw_url(public_id)
-    else:
-        preview_url = secure_url
-        raw_pdf_url = None
+    preview_url = _pdf_image_url(public_id) if is_pdf else secure_url
 
     return {
         "original_url": preview_url,
@@ -162,5 +158,5 @@ async def upload_media(
         "height": result.get("height"),
         "pages": result.get("pages"),
         "original_filename": filename,
-        "raw_pdf_url": raw_pdf_url,
+        "raw_pdf_url": None,
     }

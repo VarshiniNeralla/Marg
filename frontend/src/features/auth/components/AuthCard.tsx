@@ -24,7 +24,7 @@ export default function AuthCard({ title, subtitle, children, footer }: AuthCard
       py: 3,
       position: 'relative',
       overflow: 'hidden',
-      backgroundColor: '#ffffff', // Deep dark theme for premium feel
+      backgroundColor: '#ffffff', 
       color: '#18181b',
     }}>
       {/* ── Subtle background treatment ─────────────────────────────────────── */}

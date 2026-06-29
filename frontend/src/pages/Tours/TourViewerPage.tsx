@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { Box, Typography, Chip, IconButton, Tooltip, CircularProgress } from '@mui/material';
 import '@photo-sphere-viewer/core/index.css';
@@ -7,16 +7,18 @@ import {
   LayersRounded, NavigateNextRounded, NavigateBefore,
   CameraAltRounded, ThreeSixtyRounded, PlayArrowRounded, PauseRounded,
   CheckCircleRounded, PublishRounded, HomeRounded, MeetingRoomRounded,
-  PhotoCameraRounded, EventRounded, MapRounded,
+  PhotoCameraRounded, EventRounded, MapRounded, CompareRounded, CloseRounded,
+  HistoryRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import {
   getTourById, statusConfig, mockTours, mockTowers, getFloors, mockCaptures,
-  getCaptureSeriesForCapture, type CaptureSnapshot,
+  type CaptureSnapshot,
 } from '@/data/mockData';
 import CaptureTimeline from '@shared/components/CaptureTimeline/CaptureTimeline';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore } from '@store/authStore';
+import type { MockCapture } from '@/data/mockData';
 
 // Placeholder equirectangular panoramas — one per tour, keyed by tourId.
 // Replace these with real Cloudinary secure_url values from the API.
@@ -306,13 +308,25 @@ export default function TourViewerPage() {
   const user = useAuthStore(s => s.user);
   const tour = tours.find(t => t.id === tourId) ?? getTourById(tourId ?? '');
 
+  const capturePins = useWorkflowStore(s => s.capturePins);
+
   const [fullscreen, setFullscreen] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
   const [stepIdx, setStepIdx] = useState(0);
   const [isMarkedDone, setIsMarkedDone] = useState(false);
+  // Per-step: which snapshot is selected in the progress timeline (null = latest).
+  const [activeSnapId, setActiveSnapId] = useState<string | null>(null);
+  // Per-step: panorama override when user selects a historical snapshot.
+  const [panoramaOverride, setPanoramaOverride] = useState<string | null>(null);
+  // Compare mode: two snapshot IDs to compare.
+  const [compareIds, setCompareIds] = useState<[string | null, string | null]>([null, null]);
 
-  // Reset to the first stop whenever the tour changes.
-  useEffect(() => { setStepIdx(0); }, [tourId]);
+  // Reset timeline state when the user moves to a different step.
+  useEffect(() => {
+    setActiveSnapId(null);
+    setPanoramaOverride(null);
+    setCompareIds([null, null]);
+  }, [stepIdx, tourId]);
 
   const currentIdx = tourId ? tours.findIndex(t => t.id === tourId) : 0;
   const tourMedia = tour as typeof tour & {
@@ -325,22 +339,86 @@ export default function TourViewerPage() {
 
   // Sequential walkthrough: one stop per pin (Pin 1 → 2 → 3 …). Prev/next arrows
   // step through these. Falls back to a single-panorama tour for legacy tours.
-  const steps = tourMedia.steps ?? [];
+  const steps = tourMedia?.steps ?? [];
   const isWalkthrough = steps.length > 1;
   const clampedStep = Math.min(stepIdx, Math.max(0, steps.length - 1));
   const currentStep = steps[clampedStep];
 
-  const panoramaUrl =
+  const latestPanoramaUrl =
     currentStep?.panoramaUrl ||
-    tourMedia.panoramaUrls?.[clampedStep] ||
+    tourMedia?.panoramaUrls?.[clampedStep] ||
     (isWalkthrough ? DEMO_PANORAMAS[clampedStep % DEMO_PANORAMAS.length] : null) ||
-    tourMedia.processedPanoramaUrl ||
-    tourMedia.processed_panorama_url ||
-    tourMedia.panoramaUrls?.[0] ||
-    tourMedia.panorama_urls?.[0] ||
+    tourMedia?.processedPanoramaUrl ||
+    tourMedia?.processed_panorama_url ||
+    tourMedia?.panoramaUrls?.[0] ||
+    tourMedia?.panorama_urls?.[0] ||
     PANORAMA_MAP[tourId ?? ''] ||
     FALLBACK_PANORAMA;
+
+  // Use the history-selected panorama override when the user has picked a past snapshot.
+  const panoramaUrl = panoramaOverride ?? latestPanoramaUrl;
   const hotspots = TOUR_HOTSPOTS[tourId ?? ''] ?? [];
+
+  // ── Progress timeline for the current step ───────────────────────────────────
+  // Built from the pin's real captureIds[] — no mock data, no duplicates.
+  const pinTimeline = useMemo((): CaptureSnapshot[] => {
+    const pinId = currentStep?.pinId;
+    if (!pinId) return [];
+    const pin = capturePins.find(p => p.id === pinId);
+    if (!pin || pin.captureIds.length === 0) return [];
+
+    return pin.captureIds.map((id, i) => {
+      const cap = captures.find(c => c.id === id) as (MockCapture & Record<string, unknown>) | undefined;
+      const isLatest = i === pin.captureIds.length - 1;
+      const uploadedAt = (cap?.uploadedAt as string | undefined) ?? '';
+      const dateLabel = uploadedAt ? uploadedAt.split(',')[0] : `Visit ${i + 1}`;
+      return {
+        id,
+        baseCaptureId: id,
+        roomId: cap?.roomId ?? pin.roomId,
+        date: (cap?.capturedAt as string | undefined) ?? '',
+        dateLabel,
+        monthLabel: '',
+        reviewStatus: (cap?.reviewStatus as CaptureSnapshot['reviewStatus'] | undefined) ?? 'uploaded',
+        progress: isLatest ? 100 : Math.round(((i + 1) / pin.captureIds.length) * 100),
+        fileCount: cap?.fileCount ?? 0,
+        capturedBy: (cap?.uploadedBy as string | undefined) ?? '',
+        note: null,
+        gradient: (cap?.gradient as string | undefined) ?? 'linear-gradient(135deg,#1e3a5f,#0f2340)',
+        isLatest,
+      } satisfies CaptureSnapshot;
+    });
+  }, [currentStep?.pinId, capturePins, captures]);
+
+  // The snapshot currently shown (defaults to latest).
+  const effectiveSnapId = activeSnapId ?? (pinTimeline.length > 0 ? pinTimeline[pinTimeline.length - 1].id : '');
+
+  const resolvePanorama = useCallback((captureId: string): string | null => {
+    const cap = captures.find(c => c.id === captureId) as (MockCapture & Record<string, unknown>) | undefined;
+    if (!cap) return null;
+    const mediaAssets = (cap.mediaAssets as Array<{ original_url?: string; secure_url?: string }> | undefined) ?? [];
+    return (
+      mediaAssets[0]?.original_url ??
+      mediaAssets[0]?.secure_url ??
+      (cap.processedPanoramaUrl as string | undefined) ??
+      (cap.originalFileUrl as string | undefined) ??
+      null
+    );
+  }, [captures]);
+
+  const handleSnapSelect = useCallback((snap: CaptureSnapshot) => {
+    setCompareIds(prev => {
+      // In compare mode, clicking a node assigns it to the next empty slot.
+      if (prev[0] !== null || prev[1] !== null) {
+        if (!prev[0]) return [snap.id, prev[1]];
+        if (!prev[1]) return [prev[0], snap.id];
+        return [prev[1], snap.id]; // both full — cycle
+      }
+      return prev;
+    });
+    setActiveSnapId(snap.id);
+    setPanoramaOverride(resolvePanorama(snap.id));
+  }, [resolvePanorama]);
 
   const handleHotspotClick = useCallback((targetTourId: string) => {
     navigate(`/tours/${targetTourId}`);
@@ -364,7 +442,6 @@ export default function TourViewerPage() {
   const prevTour = currentIdx > 0 ? tours[currentIdx - 1] : null;
   const nextTour = currentIdx < tours.length - 1 ? tours[currentIdx + 1] : null;
   const capture = captures.find(c => c.id === tour.captureId) ?? mockCaptures.find(c => c.id === tour.captureId);
-  const series = getCaptureSeriesForCapture(tour.captureId);
   const floorId = floors.find(f => f.towerId === tour.towerId && f.label === tour.floorLabel)?.id;
 
   const breadcrumb: { label: string; to?: string }[] = [
@@ -434,6 +511,19 @@ export default function TourViewerPage() {
           </Box>
         )}
       </Box>
+
+      {/* History mode indicator — shown inside the viewer when viewing a past snapshot */}
+      {activeSnapId && activeSnapId !== pinTimeline[pinTimeline.length - 1]?.id && (
+        <Box sx={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 15, display: 'flex', alignItems: 'center', gap: 0.75, px: 1.5, py: 0.75, borderRadius: '999px', backgroundColor: 'rgba(217,119,6,0.9)', backdropFilter: 'blur(8px)', boxShadow: '0 4px 12px rgba(0,0,0,0.3)' }}>
+          <HistoryRounded sx={{ fontSize: 13, color: '#fff' }} />
+          <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#fff' }}>
+            {pinTimeline.find(s => s.id === activeSnapId)?.dateLabel ?? 'Historical view'}
+          </Typography>
+          <Box onClick={() => { setActiveSnapId(null); setPanoramaOverride(null); }} sx={{ display: 'flex', alignItems: 'center', ml: 0.5, cursor: 'pointer', opacity: 0.85, '&:hover': { opacity: 1 } }}>
+            <CloseRounded sx={{ fontSize: 13, color: '#fff' }} />
+          </Box>
+        </Box>
+      )}
 
       {/* Walkthrough step indicator (Pin N of M) */}
       {isWalkthrough && currentStep && (
@@ -518,19 +608,161 @@ export default function TourViewerPage() {
         {/* Right rail — always-on panels */}
         <Box sx={{ width: { xs: '100%', lg: 320 }, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
 
-          {/* Capture Timeline */}
-          {series.length > 0 && (
-            <SidePanel title="Capture Timeline" icon={<PhotoCameraRounded sx={{ fontSize: 15 }} />}>
-              <CaptureTimeline
-                series={series}
-                activeId={series[series.length - 1].id}
-                onSelect={() => navigate(`/captures/${tour.captureId}`)}
-              />
-              <Box component={Link} to={`/captures/${tour.captureId}`} sx={{ display: 'block', textAlign: 'center', mt: 1.5, fontSize: '0.75rem', fontWeight: 600, color: colors.primary, textDecoration: 'none' }}>
-                Open capture history →
-              </Box>
-            </SidePanel>
-          )}
+          {/* Progress Timeline — real pin history, inline panorama switching */}
+          {pinTimeline.length > 0 && (() => {
+            const isComparing = !!(compareIds[0] || compareIds[1]);
+            const bothSelected = !!(compareIds[0] && compareIds[1]);
+            const latestSnap = pinTimeline[pinTimeline.length - 1];
+            const isViewingHistory = !!(activeSnapId && activeSnapId !== latestSnap?.id);
+            const viewingSnap = isViewingHistory ? pinTimeline.find(s => s.id === activeSnapId) : null;
+
+            return (
+              <SidePanel
+                title="Progress Timeline"
+                icon={<HistoryRounded sx={{ fontSize: 15 }} />}
+                action={
+                  pinTimeline.length > 1 ? (
+                    <Box
+                      onClick={() => setCompareIds(isComparing ? [null, null] : [latestSnap.id, null])}
+                      sx={{
+                        display: 'inline-flex', alignItems: 'center', gap: 0.5,
+                        px: 1.25, py: 0.375, borderRadius: '6px', cursor: 'pointer',
+                        fontSize: '0.6875rem', fontWeight: 600,
+                        backgroundColor: isComparing ? 'rgba(124,58,237,0.1)' : colors.bg,
+                        color: isComparing ? '#7c3aed' : colors.textMuted,
+                        border: `1px solid ${isComparing ? '#7c3aed' : colors.borderLight}`,
+                        transition: `all ${motion.durationFast}`,
+                        '&:hover': { borderColor: '#7c3aed', color: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.08)' },
+                      }}
+                    >
+                      {isComparing ? <CloseRounded sx={{ fontSize: 12 }} /> : <CompareRounded sx={{ fontSize: 12 }} />}
+                      {isComparing ? 'Cancel' : 'Compare'}
+                    </Box>
+                  ) : undefined
+                }
+              >
+                {/* Summary row */}
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.625 }}>
+                    <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#16a34a' }} />
+                    <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: '#16a34a', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      Latest
+                    </Typography>
+                  </Box>
+                  <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, fontWeight: 500 }} noWrap>
+                    {latestSnap.dateLabel} · {pinTimeline.length} capture{pinTimeline.length !== 1 ? 's' : ''}
+                  </Typography>
+                </Box>
+
+                {/* Timeline scrubber */}
+                <CaptureTimeline
+                  series={pinTimeline}
+                  activeId={effectiveSnapId}
+                  onSelect={handleSnapSelect}
+                  compareIds={isComparing ? compareIds : undefined}
+                  compareMode={isComparing}
+                />
+
+                {/* Compare UI — shown only when compare mode is active */}
+                {isComparing && (
+                  <Box sx={{ mt: 1.5, borderRadius: '10px', overflow: 'hidden', border: `1px solid rgba(124,58,237,0.18)`, backgroundColor: 'rgba(124,58,237,0.04)' }}>
+                    {/* Instruction banner */}
+                    <Box sx={{ px: 1.5, py: 1, borderBottom: `1px solid rgba(124,58,237,0.12)`, display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                      <CompareRounded sx={{ fontSize: 13, color: '#7c3aed', flexShrink: 0 }} />
+                      <Typography sx={{ fontSize: '0.6875rem', color: '#7c3aed', fontWeight: 600, lineHeight: 1.4 }}>
+                        {!compareIds[0]
+                          ? 'Tap a node above to set A'
+                          : !compareIds[1]
+                          ? 'Now tap another node to set B'
+                          : 'Both selected — view each below'}
+                      </Typography>
+                    </Box>
+
+                    {/* A / B slot cards */}
+                    <Box sx={{ display: 'flex', gap: 1, p: 1.25 }}>
+                      {(['A', 'B'] as const).map((slot, idx) => {
+                        const slotId = compareIds[idx];
+                        const snap = slotId ? pinTimeline.find(s => s.id === slotId) : null;
+                        const snapIndex = snap ? pinTimeline.findIndex(s => s.id === snap.id) : -1;
+                        const slotColor = slot === 'A' ? '#7c3aed' : '#d97706';
+                        const isEmpty = !slotId;
+                        return (
+                          <Box
+                            key={slot}
+                            sx={{
+                              flex: 1,
+                              borderRadius: '8px',
+                              border: `1.5px ${isEmpty ? 'dashed' : 'solid'} ${isEmpty ? colors.border : slotColor}`,
+                              backgroundColor: isEmpty ? 'transparent' : slot === 'A' ? 'rgba(124,58,237,0.06)' : 'rgba(217,119,6,0.06)',
+                              p: 1,
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              gap: 0.5,
+                              minWidth: 0,
+                            }}
+                          >
+                            {/* Badge */}
+                            <Box sx={{ width: 22, height: 22, borderRadius: '50%', backgroundColor: isEmpty ? colors.borderLight : slotColor, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <Typography sx={{ fontSize: '0.6875rem', fontWeight: 800, color: isEmpty ? colors.textSubdued : '#fff' }}>{slot}</Typography>
+                            </Box>
+                            {snap ? (
+                              <>
+                                <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textStrong, textAlign: 'center', lineHeight: 1.3 }} noWrap>
+                                  {snap.isLatest ? 'Latest' : `Visit ${snapIndex + 1}`}
+                                </Typography>
+                                <Typography sx={{ fontSize: '0.625rem', color: colors.textMuted, textAlign: 'center' }} noWrap>
+                                  {snap.dateLabel}
+                                </Typography>
+                                <Box
+                                  onClick={() => { setActiveSnapId(slotId!); setPanoramaOverride(resolvePanorama(slotId!)); }}
+                                  sx={{ mt: 0.25, px: 1, py: 0.375, borderRadius: '5px', backgroundColor: slotColor, color: '#fff', fontSize: '0.625rem', fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', '&:hover': { opacity: 0.88 } }}
+                                >
+                                  View {slot}
+                                </Box>
+                              </>
+                            ) : (
+                              <Typography sx={{ fontSize: '0.625rem', color: colors.textSubdued, textAlign: 'center', lineHeight: 1.4 }}>
+                                Tap node
+                              </Typography>
+                            )}
+                          </Box>
+                        );
+                      })}
+                    </Box>
+
+                    {/* Clear button when both selected */}
+                    {bothSelected && (
+                      <Box
+                        onClick={() => setCompareIds([null, null])}
+                        sx={{ mx: 1.25, mb: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, py: 0.625, borderRadius: '7px', border: `1px solid ${colors.borderLight}`, color: colors.textMuted, fontSize: '0.6875rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: colors.danger, color: colors.danger } }}
+                      >
+                        <CloseRounded sx={{ fontSize: 12 }} /> Clear selection
+                      </Box>
+                    )}
+                  </Box>
+                )}
+
+                {/* Viewing history indicator */}
+                {isViewingHistory && !isComparing && (
+                  <Box sx={{ mt: 1.25, display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1.25, py: 0.75, borderRadius: '8px', backgroundColor: colors.warningBg, border: `1px solid rgba(217,119,6,0.2)` }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
+                      <HistoryRounded sx={{ fontSize: 13, color: colors.warning, flexShrink: 0 }} />
+                      <Typography sx={{ fontSize: '0.6875rem', color: colors.warning, fontWeight: 600 }} noWrap>
+                        {viewingSnap?.dateLabel ?? 'Historical view'}
+                      </Typography>
+                    </Box>
+                    <Box
+                      onClick={() => { setActiveSnapId(null); setPanoramaOverride(null); }}
+                      sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.25, fontSize: '0.6875rem', fontWeight: 600, color: colors.primary, cursor: 'pointer', flexShrink: 0, ml: 1, '&:hover': { opacity: 0.75 } }}
+                    >
+                      <CloseRounded sx={{ fontSize: 11 }} /> Latest
+                    </Box>
+                  </Box>
+                )}
+              </SidePanel>
+            );
+          })()}
 
           {/* Tour Metadata */}
           <SidePanel title="Tour Details" icon={<EventRounded sx={{ fontSize: 15 }} />}>

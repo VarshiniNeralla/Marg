@@ -110,8 +110,30 @@ export default function CapturesPage() {
   const allProjects = useWorkflowStore(s => s.projects);
   const allFloors = useWorkflowStore(s => s.floors);
   const allTowers = useWorkflowStore(s => s.towers);
+  const allPins = useWorkflowStore(s => s.capturePins);
   const tours = useWorkflowStore(s => s.tours);
   const deleteCapture = useWorkflowStore(s => s.deleteCapture);
+
+  // Set of capture IDs that are the LATEST capture for their pin.
+  // Non-latest captures in a pin's history should not appear as standalone gallery cards.
+  const latestPinCaptureIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const pin of allPins) {
+      if (pin.captureIds.length > 0) {
+        ids.add(pin.captureIds[pin.captureIds.length - 1]);
+      }
+    }
+    return ids;
+  }, [allPins]);
+
+  // Set of ALL capture IDs that belong to any pin (including non-latest history entries).
+  const allPinCaptureIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const pin of allPins) {
+      for (const id of pin.captureIds) ids.add(id);
+    }
+    return ids;
+  }, [allPins]);
   const [deleteTarget, setDeleteTarget] = useState<MockCapture | null>(null);
   const tourCaptureIds = useMemo(() => new Set(tours.map(t => t.captureId)), [tours]);
   const PROJECTS_WITH_CAPTURES = useMemo(() => allProjects.filter(p => !p.archived), [allProjects]);
@@ -124,9 +146,14 @@ export default function CapturesPage() {
       const matchesTower = towerId === 'all' || c.towerId === towerId;
       const floorLabel = availableFloors.find(f => f.id === floorId)?.label;
       const matchesFloor = floorId === 'all' || c.floorLabel === floorLabel;
-      return matchesProject && matchesTower && matchesFloor;
+      if (!matchesProject || !matchesTower || !matchesFloor) return false;
+      // In the engineer history view, suppress older captures that belong to a pin
+      // but are not the latest — they are accessible via the pin's timeline, not
+      // as standalone gallery cards.
+      if (isEngineerView && allPinCaptureIds.has(c.id) && !latestPinCaptureIds.has(c.id)) return false;
+      return true;
     });
-  }, [mockCaptures, projectId, towerId, floorId, availableFloors]);
+  }, [mockCaptures, projectId, towerId, floorId, availableFloors, isEngineerView, allPinCaptureIds, latestPinCaptureIds]);
 
   const [page, setPage] = useState(1);
   const itemsPerPage = 12;

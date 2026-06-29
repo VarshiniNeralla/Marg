@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { useParams, Link, useSearchParams } from 'react-router-dom';
+import { useParams, Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { Box, Typography, Chip, IconButton, Tooltip, useMediaQuery, useTheme, Drawer, Snackbar, Alert } from '@mui/material';
 import {
   ArrowBackRounded, ZoomInRounded, ZoomOutRounded, FullscreenRounded,
@@ -19,6 +19,8 @@ import CapturePinMarker from '@features/capturePins/CapturePinMarker';
 import PinActionPanel from '@features/capturePins/PinActionPanel';
 import CameraCaptureDialog from '@features/capturePins/CameraCaptureDialog';
 import PinUploadDialog from '@features/capturePins/PinUploadDialog';
+import CaptureTimeline from '@shared/components/CaptureTimeline/CaptureTimeline';
+import type { CaptureSnapshot } from '@/data/mockData';
 
 /* ── PDF.js (lazy-loaded so bundle stays small until a PDF is needed) ──── */
 type PdfViewport = { width: number; height: number };
@@ -158,6 +160,7 @@ export default function FloorPlanViewerPage() {
   // no floor switcher, room overlays/legend, capture-mode toggle, or upload button.
   const pinsOnly = searchParams.get('pinsOnly') === '1';
   const returnTo = searchParams.get('returnTo');
+  const navigate = useNavigate();
 
   const theme    = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
@@ -166,6 +169,7 @@ export default function FloorPlanViewerPage() {
 
   const user       = useAuthStore(s => s.user);
   const isEngineer = isFieldEngineer(user);
+  const backDest   = returnTo ?? (pinsOnly ? (isEngineer ? '/my-captures' : '/captures') : `/floor-plans?project=${projectId}&tower=${towerId}`);
 
   const project    = useWorkflowStore(s => s.projects.find(p => p.id === projectId));
   const tower      = useWorkflowStore(s => s.towers.find(t => t.id === towerId));
@@ -199,7 +203,10 @@ export default function FloorPlanViewerPage() {
     ?? (planRecord?.raw_pdf_url as string | undefined)
     ?? null;
   const fileFormat = ((planRecord?.format ?? planRecord?.fileType ?? '') as string).toLowerCase();
-  const isPdf = fileFormat === 'pdf' || (imageUrl?.toLowerCase().includes('.pdf') ?? false);
+  // Cloudinary-hosted PDFs are pre-converted to PNG server-side (original_url already
+  // points to the PNG render). Only use PDF.js for local/non-Cloudinary PDF sources.
+  const isCloudinaryUrl = imageUrl?.includes('res.cloudinary.com') ?? false;
+  const isPdf = !isCloudinaryUrl && (fileFormat === 'pdf' || (imageUrl?.toLowerCase().includes('.pdf') ?? false));
 
   /* ── state ──────────────────────────────────────────────────────────── */
   const [scale, setScale]               = useState(1);
@@ -214,9 +221,14 @@ export default function FloorPlanViewerPage() {
   const [captureMode, setCaptureMode]     = useState(false);
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
   const [activePin, setActivePin]         = useState<WfCapturePin | null>(null); // pin being captured
+  const [showTimeline, setShowTimeline]   = useState(false);
+  const [timelineActiveId, setTimelineActiveId] = useState<string>('');
   const [publishToast, setPublishToast]   = useState('');
   const selectedPin = pins.find(p => p.id === selectedPinId) ?? null;
   const pinsWithCaptures = pins.filter(p => p.captureIds.length > 0).length;
+
+  // Reset timeline view when the selected pin changes
+  useEffect(() => { setShowTimeline(false); }, [selectedPinId]);
 
   // SVG viewer state
   const [pageSize, setPageSize]                 = useState({ w: 0, h: 0 });
@@ -378,7 +390,11 @@ export default function FloorPlanViewerPage() {
     if (!el) return;
     const onDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
-      if ((e.target as HTMLElement).closest('button')) return;
+      // Don't start a pan when pressing an interactive overlay (zoom buttons, the
+      // fullscreen Back pill, pin action panel, etc). These are <div>s, not real
+      // <button>s, so also honour an explicit data-no-pan opt-out — otherwise
+      // setPointerCapture below steals the pointer and their click never fires.
+      if ((e.target as HTMLElement).closest('button, a, [data-no-pan]')) return;
       draggingRef.current = true;
       movedRef.current = false;
       dragStartRef.current = { x: e.clientX, y: e.clientY, ox: offsetRef.current.x, oy: offsetRef.current.y };
@@ -481,6 +497,33 @@ export default function FloorPlanViewerPage() {
     setSelectedPinId(pinId);
   }, [captureMode, floorPlan, pageSize.w, pageSize.h, createCapturePin, floor, tower, project]);
 
+  // Build CaptureSnapshot[] from this pin's real captures for the timeline
+  const pinTimeline: CaptureSnapshot[] = selectedPin
+    ? (selectedPin.captureIds
+        .map((id, i) => {
+          const cap = captures.find(c => c.id === id);
+          if (!cap) return null;
+          const isLatest = i === selectedPin.captureIds.length - 1;
+          const snap: CaptureSnapshot = {
+            id: cap.id,
+            baseCaptureId: cap.id,
+            roomId: cap.roomId,
+            date: cap.capturedAt ?? '',
+            dateLabel: cap.uploadedAt ? cap.uploadedAt.split(',')[0] : `Visit ${i + 1}`,
+            monthLabel: '',
+            reviewStatus: cap.reviewStatus ?? 'uploaded',
+            progress: isLatest ? 100 : Math.round(((i + 1) / selectedPin.captureIds.length) * 100),
+            fileCount: cap.fileCount,
+            capturedBy: cap.uploadedBy,
+            note: null,
+            gradient: cap.gradient,
+            isLatest,
+          };
+          return snap;
+        })
+        .filter(Boolean) as CaptureSnapshot[])
+    : [];
+
   /* ── Begin capture for a pin (long-press or panel button) ───────────── */
   const beginCapture = useCallback((pin: WfCapturePin) => {
     setSelectedPinId(pin.id);
@@ -504,10 +547,11 @@ export default function FloorPlanViewerPage() {
   }, [floorPlan, publishFloorPlanTour]);
 
   if (!project || !tower || !floor) {
+    const earlyBackDest = returnTo ?? `/floor-plans?project=${projectId}&tower=${towerId}`;
     return (
       <Box sx={{ p: 4 }}>
-        <Box component={Link} to="/floor-plans" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, color: P.blue, textDecoration: 'none', fontSize: '0.875rem', fontWeight: 500 }}>
-          <ArrowBackRounded sx={{ fontSize: 16 }} /> Back to Floor Plans
+        <Box component={Link} to={earlyBackDest} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, color: P.blue, textDecoration: 'none', fontSize: '0.875rem', fontWeight: 500 }}>
+          <ArrowBackRounded sx={{ fontSize: 16 }} /> Back
         </Box>
         <Typography sx={{ color: P.muted, mt: 2 }}>Floor not found.</Typography>
       </Box>
@@ -732,11 +776,11 @@ export default function FloorPlanViewerPage() {
         </CtrlBtn>
       </Box>
 
-      {/* Fullscreen back button */}
+      {/* Fullscreen back button — navigates away (same destination as header back link) */}
       {fullscreen && (
         <Box
-          onClick={() => setFullscreen(false)}
-          onPointerDown={e => e.stopPropagation()}
+          data-no-pan
+          onClick={() => navigate(backDest)}
           sx={{
             position: 'absolute', top: 14, left: 14, zIndex: 30,
             display: 'inline-flex', alignItems: 'center', gap: 0.625,
@@ -766,7 +810,7 @@ export default function FloorPlanViewerPage() {
 
       {selectedRoom && <RoomActionPanel room={selectedRoom} onClose={() => setSelectedRoom(null)} isMobile={isMobile} />}
 
-      {selectedPin && (
+      {selectedPin && !showTimeline && (
         <PinActionPanel
           pin={selectedPin}
           captures={captures}
@@ -774,9 +818,34 @@ export default function FloorPlanViewerPage() {
           canCapture={canUsePins}
           usesCamera={useCamera}
           onCapture={beginCapture}
+          onViewHistory={p => {
+            const latest = p.captureIds[p.captureIds.length - 1];
+            setTimelineActiveId(latest ?? '');
+            setShowTimeline(true);
+          }}
           onDelete={p => { deleteCapturePin(p.id); setSelectedPinId(null); }}
           onClose={() => setSelectedPinId(null)}
         />
+      )}
+
+      {selectedPin && showTimeline && pinTimeline.length > 0 && (
+        <Box sx={
+          isMobile
+            ? { position: 'absolute', bottom: 0, left: 0, right: 0, borderRadius: '16px 16px 0 0', backgroundColor: P.white, boxShadow: '0 -4px 24px rgba(15,23,42,0.18)', zIndex: 20, overflow: 'hidden', border: `1px solid ${P.border}`, p: 2.5 }
+            : { position: 'absolute', top: 16, right: 16, width: 340, borderRadius: '16px', backgroundColor: P.white, boxShadow: '0 12px 40px rgba(15,23,42,0.16)', zIndex: 20, overflow: 'hidden', border: `1px solid ${P.border}`, p: 2.5 }
+        }>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+            <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong }}>Pin {selectedPin.sequenceNumber} — History</Typography>
+            <Box onClick={() => setShowTimeline(false)} sx={{ cursor: 'pointer', color: P.subtle, display: 'flex', '&:hover': { color: P.strong } }}>
+              <Box component="span" sx={{ fontSize: 18, lineHeight: 1 }}>✕</Box>
+            </Box>
+          </Box>
+          <CaptureTimeline
+            series={pinTimeline}
+            activeId={timelineActiveId}
+            onSelect={snap => setTimelineActiveId(snap.id)}
+          />
+        </Box>
       )}
     </Box>
   );
@@ -821,9 +890,10 @@ export default function FloorPlanViewerPage() {
       {/* Header */}
       <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 3, gap: 2, flexWrap: 'wrap' }}>
         <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, minWidth: 0, flex: 1 }}>
-          <Box component={Link} to={returnTo ? returnTo : (pinsOnly ? (isEngineer ? '/my-captures' : '/captures') : `/floor-plans?project=${projectId}&tower=${towerId}`)}
-            sx={{ mt: 0.5, width: 32, height: 32, borderRadius: '9px', border: `1.5px solid ${P.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: P.muted, textDecoration: 'none', flexShrink: 0, transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}>
+          <Box component={Link} to={backDest}
+            sx={{ mt: 0.5, display: 'inline-flex', alignItems: 'center', gap: pinsOnly ? 0.625 : 0, px: pinsOnly ? 1.25 : 0, width: pinsOnly ? 'auto' : 32, height: 32, borderRadius: '9px', border: `1.5px solid ${P.border}`, justifyContent: 'center', color: P.muted, textDecoration: 'none', flexShrink: 0, transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}>
             <ArrowBackRounded sx={{ fontSize: 16 }} />
+            {pinsOnly && <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, lineHeight: 1, color: 'inherit' }}>Back</Typography>}
           </Box>
           <Box sx={{ minWidth: 0 }}>
             <Typography sx={{ fontSize: '0.75rem', color: P.muted, mb: 0.25, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{project.name} · {tower.name}</Typography>

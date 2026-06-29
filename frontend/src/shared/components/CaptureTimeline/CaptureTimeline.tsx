@@ -1,6 +1,6 @@
 import React from 'react';
-import { Box, Typography } from '@mui/material';
-import { CameraAltRounded } from '@mui/icons-material';
+import { Box, Typography, Tooltip } from '@mui/material';
+import { CameraAltRounded, CheckCircleRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { statusConfig, type CaptureSnapshot } from '@/data/mockData';
 
@@ -8,99 +8,151 @@ interface CaptureTimelineProps {
   series: CaptureSnapshot[];
   activeId: string;
   onSelect: (snapshot: CaptureSnapshot) => void;
-  /** When set, marks two snapshots as the A/B comparison selection. */
   compareIds?: [string | null, string | null];
+  /** When true, nodes show A/B select affordance with a highlight ring on hover */
+  compareMode?: boolean;
 }
 
-// Horizontal dated scrubber. Each node is a capture snapshot of the SAME room
-// over time (May 01 → May 15 → Jun 01 …). Clicking switches the active capture.
-export default function CaptureTimeline({ series, activeId, onSelect, compareIds }: CaptureTimelineProps) {
+export default function CaptureTimeline({ series, activeId, onSelect, compareIds, compareMode }: CaptureTimelineProps) {
   if (!series.length) return null;
 
   return (
-    <Box>
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-        <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.07em', textTransform: 'uppercase' }}>
-          Capture Timeline
-        </Typography>
-        <Typography sx={{ fontSize: '0.75rem', color: colors.textSubdued }}>
-          {series.length} captures · {series[0].dateLabel} → {series[series.length - 1].dateLabel}
-        </Typography>
-      </Box>
+    <Box sx={{ position: 'relative' }}>
+      {/* Rail line — top offset accounts for the 6px pt on the nodes row */}
+      <Box sx={{
+        position: 'absolute',
+        top: 24,
+        left: 20,
+        right: 20,
+        height: 2,
+        borderRadius: '2px',
+        backgroundColor: colors.borderLight,
+        zIndex: 0,
+      }} />
 
-      <Box sx={{ position: 'relative', px: 1 }}>
-        {/* The connecting rail */}
-        <Box sx={{ position: 'absolute', top: 19, left: 16, right: 16, height: 2, backgroundColor: colors.borderLight, zIndex: 0 }} />
+      {/* Nodes — pt:0.75 gives the hover ring + scale transform room to breathe */}
+      <Box sx={{
+        display: 'flex',
+        justifyContent: series.length === 1 ? 'center' : 'space-between',
+        position: 'relative',
+        zIndex: 1,
+        overflowX: 'auto',
+        scrollbarWidth: 'none',
+        '&::-webkit-scrollbar': { display: 'none' },
+        pt: 0.75,
+        pb: 0.5,
+      }}>
+        {series.map((snap, i) => {
+          const isActive = snap.id === activeId;
+          const sc = statusConfig.reviewStatus[snap.reviewStatus];
+          const compareSlot = compareIds
+            ? (compareIds[0] === snap.id ? 'A' : compareIds[1] === snap.id ? 'B' : null)
+            : null;
+          const isInCompare = !!compareSlot;
 
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', position: 'relative', zIndex: 1, overflowX: 'auto', gap: 1, pb: 0.5 }}>
-          {series.map((snap) => {
-            const isActive = snap.id === activeId;
-            const sc = statusConfig.reviewStatus[snap.reviewStatus];
-            const compareSlot = compareIds
-              ? (compareIds[0] === snap.id ? 'A' : compareIds[1] === snap.id ? 'B' : null)
-              : null;
+          const nodeColor = isActive
+            ? colors.primary
+            : isInCompare
+            ? (compareSlot === 'A' ? '#7c3aed' : '#d97706')
+            : sc.color;
 
-            return (
+          return (
+            <Tooltip
+              key={snap.id}
+              title={
+                <Box sx={{ textAlign: 'center' }}>
+                  <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: '#fff' }}>{snap.dateLabel || `Visit ${i + 1}`}</Typography>
+                  {snap.isLatest && <Typography sx={{ fontSize: '0.6875rem', color: 'rgba(255,255,255,0.7)' }}>Latest capture</Typography>}
+                  {compareMode && !isInCompare && <Typography sx={{ fontSize: '0.6875rem', color: 'rgba(255,255,255,0.7)' }}>Click to assign</Typography>}
+                </Box>
+              }
+              placement="top"
+              arrow
+            >
               <Box
-                key={snap.id}
                 onClick={() => onSelect(snap)}
                 sx={{
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'center',
-                  gap: 0.875,
+                  gap: 0.5,
                   cursor: 'pointer',
-                  minWidth: 64,
-                  flex: 1,
-                  '&:hover .tl-dot': { transform: 'scale(1.12)', borderColor: colors.primary },
-                  '&:hover .tl-date': { color: colors.textStrong },
+                  minWidth: 44,
+                  flex: series.length > 1 ? 1 : undefined,
+                  '&:hover .tl-node': {
+                    transform: 'scale(1.12)',
+                    borderColor: compareMode ? '#7c3aed' : colors.primary,
+                    boxShadow: compareMode
+                      ? '0 0 0 4px rgba(124,58,237,0.15), 0 2px 8px rgba(15,23,42,0.14)'
+                      : `0 0 0 4px ${colors.primaryRing}, 0 2px 8px rgba(15,23,42,0.14)`,
+                  },
                 }}
               >
-                {/* Node dot */}
+                {/* Node */}
                 <Box
-                  className="tl-dot"
+                  className="tl-node"
                   sx={{
                     position: 'relative',
-                    width: 38,
-                    height: 38,
+                    width: 36,
+                    height: 36,
                     borderRadius: '50%',
-                    background: snap.gradient,
-                    border: `2.5px solid ${isActive ? colors.primary : compareSlot ? sc.color : '#fff'}`,
+                    background: isActive || isInCompare ? nodeColor : snap.gradient,
+                    border: `2.5px solid ${isActive || isInCompare ? nodeColor : '#fff'}`,
                     boxShadow: isActive
                       ? `0 0 0 4px ${colors.primaryRing}, 0 2px 8px rgba(15,23,42,0.12)`
-                      : '0 2px 8px rgba(15,23,42,0.10)',
+                      : isInCompare
+                      ? `0 0 0 4px ${compareSlot === 'A' ? 'rgba(124,58,237,0.2)' : 'rgba(217,119,6,0.2)'}, 0 2px 8px rgba(15,23,42,0.10)`
+                      : '0 1px 4px rgba(15,23,42,0.10)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     transition: `all ${motion.durationNormal} ${motion.easeOut}`,
                   }}
                 >
-                  <CameraAltRounded sx={{ fontSize: 15, color: 'rgba(255,255,255,0.85)' }} />
-                  {/* Compare A/B badge */}
-                  {compareSlot && (
-                    <Box sx={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: '50%', backgroundColor: sc.color, color: '#fff', fontSize: '0.5625rem', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1.5px solid #fff' }}>
+                  {isInCompare ? (
+                    <Typography sx={{ fontSize: '0.8125rem', fontWeight: 800, color: '#fff', lineHeight: 1 }}>
                       {compareSlot}
-                    </Box>
+                    </Typography>
+                  ) : snap.isLatest ? (
+                    <CheckCircleRounded sx={{ fontSize: 15, color: '#fff' }} />
+                  ) : (
+                    <CameraAltRounded sx={{ fontSize: 14, color: 'rgba(255,255,255,0.85)' }} />
                   )}
-                  {/* Latest pulse marker */}
-                  {snap.isLatest && !compareSlot && (
-                    <Box sx={{ position: 'absolute', top: -4, right: -4, width: 10, height: 10, borderRadius: '50%', backgroundColor: '#16a34a', border: '2px solid #fff' }} />
+
+                  {/* Latest pulse dot (only when not in compare slot) */}
+                  {snap.isLatest && !isInCompare && (
+                    <Box sx={{
+                      position: 'absolute',
+                      top: -3,
+                      right: -3,
+                      width: 9,
+                      height: 9,
+                      borderRadius: '50%',
+                      backgroundColor: '#16a34a',
+                      border: '2px solid #fff',
+                    }} />
                   )}
                 </Box>
 
-                {/* Date */}
-                <Typography className="tl-date" sx={{ fontSize: '0.75rem', fontWeight: isActive ? 700 : 500, color: isActive ? colors.textStrong : colors.textMuted, lineHeight: 1, transition: `color ${motion.durationFast}` }}>
-                  {snap.dateLabel}
+                {/* Index label — always shown, compact */}
+                <Typography sx={{
+                  fontSize: '0.625rem',
+                  fontWeight: isActive || isInCompare ? 700 : 500,
+                  color: isActive
+                    ? colors.primary
+                    : isInCompare
+                    ? (compareSlot === 'A' ? '#7c3aed' : '#d97706')
+                    : colors.textSubdued,
+                  lineHeight: 1,
+                  whiteSpace: 'nowrap',
+                  transition: `color ${motion.durationFast}`,
+                }}>
+                  {snap.isLatest ? 'Latest' : `#${i + 1}`}
                 </Typography>
-
-                {/* Progress mini-bar */}
-                <Box sx={{ width: 40, height: 3, borderRadius: '2px', backgroundColor: colors.borderLight, overflow: 'hidden' }}>
-                  <Box sx={{ width: `${snap.progress}%`, height: '100%', backgroundColor: isActive ? colors.primary : sc.color, transition: `width ${motion.durationNormal}` }} />
-                </Box>
               </Box>
-            );
-          })}
-        </Box>
+            </Tooltip>
+          );
+        })}
       </Box>
     </Box>
   );

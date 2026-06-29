@@ -1,10 +1,9 @@
 import React from 'react';
 import { Box, Typography, Chip } from '@mui/material';
 import {
-  CameraAltRounded, AddAPhotoRounded, DeleteOutlineRounded, CloseRounded,
-  ArrowForwardRounded, TouchAppRounded,
+  AddAPhotoRounded, DeleteOutlineRounded, CloseRounded,
+  HistoryRounded, TouchAppRounded,
 } from '@mui/icons-material';
-import { Link } from 'react-router-dom';
 import type { WfCapturePin } from '@store/workflowStore';
 import type { MockCapture } from '@/data/mockData';
 
@@ -20,16 +19,12 @@ interface PinActionPanelProps {
   canCapture: boolean;
   usesCamera: boolean;
   onCapture: (pin: WfCapturePin) => void;
+  onViewHistory: (pin: WfCapturePin) => void;
   onDelete: (pin: WfCapturePin) => void;
   onClose: () => void;
 }
 
-/**
- * Slide-in / docked panel for a selected pin. Shows the pin's capture timeline
- * (each visit is a Capture from the existing model) and the primary capture
- * action. Mirrors the look of the existing RoomActionPanel.
- */
-export default function PinActionPanel({ pin, captures, isMobile, canCapture, usesCamera, onCapture, onDelete, onClose }: PinActionPanelProps) {
+export default function PinActionPanel({ pin, captures, isMobile, canCapture, usesCamera, onCapture, onViewHistory, onDelete, onClose }: PinActionPanelProps) {
   const pinCaptures = pin.captureIds
     .map(id => captures.find(c => c.id === id))
     .filter((c): c is MockCapture => !!c);
@@ -58,8 +53,8 @@ export default function PinActionPanel({ pin, captures, isMobile, canCapture, us
       </Box>
 
       <Box sx={{ p: 2 }}>
-        {/* Status */}
-        <Box sx={{ mb: 1.5 }}>
+        {/* Status chip */}
+        <Box sx={{ mb: 1.75 }}>
           {hasCapture ? (
             <Chip label={`${pinCaptures.length} capture${pinCaptures.length !== 1 ? 's' : ''} attached`} size="small" sx={{ height: 22, fontSize: '0.6875rem', fontWeight: 600, color: '#16a34a', backgroundColor: 'rgba(22,163,74,0.12)', borderRadius: '6px' }} />
           ) : (
@@ -67,38 +62,27 @@ export default function PinActionPanel({ pin, captures, isMobile, canCapture, us
           )}
         </Box>
 
-        {/* Capture timeline */}
-        {hasCapture && (
-          <Box sx={{ mb: 1.5, display: 'flex', flexDirection: 'column', gap: 0.5, maxHeight: 168, overflowY: 'auto' }}>
-            {pinCaptures.map((c, i) => (
-              <Box key={c.id} component={Link} to={`/captures/${c.id}`} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.25, py: 0.875, borderRadius: '8px', backgroundColor: P.bg, textDecoration: 'none', '&:hover': { backgroundColor: P.blueSoft } }}>
-                <Box sx={{ width: 24, height: 24, borderRadius: '6px', background: c.gradient, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <CameraAltRounded sx={{ fontSize: 12, color: 'rgba(255,255,255,0.85)' }} />
-                </Box>
-                <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: P.strong }}>Visit {i + 1}</Typography>
-                  <Typography noWrap sx={{ fontSize: '0.6875rem', color: P.muted }}>{c.uploadedAt} · {c.fileCount} files</Typography>
-                </Box>
-                <ArrowForwardRounded sx={{ fontSize: 13, color: P.subtle }} />
-              </Box>
-            ))}
-          </Box>
-        )}
-
         {/* Actions */}
-        {canCapture && (
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+          {canCapture && (
             <Box onClick={() => onCapture(pin)} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, px: 1.5, py: 1.125, borderRadius: '10px', background: 'linear-gradient(135deg, #2563eb 0%, #1a56db 100%)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.28)' }}>
               <AddAPhotoRounded sx={{ fontSize: 16 }} />
-              {hasCapture ? 'Capture again' : usesCamera ? 'Open camera' : 'Upload capture'}
+              {hasCapture ? 'Capture Again' : usesCamera ? 'Open Camera' : 'Upload Capture'}
             </Box>
-            <Box onClick={() => onDelete(pin)} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.75, px: 1.5, py: 0.875, borderRadius: '10px', border: `1px solid ${P.border}`, color: P.muted, fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: '#ef4444', color: '#ef4444', backgroundColor: 'rgba(239,68,68,0.05)' } }}>
-              <DeleteOutlineRounded sx={{ fontSize: 14 }} /> Remove pin
-            </Box>
-          </Box>
-        )}
+          )}
 
-        {/* Hint for camera devices */}
+          {hasCapture && (
+            <Box onClick={() => onViewHistory(pin)} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.75, px: 1.5, py: 0.875, borderRadius: '10px', border: `1px solid ${P.border}`, color: P.muted, fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}>
+              <HistoryRounded sx={{ fontSize: 15 }} /> View History
+            </Box>
+          )}
+
+          <Box onClick={() => onDelete(pin)} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.75, px: 1.5, py: 0.875, borderRadius: '10px', border: `1px solid ${P.border}`, color: P.muted, fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: '#ef4444', color: '#ef4444', backgroundColor: 'rgba(239,68,68,0.05)' } }}>
+            <DeleteOutlineRounded sx={{ fontSize: 14 }} /> Delete Pin
+          </Box>
+        </Box>
+
+        {/* Long-press hint — only when no capture yet */}
         {canCapture && !hasCapture && (
           <Typography sx={{ mt: 1.25, fontSize: '0.6875rem', color: P.subtle, textAlign: 'center', lineHeight: 1.5 }}>
             Tip: long-press the pin on the plan to {usesCamera ? 'open the camera' : 'upload'} directly.
