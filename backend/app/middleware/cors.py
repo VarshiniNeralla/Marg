@@ -20,14 +20,8 @@ def get_cors_kwargs() -> dict[str, Any]:
     return {
         "allow_origins": origins,
         "allow_credentials": True,
-        "allow_methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        "allow_headers": [
-            "Authorization",
-            "Content-Type",
-            "X-Request-ID",
-            "Accept",
-            "Origin",
-        ],
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
         "expose_headers": ["X-Request-ID"],
-        "max_age": 600,  # Preflight cache: 10 minutes
+        "max_age": 600,
     }
