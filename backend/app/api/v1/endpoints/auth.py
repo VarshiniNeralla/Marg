@@ -29,8 +29,11 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 # ── Cookie configuration ──────────────────────────────────────────────────────
 _COOKIE_NAME = "refresh_token"
 _COOKIE_MAX_AGE = settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60  # seconds
-_COOKIE_SECURE = settings.is_production  # HTTPS only in production
-_COOKIE_SAMESITE = "strict"
+# SameSite "none" is required when frontend & backend are on different sites so
+# the browser sends the cookie on the cross-site /auth/refresh request fired on
+# page load; "none" mandates Secure=True (enforced by settings.cookie_secure).
+_COOKIE_SAMESITE = settings.cookie_samesite
+_COOKIE_SECURE = settings.cookie_secure
 
 
 def _set_refresh_cookie(response: Response, token: str) -> None:

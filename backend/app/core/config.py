@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     EMAIL_FROM: str = "noreply@yourdomain.com"
     EMAIL_FROM_NAME: str = "Horizon"
 
+    # ── Cookies ───────────────────────────────────────────────────────────────
+    # SameSite policy for the refresh-token cookie. When the frontend and backend
+    # are served from different sites (e.g. *.onrender.com frontend + separate
+    # backend host), the browser only sends the cookie on cross-site requests if
+    # this is "none" — and "none" additionally requires Secure=True (HTTPS).
+    # Leave blank to auto-select: "none" in production, "lax" in development.
+    COOKIE_SAMESITE: str = ""
+
     # ── CORS ──────────────────────────────────────────────────────────────────
     # Stored as a comma-separated string in .env; parsed into a list below.
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:5174,http://localhost:3000"
@@ -67,6 +75,27 @@ class Settings(BaseSettings):
     @property
     def is_development(self) -> bool:
         return self.APP_ENV == "development"
+
+    @property
+    def cookie_samesite(self) -> str:
+        """
+        Effective SameSite policy for the refresh cookie.
+        Explicit COOKIE_SAMESITE wins; otherwise "none" in production (so the
+        cross-site refresh request on page load carries the cookie) and "lax"
+        in development (same-site localhost, avoids needing Secure/HTTPS).
+        """
+        explicit = self.COOKIE_SAMESITE.strip().lower()
+        if explicit in {"none", "lax", "strict"}:
+            return explicit
+        return "none" if self.is_production else "lax"
+
+    @property
+    def cookie_secure(self) -> bool:
+        """
+        Whether the refresh cookie is marked Secure. Browsers REQUIRE Secure when
+        SameSite=None, so force it on in that case regardless of environment.
+        """
+        return self.is_production or self.cookie_samesite == "none"
 
 
 @lru_cache
