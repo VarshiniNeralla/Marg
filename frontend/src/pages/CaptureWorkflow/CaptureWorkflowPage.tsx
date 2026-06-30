@@ -271,15 +271,20 @@ function FloorPlanWithPin({
 
   const clampOffset = useCallback((ox: number, oy: number, s: number) => {
     const el = containerRef.current;
-    if (!el) return { x: ox, y: oy };
-    const { width: cw, height: ch } = el.getBoundingClientRect();
     const wrap = imgWrapRef.current;
-    if (!wrap) return { x: ox, y: oy };
+    if (!el || !wrap) return { x: ox, y: oy };
+    const { width: cw, height: ch } = el.getBoundingClientRect();
+    // wrap.getBoundingClientRect() already reflects the live container scale, so
+    // normalise back to the image's natural size, then apply the TARGET scale s.
     const { width: iw, height: ih } = wrap.getBoundingClientRect();
-    const scaledW = iw * s / scale; // approximate — good enough for clamping
-    const scaledH = ih * s / scale;
-    const maxX = Math.max(0, (scaledW - cw) / 2 + 60);
-    const maxY = Math.max(0, (scaledH - ch) / 2 + 60);
+    const naturalW = iw / scale;
+    const naturalH = ih / scale;
+    const scaledW = naturalW * s;
+    const scaledH = naturalH * s;
+    // Keep at least 80px of the plan on screen on each axis.
+    const margin = 80;
+    const maxX = Math.max(0, (scaledW - cw) / 2 + (cw / 2 - margin));
+    const maxY = Math.max(0, (scaledH - ch) / 2 + (ch / 2 - margin));
     return {
       x: Math.max(-maxX, Math.min(maxX, ox)),
       y: Math.max(-maxY, Math.min(maxY, oy)),
@@ -287,8 +292,12 @@ function FloorPlanWithPin({
   }, [scale]);
 
   const zoom = useCallback((dir: 1 | -1) => {
-    setScale(s => Math.min(4, Math.max(0.5, +(s + dir * 0.25).toFixed(2))));
-  }, []);
+    setScale(s => {
+      const next = Math.min(6, Math.max(0.5, +(s + dir * 0.3).toFixed(2)));
+      setOffset(o => clampOffset(o.x, o.y, next));
+      return next;
+    });
+  }, [clampOffset]);
 
   const resetView = useCallback(() => { setScale(1); setOffset({ x: 0, y: 0 }); }, []);
 
@@ -308,7 +317,7 @@ function FloorPlanWithPin({
   }
   function onMouseMove(e: React.MouseEvent) {
     if (!isDragging) return;
-    setOffset({ x: dragStart.current.ox + e.clientX - dragStart.current.x, y: dragStart.current.oy + e.clientY - dragStart.current.y });
+    setOffset(clampOffset(dragStart.current.ox + e.clientX - dragStart.current.x, dragStart.current.oy + e.clientY - dragStart.current.y, scale));
   }
   function onMouseUp() { setIsDragging(false); }
 
@@ -359,20 +368,18 @@ function FloorPlanWithPin({
       const [t1, t2] = [e.touches[0], e.touches[1]] as unknown as [React.Touch, React.Touch];
       const newDist = getTouchDist(t1, t2);
       const rawScale = (newDist / pinchStartRef.current.dist) * pinchStartRef.current.scale;
-      const newScale = Math.min(4, Math.max(0.5, +rawScale.toFixed(3)));
-      setScale(newScale);
-      // Pan offset so the pinch midpoint stays fixed.
+      const newScale = Math.min(6, Math.max(0.5, +rawScale.toFixed(3)));
+      // Pan so the pinch midpoint tracks the fingers, then clamp so the plan
+      // can't slip off-screen.
       const { midX, midY } = pinchStartRef.current;
       const mid = getTouchMid(t1, t2);
-      setOffset(prev => ({
-        x: prev.x + (mid.x - midX) * 0.4,
-        y: prev.y + (mid.y - midY) * 0.4,
-      }));
+      setScale(newScale);
+      setOffset(prev => clampOffset(prev.x + (mid.x - midX) * 0.4, prev.y + (mid.y - midY) * 0.4, newScale));
     } else if (e.touches.length === 1 && !pinchStartRef.current) {
       const t = e.touches[0];
       const dx = t.clientX - touchDragStart.current.mx;
       const dy = t.clientY - touchDragStart.current.my;
-      setOffset({ x: touchDragStart.current.ox + dx, y: touchDragStart.current.oy + dy });
+      setOffset(clampOffset(touchDragStart.current.ox + dx, touchDragStart.current.oy + dy, scale));
     }
   }
 
@@ -392,14 +399,15 @@ function FloorPlanWithPin({
       if (elapsed < 300 && dist < 40) {
         // Double tap — zoom in if near 1×, zoom out if zoomed in
         if (scale < 1.4) {
-          setScale(2);
+          const target = 2.5;
+          setScale(target);
           // Center on the tap point
           const wrap = imgWrapRef.current;
           if (wrap) {
             const rect = wrap.getBoundingClientRect();
             const cx = rect.left + rect.width / 2;
             const cy = rect.top + rect.height / 2;
-            setOffset({ x: -(t.clientX - cx) * 0.8, y: -(t.clientY - cy) * 0.8 });
+            setOffset(clampOffset(-(t.clientX - cx) * 0.8, -(t.clientY - cy) * 0.8, target));
           }
         } else {
           resetView();
@@ -521,11 +529,15 @@ function FloorPlanWithPin({
                     }}
                     sx={{ position: 'absolute', left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%,-100%)', cursor: 'pointer', zIndex: 5, touchAction: 'none' }}
                   >
-                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.5))', transition: T, '&:hover': { transform: 'scale(1.08)' } }}>
-                      <Box sx={{ width: { xs: 20, sm: 30 }, height: { xs: 20, sm: 30 }, borderRadius: '50% 50% 50% 0', backgroundColor: color, border: { xs: '2px solid #fff', sm: '3px solid #fff' }, transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <Typography sx={{ fontSize: { xs: '0.625rem', sm: '0.8125rem' }, fontWeight: 800, color: '#fff', transform: 'rotate(45deg)', lineHeight: 1 }}>{p.sequenceNumber}</Typography>
+                    {/* Counter-scale so the marker keeps a constant on-screen size
+                        regardless of the container's zoom (anchored at the tip). */}
+                    <Box sx={{ transform: `scale(${1 / scale})`, transformOrigin: 'bottom center' }}>
+                      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.5))', transition: T, '&:hover': { transform: 'scale(1.08)' } }}>
+                        <Box sx={{ width: { xs: 20, sm: 30 }, height: { xs: 20, sm: 30 }, borderRadius: '50% 50% 50% 0', backgroundColor: color, border: { xs: '2px solid #fff', sm: '3px solid #fff' }, transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <Typography sx={{ fontSize: { xs: '0.625rem', sm: '0.8125rem' }, fontWeight: 800, color: '#fff', transform: 'rotate(45deg)', lineHeight: 1 }}>{p.sequenceNumber}</Typography>
+                        </Box>
+                        <Box sx={{ width: 2, height: { xs: 4, sm: 6 }, backgroundColor: color, mt: '-1px' }} />
                       </Box>
-                      <Box sx={{ width: 2, height: { xs: 4, sm: 6 }, backgroundColor: color, mt: '-1px' }} />
                     </Box>
                   </Box>
                 );
@@ -534,12 +546,15 @@ function FloorPlanWithPin({
               {/* Pending pin */}
               {pin && (
                 <Box sx={{ position: 'absolute', left: `${pin.x}%`, top: `${pin.y}%`, transform: 'translate(-50%,-100%)', pointerEvents: 'none', zIndex: 6 }}>
-                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.5))' }}>
-                    <Box sx={{ width: { xs: 22, sm: 34 }, height: { xs: 22, sm: 34 }, borderRadius: '50% 50% 50% 0', backgroundColor: '#22c55e', border: { xs: '2px solid #fff', sm: '3px solid #fff' }, transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'pinpulse 1.2s ease-in-out infinite', '@keyframes pinpulse': { '0%,100%': { boxShadow: '0 0 0 0 rgba(34,197,94,0.5)' }, '50%': { boxShadow: '0 0 0 5px rgba(34,197,94,0)' } } }}>
-                      <MyLocationRounded sx={{ fontSize: { xs: 10, sm: 14 }, color: '#fff', transform: 'rotate(45deg)' }} />
+                  {/* Counter-scale so the pending pin stays a constant on-screen size. */}
+                  <Box sx={{ transform: `scale(${1 / scale})`, transformOrigin: 'bottom center' }}>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.5))' }}>
+                      <Box sx={{ width: { xs: 22, sm: 34 }, height: { xs: 22, sm: 34 }, borderRadius: '50% 50% 50% 0', backgroundColor: '#22c55e', border: { xs: '2px solid #fff', sm: '3px solid #fff' }, transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'pinpulse 1.2s ease-in-out infinite', '@keyframes pinpulse': { '0%,100%': { boxShadow: '0 0 0 0 rgba(34,197,94,0.5)' }, '50%': { boxShadow: '0 0 0 5px rgba(34,197,94,0)' } } }}>
+                        <MyLocationRounded sx={{ fontSize: { xs: 10, sm: 14 }, color: '#fff', transform: 'rotate(45deg)' }} />
+                      </Box>
+                      <Box sx={{ width: 2, height: { xs: 5, sm: 8 }, backgroundColor: '#22c55e', mt: '-1px' }} />
+                      <Box sx={{ width: { xs: 4, sm: 5 }, height: { xs: 4, sm: 5 }, borderRadius: '50%', backgroundColor: '#22c55e', opacity: 0.4 }} />
                     </Box>
-                    <Box sx={{ width: 2, height: { xs: 5, sm: 8 }, backgroundColor: '#22c55e', mt: '-1px' }} />
-                    <Box sx={{ width: { xs: 4, sm: 5 }, height: { xs: 4, sm: 5 }, borderRadius: '50%', backgroundColor: '#22c55e', opacity: 0.4 }} />
                   </Box>
                 </Box>
               )}
