@@ -600,6 +600,7 @@ export default function CaptureWorkflowPage() {
   const flats      = useWorkflowStore(s => s.flats);
   const rooms      = useWorkflowStore(s => s.rooms);
   const allPins    = useWorkflowStore(s => s.capturePins);
+  const allCaptures = useWorkflowStore(s => s.captures);
   const createRoom         = useWorkflowStore(s => s.createRoom);
   const uploadCapture      = useWorkflowStore(s => s.uploadCapture);
   const createCapturePin   = useWorkflowStore(s => s.createCapturePin);
@@ -683,9 +684,28 @@ export default function CaptureWorkflowPage() {
     floor:   selectedFloorObj?.label,
   };
 
+  function pruneEmptyPinsOnCurrentFloor() {
+    if (!floorPlan) return;
+    allPins
+      .filter(p => p.floorPlanId === floorPlan.id && p.captureIds.length === 0)
+      .forEach(p => deleteCapturePin(p.id));
+  }
+
+  // When the capture step loads for a floor, prune any pins placed in a previous
+  // session that were never captured (orphans from abandoned sessions).
+  useEffect(() => {
+    if (step !== 'capture' || !floorPlan) return;
+    allPins
+      .filter(p => p.floorPlanId === floorPlan.id && p.captureIds.length === 0)
+      .forEach(p => deleteCapturePin(p.id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, floorPlan?.id]);
+
   function jumpToStep(target: Step) {
     const targetIdx = STEPS.findIndex(s => s.key === target);
     if (targetIdx >= stepIdx) return;
+    // Clean up any pins placed on this floor that were never captured.
+    if (step === 'capture') pruneEmptyPinsOnCurrentFloor();
     setStep(target);
     if (targetIdx <= 0) { setProject(''); setTower(''); setFloor(''); setPinPos(null); setActiveCapturePinId(null); }
     else if (targetIdx <= 1) { setTower(''); setFloor(''); setPinPos(null); setActiveCapturePinId(null); }
@@ -948,14 +968,18 @@ export default function CaptureWorkflowPage() {
                     <AddAPhotoRounded sx={{ fontSize: 15 }} /> Capture Again
                   </Box>
                 )}
-                {selectedPinObj.captureIds.length > 0 && (
-                  <Box
-                    onClick={() => navigate(`/captures/${selectedPinObj.captureIds[selectedPinObj.captureIds.length - 1]}`)}
-                    sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}
-                  >
-                    <HistoryRounded sx={{ fontSize: 15 }} /> View History
-                  </Box>
-                )}
+                {(() => {
+                  const latestCaptureId = selectedPinObj.captureIds[selectedPinObj.captureIds.length - 1];
+                  const captureExists = latestCaptureId && allCaptures.some(c => c.id === latestCaptureId);
+                  return captureExists ? (
+                    <Box
+                      onClick={() => navigate(`/captures/${latestCaptureId}`)}
+                      sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}
+                    >
+                      <HistoryRounded sx={{ fontSize: 15 }} /> View History
+                    </Box>
+                  ) : null;
+                })()}
                 <Box
                   onClick={() => { deleteCapturePin(selectedPinObj.id); setSelectedPinId(null); }}
                   sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.125, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', cursor: 'pointer', '&:hover': { borderColor: '#ef4444', color: '#ef4444', backgroundColor: 'rgba(239,68,68,0.05)' } }}

@@ -465,6 +465,12 @@ async def update_tour_status(tour_id: str, payload: dict[str, Any], ctx: CallerC
     return success_response(data=await _patch(db, "tours", tour_id, payload, ctx), message="Tour status updated")
 
 
+@router.delete("/tours/{tour_id}", summary="Delete tour")
+async def delete_tour(tour_id: str, ctx: CallerContext, db: DB):
+    await _delete(db, "tours", tour_id, ctx)
+    return success_response(message="Tour deleted")
+
+
 @router.post("/floor-plans", status_code=status.HTTP_201_CREATED, summary="Upload floor plan")
 async def create_floor_plan(payload: dict[str, Any], ctx: CallerContext, db: DB):
     asset = (payload.get("mediaAssets") or payload.get("media_assets") or [None])[0]

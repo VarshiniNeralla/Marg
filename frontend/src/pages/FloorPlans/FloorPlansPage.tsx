@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Box, Typography, useMediaQuery, useTheme, Drawer } from '@mui/material';
+import { Box, Typography, useMediaQuery, useTheme, Drawer, Menu, MenuItem } from '@mui/material';
 import {
   LayersRounded, MapRounded, CheckCircleRounded, AddRounded,
   CameraAltRounded, ViewInArRounded, UploadFileRounded, ArrowBackRounded,
@@ -37,6 +37,7 @@ export default function FloorPlansPage() {
   const isEngineer = isFieldEngineer(user);
 
   const [towerSheetOpen, setTowerSheetOpen] = useState(false);
+  const [projectMenuAnchor, setProjectMenuAnchor] = useState<null | HTMLElement>(null);
 
   const projects   = useWorkflowStore(s => s.projects);
   const towers     = useWorkflowStore(s => s.towers);
@@ -55,9 +56,12 @@ export default function FloorPlansPage() {
 
   const [projectId, setProjectId] = useState(() => {
     const pid = searchParams.get('project');
-    return pid && activeProjects.find(p => p.id === pid) ? pid : (activeProjects[0]?.id ?? '');
+    if (pid && activeProjects.find(p => p.id === pid)) return pid;
+    // Auto-select only when there's a single project (the picker is hidden then).
+    // With multiple projects, require an explicit pick before showing floor plans.
+    return activeProjects.length === 1 ? activeProjects[0].id : '';
   });
-  const project = activeProjects.find(p => p.id === projectId) ?? activeProjects[0];
+  const project = activeProjects.find(p => p.id === projectId);
 
   const projectTowers = useMemo(
     () => project
@@ -93,7 +97,7 @@ export default function FloorPlansPage() {
   const dataSlice = { flats, rooms, captures, tours, floorPlans };
   const mappedCount = towerFloors.filter(f => getFloorPlanByFloor(floorPlans, tower?.id ?? '', f.id)).length;
 
-  if (!project) {
+  if (activeProjects.length === 0) {
     return (
       <EmptyState
         icon={<MapRounded />}
@@ -144,39 +148,124 @@ export default function FloorPlansPage() {
         <Box sx={{ mb: 3 }}>
           <Typography sx={{
             fontSize: '0.625rem', fontWeight: 700, color: P.subtle,
-            letterSpacing: '0.1em', textTransform: 'uppercase', mb: 1,
+            letterSpacing: '0.1em', textTransform: 'uppercase', mb: 1.25,
           }}>
             Project
           </Typography>
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
-            {activeProjects.map(proj => {
-              const isActive = project.id === proj.id;
-              return (
+          {(() => {
+            const sel        = project;
+            const open       = !!projectMenuAnchor;
+            const accent     = (sel as { accent?: string } | undefined)?.accent ?? P.blue;
+            const gradient   = (sel as { gradient?: string } | undefined)?.gradient
+              ?? `linear-gradient(135deg, ${P.subtle}, ${P.muted})`;
+            const initial    = sel?.name.trim().split(/\s+/).pop()?.[0]?.toUpperCase() ?? '';
+            const towerCount = sel ? getTowersByProject(towers, sel.id).length : 0;
+            return (
+              <>
+                {/* Trigger */}
                 <Box
-                  key={proj.id}
-                  onClick={() => selectProject(proj.id)}
+                  onClick={e => setProjectMenuAnchor(e.currentTarget)}
                   sx={{
-                    px: 1.5, py: 0.875, borderRadius: '20px', cursor: 'pointer',
-                    border: `1.5px solid ${isActive ? P.blue : P.border}`,
-                    backgroundColor: isActive ? P.blueSoft : P.white,
+                    display: 'inline-flex', alignItems: 'center', gap: 1.25,
+                    pl: 0.75, pr: 1.5, height: 52, minWidth: { xs: '100%', sm: 280 },
+                    borderRadius: '14px', cursor: 'pointer',
+                    border: `1.5px solid ${open ? accent : P.border}`,
+                    backgroundColor: P.white,
+                    boxShadow: open ? `0 6px 18px ${accent}22` : '0 1px 2px rgba(16,24,40,0.04)',
                     transition: T,
-                    '&:hover': { borderColor: P.blue },
+                    '&:hover': { borderColor: accent, backgroundColor: P.bg },
                   }}
                 >
-                  <Typography sx={{
-                    fontSize: '0.8125rem',
-                    fontWeight: isActive ? 700 : 500,
-                    color: isActive ? P.blue : P.strong,
+                  <Box sx={{
+                    width: 38, height: 38, borderRadius: '11px', flexShrink: 0,
+                    background: gradient,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    boxShadow: `0 2px 6px ${accent}33`,
                   }}>
-                    {proj.name}
-                  </Typography>
+                    {sel
+                      ? <Typography sx={{ fontSize: '1rem', fontWeight: 800, color: '#fff', lineHeight: 1, letterSpacing: '-0.02em' }}>{initial}</Typography>
+                      : <DomainRounded sx={{ fontSize: 19, color: '#fff' }} />}
+                  </Box>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 700, color: sel ? P.ink : P.muted, letterSpacing: '-0.01em', lineHeight: 1.25 }}>
+                      {sel ? sel.name : 'Select a project'}
+                    </Typography>
+                    {sel && (
+                      <Typography noWrap sx={{ fontSize: '0.6875rem', fontWeight: 600, color: P.subtle, lineHeight: 1.3 }}>
+                        {towerCount} tower{towerCount !== 1 ? 's' : ''}
+                      </Typography>
+                    )}
+                  </Box>
+                  <KeyboardArrowDownRounded sx={{ fontSize: 20, color: P.muted, flexShrink: 0, transform: open ? 'rotate(180deg)' : 'none', transition: T }} />
                 </Box>
-              );
-            })}
-          </Box>
+
+                {/* Menu */}
+                <Menu
+                  anchorEl={projectMenuAnchor}
+                  open={open}
+                  onClose={() => setProjectMenuAnchor(null)}
+                  anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+                  transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+                  slotProps={{ paper: { sx: {
+                    mt: 1, minWidth: { xs: 'calc(100vw - 48px)', sm: 300 }, maxWidth: 'calc(100vw - 32px)',
+                    borderRadius: '14px', boxShadow: '0 12px 40px rgba(15,23,42,0.16)',
+                    border: `1px solid ${P.border}`, p: 0.75,
+                  } } }}
+                >
+                  {activeProjects.map(proj => {
+                    const isActive = projectId === proj.id;
+                    const pAccent  = (proj as { accent?: string }).accent ?? P.blue;
+                    const pGrad    = (proj as { gradient?: string }).gradient ?? `linear-gradient(135deg, ${P.blue}, ${P.blueHover})`;
+                    const pInit    = proj.name.trim().split(/\s+/).pop()?.[0]?.toUpperCase() ?? '#';
+                    const pTowers  = getTowersByProject(towers, proj.id).length;
+                    return (
+                      <MenuItem
+                        key={proj.id}
+                        onClick={() => { selectProject(proj.id); setProjectMenuAnchor(null); }}
+                        sx={{ borderRadius: '10px', py: 1, px: 1, gap: 1.25, backgroundColor: isActive ? `${pAccent}0F` : 'transparent', '&:hover': { backgroundColor: isActive ? `${pAccent}1A` : P.bg } }}
+                      >
+                        <Box sx={{ width: 32, height: 32, borderRadius: '9px', flexShrink: 0, background: pGrad, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: `0 2px 6px ${pAccent}33` }}>
+                          <Typography sx={{ fontSize: '0.875rem', fontWeight: 800, color: '#fff', lineHeight: 1 }}>{pInit}</Typography>
+                        </Box>
+                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                          <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: isActive ? 700 : 600, color: isActive ? P.ink : P.strong, letterSpacing: '-0.01em' }}>
+                            {proj.name}
+                          </Typography>
+                          <Typography noWrap sx={{ fontSize: '0.6875rem', fontWeight: 600, color: isActive ? pAccent : P.subtle }}>
+                            {pTowers} tower{pTowers !== 1 ? 's' : ''}
+                          </Typography>
+                        </Box>
+                        {isActive && <CheckCircleRounded sx={{ fontSize: 18, color: pAccent, flexShrink: 0 }} />}
+                      </MenuItem>
+                    );
+                  })}
+                </Menu>
+              </>
+            );
+          })()}
         </Box>
       )}
 
+      {/* ── Prompt to pick a project before anything else loads ──────────── */}
+      {!project && (
+        <Box sx={{
+          py: 8, textAlign: 'center',
+          border: `1.5px dashed ${P.border}`,
+          borderRadius: '18px', backgroundColor: P.white,
+        }}>
+          <DomainRounded sx={{ fontSize: 44, color: P.subtle, mb: 1.5 }} />
+          <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>
+            Select a project to begin
+          </Typography>
+          <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>
+            Choose a project above to view its towers and floor plans.
+          </Typography>
+        </Box>
+      )}
+
+      {/* Everything below depends on a chosen project */}
+      {project && (
+      <>
       {/* ── Tower selector ────────────────────────────────────────────────── */}
       {projectTowers.length > 0 && (
         <Box sx={{ mb: 3 }}>
@@ -493,6 +582,8 @@ export default function FloorPlansPage() {
             );
           })}
         </Box>
+      )}
+      </>
       )}
     </Box>
   );

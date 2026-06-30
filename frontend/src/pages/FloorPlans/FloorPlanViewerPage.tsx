@@ -184,8 +184,28 @@ export default function FloorPlanViewerPage() {
 
   const towerFloors = [...getFloorsByTower(floors, towerId ?? '')].sort((a, b) => a.number - b.number);
   const floor       = towerFloors.find(f => f.id === floorId);
-  const floorPlan   = getFloorPlanByFloor(floorPlans, towerId ?? '', floorId ?? '');
-  const pins        = floorPlan ? getCapturePinsByFloorPlan(allPins, floorPlan.id) : [];
+
+  // A floor can have more than one floor-plan record: re-uploading a plan creates a
+  // new record (the old one is only dropped from local state, not the backend), so the
+  // snapshot returns duplicates. The plainly-newest record is often NOT the one the
+  // capture pins / published tour were attached to — which made "View on floor plan"
+  // render the wrong (empty) plan. Prefer the record that actually owns the pins so
+  // every captured pin shows up.
+  const floorPlansForFloor = floorPlans.filter(fp => fp.towerId === (towerId ?? '') && fp.floorId === (floorId ?? ''));
+  const floorPlan =
+    floorPlansForFloor.find(fp => allPins.some(p => p.floorPlanId === fp.id && p.captureIds.length > 0)) ??
+    floorPlansForFloor.find(fp => allPins.some(p => p.floorPlanId === fp.id)) ??
+    floorPlansForFloor[0] ??
+    getFloorPlanByFloor(floorPlans, towerId ?? '', floorId ?? '');
+
+  // Pins for the chosen plan, falling back to every pin on this floor (covers pins
+  // attached to a sibling/older floor-plan record for the same floor).
+  const pins = (() => {
+    if (!floorPlan) return [];
+    const byPlan = getCapturePinsByFloorPlan(allPins, floorPlan.id);
+    if (byPlan.length > 0) return byPlan;
+    return [...allPins.filter(p => p.floorId === (floorId ?? ''))].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+  })();
 
   // Pin-based capture workflow is the field engineer's job.
   const canUsePins = isEngineer && !!floorPlan;
@@ -684,7 +704,7 @@ export default function FloorPlanViewerPage() {
           {/* Layer 2: Capture pins — numbered walkthrough markers */}
           {pinsOnly && floorPlan && pins.length > 0 && (
             <g id="layer-captures">
-              {pins.map(pin => (
+              {pins.filter(pin => pin.captureIds.length > 0).map(pin => (
                 <CapturePinMarker
                   key={pin.id}
                   pin={pin}

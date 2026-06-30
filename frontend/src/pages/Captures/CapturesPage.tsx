@@ -136,12 +136,27 @@ export default function CapturesPage() {
   }, [allPins]);
   const [deleteTarget, setDeleteTarget] = useState<MockCapture | null>(null);
   const tourCaptureIds = useMemo(() => new Set(tours.map(t => t.captureId)), [tours]);
-  const PROJECTS_WITH_CAPTURES = useMemo(() => allProjects.filter(p => !p.archived), [allProjects]);
+
+  // For field engineers on /my-captures, restrict the project list and captures
+  // to their assigned projects only (same scoping as CaptureWorkflowPage).
+  const assignedProjectIds = useMemo(() => {
+    if (!isEngineerView) return null;
+    const ids = user?.assignedProjectIds ?? [];
+    return ids.length > 0 ? new Set(ids) : null;
+  }, [isEngineerView, user?.assignedProjectIds]);
+
+  const PROJECTS_WITH_CAPTURES = useMemo(() => {
+    const base = allProjects.filter(p => !p.archived);
+    return assignedProjectIds ? base.filter(p => assignedProjectIds.has(p.id)) : base;
+  }, [allProjects, assignedProjectIds]);
+
   const availableTowers = useMemo(() => !projectId || projectId === 'all' ? [] : allTowers.filter(t => t.projectId === projectId).sort((a,b) => a.name.localeCompare(b.name, undefined, {numeric:true})), [allTowers, projectId]);
   const availableFloors = useMemo(() => !towerId || towerId === 'all' ? [] : allFloors.filter(f => f.towerId === towerId).sort((a,b) => a.label.localeCompare(b.label, undefined, {numeric:true})), [allFloors, towerId]);
 
   const filtered = useMemo(() => {
     return mockCaptures.filter(c => {
+      // Field engineers on /my-captures are always scoped to their assigned projects.
+      if (assignedProjectIds && !assignedProjectIds.has(c.projectId)) return false;
       const matchesProject = projectId === 'all' || c.projectId === projectId;
       const matchesTower = towerId === 'all' || c.towerId === towerId;
       const floorLabel = availableFloors.find(f => f.id === floorId)?.label;
@@ -153,7 +168,7 @@ export default function CapturesPage() {
       if (isEngineerView && allPinCaptureIds.has(c.id) && !latestPinCaptureIds.has(c.id)) return false;
       return true;
     });
-  }, [mockCaptures, projectId, towerId, floorId, availableFloors, isEngineerView, allPinCaptureIds, latestPinCaptureIds]);
+  }, [mockCaptures, projectId, towerId, floorId, availableFloors, isEngineerView, allPinCaptureIds, latestPinCaptureIds, assignedProjectIds]);
 
   const [page, setPage] = useState(1);
   const itemsPerPage = 12;

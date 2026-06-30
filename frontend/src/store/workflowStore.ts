@@ -459,10 +459,29 @@ export const useWorkflowStore = create<WorkflowState>()(
         const apiPins = migrated.capturePins;
         const localPins = get().capturePins;
         const basePins = replace ? (apiPins ?? []) : (apiPins ?? localPins);
-        const cleanPins = basePins.map(p => ({
+        // Deduplicate captureIds within each pin.
+        const deduped = basePins.map(p => ({
           ...p,
           captureIds: [...new Set(p.captureIds)],
         }));
+
+        // Drop captureIds that have no corresponding capture record (dangling refs
+        // from captures deleted server-side or from a mismatched sync). Pins that
+        // become fully empty are removed — this is the same logic deleteCapture uses,
+        // but applied at hydration time so stale pins never reach the UI.
+        const mergedCaptureIds = new Set(
+          replace
+            ? (migrated.captures ?? []).map(c => c.id)
+            : [...(migrated.captures ?? []), ...get().captures].map(c => c.id)
+        );
+        const cleanPins = deduped
+          .map(p => ({ ...p, captureIds: p.captureIds.filter(id => mergedCaptureIds.has(id)) }))
+          .filter(p => {
+            // Keep pins that still have captures OR have never had any (freshly placed, not yet captured).
+            // Remove only those that had captures but all of them are now dangling.
+            const hadCaptures = basePins.find(bp => bp.id === p.id)!.captureIds.length > 0;
+            return !hadCaptures || p.captureIds.length > 0;
+          });
 
         set(s => ({
           ...s,
@@ -1054,13 +1073,37 @@ export const useWorkflowStore = create<WorkflowState>()(
         seq += 1;
         return p.sequenceNumber === seq ? p : { ...p, sequenceNumber: seq };
       });
-      return { capturePins: resequenced };
+
+      // Build a map of roomId → new pin name for all resequenced pins on this plan.
+      const roomRename = new Map<string, string>();
+      resequenced.forEach(p => {
+        if (p.floorPlanId === pin.floorPlanId) {
+          roomRename.set(p.roomId, `Pin ${p.sequenceNumber}`);
+        }
+      });
+
+      return {
+        capturePins: resequenced,
+        // Rename the backing rooms so the room name stays in sync.
+        rooms: s.rooms.map(r => {
+          const newName = roomRename.get(r.id);
+          return newName && newName !== r.name ? { ...r, name: newName } : r;
+        }),
+        // Update the denormalized roomName on every capture that belongs to a renamed room.
+        captures: s.captures.map(c => {
+          const newName = roomRename.get(c.roomId);
+          return newName && newName !== c.roomName ? { ...c, roomName: newName } : c;
+        }),
+      };
     });
     mirrorApi(workflowApiService.deleteCapturePin(id));
     // Mirror any sequence changes for pins on the same plan.
     get().capturePins
       .filter(p => p.floorPlanId === pin.floorPlanId)
-      .forEach(p => mirrorApi(workflowApiService.updateCapturePin(p.id, { sequenceNumber: p.sequenceNumber })));
+      .forEach(p => {
+        mirrorApi(workflowApiService.updateCapturePin(p.id, { sequenceNumber: p.sequenceNumber }));
+        mirrorApi(workflowApiService.updateRoom(p.roomId, { name: `Pin ${p.sequenceNumber}` }));
+      });
   },
 
   createDefect(d) {

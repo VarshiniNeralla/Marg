@@ -339,7 +339,33 @@ export default function TourViewerPage() {
 
   // Sequential walkthrough: one stop per pin (Pin 1 → 2 → 3 …). Prev/next arrows
   // step through these. Falls back to a single-panorama tour for legacy tours.
-  const steps = tourMedia?.steps ?? [];
+  // tourMedia.steps is only populated in-memory after publishFloorPlanTour(); after a
+  // page refresh the store rehydrates from the API without steps, so we derive them
+  // live from capturePins whenever the stored array is absent.
+  const derivedSteps = useMemo(() => {
+    const tourFloorPlanId = (tourMedia as Record<string, unknown>)?.floorPlanId as string | undefined;
+    if (!tourFloorPlanId) return [];
+    const pins = capturePins
+      .filter(p => p.floorPlanId === tourFloorPlanId)
+      .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+    return pins.flatMap(pin => {
+      const latestCaptureId = pin.captureIds[pin.captureIds.length - 1];
+      if (!latestCaptureId) return [];
+      const cap = captures.find(c => c.id === latestCaptureId) as (MockCapture & Record<string, unknown>) | undefined;
+      const mediaAssets = (cap?.mediaAssets as Array<{ original_url?: string; secure_url?: string; thumbnail_url?: string }> | undefined) ?? [];
+      const panoramaUrl = mediaAssets[0]?.original_url ?? mediaAssets[0]?.secure_url ?? (cap?.processedPanoramaUrl as string | undefined) ?? null;
+      return [{
+        pinId: pin.id,
+        captureId: latestCaptureId,
+        sequenceNumber: pin.sequenceNumber,
+        label: `Pin ${pin.sequenceNumber}`,
+        panoramaUrl,
+        thumbnailUrl: (mediaAssets[0]?.thumbnail_url ?? (cap?.thumbnailUrl as string | undefined)) ?? null,
+      }];
+    });
+  }, [tourMedia, capturePins, captures]);
+
+  const steps = (tourMedia?.steps && tourMedia.steps.length > 0) ? tourMedia.steps : derivedSteps;
   const isWalkthrough = steps.length > 1;
   const clampedStep = Math.min(stepIdx, Math.max(0, steps.length - 1));
   const currentStep = steps[clampedStep];
@@ -362,33 +388,58 @@ export default function TourViewerPage() {
   // ── Progress timeline for the current step ───────────────────────────────────
   // Built from the pin's real captureIds[] — no mock data, no duplicates.
   const pinTimeline = useMemo((): CaptureSnapshot[] => {
-    const pinId = currentStep?.pinId;
-    if (!pinId) return [];
-    const pin = capturePins.find(p => p.id === pinId);
-    if (!pin || pin.captureIds.length === 0) return [];
+    if (!currentStep) return [];
 
-    return pin.captureIds.map((id, i) => {
+    // Resolve the live pin for this walkthrough stop. A published tour stores its
+    // steps[] (pinId/captureId) in the backend, so those references can go stale
+    // after the data is re-hydrated from the API or after a floor's pins are
+    // deleted and re-captured (new pin IDs). Fall back through increasingly loose
+    // keys so the timeline never silently disappears.
+    const tourFloorPlanId = (tourMedia as Record<string, unknown>)?.floorPlanId as string | undefined;
+    const pin =
+      capturePins.find(p => p.id === currentStep.pinId) ??
+      (currentStep.captureId
+        ? capturePins.find(p => p.captureIds.includes(currentStep.captureId))
+        : undefined) ??
+      (tourFloorPlanId
+        ? capturePins.find(p => p.floorPlanId === tourFloorPlanId && p.sequenceNumber === currentStep.sequenceNumber)
+        : undefined);
+
+    const toSnapshot = (id: string, i: number, total: number): CaptureSnapshot => {
       const cap = captures.find(c => c.id === id) as (MockCapture & Record<string, unknown>) | undefined;
-      const isLatest = i === pin.captureIds.length - 1;
+      const isLatest = i === total - 1;
       const uploadedAt = (cap?.uploadedAt as string | undefined) ?? '';
       const dateLabel = uploadedAt ? uploadedAt.split(',')[0] : `Visit ${i + 1}`;
       return {
         id,
         baseCaptureId: id,
-        roomId: cap?.roomId ?? pin.roomId,
+        roomId: cap?.roomId ?? pin?.roomId ?? '',
         date: (cap?.capturedAt as string | undefined) ?? '',
         dateLabel,
         monthLabel: '',
         reviewStatus: (cap?.reviewStatus as CaptureSnapshot['reviewStatus'] | undefined) ?? 'uploaded',
-        progress: isLatest ? 100 : Math.round(((i + 1) / pin.captureIds.length) * 100),
+        progress: isLatest ? 100 : Math.round(((i + 1) / total) * 100),
         fileCount: cap?.fileCount ?? 0,
         capturedBy: (cap?.uploadedBy as string | undefined) ?? '',
         note: null,
         gradient: (cap?.gradient as string | undefined) ?? 'linear-gradient(135deg,#1e3a5f,#0f2340)',
         isLatest,
       } satisfies CaptureSnapshot;
-    });
-  }, [currentStep?.pinId, capturePins, captures]);
+    };
+
+    // Preferred: full multi-visit history from the live pin.
+    if (pin && pin.captureIds.length > 0) {
+      return pin.captureIds.map((id, i) => toSnapshot(id, i, pin.captureIds.length));
+    }
+
+    // Fallback: surface at least this step's own capture so every published
+    // walkthrough stop shows a timeline.
+    if (currentStep.captureId) {
+      return [toSnapshot(currentStep.captureId, 0, 1)];
+    }
+
+    return [];
+  }, [currentStep, capturePins, captures, tourMedia]);
 
   // The snapshot currently shown (defaults to latest). Validate against the
   // current pin's timeline so a stale selection from a previously-viewed pin
