@@ -9,9 +9,12 @@ from pymongo import ReturnDocument
 
 from fastapi import Depends
 
+from app.core.config import get_settings
 from app.core.dependencies import CallerContext, DB
 from app.core.exceptions import NotFoundException, ValidationException
 from app.core.permissions import require_permission
+
+settings = get_settings()
 from app.services.cloudinary_service import cloudinary_folder, signed_upload_params, upload_media
 from app.utils.pagination import success_response
 
