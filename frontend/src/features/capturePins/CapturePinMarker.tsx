@@ -37,10 +37,11 @@ export default function CapturePinMarker({ pin, pageW, pageH, scale, selected, o
   const cy = (pin.y / 100) * pageH;
   const hasCapture = pin.captureIds.length > 0;
 
-  // Constant on-screen size regardless of zoom.
-  const r      = 13 / scale;
-  const ringR  = 17 / scale;
-  const fontSize = 14 / scale;
+  // Pin radius in PAGE units. On-screen size = r * scale, clamped to [10, 22] px
+  // so pins never explode at low zoom (scale≈0.1 on mobile) or vanish when zoomed in.
+  const r       = Math.min(22, Math.max(10, 13 * scale)) / scale;
+  const ringR   = Math.min(28, Math.max(13, 17 * scale)) / scale;
+  const fontSize = Math.min(20, Math.max(9,  14 * scale)) / scale;
 
   const fill      = hasCapture ? '#16a34a' : '#ffffff';
   const stroke    = hasCapture ? '#15803d' : '#d97706';

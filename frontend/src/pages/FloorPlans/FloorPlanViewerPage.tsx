@@ -537,11 +537,15 @@ export default function FloorPlanViewerPage() {
         const rawScale = pinchStartScaleRef.current * (dist / pinchStartDistRef.current);
         const ns = Math.min(40, Math.max(0.05, rawScale));
 
-        // Zoom toward the pinch midpoint (fixed at pinch-start)
-        const mid = pinchMidpointRef.current;
+        // Zoom toward the CURRENT midpoint between fingers (not the fixed start).
+        // Also translate by midpoint movement so the scene tracks the fingers.
+        const mid = getPointerMidpoint();
+        if (!mid) return;
+        const prevMid = pinchMidpointRef.current;
         const ratio = ns / scaleRef.current;
-        const nx = mid.x - ratio * (mid.x - offsetRef.current.x);
-        const ny = mid.y - ratio * (mid.y - offsetRef.current.y);
+        const nx = mid.x - ratio * (mid.x - offsetRef.current.x) + (mid.x - prevMid.x);
+        const ny = mid.y - ratio * (mid.y - offsetRef.current.y) + (mid.y - prevMid.y);
+        pinchMidpointRef.current = mid;
         applyTransform(nx, ny, ns);
 
       } else if (draggingRef.current && activePointersRef.current.size === 1) {
