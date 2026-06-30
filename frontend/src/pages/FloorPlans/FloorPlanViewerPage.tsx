@@ -273,6 +273,16 @@ export default function FloorPlanViewerPage() {
   const draggingRef     = useRef(false);
   const movedRef        = useRef(false); // true once a drag actually pans, so a pan-release doesn't drop a pin
   const viewerRef       = useRef<HTMLDivElement>(null);
+  // Pinch-zoom refs
+  const pinchActiveRef  = useRef(false);
+  const pinchStartDistRef = useRef(0);
+  const pinchStartScaleRef = useRef(1);
+  const pinchMidpointRef = useRef({ x: 0, y: 0 }); // midpoint in viewer-local coords
+  const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  // Inertia refs
+  const velocityRef     = useRef({ x: 0, y: 0 });
+  const lastMoveTimeRef = useRef(0);
+  const inertiaRafRef   = useRef(0);
   const pdfDocRef       = useRef<PdfDoc | null>(null);
   const renderingRef    = useRef(false);
   const lastRenderScale = useRef(0);
@@ -293,6 +303,27 @@ export default function FloorPlanViewerPage() {
     ro.observe(el);
     return () => ro.disconnect();
   }, [fullscreen]);
+
+  /* ── clampOffset: keep floor plan visible, not fully dragged off-screen */
+  const clampOffset = useCallback((ox: number, oy: number, s: number): { x: number; y: number } => {
+    const el = viewerRef.current;
+    if (!el || !pageSize.w || !pageSize.h) return { x: ox, y: oy };
+    const vw = el.clientWidth;
+    const vh = el.clientHeight;
+    // The floor plan occupies [ox, ox + pageSize.w*s] × [oy, oy + pageSize.h*s] in viewer px.
+    // Keep at least 80px of the floor plan visible on each axis.
+    const margin = 80;
+    const imgW = pageSize.w * s;
+    const imgH = pageSize.h * s;
+    const minX = margin - imgW;
+    const maxX = vw - margin;
+    const minY = margin - imgH;
+    const maxY = vh - margin;
+    return {
+      x: Math.min(maxX, Math.max(minX, ox)),
+      y: Math.min(maxY, Math.max(minY, oy)),
+    };
+  }, [pageSize]);
 
   /* ── centerImage ────────────────────────────────────────────────────── */
   const centerImage = useCallback(() => {
@@ -406,51 +437,184 @@ export default function FloorPlanViewerPage() {
     }
   }, [scale, isPdf, pageSize.w, renderPdf]);
 
-  /* ── pointer drag ───────────────────────────────────────────────────── */
+  /* ── pointer / pinch-zoom / inertia ────────────────────────────────── */
   useEffect(() => {
     const el = viewerRef.current;
     if (!el) return;
+
+    // ── helpers ──────────────────────────────────────────────────────────
+    const applyTransform = (nx: number, ny: number, ns: number, clamp = true) => {
+      const { x, y } = clamp
+        ? clampOffset(nx, ny, ns)
+        : { x: nx, y: ny };
+      scaleRef.current  = ns;
+      offsetRef.current = { x, y };
+      setScale(ns);
+      setOffset({ x, y });
+    };
+
+    const getPointerMidpoint = (): { x: number; y: number } | null => {
+      const pts = Array.from(activePointersRef.current.values());
+      if (pts.length < 2) return null;
+      const rect = el.getBoundingClientRect();
+      return {
+        x: (pts[0].x + pts[1].x) / 2 - rect.left,
+        y: (pts[0].y + pts[1].y) / 2 - rect.top,
+      };
+    };
+
+    const getPointerDistance = (): number => {
+      const pts = Array.from(activePointersRef.current.values());
+      if (pts.length < 2) return 0;
+      return Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+    };
+
+    // ── inertia ──────────────────────────────────────────────────────────
+    const stopInertia = () => {
+      cancelAnimationFrame(inertiaRafRef.current);
+      velocityRef.current = { x: 0, y: 0 };
+    };
+
+    const startInertia = () => {
+      cancelAnimationFrame(inertiaRafRef.current);
+      const FRICTION = 0.88; // lower = stops faster; 0.88 feels natural
+      const MIN_SPEED = 0.5;
+      const tick = () => {
+        velocityRef.current.x *= FRICTION;
+        velocityRef.current.y *= FRICTION;
+        if (Math.hypot(velocityRef.current.x, velocityRef.current.y) < MIN_SPEED) {
+          velocityRef.current = { x: 0, y: 0 };
+          return;
+        }
+        const { x, y } = clampOffset(
+          offsetRef.current.x + velocityRef.current.x,
+          offsetRef.current.y + velocityRef.current.y,
+          scaleRef.current,
+        );
+        offsetRef.current = { x, y };
+        setOffset({ x, y });
+        inertiaRafRef.current = requestAnimationFrame(tick);
+      };
+      inertiaRafRef.current = requestAnimationFrame(tick);
+    };
+
+    // ── pointer events ───────────────────────────────────────────────────
     const onDown = (e: PointerEvent) => {
-      if (e.button !== 0) return;
-      // Don't start a pan when pressing an interactive overlay (zoom buttons, the
-      // fullscreen Back pill, pin action panel, etc). These are <div>s, not real
-      // <button>s, so also honour an explicit data-no-pan opt-out — otherwise
-      // setPointerCapture below steals the pointer and their click never fires.
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
       if ((e.target as HTMLElement).closest('button, a, [data-no-pan]')) return;
-      draggingRef.current = true;
-      movedRef.current = false;
-      dragStartRef.current = { x: e.clientX, y: e.clientY, ox: offsetRef.current.x, oy: offsetRef.current.y };
+
+      stopInertia();
+      activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
       el.setPointerCapture(e.pointerId);
-    };
-    const onMove = (e: PointerEvent) => {
-      if (!draggingRef.current) return;
-      const nx = dragStartRef.current.ox + e.clientX - dragStartRef.current.x;
-      const ny = dragStartRef.current.oy + e.clientY - dragStartRef.current.y;
-      // Mark as a real pan only past a small threshold so a tiny jitter on a tap
-      // still counts as a click (and places a pin in capture mode).
-      if (Math.hypot(e.clientX - dragStartRef.current.x, e.clientY - dragStartRef.current.y) > 4) {
-        movedRef.current = true;
+
+      if (activePointersRef.current.size === 2) {
+        // Second finger down — switch to pinch mode
+        pinchActiveRef.current    = true;
+        draggingRef.current       = false;
+        pinchStartDistRef.current = getPointerDistance();
+        pinchStartScaleRef.current = scaleRef.current;
+        const mid = getPointerMidpoint();
+        if (mid) pinchMidpointRef.current = mid;
+      } else {
+        // First finger — start pan
+        pinchActiveRef.current = false;
+        draggingRef.current    = true;
+        movedRef.current       = false;
+        dragStartRef.current   = { x: e.clientX, y: e.clientY, ox: offsetRef.current.x, oy: offsetRef.current.y };
+        setIsDragging(true);
       }
-      setOffset({ x: nx, y: ny });
-      offsetRef.current = { x: nx, y: ny };
     };
-    const onUp = () => { draggingRef.current = false; setIsDragging(false); };
-    const onDownVis = () => setIsDragging(true);
-    el.addEventListener('pointerdown', onDown);
-    el.addEventListener('pointermove', onMove);
-    el.addEventListener('pointerup',   onUp);
+
+    const onMove = (e: PointerEvent) => {
+      activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (pinchActiveRef.current && activePointersRef.current.size >= 2) {
+        // ── Pinch-zoom ──────────────────────────────────────────────────
+        movedRef.current = true;
+        const dist = getPointerDistance();
+        if (pinchStartDistRef.current < 1) return;
+
+        const rawScale = pinchStartScaleRef.current * (dist / pinchStartDistRef.current);
+        const ns = Math.min(20, Math.max(0.05, rawScale));
+
+        // Zoom toward the pinch midpoint (fixed at pinch-start)
+        const mid = pinchMidpointRef.current;
+        const ratio = ns / scaleRef.current;
+        const nx = mid.x - ratio * (mid.x - offsetRef.current.x);
+        const ny = mid.y - ratio * (mid.y - offsetRef.current.y);
+        applyTransform(nx, ny, ns);
+
+      } else if (draggingRef.current && activePointersRef.current.size === 1) {
+        // ── Pan ─────────────────────────────────────────────────────────
+        const nx = dragStartRef.current.ox + e.clientX - dragStartRef.current.x;
+        const ny = dragStartRef.current.oy + e.clientY - dragStartRef.current.y;
+
+        if (Math.hypot(e.clientX - dragStartRef.current.x, e.clientY - dragStartRef.current.y) > 4) {
+          movedRef.current = true;
+        }
+
+        // Track velocity for inertia (capped to prevent explosive launch)
+        const now = performance.now();
+        const dt = now - lastMoveTimeRef.current;
+        if (dt > 0 && dt < 100) {
+          const MAX_V = 40;
+          velocityRef.current = {
+            x: Math.max(-MAX_V, Math.min(MAX_V, nx - offsetRef.current.x)),
+            y: Math.max(-MAX_V, Math.min(MAX_V, ny - offsetRef.current.y)),
+          };
+        }
+        lastMoveTimeRef.current = now;
+
+        const clamped = clampOffset(nx, ny, scaleRef.current);
+        offsetRef.current = clamped;
+        setOffset(clamped);
+      }
+    };
+
+    const onUp = (e: PointerEvent) => {
+      activePointersRef.current.delete(e.pointerId);
+
+      if (activePointersRef.current.size === 1) {
+        // One finger lifted from a pinch — reset to single-finger pan state
+        pinchActiveRef.current = false;
+        draggingRef.current    = true;
+        movedRef.current       = true; // prevent accidental pin drop
+        const remaining = Array.from(activePointersRef.current.entries())[0];
+        if (remaining) {
+          dragStartRef.current = {
+            x: remaining[1].x, y: remaining[1].y,
+            ox: offsetRef.current.x, oy: offsetRef.current.y,
+          };
+        }
+        return;
+      }
+
+      if (activePointersRef.current.size === 0) {
+        const wasDragging = draggingRef.current;
+        pinchActiveRef.current = false;
+        draggingRef.current    = false;
+        setIsDragging(false);
+        // Kick off inertia only on single-finger pan release, not pinch
+        if (wasDragging && !pinchActiveRef.current) {
+          startInertia();
+        }
+      }
+    };
+
+    el.addEventListener('pointerdown',   onDown);
+    el.addEventListener('pointermove',   onMove);
+    el.addEventListener('pointerup',     onUp);
     el.addEventListener('pointercancel', onUp);
-    el.addEventListener('pointerdown', onDownVis);
-    el.addEventListener('pointerup',   onUp);
+
     return () => {
-      el.removeEventListener('pointerdown', onDown);
-      el.removeEventListener('pointermove', onMove);
-      el.removeEventListener('pointerup',   onUp);
+      el.removeEventListener('pointerdown',   onDown);
+      el.removeEventListener('pointermove',   onMove);
+      el.removeEventListener('pointerup',     onUp);
       el.removeEventListener('pointercancel', onUp);
-      el.removeEventListener('pointerdown', onDownVis);
-      el.removeEventListener('pointerup',   onUp);
+      cancelAnimationFrame(inertiaRafRef.current);
+      activePointersRef.current.clear();
     };
-  }, [fullscreen]);
+  }, [fullscreen, clampOffset]);
 
   /* ── Ctrl+Wheel zoom ────────────────────────────────────────────────── */
   useEffect(() => {
@@ -468,14 +632,15 @@ export default function FloorPlanViewerPage() {
       const ratio = next / scaleRef.current;
       const nx    = mx - ratio * (mx - offsetRef.current.x);
       const ny    = my - ratio * (my - offsetRef.current.y);
+      const clamped = clampOffset(nx, ny, next);
       scaleRef.current  = next;
-      offsetRef.current = { x: nx, y: ny };
+      offsetRef.current = clamped;
       setScale(next);
-      setOffset({ x: nx, y: ny });
+      setOffset(clamped);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [fullscreen]);
+  }, [fullscreen, clampOffset]);
 
   /* ── Escape exits fullscreen ────────────────────────────────────────── */
   useEffect(() => {
