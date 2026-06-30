@@ -535,7 +535,7 @@ export default function FloorPlanViewerPage() {
         if (pinchStartDistRef.current < 1) return;
 
         const rawScale = pinchStartScaleRef.current * (dist / pinchStartDistRef.current);
-        const ns = Math.min(20, Math.max(0.05, rawScale));
+        const ns = Math.min(40, Math.max(0.05, rawScale));
 
         // Zoom toward the pinch midpoint (fixed at pinch-start)
         const mid = pinchMidpointRef.current;
@@ -625,7 +625,7 @@ export default function FloorPlanViewerPage() {
       e.preventDefault();
       e.stopPropagation();
       const delta = e.deltaY < 0 ? 0.12 : -0.12;
-      const next  = Math.min(20, Math.max(0.05, scaleRef.current + delta));
+      const next  = Math.min(40, Math.max(0.05, scaleRef.current + delta));
       const rect  = el.getBoundingClientRect();
       const mx    = e.clientX - rect.left;
       const my    = e.clientY - rect.top;
@@ -718,21 +718,22 @@ export default function FloorPlanViewerPage() {
   }, []);
 
   /* ── Perform the upload via the EXISTING pipeline, attach to pin ────── */
-  const performAttach = useCallback(async (files: File[]): Promise<boolean> => {
-    if (!activePin || attachingRef.current) return false;
+  // Throws on failure so the caller dialog (CameraCaptureDialog / PinUploadDialog)
+  // can show its own error state instead of silently closing.
+  const performAttach = useCallback(async (files: File[]): Promise<void> => {
+    if (!activePin || attachingRef.current) throw new Error('No active pin');
     attachingRef.current = true;
+    // Snapshot pin id now — activePin may be cleared by the time the upload resolves.
+    const pinId = activePin.id;
     try {
       const result = await uploadCaptureFiles(files);
-      attachCaptureToPin(activePin.id, result.count || files.length, result.files);
-      return true;
+      attachCaptureToPin(pinId, result.count || files.length, result.files);
     } catch (err) {
-      // Previously this had no catch: an upload failure closed the dialog with
-      // no capture and no message, so the user believed the photo was saved.
       const msg =
         (err as { message?: string })?.message ??
         'Upload failed. Please check your connection and try again.';
       setErrorToast(msg);
-      return false;
+      throw err; // re-throw so the dialog's catch block shows the error state
     } finally {
       attachingRef.current = false;
     }
@@ -956,20 +957,22 @@ export default function FloorPlanViewerPage() {
       {/* Controls */}
       <Box sx={{ position: 'absolute', top: fullscreen ? 56 : 12, left: 12, display: 'flex', flexDirection: 'column', gap: 0.625, zIndex: 10 }}>
         <CtrlBtn title="Zoom in" small={isMobile} onClick={() => {
-          const n = Math.min(20, scaleRef.current + 0.25);
+          const n = Math.min(40, scaleRef.current * 1.35);
           const cx = (viewerRef.current?.clientWidth ?? 0) / 2;
           const cy = (viewerRef.current?.clientHeight ?? 0) / 2;
           const r = n / scaleRef.current;
-          scaleRef.current = n; setScale(n);
-          setOffset(o => { const nx = cx - r*(cx-o.x); const ny = cy - r*(cy-o.y); offsetRef.current={x:nx,y:ny}; return {x:nx,y:ny}; });
+          const raw = { x: cx - r*(cx-offsetRef.current.x), y: cy - r*(cy-offsetRef.current.y) };
+          const clamped = clampOffset(raw.x, raw.y, n);
+          scaleRef.current = n; offsetRef.current = clamped; setScale(n); setOffset(clamped);
         }}><ZoomInRounded sx={{ fontSize: isMobile ? 15 : 17 }} /></CtrlBtn>
         <CtrlBtn title="Zoom out" small={isMobile} onClick={() => {
-          const n = Math.max(0.05, scaleRef.current - 0.25);
+          const n = Math.max(0.05, scaleRef.current / 1.35);
           const cx = (viewerRef.current?.clientWidth ?? 0) / 2;
           const cy = (viewerRef.current?.clientHeight ?? 0) / 2;
           const r = n / scaleRef.current;
-          scaleRef.current = n; setScale(n);
-          setOffset(o => { const nx = cx - r*(cx-o.x); const ny = cy - r*(cy-o.y); offsetRef.current={x:nx,y:ny}; return {x:nx,y:ny}; });
+          const raw = { x: cx - r*(cx-offsetRef.current.x), y: cy - r*(cy-offsetRef.current.y) };
+          const clamped = clampOffset(raw.x, raw.y, n);
+          scaleRef.current = n; offsetRef.current = clamped; setScale(n); setOffset(clamped);
         }}><ZoomOutRounded sx={{ fontSize: isMobile ? 15 : 17 }} /></CtrlBtn>
         <CtrlBtn title="Fit to screen" small={isMobile} onClick={centerImage}><CenterFocusStrongRounded sx={{ fontSize: isMobile ? 15 : 17 }} /></CtrlBtn>
         <CtrlBtn title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} small={isMobile} onClick={() => setFullscreen(f => !f)}>
@@ -1057,14 +1060,14 @@ export default function FloorPlanViewerPage() {
       <CameraCaptureDialog
         open={!!activePin}
         pinLabel={`Pin ${activePin.sequenceNumber}`}
-        onCapture={async file => { await performAttach([file]); }}
+        onCapture={file => performAttach([file])}
         onClose={() => setActivePin(null)}
       />
     ) : (
       <PinUploadDialog
         open={!!activePin}
         pinLabel={`Pin ${activePin.sequenceNumber}`}
-        onUpload={async files => { await performAttach(files); }}
+        onUpload={files => performAttach(files)}
         onClose={() => setActivePin(null)}
       />
     )
