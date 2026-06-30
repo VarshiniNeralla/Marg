@@ -166,6 +166,9 @@ class AuthService:
         if not user.is_active:
             raise AccountInactiveException()
 
+        if not user.org_id:
+            raise InvalidCredentialsException()
+
         # Resolve org to check suspension
         org = await self._org_repo.find_by_id(user.org_id)
         if not org or org.status != "active":
