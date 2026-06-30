@@ -3,6 +3,7 @@ import { workflowApiService } from '@/services/workflowApiService';
 import { useAuthStore } from './authStore';
 import { useWorkflowStore } from './workflowStore';
 import type { WorkflowDataState } from './workflowStore';
+import { flushWriteQueue } from './writeQueue';
 
 /**
  * Loads the authenticated organization's workflow data from the backend once.
@@ -62,6 +63,10 @@ export default function WorkflowApiBootstrap() {
     loadedRef.current = true;
     loadedKeyRef.current = loadKey;
 
+    // Replay any writes queued before this session was authenticated (e.g. a pin
+    // placed while briefly offline, or just after login before the token landed).
+    flushWriteQueue();
+
     workflowApiService
       .snapshot()
       .then(data => {
@@ -72,6 +77,9 @@ export default function WorkflowApiBootstrap() {
         } else {
           hydrateFromApi(data);
         }
+        // Now that we're authenticated and hydrated, drain any pending writes so
+        // a second device sees this device's changes promptly.
+        flushWriteQueue();
       })
       .catch(error => {
         loadedRef.current = false;

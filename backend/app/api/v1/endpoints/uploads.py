@@ -3,6 +3,7 @@ from typing import Optional
 
 import cloudinary
 import cloudinary.uploader
+from anyio import to_thread
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status
 from loguru import logger
 
@@ -53,12 +54,20 @@ async def upload_image(
 
     try:
         _get_cloudinary()
-        result = cloudinary.uploader.upload(
-            io.BytesIO(data),
-            folder=f"horizon/{folder}",
-            resource_type="image",
-            transformation=[{"width": 1200, "crop": "limit", "quality": "auto"}],
-        )
+        s = get_settings()
+
+        def _upload():
+            # Synchronous Cloudinary SDK call — run in a worker thread so it does
+            # NOT block the event loop for the full network upload duration.
+            return cloudinary.uploader.upload(
+                io.BytesIO(data),
+                folder=f"horizon/{folder}",
+                resource_type="image",
+                transformation=[{"width": 1200, "crop": "limit", "quality": "auto"}],
+                timeout=s.CLOUDINARY_UPLOAD_TIMEOUT,
+            )
+
+        result = await to_thread.run_sync(_upload)
         return ApiResponse(success=True, data={
             "url": result.get("secure_url"),
             "public_id": result.get("public_id"),

@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from app.models.organization import OrganizationDocument
 
 from bson import ObjectId
 from loguru import logger
@@ -9,6 +12,7 @@ from app.core.config import get_settings
 from app.core.exceptions import (
     AccountInactiveException,
     ConflictException,
+    ForbiddenException,
     InvalidCredentialsException,
     InvalidTokenException,
     NotFoundException,
@@ -50,10 +54,20 @@ class AuthService:
 
     # ── Register ──────────────────────────────────────────────────────────────
 
-    async def register(self, payload: RegisterRequest) -> UserDocument:
+    async def register(
+        self,
+        payload: RegisterRequest,
+        caller: Optional[UserDocument] = None,
+    ) -> tuple[UserDocument, "OrganizationDocument"]:
         """
         Creates a new user under an existing active organisation.
         Validates uniqueness of email globally and org existence.
+
+        Role assignment is privilege-gated to prevent escalation:
+        - Anonymous self-registration ALWAYS gets role "user"; any client-supplied
+          role/project assignment is ignored.
+        - An authenticated admin/super_admin may set a role (capped at their own
+          privilege) and assign projects, but only within their OWN organisation.
         """
         # 1. Check email uniqueness (global across all orgs per architecture)
         if await self._user_repo.email_exists(payload.email):
@@ -63,6 +77,11 @@ class AuthService:
         org = await self._org_repo.find_active_by_slug(payload.org_slug)
         if not org:
             raise NotFoundException("Organization", payload.org_slug)
+
+        # 2b. An authenticated caller may only create users inside their own org.
+        caller_is_admin = bool(caller and caller.role in ("admin", "super_admin"))
+        if caller and str(caller.org_id) != str(org.id):
+            raise ForbiddenException("You can only create users within your own organization")
 
         # 3. Check org user quota
         from bson import ObjectId
@@ -74,9 +93,23 @@ class AuthService:
                 f"Organization has reached its maximum user limit ({org.settings.max_users})"
             )
 
-        # 4. Hash password and create user document
-        _ALLOWED_ROLES = {"admin", "manager", "field_engineer", "user", "super_admin", "reviewer", "viewer"}
-        role = payload.role if payload.role and payload.role in _ALLOWED_ROLES else "user"
+        # 4. Determine role — privilege-gated. Only an authenticated admin may
+        #    assign a non-default role; everyone else is forced to "user".
+        _ASSIGNABLE_BY_ADMIN = {"manager", "field_engineer", "user", "reviewer", "viewer"}
+        # super_admin may additionally mint admins; admin cannot create super_admin.
+        if caller and caller.role == "super_admin":
+            _ASSIGNABLE_BY_ADMIN = _ASSIGNABLE_BY_ADMIN | {"admin", "super_admin"}
+        elif caller_is_admin:
+            _ASSIGNABLE_BY_ADMIN = _ASSIGNABLE_BY_ADMIN | {"admin"}
+
+        if caller_is_admin and payload.role and payload.role in _ASSIGNABLE_BY_ADMIN:
+            role = payload.role
+        else:
+            # Anonymous, non-admin, or an admin requesting a role above their
+            # privilege — fall back to the safe default. Never escalate.
+            role = "user"
+
+        # 5. Hash password and create user document
         user = UserDocument(
             org_id=org.id,
             name=payload.name.strip(),
@@ -90,13 +123,14 @@ class AuthService:
         user_id = await self._user_repo.create(user)
         user.id = user_id
 
-        # Assign to projects if requested
-        if payload.assigned_project_ids:
+        # Assign to projects if requested — only an authenticated admin may do
+        # this; an anonymous self-registration cannot grant itself project access.
+        if payload.assigned_project_ids and caller_is_admin:
             await self._create_project_assignments(
                 user_id=user_id,
                 org_id=str(org.id),
                 project_ids=payload.assigned_project_ids,
-                assigned_by=user_id,
+                assigned_by=caller.id,
             )
 
         await self._write_audit_log(
@@ -171,14 +205,29 @@ class AuthService:
         """
         Validates refresh token, issues new access + refresh token pair (rotation).
         Returns (new_access_token, new_refresh_token).
+
+        Rotation with revocation: the presented refresh token's jti is checked
+        against the revocation store and then revoked, so a refresh token can be
+        used at most once. A stolen-and-replayed token (or a token used after
+        logout / password reset) is rejected.
         """
+        from app.core.token_store import is_token_active, token_store
+
         payload = decode_refresh_token(refresh_token)
 
         user_id = payload.get("sub")
         org_id = payload.get("org")
+        old_jti = payload.get("jti")
+        issued_at = payload.get("iat")
+        if hasattr(issued_at, "timestamp"):
+            issued_at = int(issued_at.timestamp())
 
         if not user_id or not org_id:
             raise InvalidTokenException()
+
+        # Reject revoked / superseded refresh tokens before doing anything else.
+        if not is_token_active(old_jti, user_id, issued_at):
+            raise InvalidTokenException("Refresh token has been revoked")
 
         user = await self._user_repo.find_by_id(user_id, org_id=org_id)
         if not user or not user.is_active:
@@ -188,7 +237,10 @@ class AuthService:
         if not org or org.status != "active":
             raise InvalidTokenException("Organization suspended")
 
-        # Issue new token pair (rotation)
+        # Rotate: revoke the just-used refresh token so it cannot be reused.
+        if old_jti:
+            token_store.revoke(old_jti)
+
         new_access_token = create_access_token(
             subject=user.id,
             org_id=user.org_id,
@@ -200,6 +252,25 @@ class AuthService:
         )
 
         return new_access_token, new_refresh_token
+
+    async def revoke_refresh_token(self, refresh_token: str) -> None:
+        """Revoke a specific refresh token (logout). Never raises on a bad token —
+        logout should always succeed from the client's perspective."""
+        from app.core.token_store import token_store
+
+        try:
+            payload = decode_refresh_token(refresh_token)
+            jti = payload.get("jti")
+            if jti:
+                token_store.revoke(jti)
+        except Exception:
+            return
+
+    async def revoke_all_user_tokens(self, user_id: str) -> None:
+        """Invalidate every refresh token issued to a user (password reset)."""
+        from app.core.token_store import token_store
+
+        token_store.revoke_user(user_id)
 
     # ── Forgot password ───────────────────────────────────────────────────────
 
@@ -271,6 +342,10 @@ class AuthService:
 
         new_hash = hash_password(new_password)
         await self._user_repo.update_password(user.id, new_hash)
+
+        # Invalidate all existing sessions — a password reset should log out
+        # every device, including one a thief might be holding.
+        await self.revoke_all_user_tokens(user.id)
 
         await self._write_audit_log(
             db=self._db,

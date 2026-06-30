@@ -5,8 +5,9 @@ import { useAuthStore } from './authStore';
 import { useWorkflowStore } from './workflowStore';
 import { useSettingsStore } from './settingsStore';
 import { useUserStore } from './userStore';
+import { API_BASE_URL } from '@/config/env';
 
-const BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL ?? 'http://localhost:8000';
+const BASE_URL = API_BASE_URL;
 
 async function tryRestoreToken(): Promise<void> {
   const { isAuthenticated, accessToken, setAccessToken, clearAuth } = useAuthStore.getState();

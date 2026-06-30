@@ -5,6 +5,16 @@ services:
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: dist
+    # Build-time env vars. Vite inlines VITE_* at build, so these MUST be set
+    # here (or in the dashboard) or the bundle ships a localhost API URL and all
+    # API/auth/upload calls fail in production.
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false   # e.g. https://prangan-api.onrender.com
+      - key: VITE_CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: VITE_CLOUDINARY_UPLOAD_PRESET
+        sync: false
     routes:
       - type: redirect
         source: /*
@@ -21,15 +31,45 @@ services:
     envVars:
       - key: APP_ENV
         value: production
+      # DEBUG must be false in prod or password-reset emails are only logged,
+      # never sent (see app/utils/email.py). Forced off here.
+      - key: DEBUG
+        value: "false"
       - key: MONGO_URI
         sync: false
       - key: JWT_SECRET
         sync: false
       - key: JWT_REFRESH_SECRET
         sync: false
+      # REQUIRED in prod: the deployed frontend origin(s), comma-separated.
+      # Without this CORS falls back to localhost and the browser blocks every
+      # cross-origin API call from the real frontend. Set to your Vercel/Render
+      # frontend URL, e.g. https://prangan.vercel.app
+      - key: CORS_ORIGINS
+        sync: false
+      # REQUIRED in prod: base URL of the frontend, used to build password-reset
+      # links. Falls back to localhost otherwise. e.g. https://prangan.vercel.app
+      - key: FRONTEND_URL
+        sync: false
+      - key: DB_NAME
+        sync: false
       - key: CLOUDINARY_CLOUD_NAME
         sync: false
       - key: CLOUDINARY_API_KEY
         sync: false
       - key: CLOUDINARY_API_SECRET
+        sync: false
+      # Optional but recommended (refresh-token revocation + rate limiting store).
+      - key: REDIS_URL
+        sync: false
+      # SMTP (password-reset email). Without these, reset emails cannot be sent.
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: EMAIL_FROM
         sync: false

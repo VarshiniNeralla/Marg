@@ -7,9 +7,11 @@ import {
   type MockFloorPlan, type MockDefect, type MockNotification, type MockAuditLog,
   type MockUser, type NotifType, type AuditEventType,
 } from '@/data/mockData';
-import { workflowApiService } from '@/services/workflowApiService';
 import type { UploadedFileResponse } from '@/services/uploadService';
 import { STORE_VERSION, WORKFLOW_STORE_KEY } from './persistence';
+import { createSafeStorage } from './safeStorage';
+import { addTombstones, tombstoneSet, clearTombstones } from './tombstones';
+import { enqueueWrite, SYNC_ERROR_EVENT as WRITE_QUEUE_SYNC_ERROR_EVENT } from './writeQueue';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction Workflow Store
@@ -375,11 +377,23 @@ function ensureFlatHierarchy(data: Partial<WorkflowDataState>): WorkflowDataStat
   };
 }
 
-function mirrorApi<T>(job: Promise<T>) {
-  void job.catch(error => {
-    console.error('[workflow-api]', error);
-  });
-}
+/**
+ * Event name for backend-sync failures; a global listener surfaces a toast.
+ * Re-exported from the write queue so existing importers keep working.
+ */
+export const SYNC_ERROR_EVENT = WRITE_QUEUE_SYNC_ERROR_EVENT;
+
+/**
+ * Durable backend mirror. Replaces the old fire-and-forget
+ * `promise.catch(console.error)`: instead of firing a one-shot request whose
+ * failure left this device's localStorage permanently ahead of the server
+ * (the desktop-writes / mobile-can't-see-it sync bug), it enqueues a
+ * serialisable { op, args } descriptor that is persisted and retried until it
+ * lands — across reloads, reconnects and token refreshes.
+ *
+ * `op` is a method name on `workflowApiService`; `args` are its arguments.
+ */
+const mirrorApi = enqueueWrite;
 
 function firstMediaUrl(mediaAssets: UploadedFileResponse[] = []) {
   const first = mediaAssets[0];
@@ -398,7 +412,7 @@ function pushNotif(
   set(s => ({
     notifications: [notification, ...s.notifications],
   }));
-  mirrorApi(workflowApiService.createNotification(notification));
+  mirrorApi('createNotification', [notification]);
 }
 
 function pushAudit(
@@ -418,7 +432,7 @@ function pushAudit(
   set(s => ({
     auditLogs: [auditLog, ...s.auditLogs],
   }));
-  mirrorApi(workflowApiService.createAuditLog(auditLog));
+  mirrorApi('createAuditLog', [auditLog]);
 }
 
 export const useWorkflowStore = create<WorkflowState>()(
@@ -444,13 +458,23 @@ export const useWorkflowStore = create<WorkflowState>()(
         // back-fill re-upload of records that belong to other projects.
         const replace = options?.replace ?? false;
 
+        // Records the client intentionally deleted. They must never be kept from
+        // local state nor re-uploaded, even though the API snapshot omits them —
+        // otherwise a delete is undone on the next reload (resurrection bug).
+        const tombstones = tombstoneSet();
+
         // Merge helper: local entries fill gaps the API doesn't have (e.g. a capture
         // that was written locally but whose mirrorApi call got a 401). API wins on
         // same id so backend is always the source of truth for existing records.
+        // Tombstoned ids are dropped entirely.
         const mergeById = <T extends { id: string }>(api: T[] | undefined, local: T[]): T[] => {
           const map = new Map<string, T>();
-          for (const item of local) map.set(item.id, item);
-          for (const item of (api ?? [])) map.set(item.id, item);
+          for (const item of local) {
+            if (!tombstones.has(item.id)) map.set(item.id, item);
+          }
+          for (const item of (api ?? [])) {
+            if (!tombstones.has(item.id)) map.set(item.id, item);
+          }
           return [...map.values()];
         };
 
@@ -458,7 +482,9 @@ export const useWorkflowStore = create<WorkflowState>()(
         // API pins if the API returned them, otherwise keep local state.
         const apiPins = migrated.capturePins;
         const localPins = get().capturePins;
-        const basePins = replace ? (apiPins ?? []) : (apiPins ?? localPins);
+        const basePins = (replace ? (apiPins ?? []) : (apiPins ?? localPins))
+          // Never re-introduce a pin the client deleted.
+          .filter(p => !tombstones.has(p.id));
         // Deduplicate captureIds within each pin.
         const deduped = basePins.map(p => ({
           ...p,
@@ -492,8 +518,10 @@ export const useWorkflowStore = create<WorkflowState>()(
           floors:        migrated.floors        ?? s.floors,
           flats:         migrated.flats         ?? s.flats,
           rooms:         migrated.rooms         ?? s.rooms,
-          tours:         migrated.tours         ?? s.tours,
-          floorPlans:    migrated.floorPlans    ?? s.floorPlans,
+          tours:         (migrated.tours ?? s.tours).filter(t => !tombstones.has(t.id)),
+          // Drop floor-plan records the client superseded on re-upload so a stale
+          // duplicate snapshot can't resurrect an empty plan for the floor.
+          floorPlans:    (migrated.floorPlans ?? s.floorPlans).filter(fp => !tombstones.has(fp.id)),
           defects:       migrated.defects       ?? s.defects,
           notifications: migrated.notifications ?? s.notifications,
           auditLogs:     migrated.auditLogs     ?? s.auditLogs,
@@ -510,23 +538,48 @@ export const useWorkflowStore = create<WorkflowState>()(
         if (!replace) {
           const apiCaptureIds = new Set((migrated.captures ?? []).map(c => c.id));
           for (const cap of get().captures) {
-            if (!apiCaptureIds.has(cap.id)) {
-              mirrorApi(workflowApiService.createCapture(cap as MockCapture));
+            // Skip tombstoned ids — re-uploading a deleted capture would resurrect it.
+            if (!apiCaptureIds.has(cap.id) && !tombstones.has(cap.id)) {
+              mirrorApi('createCapture', [cap as MockCapture], 'backfill-capture');
             }
           }
 
           // Pin back-fill: use the same `apiPins` source so the check is consistent.
           const apiPinIds = new Set((apiPins ?? []).map(p => p.id));
           for (const pin of cleanPins) {
+            if (tombstones.has(pin.id)) continue;
             if (!apiPinIds.has(pin.id)) {
-              mirrorApi(workflowApiService.createCapturePin(pin));
+              mirrorApi('createCapturePin', [pin], 'backfill-pin');
             } else {
               const apiPin = (apiPins ?? []).find(p => p.id === pin.id);
               if (apiPin && pin.captureIds.length !== (apiPin.captureIds?.length ?? 0)) {
-                mirrorApi(workflowApiService.updateCapturePin(pin.id, { captureIds: pin.captureIds }));
+                mirrorApi('updateCapturePin', [pin.id, { captureIds: pin.captureIds }], 'sync-pin');
               }
             }
           }
+
+          // Converged cleanup: if a tombstoned id REAPPEARS in the API snapshot,
+          // the server still has it (our delete hasn't applied or was rejected) —
+          // re-issue the delete so FE and BE converge instead of silently diverging.
+          const apiFloorPlanIds = new Set((migrated.floorPlans ?? []).map(fp => fp.id));
+          const apiTourIds = new Set((migrated.tours ?? []).map(t => t.id));
+          const stillPresent = new Set<string>([
+            ...apiCaptureIds,
+            ...apiPinIds,
+            ...apiTourIds,
+            ...apiFloorPlanIds,
+          ]);
+          const reappeared = [...tombstones].filter(id => stillPresent.has(id));
+          for (const id of reappeared) {
+            if (apiCaptureIds.has(id)) mirrorApi('deleteCapture', [id], 'reconcile-delete-capture');
+            else if (apiPinIds.has(id)) mirrorApi('deleteCapturePin', [id], 'reconcile-delete-pin');
+            else if (apiFloorPlanIds.has(id)) mirrorApi('deleteFloorPlan', [id], 'reconcile-delete-floor-plan');
+            else mirrorApi('deleteTour', [id], 'reconcile-delete-tour');
+          }
+          // Stale tombstones are pruned by TTL in the tombstone module, not eagerly
+          // here — clearing on first absence risks dropping one before the delete
+          // round-trips, which would let the record resurrect.
+          void clearTombstones; // (kept exported for explicit admin/reset use)
         }
       },
 
@@ -545,20 +598,20 @@ export const useWorkflowStore = create<WorkflowState>()(
       lastUpdated: 'Just now', thumbnail: (p as any).thumbnailUrl ?? null, teamSize: 1,
     };
     set(s => ({ projects: [...s.projects, project] }));
-    mirrorApi(workflowApiService.createProject(project));
+    mirrorApi('createProject', [project]);
     pushAudit(set, 'project_created', 'project', id, p.name, id, `Created project "${p.name}"`);
     return id;
   },
   updateProject(id, patch) {
     const proj = get().projects.find(p => p.id === id);
     set(s => ({ projects: s.projects.map(p => p.id === id ? { ...p, ...patch, lastUpdated: 'Just now' } : p) }));
-    mirrorApi(workflowApiService.updateProject(id, { ...patch, lastUpdated: 'Just now' }));
+    mirrorApi('updateProject', [id, { ...patch, lastUpdated: 'Just now' }]);
     if (proj) pushAudit(set, 'project_updated', 'project', id, proj.name, id, `Updated project "${proj.name}"`);
   },
   archiveProject(id) {
     set(s => ({ projects: s.projects.map(p => p.id === id ? { ...p, archived: !p.archived, status: p.archived ? 'active' : 'draft' } : p) }));
     const updated = get().projects.find(p => p.id === id);
-    if (updated) mirrorApi(workflowApiService.updateProject(id, updated));
+    if (updated) mirrorApi('updateProject', [id, updated]);
   },
 
   // ── Towers ────────────────────────────────────────────────────────────────
@@ -569,12 +622,12 @@ export const useWorkflowStore = create<WorkflowState>()(
       projects: s.projects.map(p => p.id === projectId ? { ...p, towers: p.towers + 1, lastUpdated: 'Just now' } : p),
     }));
     const tower = get().towers.find(t => t.id === id);
-    if (tower) mirrorApi(workflowApiService.createTower(tower));
+    if (tower) mirrorApi('createTower', [tower]);
     return id;
   },
   updateTower(id, patch) {
     set(s => ({ towers: s.towers.map(t => t.id === id ? { ...t, ...patch } : t) }));
-    mirrorApi(workflowApiService.updateTower(id, patch));
+    mirrorApi('updateTower', [id, patch]);
   },
   deleteTower(id) {
     const tower = get().towers.find(t => t.id === id);
@@ -587,7 +640,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       tours: s.tours.filter(t => t.towerId !== id),
       projects: tower ? s.projects.map(p => p.id === tower.projectId ? { ...p, towers: Math.max(0, p.towers - 1) } : p) : s.projects,
     }));
-    mirrorApi(workflowApiService.deleteTower(id));
+    mirrorApi('deleteTower', [id]);
   },
 
   // ── Floors ────────────────────────────────────────────────────────────────
@@ -600,12 +653,12 @@ export const useWorkflowStore = create<WorkflowState>()(
       towers: s.towers.map(t => t.id === towerId ? { ...t, floors: t.floors + 1 } : t),
       projects: tower ? s.projects.map(p => p.id === tower.projectId ? { ...p, floors: p.floors + 1, lastUpdated: 'Just now' } : p) : s.projects,
     }));
-    mirrorApi(workflowApiService.createFloor(floor));
+    mirrorApi('createFloor', [floor]);
     return floor.id;
   },
   updateFloor(id, patch) {
     set(s => ({ floors: s.floors.map(f => f.id === id ? { ...f, ...patch } : f) }));
-    mirrorApi(workflowApiService.updateFloor(id, patch));
+    mirrorApi('updateFloor', [id, patch]);
   },
   deleteFloor(id) {
     const floor = get().floors.find(f => f.id === id);
@@ -617,7 +670,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       tours: s.tours.filter(t => !s.rooms.some(r => r.floorId === id && r.id === t.roomId)),
       towers: floor ? s.towers.map(t => t.id === floor.towerId ? { ...t, floors: Math.max(0, t.floors - 1) } : t) : s.towers,
     }));
-    mirrorApi(workflowApiService.deleteFloor(id));
+    mirrorApi('deleteFloor', [id]);
   },
 
   // ── Flats / Units ─────────────────────────────────────────────────────────
@@ -635,14 +688,14 @@ export const useWorkflowStore = create<WorkflowState>()(
       type,
     };
     set(s => ({ flats: [...s.flats, flat] }));
-    mirrorApi(workflowApiService.createFlat(flat));
+    mirrorApi('createFlat', [flat]);
     get().generateStandardRooms(id);
     pushAudit(set, 'project_updated', 'project', flat.projectId, flat.number, flat.projectId, `Created ${flat.number} (${flat.type})`);
     return id;
   },
   updateFlat(id, patch) {
     set(s => ({ flats: s.flats.map(f => f.id === id ? { ...f, ...patch } : f) }));
-    mirrorApi(workflowApiService.updateFlat(id, patch));
+    mirrorApi('updateFlat', [id, patch]);
   },
   deleteFlat(id) {
     const flat = get().flats.find(f => f.id === id);
@@ -653,7 +706,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       captures: s.captures.filter(c => !roomIds.has(c.roomId)),
       tours: s.tours.filter(t => !roomIds.has(t.roomId)),
     }));
-    mirrorApi(workflowApiService.deleteFlat(id));
+    mirrorApi('deleteFlat', [id]);
     if (flat) pushAudit(set, 'project_updated', 'project', flat.projectId, flat.number, flat.projectId, `Deleted ${flat.number}`);
   },
   generateStandardRooms(flatId) {
@@ -679,7 +732,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       towers: s.towers.map(t => t.id === flat.towerId ? { ...t, rooms: t.rooms + newRooms.length } : t),
       projects: s.projects.map(p => p.id === flat.projectId ? { ...p, rooms: p.rooms + newRooms.length, totalRooms: p.totalRooms + newRooms.length, lastUpdated: 'Just now' } : p),
     }));
-    newRooms.forEach(room => mirrorApi(workflowApiService.createRoom(room)));
+    newRooms.forEach(room => mirrorApi('createRoom', [room]));
   },
 
   // ── Rooms ─────────────────────────────────────────────────────────────────
@@ -696,8 +749,13 @@ export const useWorkflowStore = create<WorkflowState>()(
       number: 'Flat A',
       type: '1 BHK' as FlatType,
     };
+    // The backing flat is created on demand when a pin is placed on a floor that
+    // has no explicit flat yet. It must be mirrored to the backend too — otherwise
+    // the flat exists only in this device's localStorage, leaving an incomplete
+    // hierarchy on the server that a second device cannot reconstruct.
     if (!get().flats.some(f => f.id === parentFlat.id)) {
       set(s => ({ flats: [...s.flats, parentFlat] }));
+      mirrorApi('createFlat', [parentFlat]);
     }
     const room: WfRoom = { id: `${parentFlat.id}-${id}`, flatId: parentFlat.id, floorId: parentFlat.floorId, towerId: parentFlat.towerId, projectId: parentFlat.projectId, name, type };
     const tower = get().towers.find(t => t.id === floor.towerId);
@@ -706,12 +764,12 @@ export const useWorkflowStore = create<WorkflowState>()(
       towers: s.towers.map(t => t.id === floor.towerId ? { ...t, rooms: t.rooms + 1 } : t),
       projects: tower ? s.projects.map(p => p.id === tower.projectId ? { ...p, rooms: p.rooms + 1, totalRooms: p.totalRooms + 1, lastUpdated: 'Just now' } : p) : s.projects,
     }));
-    mirrorApi(workflowApiService.createRoom(room));
+    mirrorApi('createRoom', [room]);
     return room.id;
   },
   updateRoom(id, patch) {
     set(s => ({ rooms: s.rooms.map(r => r.id === id ? { ...r, ...patch } : r) }));
-    mirrorApi(workflowApiService.updateRoom(id, patch));
+    mirrorApi('updateRoom', [id, patch]);
   },
   deleteRoom(id) {
     const room = get().rooms.find(r => r.id === id);
@@ -720,11 +778,11 @@ export const useWorkflowStore = create<WorkflowState>()(
       captures: s.captures.filter(c => c.roomId !== id),
       towers: room ? s.towers.map(t => t.id === room.towerId ? { ...t, rooms: Math.max(0, t.rooms - 1) } : t) : s.towers,
     }));
-    mirrorApi(workflowApiService.deleteRoom(id));
+    mirrorApi('deleteRoom', [id]);
   },
   assignFloorPlan(roomId, floorPlanId) {
     set(s => ({ rooms: s.rooms.map(r => r.id === roomId ? { ...r, floorPlanId } : r) }));
-    mirrorApi(workflowApiService.updateRoom(roomId, { floorPlanId }));
+    mirrorApi('updateRoom', [roomId, { floorPlanId }]);
   },
 
   // ── Captures ────────────────────────────────────────────────────────────────
@@ -776,7 +834,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       towers: s.towers.map(t => t.id === room.towerId ? { ...t, captures: t.captures + 1 } : t),
       projects: project ? s.projects.map(p => p.id === project.id ? { ...p, captures: p.captures + 1, lastUpdated: 'Just now' } : p) : s.projects,
     }));
-    mirrorApi(workflowApiService.createCapture(capture));
+    mirrorApi('createCapture', [capture]);
     pushNotif(set, 'capture_uploaded', 'New capture uploaded', `Uploaded ${fileCount} files for ${flat?.number ?? 'Flat A'} · ${room.name}`, `/captures/${id}`);
     pushAudit(set, 'capture_uploaded', 'capture', id, capture.roomName, room.projectId, `Uploaded ${fileCount} images for ${flat?.number ?? 'Flat A'} · ${capture.roomName}`);
     return id;
@@ -798,13 +856,16 @@ export const useWorkflowStore = create<WorkflowState>()(
       ),
       towers: cap ? s.towers.map(t => t.id === cap.towerId ? { ...t, captures: Math.max(0, t.captures - 1) } : t) : s.towers,
     }));
-    mirrorApi(workflowApiService.deleteCapture(id));
+    // Tombstone the deleted capture so a later API snapshot that omits it does
+    // not resurrect it via the hydrate back-fill.
+    addTombstones(id);
+    mirrorApi('deleteCapture', [id]);
     // Mirror the unlink on each affected pin so the backend timeline stays in sync,
     // but skip pins about to be deleted (deleteCapturePin handles their removal).
     affectedPins.forEach(p => {
       if (emptiedPinIds.includes(p.id)) return;
       const remaining = p.captureIds.filter(cid => cid !== id);
-      mirrorApi(workflowApiService.updateCapturePin(p.id, { captureIds: remaining }));
+      mirrorApi('updateCapturePin', [p.id, { captureIds: remaining }]);
     });
     // Remove any now-empty pins from the floor plan and resequence the rest to 1..N.
     emptiedPinIds.forEach(pinId => get().deleteCapturePin(pinId));
@@ -812,7 +873,7 @@ export const useWorkflowStore = create<WorkflowState>()(
   replaceCapture(id, fileCount) {
     const patch = { fileCount, sizeMb: fileCount * 4, status: 'review' as const, reviewStatus: 'uploaded' as const, uploadedAt: 'Just now', reviewNotes: null, processingStatus: 'uploaded', processing_status: 'uploaded' };
     set(s => ({ captures: s.captures.map(c => c.id === id ? { ...c, ...patch } : c) }));
-    mirrorApi(workflowApiService.updateCaptureReview(id, patch));
+    mirrorApi('updateCaptureReview', [id, patch]);
   },
 
   // ── Review ──────────────────────────────────────────────────────────────────
@@ -827,7 +888,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       }),
     }));
     const updated = get().captures.find(c => c.id === id);
-    if (updated) mirrorApi(workflowApiService.updateCaptureReview(id, updated));
+    if (updated) mirrorApi('updateCaptureReview', [id, updated]);
     if (cap) {
       if (action === 'approve') {
         pushNotif(set, 'review_approved', 'Capture approved', `${cap.roomName} was approved`, `/captures/${id}`);
@@ -842,7 +903,7 @@ export const useWorkflowStore = create<WorkflowState>()(
     const cap = get().captures.find(c => c.id === id);
     set(s => ({ captures: s.captures.map(c => c.id === id ? { ...c, assignedTo: reviewerName, reviewStatus: c.reviewStatus === 'uploaded' ? 'assigned' : c.reviewStatus } : c) }));
     const updated = get().captures.find(c => c.id === id);
-    if (updated) mirrorApi(workflowApiService.updateCaptureReview(id, updated));
+    if (updated) mirrorApi('updateCaptureReview', [id, updated]);
     if (cap) {
       pushNotif(set, 'review_requested', 'Review requested', `${cap.roomName} assigned to ${reviewerName}`, `/captures/${id}`);
       pushAudit(set, 'review_assigned', 'capture', id, cap.roomName, cap.projectId, `Assigned to ${reviewerName}`);
@@ -853,11 +914,11 @@ export const useWorkflowStore = create<WorkflowState>()(
   publishCapture(id) {
     const patch = { reviewStatus: 'published' as const, status: 'processed' as const, processingStatus: 'published', processing_status: 'published' } as Partial<MockCapture> & Record<string, unknown>;
     set(s => ({ captures: s.captures.map(c => c.id === id ? { ...c, ...patch } : c) }));
-    mirrorApi(workflowApiService.updateCapturePublish(id, patch));
+    mirrorApi('updateCapturePublish', [id, patch]);
   },
   unpublishCapture(id) {
     set(s => ({ captures: s.captures.map(c => c.id === id ? { ...c, reviewStatus: 'approved' } : c) }));
-    mirrorApi(workflowApiService.updateCapturePublish(id, { reviewStatus: 'approved' }));
+    mirrorApi('updateCapturePublish', [id, { reviewStatus: 'approved' }]);
   },
 
   // ── Tours ─────────────────────────────────────────────────────────────────
@@ -886,13 +947,13 @@ export const useWorkflowStore = create<WorkflowState>()(
       thumbnail_url: (mediaAssets[0]?.thumbnail_url ?? capRecord.thumbnailUrl) as string | undefined,
     } as MockTour & Record<string, unknown>;
     set(s => ({ tours: [tour, ...s.tours] }));
-    mirrorApi(workflowApiService.createTour(tour));
+    mirrorApi('createTour', [tour]);
     return id;
   },
   publishTour(id) {
     const tour = get().tours.find(t => t.id === id);
     set(s => ({ tours: s.tours.map(t => t.id === id ? { ...t, status: 'published' } : t) }));
-    mirrorApi(workflowApiService.updateTour(id, { status: 'published' }));
+    mirrorApi('updateTour', [id, { status: 'published' }]);
     if (tour) {
       pushNotif(set, 'tour_published', 'Tour published', `Virtual tour for ${tour.roomName} is live`, `/tours/${id}`);
       pushAudit(set, 'tour_published', 'tour', id, tour.roomName, tour.projectId, `Published tour for ${tour.roomName}`);
@@ -900,12 +961,13 @@ export const useWorkflowStore = create<WorkflowState>()(
   },
   updateTour(id, patch) {
     set(s => ({ tours: s.tours.map(t => t.id === id ? { ...t, ...patch } : t) }));
-    mirrorApi(workflowApiService.updateTour(id, patch));
+    mirrorApi('updateTour', [id, patch]);
   },
   deleteTour(id) {
     const tour = get().tours.find(t => t.id === id);
     set(s => ({ tours: s.tours.filter(t => t.id !== id) }));
-    mirrorApi(workflowApiService.deleteTour(id));
+    addTombstones(id);
+    mirrorApi('deleteTour', [id]);
     if (tour) {
       pushAudit(set, 'tour_deleted', 'tour', id, tour.roomName, tour.projectId, `Deleted tour for ${tour.roomName}`);
     }
@@ -935,11 +997,36 @@ export const useWorkflowStore = create<WorkflowState>()(
       raw_pdf_url: firstAsset?.raw_pdf_url ?? null,
       rawPdfUrl: firstAsset?.raw_pdf_url ?? null,
     } as MockFloorPlan & Record<string, unknown>;
+    // Re-uploading a plan for a floor used to leave the OLD floor-plan record on
+    // the backend (only local state dropped it), so a freshly-hydrated device saw
+    // duplicate plans — and pins/tours stayed attached to the now-orphaned old id.
+    // Capture those superseded ids so we can re-point pins onto the new plan and
+    // delete the stale records, keeping exactly one canonical plan per floor.
+    const supersededPlanIds = get().floorPlans
+      .filter(fp => fp.towerId === payload.towerId && fp.floorId === payload.floorId)
+      .map(fp => fp.id);
+    const superseded = new Set(supersededPlanIds);
+
     set(s => ({
       floorPlans: [...s.floorPlans.filter(fp => !(fp.towerId === payload.towerId && fp.floorId === payload.floorId)), plan],
       floors: s.floors.map(f => f.id === payload.floorId ? { ...f, floorPlanId: id } : f),
+      // Move existing pins (and any published walkthrough) onto the new plan so
+      // numbering, "view on floor plan" and re-publishing all stay consistent.
+      capturePins: s.capturePins.map(p => superseded.has(p.floorPlanId) ? { ...p, floorPlanId: id } : p),
+      tours: s.tours.map(t => {
+        const fpId = (t as MockTour & { floorPlanId?: string }).floorPlanId;
+        return fpId && superseded.has(fpId) ? ({ ...t, floorPlanId: id } as MockTour) : t;
+      }),
     }));
-    mirrorApi(workflowApiService.createFloorPlan(plan));
+    mirrorApi('createFloorPlan', [plan]);
+    // Mirror the pin re-points, then delete the superseded plan records.
+    get().capturePins
+      .filter(p => p.floorPlanId === id && supersededPlanIds.length > 0)
+      .forEach(p => mirrorApi('updateCapturePin', [p.id, { floorPlanId: id }]));
+    supersededPlanIds.forEach(oldId => {
+      addTombstones(oldId);
+      mirrorApi('deleteFloorPlan', [oldId]);
+    });
     const project = get().projects.find(p => p.id === payload.projectId);
     pushNotif(set, 'floor_plan_uploaded', 'Floor plan uploaded', `${payload.floorLabel} uploaded for ${project?.name ?? 'project'}`, `/floor-plans/${payload.projectId}/${payload.towerId}/${payload.floorId}`);
     pushAudit(set, 'floor_plan_uploaded', 'floor_plan', id, payload.floorLabel, payload.projectId, `Uploaded floor plan for ${payload.floorLabel}`);
@@ -968,7 +1055,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       captureIds: [],
     };
     set(s => ({ capturePins: [...s.capturePins, pin] }));
-    mirrorApi(workflowApiService.createCapturePin(pin));
+    mirrorApi('createCapturePin', [pin]);
     pushAudit(set, 'floor_plan_uploaded', 'floor_plan', id, `Pin ${sequenceNumber}`, projectId, `Placed capture pin ${sequenceNumber}`);
     return id;
   },
@@ -987,7 +1074,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       ),
     }));
     const updated = get().capturePins.find(p => p.id === pinId);
-    if (updated) mirrorApi(workflowApiService.updateCapturePin(pinId, { captureIds: updated.captureIds }));
+    if (updated) mirrorApi('updateCapturePin', [pinId, { captureIds: updated.captureIds }]);
     return captureId;
   },
   publishFloorPlanTour(floorPlanId) {
@@ -1052,7 +1139,8 @@ export const useWorkflowStore = create<WorkflowState>()(
     } as MockTour & Record<string, unknown>;
 
     set(s => ({ tours: [tour, ...s.tours.filter(t => t.id !== id)] }));
-    mirrorApi(existing ? workflowApiService.updateTour(id, tour) : workflowApiService.createTour(tour));
+    if (existing) mirrorApi('updateTour', [id, tour]);
+    else mirrorApi('createTour', [tour]);
     pushNotif(set, 'tour_published', 'Walkthrough published', `${tour.roomName} · ${steps.length} stops is live`, `/tours/${id}`);
     pushAudit(set, 'tour_published', 'tour', id, tour.roomName, tour.projectId, `Published walkthrough (${steps.length} pins) for ${tour.floorLabel}`);
     return [id];
@@ -1096,13 +1184,14 @@ export const useWorkflowStore = create<WorkflowState>()(
         }),
       };
     });
-    mirrorApi(workflowApiService.deleteCapturePin(id));
+    addTombstones(id);
+    mirrorApi('deleteCapturePin', [id]);
     // Mirror any sequence changes for pins on the same plan.
     get().capturePins
       .filter(p => p.floorPlanId === pin.floorPlanId)
       .forEach(p => {
-        mirrorApi(workflowApiService.updateCapturePin(p.id, { sequenceNumber: p.sequenceNumber }));
-        mirrorApi(workflowApiService.updateRoom(p.roomId, { name: `Pin ${p.sequenceNumber}` }));
+        mirrorApi('updateCapturePin', [p.id, { sequenceNumber: p.sequenceNumber }]);
+        mirrorApi('updateRoom', [p.roomId, { name: `Pin ${p.sequenceNumber}` }]);
       });
   },
 
@@ -1110,7 +1199,7 @@ export const useWorkflowStore = create<WorkflowState>()(
     const id = get().nextId('d');
     const defect: MockDefect = { ...d, id, createdAt: 'Just now', updatedAt: 'Just now' };
     set(s => ({ defects: [defect, ...s.defects] }));
-    mirrorApi(workflowApiService.createDefect(defect));
+    mirrorApi('createDefect', [defect]);
     pushNotif(set, 'defect_assigned', 'Defect assigned', `"${d.title}" assigned to ${d.assignedTo}`, '/defects');
     pushAudit(set, 'defect_created', 'defect', id, d.title, d.projectId, `Created defect "${d.title}"`);
     return id;
@@ -1121,7 +1210,7 @@ export const useWorkflowStore = create<WorkflowState>()(
     set(s => ({
       defects: s.defects.map(d => d.id === id ? { ...d, ...patch, updatedAt: 'Just now' } : d),
     }));
-    mirrorApi(workflowApiService.updateDefect(id, { ...patch, updatedAt: 'Just now' }));
+    mirrorApi('updateDefect', [id, { ...patch, updatedAt: 'Just now' }]);
     if (defect && patch.status === 'resolved') {
       pushAudit(set, 'defect_resolved', 'defect', id, defect.title, defect.projectId, `Resolved defect "${defect.title}"`);
     }
@@ -1129,15 +1218,15 @@ export const useWorkflowStore = create<WorkflowState>()(
 
   markNotificationRead(id) {
     set(s => ({ notifications: s.notifications.map(n => n.id === id ? { ...n, read: true } : n) }));
-    mirrorApi(workflowApiService.markNotificationRead(id));
+    mirrorApi('markNotificationRead', [id]);
   },
   markAllNotificationsRead() {
     set(s => ({ notifications: s.notifications.map(n => ({ ...n, read: true })) }));
-    mirrorApi(workflowApiService.markAllNotificationsRead());
+    mirrorApi('markAllNotificationsRead', []);
   },
   deleteNotification(id) {
     set(s => ({ notifications: s.notifications.filter(n => n.id !== id) }));
-    mirrorApi(workflowApiService.deleteNotification(id));
+    mirrorApi('deleteNotification', [id]);
   },
   restoreNotification(n, index) {
     set(s => {
@@ -1145,7 +1234,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       list.splice(Math.min(index, list.length), 0, n);
       return { notifications: list };
     });
-    mirrorApi(workflowApiService.createNotification(n));
+    mirrorApi('createNotification', [n]);
   },
 
   addUserToProject(userId, projectId) {
@@ -1170,20 +1259,32 @@ export const useWorkflowStore = create<WorkflowState>()(
     {
       name: WORKFLOW_STORE_KEY,
       version: STORE_VERSION.workflow,
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() => createSafeStorage()),
       partialize: (s): WorkflowDataState => ({
         projects: s.projects,
         towers: s.towers,
         floors: s.floors,
         flats: s.flats,
         rooms: s.rooms,
-        captures: s.captures,
+        // Strip the heavy per-capture mediaAssets arrays before persisting —
+        // they are the main cause of localStorage quota overflow and are
+        // refilled from the API snapshot on load. The denormalized top-level
+        // URLs (processedPanoramaUrl/thumbnailUrl/originalFileUrl) are kept, so
+        // the viewer's fallback rendering still works offline.
+        captures: s.captures.map(c => {
+          const { mediaAssets: _ma, media_assets: _ms, ...rest } = c as MockCapture & {
+            mediaAssets?: unknown; media_assets?: unknown;
+          };
+          return rest as MockCapture;
+        }),
         tours: s.tours,
         floorPlans: s.floorPlans,
         capturePins: s.capturePins,
         defects: s.defects,
-        notifications: s.notifications,
-        auditLogs: s.auditLogs,
+        // Cap unbounded, low-value collections to a recent window so they can't
+        // grow without limit and blow the quota.
+        notifications: s.notifications.slice(0, 100),
+        auditLogs: s.auditLogs.slice(0, 200),
         users: s.users,
         uidCounter: s.uidCounter,
       }),

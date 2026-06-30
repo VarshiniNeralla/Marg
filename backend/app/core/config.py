@@ -1,8 +1,15 @@
 from functools import lru_cache
 from typing import List
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Placeholder secret values shipped in .env.example — must never reach prod.
+_PLACEHOLDER_SECRETS = {
+    "change_me_use_openssl_rand_hex_64",
+    "change_me_use_openssl_rand_hex_64_different",
+    "",
+}
 
 
 class Settings(BaseSettings):
@@ -34,9 +41,21 @@ class Settings(BaseSettings):
     CLOUDINARY_CLOUD_NAME: str = ""
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
+    # Max upload size per file (bytes). Panoramas/floor plans can be large, so
+    # default to 50 MB. Enforced server-side before streaming to Cloudinary.
+    MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024
+    # Seconds before a Cloudinary upload call is abandoned (frees the worker).
+    CLOUDINARY_UPLOAD_TIMEOUT: int = 120
 
     # ── Redis ─────────────────────────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379/0"
+
+    # ── Rate limiting ─────────────────────────────────────────────────────────
+    # slowapi-format strings: "<count>/<period>" e.g. "5/15minutes".
+    RATE_LIMIT_LOGIN: str = "5/15minutes"
+    RATE_LIMIT_REGISTER: str = "10/hour"
+    RATE_LIMIT_FORGOT_PASSWORD: str = "3/hour"
+    RATE_LIMIT_ENABLED: bool = True
 
     # ── Email ─────────────────────────────────────────────────────────────────
     SMTP_HOST: str = "smtp.gmail.com"
@@ -66,6 +85,52 @@ class Settings(BaseSettings):
 
     def get_cors_origins(self) -> List[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    # ── Production safety validation ──────────────────────────────────────────
+    @model_validator(mode="after")
+    def _validate_production_config(self) -> "Settings":
+        """
+        Fail fast at startup if production is misconfigured, instead of running
+        silently with insecure defaults (forgeable JWTs, localhost CORS, reset
+        emails that never send). Only enforced when APP_ENV=production so local
+        development is unaffected.
+        """
+        if self.APP_ENV != "production":
+            return self
+
+        errors: List[str] = []
+
+        for name, value in (
+            ("JWT_SECRET", self.JWT_SECRET),
+            ("JWT_REFRESH_SECRET", self.JWT_REFRESH_SECRET),
+        ):
+            if value in _PLACEHOLDER_SECRETS:
+                errors.append(f"{name} is unset or still the example placeholder")
+            elif len(value) < 32:
+                errors.append(f"{name} is too short (<32 chars); use `openssl rand -hex 64`")
+
+        if self.JWT_SECRET == self.JWT_REFRESH_SECRET:
+            errors.append("JWT_SECRET and JWT_REFRESH_SECRET must differ")
+
+        # CORS must name the real frontend origin, not localhost.
+        if any("localhost" in o or "127.0.0.1" in o for o in self.get_cors_origins()):
+            errors.append(
+                "CORS_ORIGINS still contains localhost — set it to the deployed frontend origin"
+            )
+
+        if "localhost" in self.FRONTEND_URL:
+            errors.append(
+                "FRONTEND_URL still points at localhost — set it to the deployed frontend URL"
+            )
+
+        if self.DEBUG:
+            errors.append("DEBUG must be false in production (reset emails are only logged when DEBUG=true)")
+
+        if errors:
+            raise ValueError(
+                "Invalid production configuration:\n  - " + "\n  - ".join(errors)
+            )
+        return self
 
     # ── Derived helpers ───────────────────────────────────────────────────────
     @property

@@ -1,3 +1,4 @@
+import asyncio
 from typing import AsyncGenerator, Optional
 
 from loguru import logger
@@ -16,10 +17,15 @@ class MongoDB:
 _mongo = MongoDB()
 
 
-async def connect_db() -> None:
+async def connect_db(retries: int = 5, base_delay: float = 1.0) -> None:
     """
     Opens the Motor client and pings the deployment to confirm connectivity.
     Called once during FastAPI startup via the lifespan context manager.
+
+    Connectivity is verified with bounded exponential-backoff retry so that a
+    transient Atlas blip during deploy does NOT crash-loop the container — Motor
+    pools/reconnects on its own once the client exists, but the startup ping is
+    what previously hard-failed. We retry it a few times before giving up.
     """
     logger.info("Connecting to MongoDB Atlas...")
     _mongo.client = AsyncIOMotorClient(
@@ -28,12 +34,42 @@ async def connect_db() -> None:
         connectTimeoutMS=10000,
         maxPoolSize=50,
         minPoolSize=5,
+        retryWrites=True,
     )
     _mongo.db = _mongo.client[settings.DB_NAME]
 
-    # Verify connectivity at startup — fail fast rather than fail at first request.
-    await _mongo.client.admin.command("ping")
-    logger.info(f"Connected to MongoDB Atlas — database: '{settings.DB_NAME}'")
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, retries + 1):
+        try:
+            await _mongo.client.admin.command("ping")
+            logger.info(f"Connected to MongoDB Atlas — database: '{settings.DB_NAME}'")
+            return
+        except Exception as exc:  # pragma: no cover - network dependent
+            last_exc = exc
+            delay = base_delay * (2 ** (attempt - 1))
+            logger.warning(
+                f"MongoDB ping failed (attempt {attempt}/{retries}): {exc}. "
+                f"Retrying in {delay:.1f}s..."
+            )
+            await asyncio.sleep(delay)
+
+    # All retries exhausted. Keep the client (Motor may still recover on first
+    # request); surface the failure so the orchestrator/operator is aware, but
+    # the readiness probe (/health/ready) is the real gate for traffic.
+    logger.error(f"MongoDB unreachable after {retries} attempts: {last_exc}")
+    raise RuntimeError(f"Could not establish MongoDB connectivity at startup: {last_exc}")
+
+
+async def ping_db() -> bool:
+    """Returns True if the database currently responds to a ping. Used by the
+    readiness health check. Never raises."""
+    try:
+        if _mongo.client is None:
+            return False
+        await _mongo.client.admin.command("ping")
+        return True
+    except Exception:
+        return False
 
 
 async def close_db() -> None:

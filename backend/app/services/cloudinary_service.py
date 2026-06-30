@@ -130,9 +130,15 @@ async def upload_media(
             use_filename=True,
             unique_filename=True,
             filename_override=filename,
+            timeout=settings.CLOUDINARY_UPLOAD_TIMEOUT,
         )
 
-    result = await to_thread.run_sync(_upload)
+    try:
+        result = await to_thread.run_sync(_upload)
+    except Exception as exc:
+        # Surface a clean 4xx/5xx instead of leaking the SDK exception; the
+        # generic handler would otherwise turn this into an opaque 500.
+        raise ValidationException(f"Media upload failed: {exc}") from exc
     public_id = result["public_id"]
     secure_url = result["secure_url"]
     fmt = result.get("format") or ext.lstrip(".")

@@ -244,6 +244,7 @@ export default function FloorPlanViewerPage() {
   const [showTimeline, setShowTimeline]   = useState(false);
   const [timelineActiveId, setTimelineActiveId] = useState<string>('');
   const [publishToast, setPublishToast]   = useState('');
+  const [errorToast, setErrorToast]       = useState('');
   const selectedPin = pins.find(p => p.id === selectedPinId) ?? null;
   const pinsWithCaptures = pins.filter(p => p.captureIds.length > 0).length;
 
@@ -552,12 +553,21 @@ export default function FloorPlanViewerPage() {
   }, []);
 
   /* ── Perform the upload via the EXISTING pipeline, attach to pin ────── */
-  const performAttach = useCallback(async (files: File[]) => {
-    if (!activePin || attachingRef.current) return;
+  const performAttach = useCallback(async (files: File[]): Promise<boolean> => {
+    if (!activePin || attachingRef.current) return false;
     attachingRef.current = true;
     try {
       const result = await uploadCaptureFiles(files);
       attachCaptureToPin(activePin.id, result.count || files.length, result.files);
+      return true;
+    } catch (err) {
+      // Previously this had no catch: an upload failure closed the dialog with
+      // no capture and no message, so the user believed the photo was saved.
+      const msg =
+        (err as { message?: string })?.message ??
+        'Upload failed. Please check your connection and try again.';
+      setErrorToast(msg);
+      return false;
     } finally {
       attachingRef.current = false;
     }
@@ -882,14 +892,14 @@ export default function FloorPlanViewerPage() {
       <CameraCaptureDialog
         open={!!activePin}
         pinLabel={`Pin ${activePin.sequenceNumber}`}
-        onCapture={file => performAttach([file])}
+        onCapture={async file => { await performAttach([file]); }}
         onClose={() => setActivePin(null)}
       />
     ) : (
       <PinUploadDialog
         open={!!activePin}
         pinLabel={`Pin ${activePin.sequenceNumber}`}
-        onUpload={performAttach}
+        onUpload={async files => { await performAttach(files); }}
         onClose={() => setActivePin(null)}
       />
     )
@@ -1092,6 +1102,12 @@ export default function FloorPlanViewerPage() {
       <Snackbar open={!!publishToast} autoHideDuration={4000} onClose={() => setPublishToast('')} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
         <Alert severity="success" onClose={() => setPublishToast('')} sx={{ borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>
           {publishToast}
+        </Alert>
+      </Snackbar>
+
+      <Snackbar open={!!errorToast} autoHideDuration={6000} onClose={() => setErrorToast('')} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
+        <Alert severity="error" variant="filled" onClose={() => setErrorToast('')} sx={{ borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>
+          {errorToast}
         </Alert>
       </Snackbar>
     </Box>

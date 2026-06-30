@@ -7,8 +7,11 @@ from fastapi import APIRouter, File, Query, UploadFile, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
+from fastapi import Depends
+
 from app.core.dependencies import CallerContext, DB
 from app.core.exceptions import NotFoundException, ValidationException
+from app.core.permissions import require_permission
 from app.services.cloudinary_service import cloudinary_folder, signed_upload_params, upload_media
 from app.utils.pagination import success_response
 
@@ -61,9 +64,19 @@ def _serialise(doc: dict[str, Any]) -> dict[str, Any]:
 def _with_tenant(payload: dict[str, Any], ctx: CallerContext, entity_id: Optional[str] = None) -> dict[str, Any]:
     doc = dict(payload)
     id_value = entity_id or doc.get("id")
-    if id_value:
+    if id_value is not None:
+        # Harden against NoSQL operator injection: the primary key must be a
+        # plain scalar string/ObjectId, never a dict like {"$ne": null} which
+        # could turn the upsert filter into a mass-overwrite.
+        if not isinstance(id_value, (str, int)):
+            raise ValidationException("Invalid resource id")
+        id_value = str(id_value)
         doc["_id"] = id_value
         doc["id"] = id_value
+    # Tenant fields are ALWAYS taken from the authenticated context, never the
+    # request body — a client cannot write into or read from another org.
+    doc.pop("orgId", None)
+    doc.pop("org_id", None)
     doc["orgId"] = ctx.org_id
     doc["org_id"] = ctx.org_id
     doc["updatedAt"] = _now()
@@ -134,6 +147,33 @@ def _asset_payload(asset: dict[str, Any], *, kind: str, entity_id: Optional[str]
     }
 
 
+# Content-type prefixes accepted per upload kind (defense-in-depth alongside the
+# extension allowlist — neither alone is sufficient, but together they reject the
+# obvious renamed-executable / wrong-type cases before bytes hit Cloudinary).
+_ALLOWED_CONTENT_TYPES = {
+    "captures": ("image/", "application/octet-stream"),  # .dng/.insp may be octet-stream
+    "floorplans": ("image/", "application/pdf"),
+    "avatars": ("image/",),
+    "projects": ("image/",),
+    "tours": ("image/",),
+}
+
+
+def _validate_upload_size(file: UploadFile) -> int:
+    """Returns the file size in bytes, raising if it exceeds the configured cap.
+    Uses seek/tell so we don't buffer the whole file in memory just to size it."""
+    try:
+        file.file.seek(0, 2)   # seek to end
+        size = file.file.tell()
+        file.file.seek(0)       # rewind for the actual upload
+    except Exception:
+        return 0  # unseekable stream — let Cloudinary's own limits apply
+    if size > settings.MAX_UPLOAD_BYTES:
+        mb = settings.MAX_UPLOAD_BYTES // (1024 * 1024)
+        raise ValidationException(f"File exceeds the maximum upload size of {mb} MB")
+    return size
+
+
 async def _upload_files(
     *,
     ctx: CallerContext,
@@ -142,12 +182,18 @@ async def _upload_files(
     entity_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     allowed = MEDIA_EXTENSIONS[kind]
+    allowed_types = _ALLOWED_CONTENT_TYPES.get(kind, ("image/",))
     folder = cloudinary_folder(kind, ctx.org_id, entity_id)
     uploaded: list[dict[str, Any]] = []
     for file in files:
         ext = _extension(file.filename or "")
         if ext not in allowed:
             raise ValidationException(f"Unsupported {kind} file type: {ext or 'unknown'}")
+        # Content-type sanity check (browser-declared; combined with extension).
+        ctype = (file.content_type or "").lower()
+        if ctype and not any(ctype.startswith(p) for p in allowed_types):
+            raise ValidationException(f"Unsupported content type for {kind}: {ctype}")
+        _validate_upload_size(file)
         asset = await upload_media(
             file_obj=file.file,
             filename=file.filename or f"upload{ext}",
@@ -233,7 +279,7 @@ async def list_projects(ctx: CallerContext, db: DB, skip: int = Query(0, ge=0), 
 
 
 @router.post("/projects", status_code=status.HTTP_201_CREATED, summary="Create project")
-async def create_project(payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def create_project(payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("projects", "create"))):
     return success_response(data=await _upsert(db, "projects", payload, ctx), message="Project created")
 
 
@@ -243,12 +289,12 @@ async def get_project(project_id: str, ctx: CallerContext, db: DB):
 
 
 @router.put("/projects/{project_id}", summary="Update project")
-async def update_project(project_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def update_project(project_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("projects", "edit"))):
     return success_response(data=await _patch(db, "projects", project_id, payload, ctx), message="Project updated")
 
 
 @router.delete("/projects/{project_id}", summary="Delete project")
-async def delete_project(project_id: str, ctx: CallerContext, db: DB):
+async def delete_project(project_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("projects", "delete"))):
     await _delete(db, "projects", project_id, ctx)
     return success_response(message="Project deleted")
 
@@ -259,18 +305,18 @@ async def list_towers(project_id: str, ctx: CallerContext, db: DB):
 
 
 @router.post("/projects/{project_id}/towers", status_code=status.HTTP_201_CREATED, summary="Create tower")
-async def create_tower(project_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def create_tower(project_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("towers", "create"))):
     payload["projectId"] = project_id
     return success_response(data=await _upsert(db, "towers", payload, ctx), message="Tower created")
 
 
 @router.put("/towers/{tower_id}", summary="Update tower")
-async def update_tower(tower_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def update_tower(tower_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("towers", "edit"))):
     return success_response(data=await _patch(db, "towers", tower_id, payload, ctx), message="Tower updated")
 
 
 @router.delete("/towers/{tower_id}", summary="Delete tower")
-async def delete_tower(tower_id: str, ctx: CallerContext, db: DB):
+async def delete_tower(tower_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("towers", "delete"))):
     await _delete(db, "towers", tower_id, ctx)
     return success_response(message="Tower deleted")
 
@@ -281,18 +327,18 @@ async def list_floors(tower_id: str, ctx: CallerContext, db: DB):
 
 
 @router.post("/towers/{tower_id}/floors", status_code=status.HTTP_201_CREATED, summary="Create floor")
-async def create_floor(tower_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def create_floor(tower_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("floors", "create"))):
     payload["towerId"] = tower_id
     return success_response(data=await _upsert(db, "floors", payload, ctx), message="Floor created")
 
 
 @router.put("/floors/{floor_id}", summary="Update floor")
-async def update_floor(floor_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def update_floor(floor_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("floors", "edit"))):
     return success_response(data=await _patch(db, "floors", floor_id, payload, ctx), message="Floor updated")
 
 
 @router.delete("/floors/{floor_id}", summary="Delete floor")
-async def delete_floor(floor_id: str, ctx: CallerContext, db: DB):
+async def delete_floor(floor_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("floors", "delete"))):
     await _delete(db, "floors", floor_id, ctx)
     return success_response(message="Floor deleted")
 
@@ -303,18 +349,18 @@ async def list_flats(floor_id: str, ctx: CallerContext, db: DB):
 
 
 @router.post("/floors/{floor_id}/flats", status_code=status.HTTP_201_CREATED, summary="Create flat")
-async def create_flat(floor_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def create_flat(floor_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("flats", "create"))):
     payload["floorId"] = floor_id
     return success_response(data=await _upsert(db, "flats", payload, ctx), message="Flat created")
 
 
 @router.put("/flats/{flat_id}", summary="Update flat")
-async def update_flat(flat_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def update_flat(flat_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("flats", "edit"))):
     return success_response(data=await _patch(db, "flats", flat_id, payload, ctx), message="Flat updated")
 
 
 @router.delete("/flats/{flat_id}", summary="Delete flat")
-async def delete_flat(flat_id: str, ctx: CallerContext, db: DB):
+async def delete_flat(flat_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("flats", "delete"))):
     await _delete(db, "flats", flat_id, ctx)
     return success_response(message="Flat deleted")
 
@@ -325,18 +371,18 @@ async def list_rooms(flat_id: str, ctx: CallerContext, db: DB):
 
 
 @router.post("/flats/{flat_id}/rooms", status_code=status.HTTP_201_CREATED, summary="Create room")
-async def create_room(flat_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def create_room(flat_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("rooms", "create"))):
     payload["flatId"] = flat_id
     return success_response(data=await _upsert(db, "rooms", payload, ctx), message="Room created")
 
 
 @router.put("/rooms/{room_id}", summary="Update room")
-async def update_room(room_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def update_room(room_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("rooms", "edit"))):
     return success_response(data=await _patch(db, "rooms", room_id, payload, ctx), message="Room updated")
 
 
 @router.delete("/rooms/{room_id}", summary="Delete room")
-async def delete_room(room_id: str, ctx: CallerContext, db: DB):
+async def delete_room(room_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("rooms", "delete"))):
     await _delete(db, "rooms", room_id, ctx)
     return success_response(message="Room deleted")
 
@@ -348,7 +394,7 @@ async def list_captures(ctx: CallerContext, db: DB, project_id: Optional[str] = 
 
 
 @router.post("/captures", status_code=status.HTTP_201_CREATED, summary="Create capture")
-async def create_capture(payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def create_capture(payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "create"))):
     assets = payload.get("mediaAssets") or payload.get("media_assets") or []
     first_asset = assets[0] if assets else None
     payload["mediaAssets"] = assets
@@ -375,17 +421,17 @@ async def get_capture(capture_id: str, ctx: CallerContext, db: DB):
 
 
 @router.put("/captures/{capture_id}/review", summary="Update capture review")
-async def update_capture_review(capture_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def update_capture_review(capture_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "approve"))):
     return success_response(data=await _patch(db, "captures", capture_id, payload, ctx), message="Capture review updated")
 
 
 @router.put("/captures/{capture_id}/publish", summary="Publish or unpublish capture")
-async def publish_capture(capture_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def publish_capture(capture_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "approve"))):
     return success_response(data=await _patch(db, "captures", capture_id, payload, ctx), message="Capture publish state updated")
 
 
 @router.delete("/captures/{capture_id}", summary="Delete capture")
-async def delete_capture(capture_id: str, ctx: CallerContext, db: DB):
+async def delete_capture(capture_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "delete"))):
     await _delete(db, "captures", capture_id, ctx)
     return success_response(message="Capture deleted")
 
@@ -398,31 +444,32 @@ async def get_upload_signature(payload: dict[str, Any], ctx: CallerContext):
 
 
 @router.post("/uploads/captures", status_code=status.HTTP_201_CREATED, summary="Upload capture files")
-async def upload_capture_files(ctx: CallerContext, files: list[UploadFile] = File(...), capture_id: Optional[str] = None):
+async def upload_capture_files(ctx: CallerContext, files: list[UploadFile] = File(...), capture_id: Optional[str] = None, _=Depends(require_permission("captures", "upload"))):
     uploaded = await _upload_files(ctx=ctx, kind="captures", files=files, entity_id=capture_id)
     return success_response(data={"files": uploaded, "count": len(uploaded)}, message="Capture files uploaded")
 
 
 @router.post("/uploads/floorplans", status_code=status.HTTP_201_CREATED, summary="Upload floor plan file")
-async def upload_floor_plan_files(ctx: CallerContext, files: list[UploadFile] = File(...), floor_plan_id: Optional[str] = None):
+async def upload_floor_plan_files(ctx: CallerContext, files: list[UploadFile] = File(...), floor_plan_id: Optional[str] = None, _=Depends(require_permission("floorPlans", "upload"))):
     uploaded = await _upload_files(ctx=ctx, kind="floorplans", files=files, entity_id=floor_plan_id)
     return success_response(data={"files": uploaded, "count": len(uploaded)}, message="Floor plan uploaded")
 
 
 @router.post("/uploads/avatars", status_code=status.HTTP_201_CREATED, summary="Upload avatar")
 async def upload_avatar_files(ctx: CallerContext, files: list[UploadFile] = File(...)):
+    # Avatar upload is self-service for any authenticated user (own profile only).
     uploaded = await _upload_files(ctx=ctx, kind="avatars", files=files, entity_id=ctx.user_id)
     return success_response(data={"files": uploaded, "count": len(uploaded)}, message="Avatar uploaded")
 
 
 @router.post("/uploads/projects", status_code=status.HTTP_201_CREATED, summary="Upload project media")
-async def upload_project_files(ctx: CallerContext, files: list[UploadFile] = File(...), project_id: Optional[str] = None):
+async def upload_project_files(ctx: CallerContext, files: list[UploadFile] = File(...), project_id: Optional[str] = None, _=Depends(require_permission("projects", "edit"))):
     uploaded = await _upload_files(ctx=ctx, kind="projects", files=files, entity_id=project_id)
     return success_response(data={"files": uploaded, "count": len(uploaded)}, message="Project media uploaded")
 
 
 @router.post("/uploads/tours", status_code=status.HTTP_201_CREATED, summary="Upload tour panorama media")
-async def upload_tour_files(ctx: CallerContext, files: list[UploadFile] = File(...), tour_id: Optional[str] = None):
+async def upload_tour_files(ctx: CallerContext, files: list[UploadFile] = File(...), tour_id: Optional[str] = None, _=Depends(require_permission("tours", "create"))):
     uploaded = await _upload_files(ctx=ctx, kind="tours", files=files, entity_id=tour_id)
     return success_response(data={"files": uploaded, "count": len(uploaded)}, message="Tour media uploaded")
 
@@ -434,7 +481,7 @@ async def list_tours(ctx: CallerContext, db: DB, project_id: Optional[str] = Non
 
 
 @router.post("/tours", status_code=status.HTTP_201_CREATED, summary="Generate tour")
-async def create_tour(payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def create_tour(payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("tours", "create"))):
     capture_id = payload.get("captureId") or payload.get("capture_id")
     if capture_id:
         capture = await db["captures"].find_one({"_id": _id_filter(capture_id), "orgId": ctx.org_id})
@@ -461,18 +508,18 @@ async def get_tour(tour_id: str, ctx: CallerContext, db: DB):
 
 
 @router.put("/tours/{tour_id}/status", summary="Update tour status")
-async def update_tour_status(tour_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def update_tour_status(tour_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("tours", "publish"))):
     return success_response(data=await _patch(db, "tours", tour_id, payload, ctx), message="Tour status updated")
 
 
 @router.delete("/tours/{tour_id}", summary="Delete tour")
-async def delete_tour(tour_id: str, ctx: CallerContext, db: DB):
+async def delete_tour(tour_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("tours", "delete"))):
     await _delete(db, "tours", tour_id, ctx)
     return success_response(message="Tour deleted")
 
 
 @router.post("/floor-plans", status_code=status.HTTP_201_CREATED, summary="Upload floor plan")
-async def create_floor_plan(payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def create_floor_plan(payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("floorPlans", "create"))):
     asset = (payload.get("mediaAssets") or payload.get("media_assets") or [None])[0]
     if asset:
         payload["file_url"] = asset.get("original_url")
@@ -491,6 +538,15 @@ async def create_floor_plan(payload: dict[str, Any], ctx: CallerContext, db: DB)
     return success_response(data=await _upsert(db, "floor_plans", payload, ctx), message="Floor plan uploaded")
 
 
+@router.delete("/floor-plans/{floor_plan_id}", summary="Delete floor plan")
+async def delete_floor_plan(floor_plan_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("floorPlans", "delete"))):
+    # Re-uploading a floor plan supersedes the previous record. The client
+    # re-points pins onto the new plan and then deletes the stale record here so
+    # the snapshot stops returning duplicate (empty) plans for the same floor.
+    await _delete(db, "floor_plans", floor_plan_id, ctx)
+    return success_response(message="Floor plan deleted")
+
+
 # ── Capture Pins ────────────────────────────────────────────────────────────
 @router.get("/floor-plans/{floor_plan_id}/pins", summary="List capture pins for a floor plan")
 async def list_capture_pins(floor_plan_id: str, ctx: CallerContext, db: DB):
@@ -501,19 +557,21 @@ async def list_capture_pins(floor_plan_id: str, ctx: CallerContext, db: DB):
     ))
 
 
+# Capture pins are managed as part of the capture workflow, so they follow the
+# same permission family as captures (field engineers create/move/delete pins).
 @router.post("/floor-plans/{floor_plan_id}/pins", status_code=status.HTTP_201_CREATED, summary="Create capture pin")
-async def create_capture_pin(floor_plan_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def create_capture_pin(floor_plan_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "create"))):
     payload.setdefault("floorPlanId", floor_plan_id)
     return success_response(data=await _upsert(db, "capture_pins", payload, ctx), message="Capture pin created")
 
 
 @router.put("/pins/{pin_id}", summary="Update capture pin")
-async def update_capture_pin(pin_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def update_capture_pin(pin_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "edit"))):
     return success_response(data=await _patch(db, "capture_pins", pin_id, payload, ctx), message="Capture pin updated")
 
 
 @router.delete("/pins/{pin_id}", summary="Delete capture pin")
-async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB):
+async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "delete"))):
     await _delete(db, "capture_pins", pin_id, ctx)
     return success_response(message="Capture pin deleted")
 
@@ -525,12 +583,12 @@ async def list_defects(ctx: CallerContext, db: DB, project_id: Optional[str] = N
 
 
 @router.post("/defects", status_code=status.HTTP_201_CREATED, summary="Create defect")
-async def create_defect(payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def create_defect(payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("defects", "create"))):
     return success_response(data=await _upsert(db, "defects", payload, ctx), message="Defect created")
 
 
 @router.put("/defects/{defect_id}", summary="Update defect")
-async def update_defect(defect_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB):
+async def update_defect(defect_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("defects", "edit"))):
     return success_response(data=await _patch(db, "defects", defect_id, payload, ctx), message="Defect updated")
 
 
@@ -569,7 +627,7 @@ async def unread_notification_count(ctx: CallerContext, db: DB):
 
 
 @router.get("/audit-logs", summary="List audit logs")
-async def list_audit_logs(ctx: CallerContext, db: DB, project_id: Optional[str] = None, skip: int = 0, limit: int = 100):
+async def list_audit_logs(ctx: CallerContext, db: DB, project_id: Optional[str] = None, skip: int = 0, limit: int = 100, _=Depends(require_permission("auditLogs", "view"))):
     filters = {"projectId": project_id} if project_id else None
     return success_response(data=await _list(db, "audit_logs", ctx, skip, limit, filters))
 

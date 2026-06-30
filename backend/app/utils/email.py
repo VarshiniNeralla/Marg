@@ -1,10 +1,15 @@
+import html
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+from anyio import to_thread
 from loguru import logger
 
 from app.core.config import get_settings
+
+# Abort a hung SMTP connection rather than blocking a worker thread forever.
+_SMTP_TIMEOUT_SECONDS = 10
 
 settings = get_settings()
 
@@ -32,10 +37,13 @@ async def send_password_reset_email(
         return
 
     subject = f"Reset your {settings.APP_NAME} password"
-    html_body = _build_reset_email_html(to_name, reset_url)
+    # HTML-escape the user-controlled name to prevent HTML/markup injection into
+    # the rendered email body.
+    safe_name = html.escape(to_name or "")
+    html_body = _build_reset_email_html(safe_name, reset_url)
     text_body = _build_reset_email_text(to_name, reset_url)
 
-    try:
+    def _send() -> None:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"] = f"{settings.EMAIL_FROM_NAME} <{settings.EMAIL_FROM}>"
@@ -44,12 +52,16 @@ async def send_password_reset_email(
         msg.attach(MIMEText(text_body, "plain"))
         msg.attach(MIMEText(html_body, "html"))
 
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=_SMTP_TIMEOUT_SECONDS) as server:
             server.ehlo()
             server.starttls()
             server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
             server.sendmail(settings.EMAIL_FROM, to_email, msg.as_string())
 
+    try:
+        # smtplib is blocking — run it in a worker thread so it never stalls the
+        # event loop, even though this is invoked from an async background task.
+        await to_thread.run_sync(_send)
         logger.info(f"Password reset email sent to {to_email}")
     except Exception as exc:
         logger.error(f"Failed to send password reset email to {to_email}: {exc}")

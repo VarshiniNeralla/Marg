@@ -6,6 +6,7 @@ import AppRouter from '@router/index';
 import { ErrorBoundary } from '@shared/components/ErrorBoundary/ErrorBoundary';
 import StoreHydrationGate from '@store/StoreHydrationGate';
 import WorkflowApiBootstrap from '@store/WorkflowApiBootstrap';
+import SyncErrorToast from '@shared/components/SyncErrorToast/SyncErrorToast';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -33,6 +34,7 @@ export default function App() {
           }} />
           <StoreHydrationGate>
             <WorkflowApiBootstrap />
+            <SyncErrorToast />
             <AppRouter />
           </StoreHydrationGate>
         </ThemeProvider>

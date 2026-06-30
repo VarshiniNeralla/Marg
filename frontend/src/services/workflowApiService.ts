@@ -121,6 +121,10 @@ export const workflowApiService = {
     return getData<MockFloorPlan>(apiClient.post('/floor-plans', floorPlan));
   },
 
+  async deleteFloorPlan(id: string): Promise<void> {
+    await apiClient.delete(`/floor-plans/${id}`);
+  },
+
   // ── Capture Pins ──
   async createCapturePin(pin: WfCapturePin): Promise<WfCapturePin> {
     return getData<WfCapturePin>(apiClient.post(`/floor-plans/${pin.floorPlanId}/pins`, pin));

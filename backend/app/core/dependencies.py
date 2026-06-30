@@ -55,6 +55,38 @@ async def get_current_user(
     return user
 
 
+async def get_optional_current_user(
+    authorization: Optional[str] = Header(default=None),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+) -> Optional[UserDocument]:
+    """
+    Like get_current_user but never raises — returns None when no valid token
+    is present. Used by endpoints that behave differently for authenticated vs
+    anonymous callers (e.g. /auth/register: an admin may set a role, an
+    anonymous self-registration may not).
+    """
+    if not authorization:
+        return None
+    try:
+        token = _extract_bearer_token(authorization)
+        payload = decode_access_token(token)
+    except Exception:
+        return None
+
+    user_id: Optional[str] = payload.get("sub")
+    org_id: Optional[str] = payload.get("org")
+    if not user_id or not org_id:
+        return None
+
+    try:
+        user = await UserRepository(db).find_by_id(user_id, org_id=org_id)
+    except Exception:
+        return None
+    if not user or not user.is_active:
+        return None
+    return user
+
+
 # ── System-role guards ────────────────────────────────────────────────────────
 
 async def require_admin(
@@ -183,6 +215,7 @@ def require_project_role(minimum_role: str):
 # ── Typed shorthand aliases ───────────────────────────────────────────────────
 
 CurrentUser = Annotated[UserDocument, Depends(get_current_user)]
+OptionalCurrentUser = Annotated[Optional[UserDocument], Depends(get_optional_current_user)]
 AdminUser = Annotated[UserDocument, Depends(require_admin)]
 SuperAdminUser = Annotated[UserDocument, Depends(require_super_admin)]
 RefreshTokenCookie = Annotated[str, Depends(get_refresh_token_from_cookie)]

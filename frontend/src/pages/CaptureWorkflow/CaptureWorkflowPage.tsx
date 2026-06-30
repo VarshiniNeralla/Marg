@@ -647,12 +647,32 @@ export default function CaptureWorkflowPage() {
   const myFloors = [...getFloorsByTower(floors, selectedTower)]
     .sort((a, b) => a.number - b.number);
 
-  const floorPlan = getFloorPlanByFloor(floorPlans, selectedTower, selectedFloor);
+  // A floor can accumulate more than one floor-plan record: re-uploading a plan
+  // adds a new record on the backend (the old one is only dropped from local
+  // state), so a freshly-hydrated device — e.g. the same user on mobile — sees
+  // duplicates. The plainly-newest record is often NOT the one the existing pins
+  // were placed on, which made the capture workflow show an empty plan even
+  // though captures exist. Prefer the record that actually owns pins so every
+  // pin shows up and new captures stay on the same plan.
+  const floorPlansForFloor = floorPlans.filter(
+    fp => fp.towerId === selectedTower && fp.floorId === selectedFloor,
+  );
+  const floorPlan =
+    floorPlansForFloor.find(fp => allPins.some(p => p.floorPlanId === fp.id && p.captureIds.length > 0)) ??
+    floorPlansForFloor.find(fp => allPins.some(p => p.floorPlanId === fp.id)) ??
+    floorPlansForFloor[0] ??
+    getFloorPlanByFloor(floorPlans, selectedTower, selectedFloor);
 
   const floorPins: RenderPin[] = floorPlan
-    ? [...allPins.filter(p => p.floorPlanId === floorPlan.id)]
-        .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
-        .map(p => ({ id: p.id, sequenceNumber: p.sequenceNumber, x: p.x, y: p.y, hasCapture: p.captureIds.length > 0 }))
+    ? (() => {
+        // Pins for the chosen plan, falling back to every pin on this floor
+        // (covers pins attached to a sibling/older floor-plan record).
+        const byPlan = allPins.filter(p => p.floorPlanId === floorPlan.id);
+        const source = byPlan.length > 0 ? byPlan : allPins.filter(p => p.floorId === selectedFloor);
+        return [...source]
+          .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
+          .map(p => ({ id: p.id, sequenceNumber: p.sequenceNumber, x: p.x, y: p.y, hasCapture: p.captureIds.length > 0 }));
+      })()
     : [];
 
   function handlePinClick(pinId: string) {

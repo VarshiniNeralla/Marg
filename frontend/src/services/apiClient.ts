@@ -1,13 +1,14 @@
 /// <reference types="vite/client" />
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore } from '@store/authStore';
+import { API_BASE_URL, API_V1_URL } from '@/config/env';
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+const BASE_URL = API_BASE_URL;
 
 // ── Main client ───────────────────────────────────────────────────────────────
 
 export const apiClient = axios.create({
-  baseURL: `${BASE_URL}/api/v1`,
+  baseURL: API_V1_URL,
   withCredentials: true,   // sends the httpOnly refresh-token cookie
   headers: {
     'Content-Type': 'application/json',

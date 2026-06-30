@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Response, status
+from fastapi import APIRouter, BackgroundTasks, Cookie, Request, Response, status
 
 from app.core.config import get_settings
-from app.core.dependencies import CurrentUser, DB, RefreshTokenCookie
+from app.core.rate_limit import limiter
+from app.core.dependencies import CurrentUser, DB, OptionalCurrentUser, RefreshTokenCookie
 from app.core.exceptions import ConflictException, ValidationException
 from app.core.security import hash_password, verify_password
 from app.repositories.user import UserRepository
@@ -25,6 +27,18 @@ from app.utils.pagination import success_response
 
 settings = get_settings()
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+
+def _rate_limit(limit_value: str):
+    """Apply a slowapi rate limit if the limiter built successfully; else no-op.
+    Keeps the endpoints decoratable even when slowapi/Redis are unavailable."""
+    if limiter is not None:
+        return limiter.limit(limit_value)
+
+    def _noop(func):
+        return func
+
+    return _noop
 
 # ── Cookie configuration ──────────────────────────────────────────────────────
 _COOKIE_NAME = "refresh_token"
@@ -68,16 +82,20 @@ def _clear_refresh_cookie(response: Response) -> None:
     summary="Register a new user",
     response_description="Created user profile",
 )
-async def register(payload: RegisterRequest, db: DB):
+@_rate_limit(settings.RATE_LIMIT_REGISTER)
+async def register(request: Request, payload: RegisterRequest, db: DB, caller: OptionalCurrentUser = None):
     """
     Registers a new user under an existing active organisation.
     - Email must be globally unique.
     - org_slug must reference an active organisation.
     - Password is validated against the security policy.
-    - New users are always assigned role: user.
+    - Anonymous self-registration is always assigned role "user"; a client-supplied
+      role is ignored. Only an authenticated admin (presenting a Bearer token) may
+      assign an elevated role, and only within their own organisation. This closes
+      the privilege-escalation hole where anyone could register as super_admin.
     """
     service = AuthService(db)
-    user, org = await service.register(payload)
+    user, org = await service.register(payload, caller=caller)
 
     return success_response(
         data=RegisterResponse(
@@ -99,7 +117,8 @@ async def register(payload: RegisterRequest, db: DB):
     status_code=status.HTTP_200_OK,
     summary="Authenticate and receive tokens",
 )
-async def login(payload: LoginRequest, response: Response, db: DB):
+@_rate_limit(settings.RATE_LIMIT_LOGIN)
+async def login(request: Request, payload: LoginRequest, response: Response, db: DB):
     """
     Authenticates a user/admin.
     - Returns access_token in response body (store in memory only).
@@ -163,13 +182,19 @@ async def refresh_token(
     status_code=status.HTTP_200_OK,
     summary="Revoke session and clear cookie",
 )
-async def logout(response: Response, current_user: CurrentUser):
+async def logout(
+    response: Response,
+    current_user: CurrentUser,
+    db: DB,
+    refresh_token: Optional[str] = Cookie(default=None, alias="refresh_token"),
+):
     """
-    Clears the refresh token cookie.
-    The access token is short-lived (15 min) and will expire naturally.
-    For immediate access token revocation, a Redis jti blocklist would
-    be added here in a future security hardening phase.
+    Revokes the current refresh token (so it cannot be reused even if captured)
+    and clears the cookie. The access token is short-lived (15 min) and expires
+    naturally.
     """
+    if refresh_token:
+        await AuthService(db).revoke_refresh_token(refresh_token)
     _clear_refresh_cookie(response)
     return success_response(data=None, message="Logged out successfully")
 
@@ -181,7 +206,9 @@ async def logout(response: Response, current_user: CurrentUser):
     status_code=status.HTTP_200_OK,
     summary="Request a password reset email",
 )
+@_rate_limit(settings.RATE_LIMIT_FORGOT_PASSWORD)
 async def forgot_password(
+    request: Request,
     payload: ForgotPasswordRequest,
     background_tasks: BackgroundTasks,
     db: DB,

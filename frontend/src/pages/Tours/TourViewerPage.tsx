@@ -343,7 +343,7 @@ export default function TourViewerPage() {
   // page refresh the store rehydrates from the API without steps, so we derive them
   // live from capturePins whenever the stored array is absent.
   const derivedSteps = useMemo(() => {
-    const tourFloorPlanId = (tourMedia as Record<string, unknown>)?.floorPlanId as string | undefined;
+    const tourFloorPlanId = (tourMedia as unknown as Record<string, unknown>)?.floorPlanId as string | undefined;
     if (!tourFloorPlanId) return [];
     const pins = capturePins
       .filter(p => p.floorPlanId === tourFloorPlanId)
@@ -395,7 +395,7 @@ export default function TourViewerPage() {
     // after the data is re-hydrated from the API or after a floor's pins are
     // deleted and re-captured (new pin IDs). Fall back through increasingly loose
     // keys so the timeline never silently disappears.
-    const tourFloorPlanId = (tourMedia as Record<string, unknown>)?.floorPlanId as string | undefined;
+    const tourFloorPlanId = (tourMedia as unknown as Record<string, unknown>)?.floorPlanId as string | undefined;
     const pin =
       capturePins.find(p => p.id === currentStep.pinId) ??
       (currentStep.captureId
