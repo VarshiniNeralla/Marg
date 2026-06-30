@@ -162,13 +162,16 @@ export default function CapturesPage() {
       const floorLabel = availableFloors.find(f => f.id === floorId)?.label;
       const matchesFloor = floorId === 'all' || c.floorLabel === floorLabel;
       if (!matchesProject || !matchesTower || !matchesFloor) return false;
-      // In the engineer history view, suppress older captures that belong to a pin
-      // but are not the latest — they are accessible via the pin's timeline, not
-      // as standalone gallery cards.
-      if (isEngineerView && allPinCaptureIds.has(c.id) && !latestPinCaptureIds.has(c.id)) return false;
+      // Suppress older captures that belong to a pin but are not the latest —
+      // they are accessible via the pin's timeline, not as standalone cards.
+      if (allPinCaptureIds.has(c.id) && !latestPinCaptureIds.has(c.id)) return false;
+      // Suppress orphaned pin captures: a "Pin N" capture whose pin was deleted
+      // and re-created leaves the old capture behind with no live pin. It must
+      // not show as a duplicate gallery card alongside the current pin's capture.
+      if (/^Pin\s+\d+$/i.test(c.roomName ?? '') && !allPinCaptureIds.has(c.id)) return false;
       return true;
     });
-  }, [mockCaptures, projectId, towerId, floorId, availableFloors, isEngineerView, allPinCaptureIds, latestPinCaptureIds, assignedProjectIds]);
+  }, [mockCaptures, projectId, towerId, floorId, availableFloors, allPinCaptureIds, latestPinCaptureIds, assignedProjectIds]);
 
   const [page, setPage] = useState(1);
   const itemsPerPage = 12;

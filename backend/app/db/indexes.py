@@ -96,10 +96,21 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.rooms.create_index(
         [("floor_id", ASCENDING), ("org_id", ASCENDING)], name="room_floor"
     )
+    # Drop the legacy unique (floor_id, room_number) index if present. Rooms are now
+    # created from capture pins, which reuse human labels ("Pin 4") across re-captures
+    # and re-syncs; uniqueness is owned by _id, not the label, so the constraint causes
+    # spurious DuplicateKeyError 500s. Best-effort: ignore if it was already removed.
+    try:
+        existing = await db.rooms.index_information()
+        if "room_number_per_floor_unique" in existing:
+            await db.rooms.drop_index("room_number_per_floor_unique")
+            logger.info("Dropped stale unique index room_number_per_floor_unique.")
+    except Exception as exc:
+        logger.warning(f"Could not drop room_number_per_floor_unique (continuing): {exc}")
+    # Non-unique lookup index on the same key for query performance.
     await db.rooms.create_index(
         [("floor_id", ASCENDING), ("room_number", ASCENDING)],
-        unique=True,
-        name="room_number_per_floor_unique",
+        name="room_number_per_floor",
     )
     await db.rooms.create_index(
         [("org_id", ASCENDING), ("name", TEXT), ("room_number", TEXT)],

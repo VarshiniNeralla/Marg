@@ -301,6 +301,31 @@ function FloorPlanWithPin({
 
   const resetView = useCallback(() => { setScale(1); setOffset({ x: 0, y: 0 }); }, []);
 
+  // ── Ctrl/⌘ + scroll wheel zoom (desktop), zooming toward the cursor ───────
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return; // plain scroll = let the page scroll
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = el.getBoundingClientRect();
+      // Cursor position relative to the container centre (the transform origin).
+      const cx = e.clientX - (rect.left + rect.width / 2);
+      const cy = e.clientY - (rect.top + rect.height / 2);
+      setScale(prev => {
+        const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+        const next = Math.min(6, Math.max(0.5, +(prev * factor).toFixed(3)));
+        const ratio = next / prev;
+        // Keep the point under the cursor stationary while zooming.
+        setOffset(o => clampOffset(cx - ratio * (cx - o.x), cy - ratio * (cy - o.y), next));
+        return next;
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [clampOffset]);
+
   useEffect(() => {
     if (!fullscreen) return;
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setFullscreen(false); };
