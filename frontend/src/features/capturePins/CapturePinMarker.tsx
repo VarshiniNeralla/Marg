@@ -37,11 +37,15 @@ export default function CapturePinMarker({ pin, pageW, pageH, scale, selected, o
   const cy = (pin.y / 100) * pageH;
   const hasCapture = pin.captureIds.length > 0;
 
-  // Pin radius in PAGE units. On-screen size = r * scale, clamped to [10, 22] px
-  // so pins never explode at low zoom (scale≈0.1 on mobile) or vanish when zoomed in.
-  const r       = Math.min(22, Math.max(10, 13 * scale)) / scale;
-  const ringR   = Math.min(28, Math.max(13, 17 * scale)) / scale;
-  const fontSize = Math.min(20, Math.max(9,  14 * scale)) / scale;
+  // Convert desired on-screen pixel sizes → page-space units (divide by scale).
+  // Clamp the on-screen px so pins are never bigger than 18px or smaller than 8px
+  // on screen, regardless of how far out the user has zoomed.
+  const screenR    = Math.min(18, Math.max(8,  13 * scale));
+  const screenRing = Math.min(24, Math.max(11, 17 * scale));
+  const screenFont = Math.min(16, Math.max(7,  12 * scale));
+  const r        = screenR    / scale;
+  const ringR    = screenRing / scale;
+  const fontSize = screenFont / scale;
 
   const fill      = hasCapture ? '#16a34a' : '#ffffff';
   const stroke    = hasCapture ? '#15803d' : '#d97706';
@@ -89,11 +93,11 @@ export default function CapturePinMarker({ pin, pageW, pageH, scale, selected, o
       {/* Capture-count badge (>1 visit) */}
       {pin.captureIds.length > 1 && (
         <>
-          <circle cx={cx + r * 0.85} cy={cy - r * 0.85} r={7 / scale} fill="#2563eb" stroke="#fff" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+          <circle cx={cx + r * 0.85} cy={cy - r * 0.85} r={Math.min(7, Math.max(4, 7 * scale)) / scale} fill="#2563eb" stroke="#fff" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
           <text
             x={cx + r * 0.85} y={cy - r * 0.85}
             textAnchor="middle" dominantBaseline="central"
-            fontSize={8 / scale} fontWeight={700} fill="#fff"
+            fontSize={Math.min(8, Math.max(5, 8 * scale)) / scale} fontWeight={700} fill="#fff"
             fontFamily="Inter, system-ui, sans-serif"
             style={{ pointerEvents: 'none', userSelect: 'none' }}
           >{pin.captureIds.length}</text>
