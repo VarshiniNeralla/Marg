@@ -33,7 +33,9 @@ def _build_limiter():
         return None
 
     storage_uri = None
-    if settings.RATE_LIMIT_ENABLED:
+    # Production only: Redis buckets are shared and persistent — using them in
+    # local dev caused 429 lockouts that survived backend restarts.
+    if settings.RATE_LIMIT_ENABLED and settings.is_production:
         # Try Redis storage; verify connectivity so a dead Redis doesn't make
         # every request error. If unreachable, fall back to in-memory storage.
         try:

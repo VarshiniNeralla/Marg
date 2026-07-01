@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { Dialog, Box, Typography, LinearProgress, IconButton } from '@mui/material';
 import {
   CloudUploadRounded, CheckCircleRounded, CloseRounded, CameraAltRounded,
+  ThreeSixtyRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 
@@ -61,8 +62,16 @@ export default function PinUploadDialog({ open, pinLabel, onUpload, onClose }: P
       setProgress(100);
       reset();
       onClose();
-    } catch {
-      setError('Upload failed. Please check your connection and try again.');
+    } catch (err) {
+      // Surface the SERVER's actual message (e.g. size limit, unsupported type)
+      // instead of a generic string, so the user knows how to fix the upload.
+      // May arrive as a raw AxiosError or the interceptor's normalised ApiError.
+      const e = err as { message?: string; response?: { data?: { message?: string } } };
+      const msg =
+        e?.response?.data?.message ||
+        e?.message ||
+        'Upload failed. Please check your connection and try again.';
+      setError(msg);
       setUploading(false);
       setProgress(0);
     }
@@ -97,6 +106,16 @@ export default function PinUploadDialog({ open, pinLabel, onUpload, onClose }: P
               <Box key={b.l} sx={{ px: 0.875, py: 0.25, borderRadius: '4px', backgroundColor: `${b.c}15`, fontSize: '0.625rem', fontWeight: 700, color: b.c }}>{b.l}</Box>
             ))}
           </Box>
+        </Box>
+
+        {/* Quality guidance: a stitched equirectangular export gives a seamless
+            360. Raw .insp still works but shows the camera's lens seam. */}
+        <Box sx={{ mt: 1.5, px: 1.5, py: 1, borderRadius: '10px', backgroundColor: '#2563eb0d', border: `1px solid #2563eb22`, display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+          <ThreeSixtyRounded sx={{ fontSize: 16, color: '#2563eb', flexShrink: 0, mt: 0.125 }} />
+          <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, lineHeight: 1.45 }}>
+            For a seamless 360 tour, upload the <strong>stitched export</strong> from the Insta360 app
+            (tap <strong>Export</strong> after capture). Raw&nbsp;.insp files work too, but show the camera&apos;s lens seam.
+          </Typography>
         </Box>
 
         {files.length > 0 && (

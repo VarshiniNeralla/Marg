@@ -816,8 +816,17 @@ export default function CaptureWorkflowPage() {
         setToast('Capture uploaded · sent for review');
         setPinPos(null);
       }
-    } catch {
-      setUploadError('Upload failed. Please check your connection and try again.');
+    } catch (err) {
+      // Surface the SERVER's real message (size limit, unsupported type, auth,
+      // etc.) instead of a generic string so the user knows how to fix it.
+      // The error may arrive as a raw AxiosError (response.data.message) or as
+      // the interceptor's normalised ApiError (message) — handle both.
+      const e = err as { message?: string; response?: { data?: { message?: string } } };
+      const msg =
+        e?.response?.data?.message ||
+        e?.message ||
+        'Upload failed. Please check your connection and try again.';
+      setUploadError(msg);
     } finally {
       setIsUploading(false);
       uploadingRef.current = false;

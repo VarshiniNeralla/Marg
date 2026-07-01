@@ -41,9 +41,12 @@ class Settings(BaseSettings):
     CLOUDINARY_CLOUD_NAME: str = ""
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
-    # Max upload size per file (bytes). Panoramas/floor plans can be large, so
-    # default to 50 MB. Enforced server-side before streaming to Cloudinary.
-    MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024
+    # Max upload size per file (bytes). Cloudinary's FREE plan hard-caps uploads
+    # at 10 MB/file (image and raw) — a larger file transfers fully and is THEN
+    # rejected, wasting ~15s and returning an opaque 422. So we cap at 10 MB and
+    # fail fast with a clear message. Raise this (and set the env var) after
+    # upgrading the Cloudinary plan, which allows larger files.
+    MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
     # Seconds before a Cloudinary upload call is abandoned (frees the worker).
     CLOUDINARY_UPLOAD_TIMEOUT: int = 120
 
@@ -130,6 +133,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Invalid production configuration:\n  - " + "\n  - ".join(errors)
             )
+        return self
+
+    @model_validator(mode="after")
+    def _development_defaults(self) -> "Settings":
+        """
+        Local development should not share production Redis rate-limit buckets or
+        lock engineers out after a few failed logins while the API is restarting.
+        """
+        if self.APP_ENV != "production":
+            object.__setattr__(self, "RATE_LIMIT_ENABLED", False)
         return self
 
     # ── Derived helpers ───────────────────────────────────────────────────────

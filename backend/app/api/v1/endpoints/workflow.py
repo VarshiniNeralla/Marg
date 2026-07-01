@@ -173,7 +173,16 @@ def _validate_upload_size(file: UploadFile) -> int:
         return 0  # unseekable stream — let Cloudinary's own limits apply
     if size > settings.MAX_UPLOAD_BYTES:
         mb = settings.MAX_UPLOAD_BYTES // (1024 * 1024)
-        raise ValidationException(f"File exceeds the maximum upload size of {mb} MB")
+        actual_mb = size / (1024 * 1024)
+        from loguru import logger
+        logger.warning(
+            f"Upload rejected: {file.filename} is {actual_mb:.1f} MB > {mb} MB cap"
+        )
+        raise ValidationException(
+            f"File is {actual_mb:.0f} MB, over the {mb} MB limit. Raw camera files "
+            f"(.dng/.insv) are usually too large — upload the JPG photo or the "
+            f"stitched 360 export from the Insta360 app instead."
+        )
     return size
 
 
@@ -202,6 +211,12 @@ async def _upload_files(
             filename=file.filename or f"upload{ext}",
             folder=folder,
             resource_type="image" if ext == ".pdf" else "auto",
+            # Captures may be a 360 panorama OR a plain photo/raw camera file. We
+            # never reject: if it's a genuine 2:1 equirectangular image we tag it
+            # with GPano metadata so the viewer shows a true 360; anything else is
+            # uploaded as-is and the viewer renders it flat. Uploads must always
+            # succeed so field captures are never lost.
+            tag_if_panorama=(kind == "captures"),
         )
         uploaded.append(_asset_payload(asset, kind=kind, entity_id=entity_id, ext=ext))
     return uploaded

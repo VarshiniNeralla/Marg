@@ -204,6 +204,13 @@ async def client(seeded_db) -> AsyncGenerator[AsyncClient, None]:
 
     app: FastAPI = create_app()
 
+    # Disable rate limiting in tests. Otherwise, when REDIS_URL points at a real
+    # (shared) Redis, login/register attempts accumulate ACROSS test runs and the
+    # per-IP limit trips with 429s that have nothing to do with the test.
+    limiter = getattr(app.state, "limiter", None)
+    if limiter is not None:
+        limiter.enabled = False
+
     # Override the DB dependency so the app uses our mock
     async def _override_db():
         yield seeded_db

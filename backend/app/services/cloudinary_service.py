@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 import time
 from typing import BinaryIO, Optional
@@ -10,6 +11,13 @@ from anyio import to_thread
 
 from app.core.config import get_settings
 from app.core.exceptions import ValidationException
+from app.services.panorama_service import (
+    inject_gpano_xmp,
+    is_dng,
+    is_equirectangular,
+    is_insp,
+    measure_image,
+)
 
 settings = get_settings()
 
@@ -116,28 +124,64 @@ async def upload_media(
     filename: str,
     folder: str,
     resource_type: str = "auto",
+    tag_if_panorama: bool = False,
 ) -> dict:
     configure_cloudinary()
     ext = Path(filename).suffix.lower()
-    # Upload PDFs as resource_type="image" so Cloudinary renders them as images
+    # Upload PDFs as resource_type="image" so Cloudinary renders them as images.
     effective_resource_type = "image" if ext == ".pdf" else resource_type
+
+    upload_source: BinaryIO = file_obj
+    upload_filename = filename
+
+    # Raw camera formats (.dng, .insv) are NOT browser-displayable and Cloudinary's
+    # image pipeline can't decode a .dng ("Failed to ping image" → the 422 the
+    # field team hit). Store them as resource_type="raw" so the upload always
+    # succeeds as an archival original, rather than failing the whole capture.
+    #   • .insp is a JPEG internally, so Cloudinary decodes it as an image — keep it
+    #     as image so the viewer can load it (rendered via the dual-fisheye path).
+    #   • .dng / .insv → raw storage.
+    if is_dng(filename) or ext == ".insv":
+        effective_resource_type = "raw"
+
+    # Captures: NEVER reject. If the image is a genuine 2:1 equirectangular
+    # panorama, inject GPano metadata so the viewer renders a true 360; otherwise
+    # upload it untouched (the viewer shows non-2:1 images flat). Raw camera files
+    # are uploaded as-is — the field team uploads straight from the 360 camera, so
+    # the capture must always attach.
+    if tag_if_panorama and not is_dng(filename) and not is_insp(filename) and ext != ".insv":
+        raw = file_obj.read()
+        dims = measure_image(raw)
+        if dims and is_equirectangular(dims[0], dims[1]):
+            tagged = await to_thread.run_sync(inject_gpano_xmp, raw, dims[0], dims[1])
+            upload_source = BytesIO(tagged)
+            upload_filename = Path(filename).stem + ".jpg"
+            effective_resource_type = "image"
+        else:
+            # Not a panorama (or undecodable here) — upload the original bytes.
+            upload_source = BytesIO(raw)
 
     def _upload() -> dict:
         return cloudinary.uploader.upload(
-            file_obj,
+            upload_source,
             folder=folder,
             resource_type=effective_resource_type,
             use_filename=True,
             unique_filename=True,
-            filename_override=filename,
+            filename_override=upload_filename,
             timeout=settings.CLOUDINARY_UPLOAD_TIMEOUT,
         )
 
     try:
         result = await to_thread.run_sync(_upload)
     except Exception as exc:
-        # Surface a clean 4xx/5xx instead of leaking the SDK exception; the
-        # generic handler would otherwise turn this into an opaque 500.
+        # Log the full Cloudinary error so upload failures are diagnosable, then
+        # surface a clean 4xx (the generic handler would otherwise make it a 500).
+        from loguru import logger
+        logger.error(
+            f"Cloudinary upload failed: file={upload_filename} "
+            f"resource_type={effective_resource_type} error={exc!r}"
+        )
         raise ValidationException(f"Media upload failed: {exc}") from exc
     public_id = result["public_id"]
     secure_url = result["secure_url"]

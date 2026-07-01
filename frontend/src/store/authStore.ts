@@ -19,19 +19,23 @@ export interface AuthUser {
   assignedProjectIds?: string[];
 }
 
+export type SessionKind = 'live' | 'mock';
+
 interface AuthState {
   // Access token lives in memory only — never persisted to localStorage.
   accessToken: string | null;
   user: AuthUser | null;
   isAuthenticated: boolean;
+  /** Whether the session was established via the real backend (refresh cookie) or offline mock login. */
+  sessionKind: SessionKind | null;
 
-  setAuth: (token: string, user: AuthUser) => void;
+  setAuth: (token: string, user: AuthUser, sessionKind?: SessionKind) => void;
   setAccessToken: (token: string) => void;
   updateUser: (partial: Partial<AuthUser>) => void;
   clearAuth: () => void;
 }
 
-type PersistedAuth = Pick<AuthState, 'user' | 'isAuthenticated'>;
+type PersistedAuth = Pick<AuthState, 'user' | 'sessionKind'>;
 
 function migrateLegacyAuth(persisted: PersistedAuth | null): PersistedAuth | null {
   if (persisted?.user) {
@@ -51,9 +55,10 @@ export const useAuthStore = create<AuthState>()(
       accessToken: null,
       user: null,
       isAuthenticated: false,
+      sessionKind: null,
 
-      setAuth(token, user) {
-        set({ accessToken: token, user, isAuthenticated: true });
+      setAuth(token, user, sessionKind = 'live') {
+        set({ accessToken: token, user, isAuthenticated: true, sessionKind });
       },
 
       setAccessToken(token) {
@@ -65,20 +70,32 @@ export const useAuthStore = create<AuthState>()(
       },
 
       clearAuth() {
-        set({ accessToken: null, user: null, isAuthenticated: false });
+        set({ accessToken: null, user: null, isAuthenticated: false, sessionKind: null });
       },
     }),
     {
       name: AUTH_STORE_KEY,
       version: STORE_VERSION.auth,
       storage: createJSONStorage(() => localStorage),
-      partialize: (s): PersistedAuth => ({ user: s.user, isAuthenticated: s.isAuthenticated }),
+      // Never persist isAuthenticated — it must only become true after a fresh
+      // login or a successful refresh-cookie exchange. Persisting the flag
+      // without a valid cookie caused spurious /auth/refresh 401s on every load.
+      partialize: (s): PersistedAuth => ({
+        user: s.sessionKind === 'live' ? s.user : null,
+        sessionKind: s.sessionKind === 'live' ? 'live' : null,
+      }),
       migrate: (persisted) => {
-        const migrated = migrateLegacyAuth(persisted as PersistedAuth | null);
-        if (!migrated?.user || typeof migrated.isAuthenticated !== 'boolean') {
-          return { user: null, isAuthenticated: false };
+        const raw = persisted as (PersistedAuth & { isAuthenticated?: boolean }) | null;
+        const migrated = migrateLegacyAuth(raw);
+        if (!migrated?.user) {
+          return { user: null, sessionKind: null };
         }
-        return migrated;
+        // Legacy stores persisted isAuthenticated without sessionKind — treat as
+        // a live session and let restoreSessionFromCookie validate the cookie.
+        return {
+          user: migrated.user,
+          sessionKind: raw?.sessionKind === 'mock' ? null : ('live' as const),
+        };
       },
     },
   ),

@@ -151,37 +151,160 @@ interface PanoramaViewerProps {
   onHotspotClick: (targetTourId: string) => void;
 }
 
+// How a capture should be projected in the viewer.
+//   'flat'           → not ~2:1; a normal photo, shown as a plain image.
+//   'dualfisheye'    → ~2:1 with dark corners; a RAW 360-camera file (two
+//                      fisheye circles). Rendered with PSV's DualFisheyeAdapter.
+//   'equirectangular'→ ~2:1 with filled corners; a genuine stitched 360.
+type Projection = 'flat' | 'dualfisheye' | 'equirectangular';
+
+const _RATIO_MIN = 1.8;
+const _RATIO_MAX = 2.2;
+
+/**
+ * Classify a loaded image by BOTH aspect ratio and corner darkness.
+ *
+ * A raw dual-fisheye and a true equirectangular are BOTH ~2:1, so dimensions
+ * alone cannot tell them apart (this is exactly why raw .insp files were being
+ * sphere-projected as equirectangular and producing the black hourglass). The
+ * decisive signal is the FOUR CORNERS: a dual-fisheye leaves large black corners
+ * around each lens circle, whereas an equirectangular fills the whole frame.
+ */
+function classifyProjection(img: HTMLImageElement): Projection {
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  if (!w || !h) return 'flat';
+  const ratio = w / h;
+  if (ratio < _RATIO_MIN || ratio > _RATIO_MAX) return 'flat';
+
+  // Sample the mean luminance of the four corners on a downscaled canvas.
+  try {
+    const cw = 128;
+    const ch = 64;
+    const canvas = document.createElement('canvas');
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return 'equirectangular';
+    ctx.drawImage(img, 0, 0, cw, ch);
+    const patch = 12; // corner box size in the downscaled space
+    const corners: Array<[number, number]> = [
+      [0, 0], [cw - patch, 0], [0, ch - patch], [cw - patch, ch - patch],
+    ];
+    let darkCorners = 0;
+    for (const [sx, sy] of corners) {
+      const { data } = ctx.getImageData(sx, sy, patch, patch);
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      }
+      const meanLuma = sum / (data.length / 4);
+      if (meanLuma < 24) darkCorners++; // near-black
+    }
+    // Dual-fisheye has black corners on both lens circles → ≥3 dark corners.
+    return darkCorners >= 3 ? 'dualfisheye' : 'equirectangular';
+  } catch {
+    // CORS-tainted canvas (getImageData throws) — fall back to equirectangular.
+    return 'equirectangular';
+  }
+}
+
 function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick }: PanoramaViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<import('@photo-sphere-viewer/core').Viewer | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  // null = still probing; otherwise the resolved projection for this image.
+  const [projection, setProjection] = useState<Projection | null>(null);
+  // The adapter identity the current viewer was built with — a switch between
+  // equirectangular and dual-fisheye needs a full rebuild (adapters differ).
+  const builtProjectionRef = useRef<Projection | null>(null);
+
+  // Probe the image (dimensions + corner darkness) before deciding how to render.
+  useEffect(() => {
+    let cancelled = false;
+    setProjection(null);
+    setError(false);
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      if (cancelled) return;
+      setProjection(classifyProjection(img));
+    };
+    img.onerror = () => { if (!cancelled) { setError(true); setLoading(false); } };
+    img.src = panoramaUrl;
+    return () => { cancelled = true; };
+  }, [panoramaUrl]);
+
+  const is360 = projection === 'equirectangular' || projection === 'dualfisheye';
 
   useEffect(() => {
+    // Only mount the sphere viewer for genuine 360 panoramas.
+    if (!is360 || projection === null) { setLoading(false); return; }
     if (!containerRef.current) return;
     let destroyed = false;
+
+    // Swap the texture in place with setPanorama() when the viewer already
+    // exists AND uses the same adapter — this preserves the WebGL context and
+    // avoids a jarring remount/camera snap. A change of projection type
+    // (equirectangular ↔ dual-fisheye) needs a full rebuild, so tear down first.
+    if (viewerRef.current && builtProjectionRef.current === projection) {
+      setLoading(true);
+      viewerRef.current
+        .setPanorama(panoramaUrl, { transition: false })
+        .then(() => { if (!destroyed) setLoading(false); })
+        .catch(() => { if (!destroyed) { setLoading(false); setError(true); } });
+      return () => { destroyed = true; };
+    }
+    if (viewerRef.current) {
+      viewerRef.current.destroy();
+      viewerRef.current = null;
+    }
+
+    const currentProjection = projection;
 
     async function initViewer() {
       setLoading(true);
       setError(false);
 
       try {
-        const { Viewer } = await import('@photo-sphere-viewer/core');
+        const { Viewer, DualFisheyeAdapter } = await import('@photo-sphere-viewer/core');
 
         if (destroyed || !containerRef.current) return;
+
+        // Raw dual-fisheye 360-camera files use the DualFisheyeAdapter, which
+        // maps the two lens circles onto the sphere — NO black cones, unlike
+        // feeding a dual-fisheye to the default equirectangular adapter.
+        const isDual = currentProjection === 'dualfisheye';
+        // Initial heading: for a dual-fisheye the stitch seam sits at yaw ±90°,
+        // so we open facing the FRONT lens centre (yaw 0 in the adapter maps to a
+        // lens boundary → opening there is why left/right felt wrong until you
+        // rotated ~180°). Facing the lens centre gives a natural forward view and
+        // keeps the seam off to the side. Equirectangular exports are already
+        // centred on their forward direction, so no offset is needed.
+        const initialYaw = isDual ? Math.PI : 0; // radians (PSV v5 uses radians)
 
         const viewer = new Viewer({
           container: containerRef.current,
           panorama: panoramaUrl,
-          defaultZoomLvl: 50,
+          ...(isDual ? { adapter: DualFisheyeAdapter } : {}),
+          defaultZoomLvl: 30,
+          // Allow free 360° horizontal + full vertical look-around.
+          minFov: 30,
+          maxFov: 90,
+          defaultYaw: initialYaw,
+          defaultPitch: 0,
+          // Single-finger drag + one-finger touch move so mobile can pan freely.
           touchmoveTwoFingers: false,
           mousewheelCtrlKey: false,
+          moveInertia: true,
           navbar: false,
           loadingTxt: '',
           loadingImg: '',
         });
 
         viewerRef.current = viewer;
+        builtProjectionRef.current = currentProjection;
 
         viewer.addEventListener('ready', () => {
           if (!destroyed) setLoading(false);
@@ -190,9 +313,6 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick }: P
         viewer.addEventListener('error' as never, () => {
           if (!destroyed) { setLoading(false); setError(true); }
         });
-
-        // Add hotspot markers as markers plugin markers if available
-        // For now, we position them as absolute overlays in the JSX layer
 
       } catch (e) {
         if (!destroyed) { setLoading(false); setError(true); }
@@ -203,28 +323,50 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick }: P
 
     return () => {
       destroyed = true;
+    };
+  }, [panoramaUrl, projection, is360]);
+
+  // Destroy the viewer only when the component actually unmounts.
+  useEffect(() => {
+    return () => {
       viewerRef.current?.destroy();
       viewerRef.current = null;
     };
-  }, [panoramaUrl]);
+  }, []);
 
-  // Auto-rotate: manually advance yaw every animation frame
+  // Auto-rotate: advance yaw each frame, but YIELD to the user. While the user
+  // is dragging/zooming we suspend the loop entirely so it never fights or
+  // rubber-bands the manual rotation (the previous version wrote yaw every frame
+  // regardless, which is what made free dragging feel constrained).
   const rafRef = useRef<number>(0);
+  const userInteractingRef = useRef(false);
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !autoRotate) {
       cancelAnimationFrame(rafRef.current);
       return;
     }
+    const onInteractStart = () => { userInteractingRef.current = true; };
+    const onInteractStop = () => { userInteractingRef.current = false; };
+    // PSV emits these around user gestures; pausing on them removes the fight.
+    viewer.addEventListener('move-start' as never, onInteractStart);
+    viewer.addEventListener('move-end' as never, onInteractStop);
+
     const tick = () => {
-      try {
-        const pos = viewer.getPosition();
-        viewer.rotate({ yaw: pos.yaw + 0.003, pitch: pos.pitch });
-      } catch { /* viewer may be mid-transition */ }
+      if (!userInteractingRef.current) {
+        try {
+          const pos = viewer.getPosition();
+          viewer.rotate({ yaw: pos.yaw + 0.002, pitch: pos.pitch });
+        } catch { /* viewer may be mid-transition */ }
+      }
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
+    return () => {
+      cancelAnimationFrame(rafRef.current);
+      viewer.removeEventListener('move-start' as never, onInteractStart);
+      viewer.removeEventListener('move-end' as never, onInteractStop);
+    };
   }, [autoRotate]);
 
   if (error) {
@@ -232,6 +374,26 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick }: P
       <Box sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1, background: '#0f1929' }}>
         <ThreeSixtyRounded sx={{ color: 'rgba(255,255,255,0.15)', fontSize: 80 }} />
         <Typography sx={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.875rem' }}>Could not load panorama</Typography>
+      </Box>
+    );
+  }
+
+  // Regular (non-360) photo: show it flat, contained, no sphere projection —
+  // avoids the black zenith/nadir cones that a sphere produces for a flat image.
+  if (projection === 'flat') {
+    return (
+      <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0f1929' }}>
+        <Box
+          component="img"
+          src={panoramaUrl}
+          alt="Capture"
+          onError={() => setError(true)}
+          sx={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block' }}
+        />
+        <Box sx={{ position: 'absolute', bottom: 12, right: 12, px: 1.25, py: 0.5, borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', gap: 0.625 }}>
+          <CameraAltRounded sx={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }} />
+          <Typography sx={{ fontSize: '0.6875rem', color: 'rgba(255,255,255,0.85)', fontWeight: 600 }}>Standard photo</Typography>
+        </Box>
       </Box>
     );
   }
@@ -244,11 +406,26 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick }: P
           <CircularProgress size={36} sx={{ color: '#fff' }} />
         </Box>
       )}
-      {/* Hotspot overlay layer — rendered on top of PSV canvas */}
+      {/* Raw dual-fisheye: navigable but shows the camera's lens seam because it
+          was never stitched. The generic dual-fisheye projection can't reproduce
+          the per-model (X3/X4/X5) calibration, so we flag it and point the user at
+          the stitched export, which renders seamlessly via the equirectangular path. */}
+      {!loading && projection === 'dualfisheye' && (
+        <Box sx={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 16, maxWidth: '90%', px: 1.5, py: 0.75, borderRadius: '999px', backgroundColor: 'rgba(217,119,6,0.92)', backdropFilter: 'blur(8px)', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', gap: 0.75 }}>
+          <ThreeSixtyRounded sx={{ fontSize: 14, color: '#fff', flexShrink: 0 }} />
+          <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: '#fff', lineHeight: 1.3 }}>
+            Unstitched 360 — upload the Insta360 app export for a seamless view
+          </Typography>
+        </Box>
+      )}
+      {/* Hotspot overlay layer — rendered on top of PSV canvas.
+          The wrapper is pointer-transparent (pointerEvents:'none') so a drag that
+          starts on/near a marker passes THROUGH to the PSV canvas and rotates the
+          sphere. Only the small marker dot re-enables pointer events for its click.
+          This removes the marker interception that partially blocked free drag. */}
       {!loading && hotspots.map(hs => (
         <Box
           key={hs.id}
-          onClick={() => hs.targetTourId && onHotspotClick(hs.targetTourId)}
           sx={{
             position: 'absolute',
             // Approximate screen position from yaw/pitch for the overlay markers.
@@ -256,12 +433,15 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick }: P
             left: `${50 + (hs.yaw / 180) * 40}%`,
             top: `${50 - (hs.pitch / 90) * 30}%`,
             transform: 'translate(-50%, -50%)',
-            cursor: hs.targetTourId ? 'pointer' : 'default',
             zIndex: 3,
+            pointerEvents: 'none',
             '&:hover .hs-label': { opacity: 1, transform: 'translateY(-4px)' },
           }}
         >
-          <Box sx={{ width: 30, height: 30, borderRadius: '50%', backgroundColor: 'rgba(255,255,255,0.2)', border: '2px solid rgba(255,255,255,0.55)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Box
+            onClick={() => hs.targetTourId && onHotspotClick(hs.targetTourId)}
+            sx={{ width: 30, height: 30, borderRadius: '50%', backgroundColor: 'rgba(255,255,255,0.2)', border: '2px solid rgba(255,255,255,0.55)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: hs.targetTourId ? 'pointer' : 'default', pointerEvents: hs.targetTourId ? 'auto' : 'none' }}
+          >
             <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: hs.targetTourId ? '#60a5fa' : '#fff' }} />
           </Box>
           <Box className="hs-label" sx={{ position: 'absolute', bottom: '120%', left: '50%', transform: 'translateX(-50%) translateY(0)', opacity: 0, transition: `all ${motion.durationFast}`, backgroundColor: 'rgba(0,0,0,0.72)', color: '#fff', fontSize: '0.6875rem', fontWeight: 600, px: 1.25, py: 0.5, borderRadius: '6px', whiteSpace: 'nowrap', pointerEvents: 'none' }}>
@@ -592,33 +772,33 @@ export default function TourViewerPage() {
         </Box>
       )}
 
-      {/* Prev/Next arrows — step through walkthrough stops, else navigate tours */}
+      {/* Prev/Next navigation — moved to the BOTTOM-LEFT corner (away from the
+          left/right vertical-centre edges) so they no longer intercept the
+          horizontal drag needed to rotate the 360 panorama. The full-height
+          centre-edge buttons previously swallowed every left/right drag, making
+          the sphere feel like it only moved vertically. */}
       {isWalkthrough ? (
-        <>
-          {clampedStep > 0 && (
-            <Box onClick={() => setStepIdx(i => Math.max(0, i - 1))} sx={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', color: '#fff', cursor: 'pointer', zIndex: 10, '&:hover': { backgroundColor: 'rgba(0,0,0,0.7)' } }}>
-              <NavigateBefore sx={{ fontSize: 24 }} />
-            </Box>
-          )}
-          {clampedStep < steps.length - 1 && (
-            <Box onClick={() => setStepIdx(i => Math.min(steps.length - 1, i + 1))} sx={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', color: '#fff', cursor: 'pointer', zIndex: 10, '&:hover': { backgroundColor: 'rgba(0,0,0,0.7)' } }}>
-              <NavigateNextRounded sx={{ fontSize: 24 }} />
-            </Box>
-          )}
-        </>
+        <Box sx={{ position: 'absolute', bottom: 12, right: 12, display: 'flex', gap: 0.75, zIndex: 12 }}>
+          <Box onClick={() => setStepIdx(i => Math.max(0, i - 1))} sx={{ visibility: clampedStep > 0 ? 'visible' : 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', color: '#fff', cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0,0,0,0.7)' } }}>
+            <NavigateBefore sx={{ fontSize: 22 }} />
+          </Box>
+          <Box onClick={() => setStepIdx(i => Math.min(steps.length - 1, i + 1))} sx={{ visibility: clampedStep < steps.length - 1 ? 'visible' : 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', color: '#fff', cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0,0,0,0.7)' } }}>
+            <NavigateNextRounded sx={{ fontSize: 22 }} />
+          </Box>
+        </Box>
       ) : (
-        <>
+        <Box sx={{ position: 'absolute', bottom: 12, right: 12, display: 'flex', gap: 0.75, zIndex: 12 }}>
           {prevTour && (
-            <Box component={Link} to={`/tours/${prevTour.id}`} sx={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', zIndex: 10, '&:hover': { backgroundColor: 'rgba(0,0,0,0.65)' } }}>
+            <Box component={Link} to={`/tours/${prevTour.id}`} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(0,0,0,0.65)' } }}>
               <NavigateBefore sx={{ fontSize: 20 }} />
             </Box>
           )}
           {nextTour && (
-            <Box component={Link} to={`/tours/${nextTour.id}`} sx={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', zIndex: 10, '&:hover': { backgroundColor: 'rgba(0,0,0,0.65)' } }}>
+            <Box component={Link} to={`/tours/${nextTour.id}`} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(0,0,0,0.65)' } }}>
               <NavigateNextRounded sx={{ fontSize: 20 }} />
             </Box>
           )}
-        </>
+        </Box>
       )}
     </Box>
   );

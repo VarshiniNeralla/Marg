@@ -142,7 +142,7 @@ export default function LoginPage() {
         org_slug: 'myhome',
         avatar_url: data.user.avatar_url,
         assignedProjectIds: data.user.assignedProjectIds,
-      });
+      }, data.sessionKind ?? 'live');
       try {
         const me = await backendAuth.me();
         setAuth(data.access_token, {
@@ -155,7 +155,7 @@ export default function LoginPage() {
           org_slug: me.org_slug,
           avatar_url: me.avatar_url,
           assignedProjectIds: me.assigned_project_ids,
-        });
+        }, 'live');
       } catch {
         // partial data
       }
@@ -164,11 +164,15 @@ export default function LoginPage() {
       navigate(from ?? getRoleLandingPath(authedRole), { replace: true });
     } catch (err) {
       const e = normaliseError(err);
-      setServerError(
-        e.status === 401
-          ? 'Invalid email or password. Please check your credentials.'
-          : e.message
-      );
+      if (e.status === 401) {
+        setServerError('Invalid email or password. Please check your credentials.');
+      } else if (e.status === 429) {
+        setServerError('Too many login attempts. Wait a few minutes and try again.');
+      } else if (e.status === 0) {
+        setServerError('Cannot reach the server. Make sure the backend is running on port 8002.');
+      } else {
+        setServerError(e.message);
+      }
     } finally {
       setIsLoading(false);
     }

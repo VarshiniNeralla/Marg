@@ -9,6 +9,7 @@ interface LoginPayload {
 interface LoginResponse {
   access_token: string;
   user: AuthUser;
+  sessionKind?: 'live' | 'mock';
 }
 
 // ── Mock credential table ─────────────────────────────────────────────────────
@@ -60,6 +61,7 @@ function mockLogin(email: string, password: string): LoginResponse | null {
   return {
     access_token: `mock-token-${user.id}-${Date.now()}`,
     user,
+    sessionKind: 'mock',
   };
 }
 
@@ -71,6 +73,7 @@ export const authService = {
       const data = await backendAuthService.login(payload);
       return {
         access_token: data.access_token,
+        sessionKind: 'live' as const,
         user: {
           ...data.user,
           org_slug: 'default',

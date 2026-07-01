@@ -1,9 +1,8 @@
 /// <reference types="vite/client" />
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore } from '@store/authStore';
-import { API_BASE_URL, API_V1_URL } from '@/config/env';
-
-const BASE_URL = API_BASE_URL;
+import { API_V1_URL } from '@/config/env';
+import { restoreSessionFromCookie } from '@/services/sessionRefresh';
 
 // ── Main client ───────────────────────────────────────────────────────────────
 
@@ -30,19 +29,6 @@ apiClient.interceptors.request.use(
 
 // ── Response interceptor — refresh token on 401 ───────────────────────────────
 
-let _isRefreshing = false;
-let _waitQueue: Array<{
-  resolve: (token: string) => void;
-  reject: (err: unknown) => void;
-}> = [];
-
-function drainQueue(token: string | null, error?: unknown) {
-  _waitQueue.forEach(({ resolve, reject }) =>
-    token ? resolve(token) : reject(error)
-  );
-  _waitQueue = [];
-}
-
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
@@ -61,38 +47,24 @@ apiClient.interceptors.response.use(
       return Promise.reject(normaliseError(error));
     }
 
-    if (_isRefreshing) {
-      // Queue this request until the in-flight refresh resolves.
-      return new Promise<string>((resolve, reject) => {
-        _waitQueue.push({ resolve, reject });
-      }).then((newToken) => {
-        original.headers.Authorization = `Bearer ${newToken}`;
-        return apiClient(original);
-      });
-    }
-
     original._retry = true;
-    _isRefreshing = true;
 
-    try {
-      const { data } = await axios.post<{ data: { access_token: string } }>(
-        `${BASE_URL}/api/v1/auth/refresh`,
-        {},
-        { withCredentials: true }
-      );
-      const newToken = data.data.access_token;
-      useAuthStore.getState().setAccessToken(newToken);
-      drainQueue(newToken);
-      original.headers.Authorization = `Bearer ${newToken}`;
-      return apiClient(original);
-    } catch (refreshError) {
-      drainQueue(null, refreshError);
+    const restored = await restoreSessionFromCookie();
+    if (!restored) {
       useAuthStore.getState().clearAuth();
-      window.location.replace('/login');
-      return Promise.reject(refreshError);
-    } finally {
-      _isRefreshing = false;
+      if (!window.location.pathname.startsWith('/login')) {
+        window.location.replace('/login');
+      }
+      return Promise.reject(normaliseError(error));
     }
+
+    const newToken = useAuthStore.getState().accessToken;
+    if (!newToken) {
+      return Promise.reject(normaliseError(error));
+    }
+
+    original.headers.Authorization = `Bearer ${newToken}`;
+    return apiClient(original);
   }
 );
 

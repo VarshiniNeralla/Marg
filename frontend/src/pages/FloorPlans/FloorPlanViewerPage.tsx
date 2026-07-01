@@ -733,8 +733,12 @@ export default function FloorPlanViewerPage() {
       const result = await uploadCaptureFiles(files);
       attachCaptureToPin(pinId, result.count || files.length, result.files);
     } catch (err) {
+      // Surface the server's real message (size limit, unsupported type, etc.).
+      // May be a raw AxiosError or the interceptor's normalised ApiError.
+      const e = err as { message?: string; response?: { data?: { message?: string } } };
       const msg =
-        (err as { message?: string })?.message ??
+        e?.response?.data?.message ||
+        e?.message ||
         'Upload failed. Please check your connection and try again.';
       setErrorToast(msg);
       throw err; // re-throw so the dialog's catch block shows the error state
