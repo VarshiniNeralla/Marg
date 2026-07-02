@@ -567,6 +567,54 @@ def _hemisphere_map(
     return mapx, mapy, valid
 
 
+def _estimate_clean_theta(front, back, overlap, theta1_deg, theta2_deg, fov_deg):
+    """Largest lens angle (degrees) still at >=90% relative illumination.
+
+    The outer few degrees of each fisheye are strongly vignetted (measured
+    ~-65% luminance at theta=102° on real X2 files). This measures each lens's
+    rim illumination from the OVERLAP: at an output pixel where lens k sits at
+    angle theta, the mirror lens sits at ~180°-theta (unvignetted when
+    theta > 96°), so the luminance ratio isolates lens k's falloff. The
+    per-lens exposure factor is cancelled using the symmetric theta≈90° ring,
+    where both lenses are equally vignetted.
+
+    Returns fov/2 (i.e. no behaviour change) when the signal is unmeasurable.
+    The result is clamped to [92°, fov/2]; since theta1 + theta2 ≈ 180°, any
+    pixel with theta_k > 92° has the mirror lens below 90°, so restricting the
+    feather to theta <= clean angle can never leave a pixel uncovered.
+    """
+    import cv2
+    import numpy as np
+
+    half = fov_deg / 2.0
+    lf = cv2.cvtColor(front, cv2.COLOR_BGR2GRAY).astype(np.float32) + 1e-3
+    lb = cv2.cvtColor(back, cv2.COLOR_BGR2GRAY).astype(np.float32) + 1e-3
+    ok = overlap & (lf > 8) & (lb > 8)
+    ring = ok & (np.abs(theta1_deg - 90.0) <= 2.0) & (np.abs(theta2_deg - 90.0) <= 2.0)
+    if ring.sum() < 500:
+        return half
+    k = float(np.median(lf[ring] / lb[ring]))
+    if not np.isfinite(k) or k <= 0:
+        return half
+
+    theta_clean = half
+    lo = 91.0
+    while lo < half:
+        hi = lo + 1.0
+        rel_illum = []
+        b1 = ok & (theta1_deg >= lo) & (theta1_deg < hi)
+        if b1.sum() >= 200:
+            rel_illum.append(float(np.median(lf[b1] / lb[b1])) / k)
+        b2 = ok & (theta2_deg >= lo) & (theta2_deg < hi)
+        if b2.sum() >= 200:
+            rel_illum.append(float(np.median(lb[b2] / lf[b2])) * k)
+        if rel_illum and min(rel_illum) < 0.9:
+            theta_clean = lo
+            break
+        lo = hi
+    return float(max(92.0, min(theta_clean, half)))
+
+
 @dataclass
 class StitchArtifacts:
     """Intermediate buffers for stitch debugging (BGR uint8 unless noted)."""
@@ -939,16 +987,66 @@ def _stitch_arrays(
     sphere2[~v2] = 0
 
     overlap = v1 & v2
-    if overlap.sum() > 1000:
-        m_f = front[overlap].mean(axis=0) + 1e-6
-        m_b = back[overlap].mean(axis=0) + 1e-6
-        gain = (m_f / m_b).reshape(1, 1, 3)
+
+    # ── Vertical gradient-band fix (blend stage only) ────────────────────────
+    # Two faint vertical bands appeared at the seam longitudes because the
+    # vignetted outer rim of each fisheye (illumination collapses ~65% over the
+    # last ~5° of FOV) entered the blend: it received up to ~30% feather weight
+    # AND biased the global exposure gain (estimated over ALL overlap pixels,
+    # dark rims included), which over-brightened the back hemisphere into
+    # clipping. Both estimators now use the measured clean FOV. The angle is
+    # measured per capture from the overlap itself (no fixed constants beyond
+    # the 90%-illumination definition); validity/ownership masks (v1, v2) and
+    # the projection are untouched, and the same clean angle is used for both
+    # lenses so the w1=0.5 seam-centre locus is unchanged.
+    theta1_deg = np.hypot(m1x - l1.cx, m1y - l1.cy) / max(l1.radius, 1e-6) * (fov / 2.0)
+    theta2_deg = (
+        np.hypot(m2x - l2_draw.cx, m2y - l2_draw.cy) / max(l2_draw.radius, 1e-6) * (fov / 2.0)
+    )
+    theta_clean = _estimate_clean_theta(front, back, overlap, theta1_deg, theta2_deg, fov)
+    clean1 = v1 & (theta1_deg <= theta_clean)
+    clean2 = v2 & (theta2_deg <= theta_clean)
+    meta["blend_theta_clean_deg"] = theta_clean
+    logger.info(
+        f"Blend clean FOV: theta_clean={theta_clean:.1f}° (fov/2={fov / 2.0:.1f}°)"
+    )
+
+    # Exposure gain: per-channel MEDIAN of per-pixel front/back ratios over the
+    # clean overlap. The previous mean-of-sums over the full overlap was biased
+    # by the vignetted rims AND by close-range parallax content in the polar
+    # caps (floor/ceiling), inflating the gain (measured 1.36x vs a true
+    # same-surface ratio of ~1.05x on real captures) and clipping up to ~half
+    # of the bright overlap — the wide component of the seam gradient bands.
+    # The median over pixel-aligned clean pixels is robust to both.
+    gain_region = clean1 & clean2
+    if gain_region.sum() <= 1000:
+        gain_region = overlap
+    if gain_region.sum() > 1000:
+        gains = []
+        for c in range(3):
+            fr = front[..., c][gain_region].astype(np.float32)
+            bk = back[..., c][gain_region].astype(np.float32)
+            m = (fr > 10) & (bk > 10)
+            if m.sum() > 1000:
+                gains.append(float(np.median(fr[m] / bk[m])))
+            else:
+                gains.append(float((fr.mean() + 1e-6) / (bk.mean() + 1e-6)))
+        gain = np.array(gains, dtype=np.float32).reshape(1, 1, 3)
+        meta["exposure_gain_bgr"] = [float(g) for g in gain.ravel()]
         back = np.clip(back.astype(np.float32) * gain, 0, 255).astype(np.uint8)
         sphere2 = back.copy()
         sphere2[~v2] = 0
 
-    d1 = cv2.distanceTransform(v1.astype(np.uint8), cv2.DIST_L2, 5)
-    d2 = cv2.distanceTransform(v2.astype(np.uint8), cv2.DIST_L2, 5)
+    d1 = cv2.distanceTransform(clean1.astype(np.uint8), cv2.DIST_L2, 5)
+    d2 = cv2.distanceTransform(clean2.astype(np.uint8), cv2.DIST_L2, 5)
+    # Coverage safety net: theta1+theta2≈180° guarantees every valid pixel is
+    # inside at least one clean mask; if a pathological calibration ever broke
+    # that, fall back to the original full-validity feather rather than render
+    # holes.
+    if not bool(np.all((d1 + d2)[v1 | v2] > 0)):
+        logger.warning("Clean-FOV feather left uncovered pixels; using full-validity feather")
+        d1 = cv2.distanceTransform(v1.astype(np.uint8), cv2.DIST_L2, 5)
+        d2 = cv2.distanceTransform(v2.astype(np.uint8), cv2.DIST_L2, 5)
     w1 = d1 / (d1 + d2 + 1e-6)
     blended = (front.astype(np.float32) * w1[..., None] +
                back.astype(np.float32) * (1.0 - w1)[..., None])
