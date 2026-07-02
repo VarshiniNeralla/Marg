@@ -1,0 +1,111 @@
+{
+  "summary": {
+    "total_pixels": 16588800,
+    "lens1_valid": {
+      "pixels": 11066153,
+      "percent": 66.70858048804013
+    },
+    "lens2_valid": {
+      "pixels": 11068633,
+      "percent": 66.72353033371914
+    },
+    "lens1_exclusive": {
+      "pixels": 5520167,
+      "percent": 33.27646966628087
+    },
+    "lens2_exclusive": {
+      "pixels": 5522647,
+      "percent": 33.29141951195987
+    },
+    "overlap": {
+      "pixels": 5545986,
+      "percent": 33.43211082175926
+    },
+    "neither": {
+      "pixels": 0,
+      "percent": 0.0
+    },
+    "blend_weight_lens1": {
+      "min": 0.0,
+      "max": 1.0,
+      "mean_in_overlap": 0.499966614718128
+    }
+  },
+  "longitude_columns": {
+    "columns_both_gt_25pct_rows": 2107,
+    "columns_lens1_dominant": 0,
+    "columns_lens2_dominant": 0,
+    "sample_contested_output_longitudes_deg": [
+      -123.74999999999999,
+      -123.6875,
+      -123.625,
+      -123.56250000000001,
+      -123.5,
+      -123.4375,
+      -123.37499999999999,
+      -123.3125,
+      -123.24999999999999,
+      -123.18750000000001,
+      -123.125,
+      -123.06249999999999,
+      -122.99999999999999,
+      -122.9375,
+      -122.87499999999999,
+      -122.8125,
+      -122.75,
+      -122.68749999999999,
+      -122.62499999999999,
+      -122.5625,
+      "..."
+    ],
+    "mean_column_fraction_lens1": 0.6670858048804011,
+    "mean_column_fraction_lens2": 0.6672353033371914,
+    "mean_column_fraction_both": 0.3343211082175926
+  },
+  "lens2_rotation_hypotheses": {
+    "modes": [
+      {
+        "mode": "stitched_actual",
+        "description": "Ry(\u03c0) + yaw_offset=\u03c0 [current lens2]",
+        "yaw_offset_deg": 180.0,
+        "body_flip": true,
+        "lens2_valid_pct": 66.70876736111111,
+        "overlap_with_lens1_pct": 66.27478780864197,
+        "lens1_exclusive_pct": 0.43379267939814814,
+        "lens2_exclusive_pct": 0.4339795524691358
+      },
+      {
+        "mode": "body_flip_only",
+        "description": "Ry(\u03c0) only, yaw_offset=0",
+        "yaw_offset_deg": 0.0,
+        "body_flip": true,
+        "lens2_valid_pct": 66.72353033371914,
+        "overlap_with_lens1_pct": 33.43211082175926,
+        "lens1_exclusive_pct": 33.27646966628087,
+        "lens2_exclusive_pct": 33.29141951195987
+      },
+      {
+        "mode": "yaw_offset_only",
+        "description": "yaw_offset=\u03c0 only, no Ry(\u03c0)",
+        "yaw_offset_deg": 180.0,
+        "body_flip": false,
+        "lens2_valid_pct": 66.72353033371914,
+        "overlap_with_lens1_pct": 33.43211082175926,
+        "lens1_exclusive_pct": 33.27646966628087,
+        "lens2_exclusive_pct": 33.29141951195987
+      },
+      {
+        "mode": "calib_only",
+        "description": "calibration R2 only",
+        "yaw_offset_deg": 0.0,
+        "body_flip": false,
+        "lens2_valid_pct": 66.70876736111111,
+        "overlap_with_lens1_pct": 66.27478780864197,
+        "lens1_exclusive_pct": 0.43379267939814814,
+        "lens2_exclusive_pct": 0.4339795524691358
+      }
+    ],
+    "interpretation": "High overlap likely from BOTH Ry(\u03c0) and yaw_offset=\u03c0: actual overlap 66.3% vs body_flip_only 33.4% vs yaw_offset_only 33.4%.",
+    "note": "yaw_offset shifts lon before sphere_dirs; body_flip composes R2 @ Ry(\u03c0). They are independent. If stitched_actual overlap \u226b body_flip_only and \u226b yaw_offset_only individually, both may be steering lens2 onto lens1 longitudes."
+  }
+}

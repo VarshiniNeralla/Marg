@@ -121,17 +121,17 @@ def _extension(filename: str) -> str:
     return Path(filename or "").suffix.lower()
 
 
-def _processing_status(kind: str, ext: str) -> str:
-    if kind == "captures" and ext in {".dng", ".insp", ".insv"}:
-        return "queued"
-    return "converted"
-
-
 def _asset_payload(asset: dict[str, Any], *, kind: str, entity_id: Optional[str], ext: str) -> dict[str, Any]:
     original_url = asset["original_url"]
     thumbnail_url = asset["thumbnail_url"]
-    # PDFs are uploaded as resource_type=image and original_url is already an image-render URL
-    processed_url = original_url if ext in {".jpg", ".jpeg", ".png", ".pdf"} else None
+    stitched = asset.get("stitch") is not None
+    # A raw dual-fisheye that was successfully stitched server-side is now a
+    # viewable equirectangular JPEG — treat it exactly like a converted panorama.
+    is_viewable = ext in {".jpg", ".jpeg", ".png", ".pdf"} or stitched
+    processed_url = original_url if is_viewable else None
+    # Raw formats that FAILED to stitch remain queued (archival raw only); a
+    # stitched or already-viewable asset is converted.
+    status = "converted" if is_viewable else "queued"
     return {
         **asset,
         "originalUrl": original_url,
@@ -141,10 +141,13 @@ def _asset_payload(asset: dict[str, Any], *, kind: str, entity_id: Optional[str]
         "processedPanoramaUrl": processed_url,
         "preview_url": thumbnail_url,
         "previewUrl": thumbnail_url,
-        "file_type": ext.lstrip("."),
-        "fileType": ext.lstrip("."),
-        "processing_status": _processing_status(kind, ext),
-        "processingStatus": _processing_status(kind, ext),
+        # After a successful stitch the delivered asset is a jpg, not the raw ext.
+        "file_type": "jpg" if stitched else ext.lstrip("."),
+        "fileType": "jpg" if stitched else ext.lstrip("."),
+        "processing_status": status,
+        "processingStatus": status,
+        "projection": (asset.get("stitch") or {}).get("projection") if stitched else None,
+        "cameraModel": (asset.get("stitch") or {}).get("cameraModel") if stitched else None,
         "capture_id": entity_id if kind == "captures" else None,
         "captureId": entity_id if kind == "captures" else None,
     }
@@ -162,26 +165,34 @@ _ALLOWED_CONTENT_TYPES = {
 }
 
 
-def _validate_upload_size(file: UploadFile) -> int:
+def _validate_upload_size(file: UploadFile, *, is_raw_360: bool = False) -> int:
     """Returns the file size in bytes, raising if it exceeds the configured cap.
-    Uses seek/tell so we don't buffer the whole file in memory just to size it."""
+    Uses seek/tell so we don't buffer the whole file in memory just to size it.
+
+    Raw 360 files (.dng/.insp/.insv) are STITCHED down to a small equirectangular
+    JPEG before they reach Cloudinary, so the raw input gets a larger cap — only
+    the stitched output must fit Cloudinary's limit."""
     try:
         file.file.seek(0, 2)   # seek to end
         size = file.file.tell()
         file.file.seek(0)       # rewind for the actual upload
     except Exception:
         return 0  # unseekable stream — let Cloudinary's own limits apply
-    if size > settings.MAX_UPLOAD_BYTES:
-        mb = settings.MAX_UPLOAD_BYTES // (1024 * 1024)
+    cap = settings.MAX_RAW_UPLOAD_BYTES if is_raw_360 else settings.MAX_UPLOAD_BYTES
+    if size > cap:
+        mb = cap // (1024 * 1024)
         actual_mb = size / (1024 * 1024)
         from loguru import logger
         logger.warning(
             f"Upload rejected: {file.filename} is {actual_mb:.1f} MB > {mb} MB cap"
         )
+        if is_raw_360:
+            raise ValidationException(
+                f"File is {actual_mb:.0f} MB, over the {mb} MB limit for raw 360 files."
+            )
         raise ValidationException(
-            f"File is {actual_mb:.0f} MB, over the {mb} MB limit. Raw camera files "
-            f"(.dng/.insv) are usually too large — upload the JPG photo or the "
-            f"stitched 360 export from the Insta360 app instead."
+            f"File is {actual_mb:.0f} MB, over the {mb} MB limit. Upload a smaller "
+            f"image or the stitched 360 export from the Insta360 app."
         )
     return size
 
@@ -205,7 +216,13 @@ async def _upload_files(
         ctype = (file.content_type or "").lower()
         if ctype and not any(ctype.startswith(p) for p in allowed_types):
             raise ValidationException(f"Unsupported content type for {kind}: {ctype}")
-        _validate_upload_size(file)
+        is_raw_360 = kind == "captures" and ext in {".dng", ".insp", ".insv"}
+        from loguru import logger
+        logger.info(
+            f"[capture-upload] file={file.filename} ext={ext} kind={kind} "
+            f"is_raw_360={is_raw_360} entity_id={entity_id}"
+        )
+        _validate_upload_size(file, is_raw_360=is_raw_360)
         asset = await upload_media(
             file_obj=file.file,
             filename=file.filename or f"upload{ext}",
@@ -218,7 +235,15 @@ async def _upload_files(
             # succeed so field captures are never lost.
             tag_if_panorama=(kind == "captures"),
         )
-        uploaded.append(_asset_payload(asset, kind=kind, entity_id=entity_id, ext=ext))
+        payload = _asset_payload(asset, kind=kind, entity_id=entity_id, ext=ext)
+        logger.info(
+            f"[capture-upload] completed file={file.filename} "
+            f"processing_status={payload.get('processing_status')} "
+            f"projection={payload.get('projection')} "
+            f"processed_panorama_url={payload.get('processed_panorama_url')} "
+            f"original_url={payload.get('original_url')}"
+        )
+        uploaded.append(payload)
     return uploaded
 
 

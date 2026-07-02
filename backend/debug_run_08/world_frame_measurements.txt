@@ -1,0 +1,25 @@
+── World frame on stitched equirect ──
+
+Lens1 optical axis
+  lon = -0.85°
+  lat = +0.04°
+
+Lens2 optical axis
+  lon = -179.06°
+  lat = -0.10°
+
+Expected seam longitude = +89.15°, -90.85°
+Actual overlap longitude = -89.77°
+Actual overlap longitude range (equator band) = -103.00° to +101.25°
+
+Current body flip axis
+  Ry (π)  (not Rx, not Rz)
+  _rot_matrix(180, 0, 0) → Ry(π) only; first calibration arg (ra) is the Ry axis. Not Rx or Rz.
+
+World axis markers (stitcher frame):
+  +X: lon=+90.00° lat=+0.00°
+  -X: lon=-90.00° lat=+0.00°
+  +Y: lon=+0.00° lat=+90.00°
+  -Y: lon=+0.00° lat=-90.00°
+  +Z: lon=+0.00° lat=+0.00°
+  -Z: lon=+180.00° lat=+0.00°

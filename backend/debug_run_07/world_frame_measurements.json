@@ -1,0 +1,104 @@
+{
+  "world_frame": "X=cos(lat)*sin(lon), Y=sin(lat), Z=cos(lat)*cos(lon)",
+  "world_axes": [
+    {
+      "label": "+X",
+      "world_vector": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "longitude_deg": 90.0,
+      "latitude_deg": 0.0
+    },
+    {
+      "label": "-X",
+      "world_vector": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "longitude_deg": -90.0,
+      "latitude_deg": 0.0
+    },
+    {
+      "label": "+Y",
+      "world_vector": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "longitude_deg": 0.0,
+      "latitude_deg": 90.0
+    },
+    {
+      "label": "-Y",
+      "world_vector": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "longitude_deg": 0.0,
+      "latitude_deg": -90.0
+    },
+    {
+      "label": "+Z",
+      "world_vector": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "longitude_deg": 0.0,
+      "latitude_deg": 0.0
+    },
+    {
+      "label": "-Z",
+      "world_vector": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "longitude_deg": 180.0,
+      "latitude_deg": 0.0
+    }
+  ],
+  "lens1_optical_axis": {
+    "world_vector": [
+      -0.014782395979120731,
+      0.0007679447953962922,
+      0.9998904395132038
+    ],
+    "longitude_deg": -0.847,
+    "latitude_deg": 0.044,
+    "rotation": "Rz(-179.356) @ Rx(0.044) @ Ry(0.847)",
+    "yaw_offset_deg": 0.0,
+    "body_flip": false
+  },
+  "lens2_optical_axis": {
+    "world_vector": [
+      -0.016335528275891638,
+      -0.001815141425336601,
+      -0.9998649187653068
+    ],
+    "longitude_deg": -179.064,
+    "latitude_deg": -0.104,
+    "rotation": "Rz(0.012) @ Rx(-0.104) @ Ry(-0.936) @ Ry(\u03c0)",
+    "yaw_offset_deg": 0.0,
+    "body_flip": true
+  },
+  "seam": {
+    "expected_seam_longitude_deg": [
+      89.15300000000002,
+      -90.847
+    ],
+    "expected_seam_note": "\u00b190\u00b0 from lens1 optical-axis longitude (dual-fisheye hemisphere boundary)",
+    "actual_overlap_longitude_centroid_deg": -89.61157739149135,
+    "actual_overlap_longitude_equator_deg": -89.77030555764938,
+    "actual_overlap_longitude_range_deg": [
+      -102.99999999999999,
+      101.25000000000001
+    ]
+  },
+  "body_flip_axis": "Ry (\u03c0)",
+  "body_flip_detail": "_rot_matrix(180, 0, 0) \u2192 Ry(\u03c0) only; first calibration arg (ra) is the Ry axis. Not Rx or Rz."
+}

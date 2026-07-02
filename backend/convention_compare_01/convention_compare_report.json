@@ -1,0 +1,45 @@
+{
+  "dng": "IMG_20250502_162926_00_002.dng",
+  "output_width": 5760,
+  "output_height": 2880,
+  "conventions": {
+    "baseline": "Baseline: R @ v, phi=atan2(Yr,Xr)",
+    "r_transpose": "R.T @ v, phi=atan2(Yr,Xr)",
+    "phi_swap": "R @ v, phi=atan2(Xr,Yr)",
+    "phi_plus90": "R @ v, phi=atan2(Yr,Xr)+90deg"
+  },
+  "vs_baseline": {
+    "baseline": {
+      "yaw_deg": 0,
+      "pitch_deg": 0,
+      "roll_deg": 0,
+      "mse": 0,
+      "correlation": 1,
+      "abs_sum_deg": 0
+    },
+    "r_transpose": {
+      "yaw_deg": 2.0,
+      "pitch_deg": 0.0,
+      "roll_deg": 0.0,
+      "mse": 0.00028958270559087396,
+      "correlation": 0.9930705130390556,
+      "abs_sum_deg": 2.0
+    },
+    "phi_swap": {
+      "yaw_deg": 14.5,
+      "pitch_deg": -19.5,
+      "roll_deg": -14.0,
+      "mse": 0.015557024627923965,
+      "correlation": 0.5812034670278798,
+      "abs_sum_deg": 48.0
+    },
+    "phi_plus90": {
+      "yaw_deg": 14.5,
+      "pitch_deg": 4.0,
+      "roll_deg": -17.0,
+      "mse": 0.015983184799551964,
+      "correlation": 0.5673494795072191,
+      "abs_sum_deg": 35.5
+    }
+  }
+}

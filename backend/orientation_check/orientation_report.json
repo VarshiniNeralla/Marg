@@ -1,0 +1,67 @@
+{
+  "conventions": {
+    "equirect_world_frame": "X=cos(lat)*sin(lon), Y=sin(lat), Z=cos(lat)*cos(lon)",
+    "forward_at_lon0_lat0": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "zenith_at_lat90": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "lens_optical_axis_lens_frame": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "world_to_lens": "v_lens = R @ v_world",
+    "rotation_matrix": "R = Rz(rc) @ Rx(rb) @ Ry(ra)  with rot=(ra,rb,rc)",
+    "lens2_equirect_yaw_offset": "pi rad added to lon when sampling lens2 only"
+  },
+  "forward": {
+    "world_vector": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "longitude_deg": 0.0,
+    "latitude_deg": 0.0
+  },
+  "lens1": {
+    "lens_label": "lens1",
+    "calibration_rot_deg": [
+      0.847,
+      0.044,
+      -179.356
+    ],
+    "stitcher_yaw_offset_deg": 0.0,
+    "world_vector": [
+      -0.014782395979120731,
+      0.0007679447953962922,
+      0.9998904395132038
+    ],
+    "longitude_deg": -0.847,
+    "latitude_deg": 0.044
+  },
+  "lens2": {
+    "lens_label": "lens2",
+    "calibration_rot_deg": [
+      -0.936,
+      -0.104,
+      0.012
+    ],
+    "stitcher_yaw_offset_deg": 180.0,
+    "world_vector": [
+      0.016335528275891516,
+      -0.001815141425336601,
+      0.9998649187653068
+    ],
+    "longitude_deg": 0.936,
+    "latitude_deg": -0.104
+  },
+  "separation_lens1_lens2_deg": 1.7891311748082117,
+  "separation_lens1_forward_deg": 0.8481420040119693,
+  "separation_lens2_forward_deg": 0.9417595435208184
+}

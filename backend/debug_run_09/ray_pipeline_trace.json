@@ -1,0 +1,350 @@
+{
+  "conventions": {
+    "world_frame": {
+      "description": "Right-handed unit sphere used by _hemisphere_map",
+      "formulas": [
+        "X = cos(lat) * sin(lon)",
+        "Y = sin(lat)",
+        "Z = cos(lat) * cos(lon)"
+      ],
+      "reference_directions": {
+        "forward_plus_Z": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "zenith_plus_Y": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "lon_0_lat_0": [
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "longitude": "atan2(X, Z); lon=0\u00b0 at +Z (forward)",
+      "latitude": "asin(Y); lat=+90\u00b0 at +Y (zenith, GPano row 0)"
+    },
+    "equirect_grid": {
+      "lon_rad": "np.linspace(-\u03c0, \u03c0, out_w)  \u2192  x=0 is lon=\u2212180\u00b0",
+      "lat_rad": "np.linspace(+\u03c0/2, \u2212\u03c0/2, out_h)  \u2192  y=0 is lat=+90\u00b0 (GPano)",
+      "yaw_offset": "lon_sphere = lon_output + yaw_offset (applied before sphere_dirs)",
+      "current_lens1_yaw_offset_deg": 0.0,
+      "current_lens2_yaw_offset_deg": 0.0
+    },
+    "rotation": {
+      "calibration_order": "R_cal = Rz(rc) @ Rx(rb) @ Ry(ra)  [degrees from blob]",
+      "lens1_effective": "R_eff = R_cal",
+      "lens2_effective": "R_eff = R_cal @ Ry(\u03c0)",
+      "lens2_body_flip": "_rot_matrix(180, 0, 0) \u2192 Ry(\u03c0) only; first calibration arg (ra) is the Ry axis. Not Rx or Rz.",
+      "world_to_lens": "v_lens = R_eff @ v_world"
+    },
+    "lens_frame": {
+      "optical_axis": "+Z (boresight)",
+      "theta": "acos(Zr)  \u2014 incidence angle from boresight [rad/deg]",
+      "phi": "atan2(Yr, Xr)  \u2014 azimuth in lens image plane [rad/deg]"
+    },
+    "fisheye_equidistant": {
+      "model": "r_px = radius * theta / (FOV/2)",
+      "pixel": "u = cx + r_px * cos(phi),  v = cy + r_px * sin(phi)",
+      "valid": "theta <= FOV/2"
+    },
+    "inverse_remap": {
+      "description": "cv2.remap builds mapx/mapy: for each panorama pixel (x,y) \u2026",
+      "steps": [
+        "1. lon_output, lat from equirect grid (GPano y-down latitude)",
+        "2. lon_sphere = lon_output + yaw_offset",
+        "3. (X,Y,Z) = sphere_dirs(lon_sphere, lat)",
+        "4. (Xr,Yr,Zr) = R_eff @ (X,Y,Z)",
+        "5. theta, phi \u2192 sample fisheye at (u,v)"
+      ],
+      "forward_inverse": "Given v_world, lon=atan2(X,Z), lat=asin(Y); lon_output = lon_sphere \u2212 yaw_offset; panorama (x,y) from lonlat_to_pixel"
+    }
+  },
+  "sample_ray": {
+    "world_vector_xyz": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "lon_deg": 0.0,
+    "lat_deg": 0.0,
+    "description": "Default: forward +Z at panorama centre (lon=0\u00b0, lat=0\u00b0)"
+  },
+  "lens1": {
+    "lens": "lens1",
+    "calibration_rot_deg": [
+      0.847,
+      0.044,
+      -179.356
+    ],
+    "yaw_offset_deg": 0.0,
+    "body_flip": false,
+    "step_1_world_ray": {
+      "vector_xyz": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "lon_deg": 0.0,
+      "lat_deg": 0.0,
+      "note": "Stitcher world / GPano sphere frame"
+    },
+    "step_2_after_R_cal": {
+      "formula": "R_cal = Rz(-179.356) @ Rx(0.044) @ Ry(0.847)",
+      "matrix": [
+        [
+          -0.9998274464189165,
+          0.011239680402688962,
+          -0.014790097088061432
+        ],
+        [
+          -0.011249806955914791,
+          -0.9999365379088999,
+          0.0006016628773804607
+        ],
+        [
+          -0.014782395979120731,
+          0.0007679447953962922,
+          0.9998904395132038
+        ]
+      ],
+      "vector_xyz": [
+        -0.014790097088061432,
+        0.0006016628773804607,
+        0.9998904395132038
+      ]
+    },
+    "step_3_after_Ry_pi": {
+      "applied": false,
+      "formula": "skipped (lens1)",
+      "matrix": null,
+      "vector_xyz": [
+        -0.014790097088061432,
+        0.0006016628773804607,
+        0.9998904395132038
+      ],
+      "note": "Lens2 only; composed as R_eff = R_cal @ Ry(\u03c0)"
+    },
+    "step_4_effective_rotation": {
+      "formula": "R_eff = R_cal",
+      "matrix": [
+        [
+          -0.9998274464189165,
+          0.011239680402688962,
+          -0.014790097088061432
+        ],
+        [
+          -0.011249806955914791,
+          -0.9999365379088999,
+          0.0006016628773804607
+        ],
+        [
+          -0.014782395979120731,
+          0.0007679447953962922,
+          0.9998904395132038
+        ]
+      ],
+      "vector_lens_xyz": [
+        -0.014790097088061432,
+        0.0006016628773804607,
+        0.9998904395132038
+      ]
+    },
+    "step_5_fisheye_angles": {
+      "theta_rad": 0.01480287049447182,
+      "theta_deg": 0.8481420040119693,
+      "phi_rad": 3.1009349546382596,
+      "phi_deg": 177.67048544536365,
+      "definition": "theta=acos(Zr), phi=atan2(Yr,Xr) in lens frame (+Z boresight)"
+    },
+    "step_6_fisheye_pixel": {
+      "r_px": 12.582934990109338,
+      "u": 1467.5874636781189,
+      "v": 1524.971452246348,
+      "cx": 1480.16,
+      "cy": 1524.46,
+      "radius": 1513.26,
+      "fov_deg": 204.0,
+      "formula": "r = radius * theta / (FOV/2); u = cx + r*cos(phi); v = cy + r*sin(phi)",
+      "valid_in_fov": true
+    },
+    "step_7_inverse_mapping_to_panorama": {
+      "description": "Which equirect pixel displays this world direction",
+      "lon_sphere_deg": 0.0,
+      "yaw_offset_deg": 0.0,
+      "lon_output_deg": 0.0,
+      "lat_deg": 0.0,
+      "formula_lon": "lon_sphere = atan2(X,Z); lon_output = lon_sphere \u2212 yaw_offset"
+    },
+    "step_8_panorama_pixel": {
+      "x": 2880,
+      "y": 1440,
+      "out_width": 5760,
+      "out_height": 2880,
+      "formula": "GPano: x from lon, y from lat (row 0 = lat +90\u00b0)"
+    },
+    "inverse_remap_round_trip": {
+      "from_pano_pixel": [
+        2880,
+        1440
+      ],
+      "lon_output_deg": 0.031255426289284696,
+      "lon_sphere_deg": 0.031255426289284696,
+      "lat_deg": -0.03126085446334896,
+      "world_xyz": [
+        0.0005455099896118323,
+        -0.0005456048103025083,
+        0.9999997023670768
+      ],
+      "matches_input_world": false
+    }
+  },
+  "lens2": {
+    "lens": "lens2",
+    "calibration_rot_deg": [
+      -0.936,
+      -0.104,
+      0.012
+    ],
+    "yaw_offset_deg": 0.0,
+    "body_flip": true,
+    "step_1_world_ray": {
+      "vector_xyz": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "lon_deg": 0.0,
+      "lat_deg": 0.0,
+      "note": "Stitcher world / GPano sphere frame"
+    },
+    "step_2_after_R_cal": {
+      "formula": "R_cal = Rz(0.012) @ Rx(-0.104) @ Ry(-0.936)",
+      "matrix": [
+        [
+          0.9998665377763549,
+          -0.00020943916368366594,
+          -0.016335934939927042
+        ],
+        [
+          0.00023906290461390758,
+          0.999998330697028,
+          0.0018114778731453116
+        ],
+        [
+          0.016335528275891516,
+          -0.001815141425336601,
+          0.9998649187653068
+        ]
+      ],
+      "vector_xyz": [
+        -0.016335934939927042,
+        0.0018114778731453116,
+        0.9998649187653068
+      ]
+    },
+    "step_3_after_Ry_pi": {
+      "applied": true,
+      "formula": "Ry(\u03c0) = _rot_matrix(180\u00b0, 0\u00b0, 0\u00b0)",
+      "matrix": [
+        [
+          -1.0,
+          0.0,
+          1.2246467991473532e-16
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          -1.2246467991473532e-16,
+          0.0,
+          -1.0
+        ]
+      ],
+      "vector_xyz": [
+        0.016335934939927164,
+        0.0018114778731453116,
+        -0.9998649187653068
+      ],
+      "note": "Lens2 only; composed as R_eff = R_cal @ Ry(\u03c0)"
+    },
+    "step_4_effective_rotation": {
+      "formula": "R_eff = R_cal @ Ry(\u03c0)",
+      "matrix": [
+        [
+          -0.9998665377763549,
+          -0.00020943916368366594,
+          0.016335934939927164
+        ],
+        [
+          -0.0002390629046139078,
+          0.999998330697028,
+          -0.0018114778731453116
+        ],
+        [
+          -0.016335528275891638,
+          -0.001815141425336601,
+          -0.9998649187653068
+        ]
+      ],
+      "vector_lens_xyz": [
+        0.016335934939927164,
+        -0.0018114778731453116,
+        -0.9998649187653068
+      ]
+    },
+    "step_5_fisheye_angles": {
+      "theta_rad": 3.125155848793276,
+      "theta_deg": 179.05824045647918,
+      "phi_rad": -0.11043795752822123,
+      "phi_deg": -6.327628864412114,
+      "definition": "theta=acos(Zr), phi=atan2(Yr,Xr) in lens frame (+Z boresight)"
+    },
+    "step_6_fisheye_pixel": {
+      "r_px": 2656.486989736977,
+      "u": 4120.91347016822,
+      "v": 1221.5590032473378,
+      "cx": 1480.61,
+      "cy": 1514.34,
+      "radius": 1513.26,
+      "fov_deg": 204.0,
+      "formula": "r = radius * theta / (FOV/2); u = cx + r*cos(phi); v = cy + r*sin(phi)",
+      "valid_in_fov": false
+    },
+    "step_7_inverse_mapping_to_panorama": {
+      "description": "Which equirect pixel displays this world direction",
+      "lon_sphere_deg": 0.0,
+      "yaw_offset_deg": 0.0,
+      "lon_output_deg": 0.0,
+      "lat_deg": 0.0,
+      "formula_lon": "lon_sphere = atan2(X,Z); lon_output = lon_sphere \u2212 yaw_offset"
+    },
+    "step_8_panorama_pixel": {
+      "x": 2880,
+      "y": 1440,
+      "out_width": 5760,
+      "out_height": 2880,
+      "formula": "GPano: x from lon, y from lat (row 0 = lat +90\u00b0)"
+    },
+    "inverse_remap_round_trip": {
+      "from_pano_pixel": [
+        2880,
+        1440
+      ],
+      "lon_output_deg": 0.031255426289284696,
+      "lon_sphere_deg": 0.031255426289284696,
+      "lat_deg": -0.03126085446334896,
+      "world_xyz": [
+        0.0005455099896118323,
+        -0.0005456048103025083,
+        0.9999997023670768
+      ],
+      "matches_input_world": false
+    }
+  }
+}

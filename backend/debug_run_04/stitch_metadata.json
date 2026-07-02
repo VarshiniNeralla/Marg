@@ -1,0 +1,35 @@
+{
+  "camera_model": "ONE X2",
+  "decoded_width": 3040,
+  "decoded_height": 6080,
+  "output_width": 5760,
+  "output_height": 2880,
+  "calibration_source": "embedded",
+  "layout": "top-bottom",
+  "fisheye_fov_deg": 204.0,
+  "raw_calibration": "INSTA3602_1480.160_1524.460_1513.260_0.847_0.044_-179.356_1480.610_1514.340_4557.130_-0.936_-0.104_0.012_3040_6080_3113",
+  "calibration_width": 3040,
+  "calibration_height": 6080,
+  "scale_x": 1.0,
+  "scale_y": 1.0,
+  "lens1": {
+    "cx": 1480.16,
+    "cy": 1524.46,
+    "radius": 1513.26,
+    "rot": [
+      0.847,
+      0.044,
+      -179.356
+    ]
+  },
+  "lens2": {
+    "cx": 1480.61,
+    "cy": 1514.34,
+    "radius": 1513.26,
+    "rot": [
+      -0.936,
+      -0.104,
+      0.012
+    ]
+  }
+}

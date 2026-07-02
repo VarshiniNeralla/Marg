@@ -1,30 +1,16 @@
 """
 360 panorama validation + spherical-metadata injection.
 
-Design decision (production): we do NOT stitch raw dual-fisheye .insp files
-server-side. ffmpeg's v360 filter is a geometric reprojection tool with no
-seam-blending / optical-flow alignment, so it always bakes a hard vertical
-seam into the meridian. Commercial-grade seamless panoramas require the
-calibrated optical-flow stitching that the Insta360 app / Studio performs.
-
-So the field workflow is: export the finished equirectangular JPEG from the
-Insta360 app, then upload that. This module's job is therefore to:
-
-  1. VALIDATE that an uploaded image is a usable equirectangular panorama
-     (exactly ~2:1, decodable, sane dimensions). Anything else is rejected
-     before publish so a broken panorama never reaches the viewer.
-  2. INJECT XMP GPano spherical metadata so downstream viewers/tools can
-     recognise the JPEG as a full 360 equirectangular panorama.
-
-`.insp`/`.dng` are still accepted as *files*, but a raw dual-fisheye .insp
-will fail the 2:1 aspect check (it is ~2:1 but not equirectangular) — see
-is_probably_equirectangular's note — and .dng is treated as a flat still.
+Raw dual-fisheye camera files (.dng / .insp / .insv) are stitched server-side
+into equirectangular panoramas (see fisheye_stitch.py + cloudinary_service.py).
+This module validates dimensions and injects XMP GPano metadata for viewers.
 """
 from __future__ import annotations
 
 import io
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from loguru import logger
 
@@ -43,6 +29,8 @@ _MIN_WIDTH = 1024
 
 INSP_EXTENSIONS = {".insp"}
 DNG_EXTENSIONS = {".dng"}
+INSV_EXTENSIONS = {".insv"}
+RAW_CAPTURE_EXTENSIONS = INSP_EXTENSIONS | DNG_EXTENSIONS | INSV_EXTENSIONS
 
 
 class PanoramaValidationError(ValueError):
@@ -55,6 +43,80 @@ def is_insp(filename: str) -> bool:
 
 def is_dng(filename: str) -> bool:
     return Path(filename).suffix.lower() in DNG_EXTENSIONS
+
+
+def is_insv(filename: str) -> bool:
+    return Path(filename).suffix.lower() in INSV_EXTENSIONS
+
+
+def is_raw_capture(filename: str) -> bool:
+    """True for camera raw dual-fisheye files that require server-side stitching."""
+    return Path(filename).suffix.lower() in RAW_CAPTURE_EXTENSIONS
+
+
+def is_dual_fisheye_layout(width: int, height: int) -> bool:
+    """
+    Heuristic for unstitched Insta360 dual-fisheye frames (top-bottom or side-by-side).
+
+    Equirectangular panoramas are ~2:1 (width > height). Raw dual-fisheye is often
+  ~1:2 stacked (e.g. 3040×6080) or side-by-side with similar extreme aspect.
+    """
+    if width <= 0 or height <= 0:
+        return False
+    if is_equirectangular(width, height):
+        return False
+    ratio = width / height
+    inv = height / width
+    return (_MIN_RATIO <= ratio <= _MAX_RATIO) or (_MIN_RATIO <= inv <= _MAX_RATIO)
+
+
+def validate_stitched_output(width: int, height: int, *, filename: str = "") -> None:
+    """Raise PanoramaValidationError when stitch output is not a 2:1 equirectangular."""
+    if is_dual_fisheye_layout(width, height):
+        logger.error(
+            f"Stitch output looks like raw dual-fisheye '{filename}': {width}x{height}"
+        )
+        raise PanoramaValidationError(
+            "Stitching produced a raw dual-fisheye layout instead of an equirectangular panorama."
+        )
+    if not is_equirectangular(width, height):
+        logger.error(
+            f"Stitch output has invalid aspect '{filename}': {width}x{height} "
+            f"(ratio {width / max(height, 1):.3f}, expected ~2.0)"
+        )
+        raise PanoramaValidationError(
+            "Stitching did not produce a valid 2:1 equirectangular panorama."
+        )
+
+
+def classify_projection_bgr(img_bgr) -> Literal["flat", "dualfisheye", "equirectangular"]:
+    """
+    Backend analogue of the frontend projection classifier.
+
+    Both raw dual-fisheye previews and true panoramas can be ~2:1, so we also
+    inspect the four corners: dark corners imply dual-fisheye circles on a black
+    canvas; filled corners imply a stitched equirectangular panorama.
+    """
+    import cv2
+    import numpy as np
+
+    if img_bgr is None or getattr(img_bgr, "shape", None) is None or len(img_bgr.shape) < 2:
+        return "flat"
+    h, w = img_bgr.shape[:2]
+    if w <= 0 or h <= 0 or not is_equirectangular(w, h):
+        return "flat"
+
+    small = cv2.resize(img_bgr, (128, 64), interpolation=cv2.INTER_AREA)
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    patch = 12
+    corners = [
+        gray[0:patch, 0:patch],
+        gray[0:patch, -patch:],
+        gray[-patch:, 0:patch],
+        gray[-patch:, -patch:],
+    ]
+    dark_corners = sum(float(np.mean(c)) < 18.0 for c in corners)
+    return "dualfisheye" if dark_corners >= 3 else "equirectangular"
 
 
 def measure_image(data: bytes) -> Optional[tuple[int, int]]:
@@ -104,7 +166,32 @@ def validate_panorama(data: bytes, *, filename: str) -> tuple[int, int]:
 _XMP_NS = b"http://ns.adobe.com/xap/1.0/\x00"
 
 
-def _build_gpano_xmp(width: int, height: int) -> bytes:
+@dataclass(frozen=True)
+class GpanoPose:
+    """Google Photo Sphere XMP pose + initial-view fields (degrees)."""
+    pose_heading_degrees: float = 0.0
+    pose_pitch_degrees: float = 0.0
+    pose_roll_degrees: float = 0.0
+    initial_view_heading_degrees: float = 0.0
+    initial_view_pitch_degrees: float = 0.0
+    initial_horizontal_fov_degrees: float = 72.0
+
+    @classmethod
+    def from_metadata(cls, data: Optional[dict]) -> "GpanoPose":
+        if not data:
+            return cls()
+        return cls(
+            pose_heading_degrees=float(data.get("poseHeadingDegrees", 0.0)),
+            pose_pitch_degrees=float(data.get("posePitchDegrees", 0.0)),
+            pose_roll_degrees=float(data.get("poseRollDegrees", 0.0)),
+            initial_view_heading_degrees=float(data.get("initialViewHeadingDegrees", 0.0)),
+            initial_view_pitch_degrees=float(data.get("initialViewPitchDegrees", 0.0)),
+            initial_horizontal_fov_degrees=float(data.get("initialHorizontalFovDegrees", 72.0)),
+        )
+
+
+def _build_gpano_xmp(width: int, height: int, pose: Optional[GpanoPose] = None) -> bytes:
+    p = pose or GpanoPose()
     packet = (
         '<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>'
         '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
@@ -118,14 +205,25 @@ def _build_gpano_xmp(width: int, height: int) -> bytes:
         f'GPano:CroppedAreaImageWidthPixels="{width}" '
         f'GPano:CroppedAreaImageHeightPixels="{height}" '
         'GPano:CroppedAreaLeftPixels="0" '
-        'GPano:CroppedAreaTopPixels="0" />'
+        'GPano:CroppedAreaTopPixels="0" '
+        f'GPano:PoseHeadingDegrees="{p.pose_heading_degrees}" '
+        f'GPano:PosePitchDegrees="{p.pose_pitch_degrees}" '
+        f'GPano:PoseRollDegrees="{p.pose_roll_degrees}" '
+        f'GPano:InitialViewHeadingDegrees="{p.initial_view_heading_degrees}" '
+        f'GPano:InitialViewPitchDegrees="{p.initial_view_pitch_degrees}" '
+        f'GPano:InitialHorizontalFOVDegrees="{p.initial_horizontal_fov_degrees}" />'
         '</rdf:RDF></x:xmpmeta>'
         '<?xpacket end="w"?>'
     )
     return packet.encode("utf-8")
 
 
-def inject_gpano_xmp(data: bytes, width: int, height: int) -> bytes:
+def inject_gpano_xmp(
+    data: bytes,
+    width: int,
+    height: int,
+    pose: Optional[GpanoPose | dict] = None,
+) -> bytes:
     """
     Inject XMP GPano spherical metadata so viewers recognise the JPEG as a full
     equirectangular 360 panorama.
@@ -137,6 +235,7 @@ def inject_gpano_xmp(data: bytes, width: int, height: int) -> bytes:
     """
     if not _PIL_OK:
         return data
+    gpano_pose = pose if isinstance(pose, GpanoPose) else GpanoPose.from_metadata(pose)
     try:
         # Normalise to a clean baseline JPEG first (handles .png inputs too).
         with Image.open(io.BytesIO(data)) as img:
@@ -149,7 +248,7 @@ def inject_gpano_xmp(data: bytes, width: int, height: int) -> bytes:
         # 2 length bytes but not the FF E1 marker.
         if not jpeg.startswith(b"\xff\xd8"):
             return jpeg
-        payload = _XMP_NS + _build_gpano_xmp(width, height)
+        payload = _XMP_NS + _build_gpano_xmp(width, height, gpano_pose)
         seg_len = len(payload) + 2
         if seg_len > 0xFFFF:  # XMP too large for a single APP1 segment
             return jpeg

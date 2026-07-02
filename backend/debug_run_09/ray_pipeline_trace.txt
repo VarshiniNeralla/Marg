@@ -1,0 +1,118 @@
+═══ Ray pipeline trace (one world direction through full stitch path) ═══
+
+── Coordinate conventions ──
+  [world_frame]
+    description: Right-handed unit sphere used by _hemisphere_map
+    formulas:
+      • X = cos(lat) * sin(lon)
+      • Y = sin(lat)
+      • Z = cos(lat) * cos(lon)
+    reference_directions: {'forward_plus_Z': [0.0, 0.0, 1.0], 'zenith_plus_Y': [0.0, 1.0, 0.0], 'lon_0_lat_0': [0.0, 0.0, 1.0]}
+    longitude: atan2(X, Z); lon=0° at +Z (forward)
+    latitude: asin(Y); lat=+90° at +Y (zenith, GPano row 0)
+
+  [equirect_grid]
+    lon_rad: np.linspace(-π, π, out_w)  →  x=0 is lon=−180°
+    lat_rad: np.linspace(+π/2, −π/2, out_h)  →  y=0 is lat=+90° (GPano)
+    yaw_offset: lon_sphere = lon_output + yaw_offset (applied before sphere_dirs)
+    current_lens1_yaw_offset_deg: 0.0
+    current_lens2_yaw_offset_deg: 0.0
+
+  [rotation]
+    calibration_order: R_cal = Rz(rc) @ Rx(rb) @ Ry(ra)  [degrees from blob]
+    lens1_effective: R_eff = R_cal
+    lens2_effective: R_eff = R_cal @ Ry(π)
+    lens2_body_flip: _rot_matrix(180, 0, 0) → Ry(π) only; first calibration arg (ra) is the Ry axis. Not Rx or Rz.
+    world_to_lens: v_lens = R_eff @ v_world
+
+  [lens_frame]
+    optical_axis: +Z (boresight)
+    theta: acos(Zr)  — incidence angle from boresight [rad/deg]
+    phi: atan2(Yr, Xr)  — azimuth in lens image plane [rad/deg]
+
+  [fisheye_equidistant]
+    model: r_px = radius * theta / (FOV/2)
+    pixel: u = cx + r_px * cos(phi),  v = cy + r_px * sin(phi)
+    valid: theta <= FOV/2
+
+  [inverse_remap]
+    description: cv2.remap builds mapx/mapy: for each panorama pixel (x,y) …
+    steps:
+      • 1. lon_output, lat from equirect grid (GPano y-down latitude)
+      • 2. lon_sphere = lon_output + yaw_offset
+      • 3. (X,Y,Z) = sphere_dirs(lon_sphere, lat)
+      • 4. (Xr,Yr,Zr) = R_eff @ (X,Y,Z)
+      • 5. theta, phi → sample fisheye at (u,v)
+    forward_inverse: Given v_world, lon=atan2(X,Z), lat=asin(Y); lon_output = lon_sphere − yaw_offset; panorama (x,y) from lonlat_to_pixel
+
+── Sample world ray ──
+  (X,Y,Z) = (0.000000, 0.000000, 1.000000)
+  lon = 0.0000°,  lat = 0.0000°
+  (Default: forward +Z at panorama centre (lon=0°, lat=0°))
+
+── LENS1 trace ──
+  calibration (ra,rb,rc) = [0.847, 0.044, -179.356]
+  yaw_offset = 0.0°   body_flip = False
+
+  1) World ray (X,Y,Z):
+     (+0.000000, +0.000000, +1.000000)   lon=0.0000° lat=0.0000°
+
+  2) After R_cal  [R_cal = Rz(-179.356) @ Rx(0.044) @ Ry(0.847)]:
+     (-0.014790, +0.000602, +0.999890)
+     R_cal = [[-0.99983, +0.01124, -0.01479]; [-0.01125, -0.99994, +0.00060]; [-0.01478, +0.00077, +0.99989]]
+
+  3) After Ry(π):  skipped (lens1)
+     (not applied)
+
+  4) Effective R_eff @ v_world → lens frame:
+     v_lens = (-0.014790, +0.000602, +0.999890)
+     R_eff = [[-0.99983, +0.01124, -0.01479]; [-0.01125, -0.99994, +0.00060]; [-0.01478, +0.00077, +0.99989]]
+
+  5) Fisheye angles (lens frame):
+     theta = 0.8481°   phi = 177.6705°
+
+  6) Fisheye pixel (equidistant):
+     r = 12.58 px   (u,v) = (1467.59, 1524.97)   valid=True
+     cx=1480.2 cy=1524.5 radius=1513.3 FOV=204.0°
+
+  7) Inverse mapping (world → equirect lon/lat):
+     lon_sphere=0.0000°  lon_output=0.0000°  lat=0.0000°
+
+  8) Panorama pixel (GPano layout):
+     (x,y) = (2880, 1440)  on 5760×2880
+     round-trip from (x,y): world=[0.0005455099896118323, -0.0005456048103025083, 0.9999997023670768]  matches=False
+
+── LENS2 trace ──
+  calibration (ra,rb,rc) = [-0.936, -0.104, 0.012]
+  yaw_offset = 0.0°   body_flip = True
+
+  1) World ray (X,Y,Z):
+     (+0.000000, +0.000000, +1.000000)   lon=0.0000° lat=0.0000°
+
+  2) After R_cal  [R_cal = Rz(0.012) @ Rx(-0.104) @ Ry(-0.936)]:
+     (-0.016336, +0.001811, +0.999865)
+     R_cal = [[+0.99987, -0.00021, -0.01634]; [+0.00024, +1.00000, +0.00181]; [+0.01634, -0.00182, +0.99986]]
+
+  3) After Ry(π):  Ry(π) = _rot_matrix(180°, 0°, 0°)
+     (+0.016336, +0.001811, -0.999865)
+     Ry(π) = [[-1.00000, +0.00000, +0.00000]; [+0.00000, +1.00000, +0.00000]; [-0.00000, +0.00000, -1.00000]]
+
+  4) Effective R_eff @ v_world → lens frame:
+     v_lens = (+0.016336, -0.001811, -0.999865)
+     R_eff = [[-0.99987, -0.00021, +0.01634]; [-0.00024, +1.00000, -0.00181]; [-0.01634, -0.00182, -0.99986]]
+
+  5) Fisheye angles (lens frame):
+     theta = 179.0582°   phi = -6.3276°
+
+  6) Fisheye pixel (equidistant):
+     r = 2656.49 px   (u,v) = (4120.91, 1221.56)   valid=False
+     cx=1480.6 cy=1514.3 radius=1513.3 FOV=204.0°
+
+  7) Inverse mapping (world → equirect lon/lat):
+     lon_sphere=0.0000°  lon_output=0.0000°  lat=0.0000°
+
+  8) Panorama pixel (GPano layout):
+     (x,y) = (2880, 1440)  on 5760×2880
+     round-trip from (x,y): world=[0.0005455099896118323, -0.0005456048103025083, 0.9999997023670768]  matches=False
+
+Note: cv2.remap runs this chain FORWARD per panorama pixel (steps 7→1→2→3→4→5→6) to build mapx/mapy; the trace above follows one fixed world ray.

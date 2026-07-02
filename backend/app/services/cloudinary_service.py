@@ -12,12 +12,63 @@ from anyio import to_thread
 from app.core.config import get_settings
 from app.core.exceptions import ValidationException
 from app.services.panorama_service import (
+    GpanoPose,
+    PanoramaValidationError,
+    classify_projection_bgr,
     inject_gpano_xmp,
-    is_dng,
     is_equirectangular,
     is_insp,
+    is_raw_capture,
     measure_image,
+    validate_stitched_output,
 )
+from app.services.fisheye_stitch import StitchResult, _decode_raw_rgb, stitch_equirectangular
+
+
+def _stitch_raw_360(raw: bytes, filename: str) -> Optional[StitchResult]:
+    """Thread-pool wrapper: stitch a raw dual-fisheye file to equirectangular."""
+    from loguru import logger
+    try:
+        logger.info(f"[capture-pipeline] stitching started file={filename} bytes={len(raw)}")
+        result = stitch_equirectangular(raw, filename)
+        if result is None:
+            logger.error(f"[capture-pipeline] stitching returned None for {filename}")
+            return None
+        aspect = result.width / max(result.height, 1)
+        logger.info(
+            f"[capture-pipeline] stitching completed file={filename} "
+            f"output={result.width}x{result.height} aspect={aspect:.3f} "
+            f"projection={result.projection} camera={result.camera_model}"
+        )
+        return result
+    except Exception as exc:
+        logger.error(f"[capture-pipeline] stitching failed for {filename}: {exc!r}")
+        return None
+
+
+def _extract_insp_preview(raw: bytes, filename: str) -> Optional[tuple[bytes, int, int]]:
+    """
+    Fallback for `.insp` files that decode to a viewable 2:1 preview but do not
+    expose the raw calibration blob needed for our stitcher.
+    """
+    from loguru import logger
+    import cv2
+
+    img = _decode_raw_rgb(raw, filename)
+    if img is None:
+        return None
+    h, w = img.shape[:2]
+    projection = classify_projection_bgr(img)
+    logger.info(
+        f"[capture-pipeline] insp_preview_check file={filename} "
+        f"decoded={w}x{h} projection={projection}"
+    )
+    if projection != "equirectangular":
+        return None
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    if not ok:
+        return None
+    return buf.tobytes(), w, h
 
 settings = get_settings()
 
@@ -133,23 +184,101 @@ async def upload_media(
 
     upload_source: BinaryIO = file_obj
     upload_filename = filename
+    stitch_meta: Optional[dict] = None
 
-    # Raw camera formats (.dng, .insv) are NOT browser-displayable and Cloudinary's
-    # image pipeline can't decode a .dng ("Failed to ping image" → the 422 the
-    # field team hit). Store them as resource_type="raw" so the upload always
-    # succeeds as an archival original, rather than failing the whole capture.
-    #   • .insp is a JPEG internally, so Cloudinary decodes it as an image — keep it
-    #     as image so the viewer can load it (rendered via the dual-fisheye path).
-    #   • .dng / .insv → raw storage.
-    if is_dng(filename) or ext == ".insv":
-        effective_resource_type = "raw"
+    # Raw dual-fisheye camera files (.dng/.insp/.insv) are stitched server-side
+    # when calibration is available. If stitching is unavailable for `.insp`, we
+    # preserve the prior product behavior: upload the raw image and let the
+    # frontend render it with DualFisheyeAdapter.
+    if tag_if_panorama and is_raw_capture(filename):
+        from loguru import logger
 
-    # Captures: NEVER reject. If the image is a genuine 2:1 equirectangular
-    # panorama, inject GPano metadata so the viewer renders a true 360; otherwise
-    # upload it untouched (the viewer shows non-2:1 images flat). Raw camera files
-    # are uploaded as-is — the field team uploads straight from the 360 camera, so
-    # the capture must always attach.
-    if tag_if_panorama and not is_dng(filename) and not is_insp(filename) and ext != ".insv":
+        ext = Path(filename).suffix.lower()
+        logger.info(
+            f"[capture-pipeline] file_type={ext} processor=fisheye_stitch "
+            f"filename={filename} folder={folder}"
+        )
+        raw = file_obj.read()
+        result = await to_thread.run_sync(_stitch_raw_360, raw, filename)
+        if result is None:
+            if is_insp(filename):
+                preview = await to_thread.run_sync(_extract_insp_preview, raw, filename)
+                if preview is not None:
+                    preview_jpg, width, height = preview
+                    try:
+                        validate_stitched_output(width, height, filename=filename)
+                    except PanoramaValidationError as exc:
+                        raise ValidationException(str(exc)) from exc
+                    tagged = await to_thread.run_sync(
+                        inject_gpano_xmp,
+                        preview_jpg,
+                        width,
+                        height,
+                    )
+                    upload_source = BytesIO(tagged)
+                    upload_filename = Path(filename).stem + ".jpg"
+                    effective_resource_type = "image"
+                    stitch_meta = {
+                        "projection": "equirectangular",
+                        "cameraModel": "embedded-preview",
+                        "stitchWidth": width,
+                        "stitchHeight": height,
+                        "source": "insp_preview",
+                    }
+                    logger.info(
+                        f"[capture-pipeline] using embedded INSP preview for {filename} "
+                        f"output={width}x{height} aspect={width / max(height, 1):.3f}"
+                    )
+                else:
+                    dims = measure_image(raw)
+                    dim_text = f"{dims[0]}x{dims[1]}" if dims else "unknown"
+                    logger.warning(
+                        f"[capture-pipeline] stitch_failed_fallback_raw_insp file={filename} "
+                        f"reason=no_usable_calibration_or_preview projection=dualfisheye "
+                        f"dims={dim_text}"
+                    )
+                    upload_source = BytesIO(raw)
+                    upload_filename = filename
+                    effective_resource_type = "image"
+            else:
+                raise ValidationException(
+                    f"Could not stitch {filename}. The file may be corrupt, missing "
+                    f"embedded Insta360 calibration, or unsupported. Export an "
+                    f"equirectangular JPEG from Insta360 Studio and upload that instead."
+                )
+        else:
+            try:
+                validate_stitched_output(result.width, result.height, filename=filename)
+            except PanoramaValidationError as exc:
+                raise ValidationException(str(exc)) from exc
+
+            gpano_pose = GpanoPose.from_metadata((result.metadata or {}).get("gpano"))
+            tagged = await to_thread.run_sync(
+                inject_gpano_xmp,
+                result.processed_image,
+                result.width,
+                result.height,
+                gpano_pose,
+            )
+            upload_source = BytesIO(tagged)
+            upload_filename = Path(filename).stem + ".jpg"
+            effective_resource_type = "image"
+            stitch_meta = {
+                "projection": result.projection,
+                "cameraModel": result.camera_model,
+                "stitchWidth": result.width,
+                "stitchHeight": result.height,
+                **result.metadata,
+            }
+            logger.info(
+                f"[capture-pipeline] upload_source=stitched_jpg filename={upload_filename} "
+                f"dimensions={result.width}x{result.height} "
+                f"aspect={result.width / max(result.height, 1):.3f}"
+            )
+
+    # Non-raw captures: if the image is already a 2:1 equirectangular export
+    # (e.g. from the Insta360 app), inject GPano metadata; otherwise upload as-is.
+    elif tag_if_panorama:
         raw = file_obj.read()
         dims = measure_image(raw)
         if dims and is_equirectangular(dims[0], dims[1]):
@@ -158,7 +287,6 @@ async def upload_media(
             upload_filename = Path(filename).stem + ".jpg"
             effective_resource_type = "image"
         else:
-            # Not a panorama (or undecodable here) — upload the original bytes.
             upload_source = BytesIO(raw)
 
     def _upload() -> dict:
@@ -189,6 +317,20 @@ async def upload_media(
     size = int(result.get("bytes") or 0)
     uploaded_at = result.get("created_at") or datetime.now(timezone.utc).isoformat()
     resource = result.get("resource_type", "image")
+    out_w = result.get("width")
+    out_h = result.get("height")
+
+    from loguru import logger
+    logger.info(
+        f"[capture-pipeline] cloudinary_upload_complete filename={upload_filename} "
+        f"public_id={public_id} resource_type={resource} "
+        f"dimensions={out_w}x{out_h} url={secure_url}"
+    )
+    if stitch_meta is not None and out_w and out_h:
+        logger.info(
+            f"[capture-pipeline] panorama_url={secure_url} "
+            f"aspect={out_w / max(out_h, 1):.3f} projection={stitch_meta.get('projection')}"
+        )
 
     # For PDFs uploaded as resource_type="image", Cloudinary already converts them.
     # original_url points to the PNG render (public, no auth). raw_pdf_url would
@@ -209,4 +351,6 @@ async def upload_media(
         "pages": result.get("pages"),
         "original_filename": filename,
         "raw_pdf_url": None,
+        # Present when a raw dual-fisheye was stitched to equirectangular server-side.
+        "stitch": stitch_meta,
     }

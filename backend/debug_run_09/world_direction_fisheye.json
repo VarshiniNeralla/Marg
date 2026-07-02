@@ -1,0 +1,248 @@
+{
+  "note": "yaw_offset not used; lens2 uses R2 @ Ry(\u03c0) body flip",
+  "lens1_params": {
+    "cx": 1480.16,
+    "cy": 1524.46,
+    "radius": 1513.26,
+    "rot": [
+      0.847,
+      0.044,
+      -179.356
+    ]
+  },
+  "lens2_params": {
+    "cx": 1480.61,
+    "cy": 1514.34,
+    "radius": 1513.26,
+    "rot": [
+      -0.936,
+      -0.104,
+      0.012
+    ]
+  },
+  "projections": [
+    {
+      "direction": "+X",
+      "world_vector": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "color_bgr": [
+        0,
+        0,
+        255
+      ],
+      "lens1": {
+        "pixel_x": 132.44990817936855,
+        "pixel_y": 1509.2959050155866,
+        "valid": true,
+        "theta_deg": 90.84699975022721,
+        "inside_fisheye_circle": true,
+        "inside_image": true,
+        "unexpected_outside": false,
+        "dist_from_center_px": 1347.7954004120475
+      },
+      "lens2": {
+        "pixel_x": 131.4942637929969,
+        "pixel_y": 1514.0174334229894,
+        "valid": true,
+        "theta_deg": 90.93599845792399,
+        "inside_fisheye_circle": true,
+        "inside_image": true,
+        "unexpected_outside": false,
+        "dist_from_center_px": 1349.1157747690004
+      }
+    },
+    {
+      "direction": "-X",
+      "world_vector": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "color_bgr": [
+        0,
+        0,
+        128
+      ],
+      "lens1": {
+        "pixel_x": 2802.739705252243,
+        "pixel_y": 1539.3413341954051,
+        "valid": true,
+        "theta_deg": 89.1530002497728,
+        "inside_fisheye_circle": true,
+        "inside_image": true,
+        "unexpected_outside": false,
+        "dist_from_center_px": 1322.6634231173646
+      },
+      "lens2": {
+        "pixel_x": 2801.953010992246,
+        "pixel_y": 1514.6559262624205,
+        "valid": true,
+        "theta_deg": 89.06400154207601,
+        "inside_fisheye_circle": true,
+        "inside_image": true,
+        "unexpected_outside": false,
+        "dist_from_center_px": 1321.3430487604114
+      }
+    },
+    {
+      "direction": "+Y",
+      "world_vector": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "color_bgr": [
+        0,
+        255,
+        0
+      ],
+      "lens1": {
+        "pixel_x": 1495.1602192502648,
+        "pixel_y": 189.9676685813995,
+        "valid": true,
+        "theta_deg": 89.956,
+        "inside_fisheye_circle": true,
+        "inside_image": true,
+        "unexpected_outside": false,
+        "dist_from_center_px": 1334.5766329411765
+      },
+      "lens2": {
+        "pixel_x": 1480.3300270571165,
+        "pixel_y": 2851.1123142107135,
+        "valid": true,
+        "theta_deg": 90.10400000000001,
+        "inside_fisheye_circle": true,
+        "inside_image": true,
+        "unexpected_outside": false,
+        "dist_from_center_px": 1336.7723435294117
+      }
+    },
+    {
+      "direction": "-Y",
+      "world_vector": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "color_bgr": [
+        0,
+        160,
+        0
+      ],
+      "lens1": {
+        "pixel_x": 1465.145106694708,
+        "pixel_y": 2860.257806597186,
+        "valid": true,
+        "theta_deg": 90.044,
+        "inside_fisheye_circle": true,
+        "inside_image": true,
+        "unexpected_outside": false,
+        "dist_from_center_px": 1335.8821905882355
+      },
+      "lens2": {
+        "pixel_x": 1480.8893266411417,
+        "pixel_y": 180.6535492510177,
+        "valid": true,
+        "theta_deg": 89.896,
+        "inside_fisheye_circle": true,
+        "inside_image": true,
+        "unexpected_outside": false,
+        "dist_from_center_px": 1333.6864799999998
+      }
+    },
+    {
+      "direction": "+Z",
+      "world_vector": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "color_bgr": [
+        255,
+        160,
+        0
+      ],
+      "lens1": {
+        "pixel_x": 1467.5874636781189,
+        "pixel_y": 1524.971452246348,
+        "valid": true,
+        "theta_deg": 0.8481420040119693,
+        "inside_fisheye_circle": true,
+        "inside_image": true,
+        "unexpected_outside": false,
+        "dist_from_center_px": 12.582934990109298
+      },
+      "lens2": {
+        "pixel_x": 4120.91347016822,
+        "pixel_y": 1221.5590032473378,
+        "valid": false,
+        "theta_deg": 179.05824045647918,
+        "inside_fisheye_circle": false,
+        "inside_image": false,
+        "unexpected_outside": false,
+        "dist_from_center_px": 2656.486989736977
+      }
+    },
+    {
+      "direction": "-Z",
+      "world_vector": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "color_bgr": [
+        255,
+        0,
+        255
+      ],
+      "lens1": {
+        "pixel_x": 4135.839392286396,
+        "pixel_y": 1416.4266520747326,
+        "valid": false,
+        "theta_deg": 179.15185799598805,
+        "inside_fisheye_circle": false,
+        "inside_image": false,
+        "unexpected_outside": false,
+        "dist_from_center_px": 2657.875888539302
+      },
+      "lens2": {
+        "pixel_x": 1466.723283675283,
+        "pixel_y": 1515.8798861127555,
+        "valid": true,
+        "theta_deg": 0.9417595435208184,
+        "inside_fisheye_circle": true,
+        "inside_image": true,
+        "unexpected_outside": false,
+        "dist_from_center_px": 13.971833792434529
+      }
+    }
+  ],
+  "checks": {
+    "plus_z_at_lens1_center_px": 12.582934990109298,
+    "minus_z_at_lens2_center_px": 13.971833792434529,
+    "lens1_x_opposite": {
+      "opposite": true,
+      "cos_angle": -1.0,
+      "angle_deg": 180.0
+    },
+    "lens1_y_opposite": {
+      "opposite": true,
+      "cos_angle": -1.0,
+      "angle_deg": 180.0
+    },
+    "lens2_x_opposite": {
+      "opposite": true,
+      "cos_angle": -1.0,
+      "angle_deg": 180.0
+    },
+    "lens2_y_opposite": {
+      "opposite": true,
+      "cos_angle": -0.9999999999999999,
+      "angle_deg": 179.99999914622634
+    },
+    "unexpected_outside": []
+  }
+}

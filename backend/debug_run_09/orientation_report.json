@@ -1,0 +1,189 @@
+{
+  "conventions": {
+    "equirect_world_frame": "X=cos(lat)*sin(lon), Y=sin(lat), Z=cos(lat)*cos(lon)",
+    "forward_at_lon0_lat0": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "zenith_at_lat90": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "lens_optical_axis_lens_frame": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "world_to_lens": "v_lens = R_eff @ v_world",
+    "rotation_matrix_lens1": "R1 = Rz(rc) @ Rx(rb) @ Ry(ra)",
+    "rotation_matrix_lens2": "R2 @ Ry(\u03c0)  (body-frame flip after calibration)",
+    "calibration_frame": "per-lens (ra,rb,rc); lens2 body flip applied in stitcher only"
+  },
+  "forward": {
+    "world_vector": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "longitude_deg": 0.0,
+    "latitude_deg": 0.0
+  },
+  "stitcher_code_path": {
+    "file": "fisheye_stitch.py::_hemisphere_map",
+    "order": [
+      "1. lon_output, lat from equirect grid",
+      "2. lon = lon_output + yaw_offset   # lens2: 0",
+      "3. v_world = sphere_dirs(lon, lat)",
+      "4. v_lens = R_eff @ v_world   # lens2: R2 @ Ry(\u03c0)",
+      "5. theta = acos(Z_lens), fisheye UV"
+    ],
+    "yaw_offset_composes_with_R": false,
+    "lens2_body_flip": "R2 @ Ry(\u03c0)",
+    "lens1_yaw_offset_rad": 0.0,
+    "lens2_yaw_offset_rad": 0.0
+  },
+  "calibration_analysis": {
+    "lens1_rot_deg": [
+      0.847,
+      0.044,
+      -179.356
+    ],
+    "lens2_rot_deg": [
+      -0.936,
+      -0.104,
+      0.012
+    ],
+    "delta_ra_deg": 1.783,
+    "delta_rb_deg": 0.148,
+    "delta_rc_deg": -179.368,
+    "rc_sum_near_180": true
+  },
+  "lens1": {
+    "lens_label": "lens1",
+    "calibration_rot_deg": [
+      0.847,
+      0.044,
+      -179.356
+    ],
+    "rotation_formula": "Rz(-179.356) @ Rx(0.044) @ Ry(0.847)",
+    "body_flip_applied": false,
+    "rotation_matrix": [
+      [
+        -0.9998274464189165,
+        0.011239680402688962,
+        -0.014790097088061432
+      ],
+      [
+        -0.011249806955914791,
+        -0.9999365379088999,
+        0.0006016628773804607
+      ],
+      [
+        -0.014782395979120731,
+        0.0007679447953962922,
+        0.9998904395132038
+      ]
+    ],
+    "world_vector_before_yaw_offset": [
+      -0.014782395979120731,
+      0.0007679447953962922,
+      0.9998904395132038
+    ],
+    "world_longitude_deg": -0.847,
+    "world_latitude_deg": 0.044,
+    "stitcher_yaw_offset_deg": 0.0,
+    "output_equirect_longitude_deg": -0.8470000000000084,
+    "output_equirect_latitude_deg": 0.044,
+    "yaw_offset_applied_to": "equirect longitude before sphere_dirs (not composed with R)"
+  },
+  "lens2": {
+    "lens_label": "lens2",
+    "calibration_rot_deg": [
+      -0.936,
+      -0.104,
+      0.012
+    ],
+    "rotation_formula": "Rz(0.012) @ Rx(-0.104) @ Ry(-0.936) @ Ry(\u03c0)",
+    "body_flip_applied": true,
+    "rotation_matrix": [
+      [
+        -0.9998665377763549,
+        -0.00020943916368366594,
+        0.016335934939927164
+      ],
+      [
+        -0.0002390629046139078,
+        0.999998330697028,
+        -0.0018114778731453116
+      ],
+      [
+        -0.016335528275891638,
+        -0.001815141425336601,
+        -0.9998649187653068
+      ]
+    ],
+    "world_vector_before_yaw_offset": [
+      -0.016335528275891638,
+      -0.001815141425336601,
+      -0.9998649187653068
+    ],
+    "world_longitude_deg": -179.064,
+    "world_latitude_deg": -0.104,
+    "stitcher_yaw_offset_deg": 0.0,
+    "output_equirect_longitude_deg": -179.064,
+    "output_equirect_latitude_deg": -0.104,
+    "yaw_offset_applied_to": "equirect longitude before sphere_dirs (not composed with R)"
+  },
+  "lens2_composition_candidates": [
+    {
+      "name": "lens2_R_only",
+      "formula": "R2 (no body flip)",
+      "world_vector": [
+        0.016335528275891516,
+        -0.001815141425336601,
+        0.9998649187653068
+      ],
+      "world_longitude_deg": 0.936,
+      "world_latitude_deg": -0.104,
+      "separation_from_lens1_deg": 1.7891311748082117
+    },
+    {
+      "name": "lens2_R2_at_Ry_pi",
+      "formula": "R2 @ Ry(\u03c0) [stitcher]",
+      "world_vector": [
+        -0.016335528275891638,
+        -0.001815141425336601,
+        -0.9998649187653068
+      ],
+      "world_longitude_deg": -179.064,
+      "world_latitude_deg": -0.104,
+      "separation_from_lens1_deg": 178.2159923189469
+    },
+    {
+      "name": "lens2_Ry_pi_at_R2",
+      "formula": "Ry(\u03c0) @ R2",
+      "world_vector": [
+        -0.016335528275891638,
+        0.001815141425336601,
+        -0.9998649187653068
+      ],
+      "world_longitude_deg": -179.064,
+      "world_latitude_deg": 0.104,
+      "separation_from_lens1_deg": 178.2108688251918
+    }
+  ],
+  "separation_lens1_lens2_world_deg": 178.2159923189469,
+  "separation_lens1_lens2_output_lon_deg": 178.21699999999998,
+  "separation_lens1_forward_deg": 0.8481420040119693,
+  "separation_lens2_forward_deg": 179.05824045647918,
+  "findings": [
+    "Lens1 uses R1 = Rz(rc) @ Rx(rb) @ Ry(ra). Lens2 uses R2 @ Ry(\u03c0) with the same Ry axis as calibration ra.",
+    "yaw_offset is applied BEFORE R: `lon = lon_output + yaw_offset`, then `v_lens = R_eff @ v_world`. It does not replace the body flip.",
+    "World boresight separation lens1 \u2194 lens2: 178.22\u00b0 (expected \u2248180\u00b0 for back-to-back fisheyes).",
+    "Lens1 boresight near +Z: z=+0.9999, sep from forward=0.85\u00b0.",
+    "Lens2 boresight near \u2212Z: z=-0.9999, sep from forward=179.06\u00b0.",
+    "Calibration \u0394rc=-179.368\u00b0 alone did not flip lens2; R2 @ Ry(\u03c0) was required (audit candidate sep=178.22\u00b0)."
+  ]
+}

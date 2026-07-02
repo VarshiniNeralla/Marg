@@ -1,0 +1,498 @@
+{
+  "camera_model": "ONE X2",
+  "decoded_width": 3040,
+  "decoded_height": 6080,
+  "output_width": 5760,
+  "output_height": 2880,
+  "calibration_source": "embedded",
+  "layout": "top-bottom",
+  "fisheye_fov_deg": 204.0,
+  "raw_calibration": "INSTA3602_1480.160_1524.460_1513.260_0.847_0.044_-179.356_1480.610_1514.340_4557.130_-0.936_-0.104_0.012_3040_6080_3113",
+  "calibration_width": 3040,
+  "calibration_height": 6080,
+  "scale_x": 1.0,
+  "scale_y": 1.0,
+  "lens1": {
+    "cx": 1480.16,
+    "cy": 1524.46,
+    "radius": 1513.26,
+    "rot": [
+      0.847,
+      0.044,
+      -179.356
+    ]
+  },
+  "lens2": {
+    "cx": 1480.61,
+    "cy": 1514.34,
+    "radius": 1513.26,
+    "rot": [
+      -0.936,
+      -0.104,
+      0.012
+    ]
+  },
+  "ownership_diagnostics": {
+    "summary": {
+      "total_pixels": 16588800,
+      "lens1_valid": {
+        "pixels": 11066153,
+        "percent": 66.70858048804013
+      },
+      "lens2_valid": {
+        "pixels": 11068633,
+        "percent": 66.72353033371914
+      },
+      "lens1_exclusive": {
+        "pixels": 5520167,
+        "percent": 33.27646966628087
+      },
+      "lens2_exclusive": {
+        "pixels": 5522647,
+        "percent": 33.29141951195987
+      },
+      "overlap": {
+        "pixels": 5545986,
+        "percent": 33.43211082175926
+      },
+      "neither": {
+        "pixels": 0,
+        "percent": 0.0
+      },
+      "blend_weight_lens1": {
+        "min": 0.0,
+        "max": 1.0,
+        "mean_in_overlap": 0.499966614718128
+      }
+    },
+    "longitude_columns": {
+      "columns_both_gt_25pct_rows": 2107,
+      "columns_lens1_dominant": 0,
+      "columns_lens2_dominant": 0,
+      "sample_contested_output_longitudes_deg": [
+        -123.74999999999999,
+        -123.6875,
+        -123.625,
+        -123.56250000000001,
+        -123.5,
+        -123.4375,
+        -123.37499999999999,
+        -123.3125,
+        -123.24999999999999,
+        -123.18750000000001,
+        -123.125,
+        -123.06249999999999,
+        -122.99999999999999,
+        -122.9375,
+        -122.87499999999999,
+        -122.8125,
+        -122.75,
+        -122.68749999999999,
+        -122.62499999999999,
+        -122.5625,
+        "..."
+      ],
+      "mean_column_fraction_lens1": 0.6670858048804011,
+      "mean_column_fraction_lens2": 0.6672353033371914,
+      "mean_column_fraction_both": 0.3343211082175926
+    },
+    "lens2_rotation_hypotheses": {
+      "modes": [
+        {
+          "mode": "stitched_actual",
+          "description": "Ry(\u03c0) + yaw_offset=\u03c0 [current lens2]",
+          "yaw_offset_deg": 180.0,
+          "body_flip": true,
+          "lens2_valid_pct": 66.70876736111111,
+          "overlap_with_lens1_pct": 66.27478780864197,
+          "lens1_exclusive_pct": 0.43379267939814814,
+          "lens2_exclusive_pct": 0.4339795524691358
+        },
+        {
+          "mode": "body_flip_only",
+          "description": "Ry(\u03c0) only, yaw_offset=0",
+          "yaw_offset_deg": 0.0,
+          "body_flip": true,
+          "lens2_valid_pct": 66.72353033371914,
+          "overlap_with_lens1_pct": 33.43211082175926,
+          "lens1_exclusive_pct": 33.27646966628087,
+          "lens2_exclusive_pct": 33.29141951195987
+        },
+        {
+          "mode": "yaw_offset_only",
+          "description": "yaw_offset=\u03c0 only, no Ry(\u03c0)",
+          "yaw_offset_deg": 180.0,
+          "body_flip": false,
+          "lens2_valid_pct": 66.72353033371914,
+          "overlap_with_lens1_pct": 33.43211082175926,
+          "lens1_exclusive_pct": 33.27646966628087,
+          "lens2_exclusive_pct": 33.29141951195987
+        },
+        {
+          "mode": "calib_only",
+          "description": "calibration R2 only",
+          "yaw_offset_deg": 0.0,
+          "body_flip": false,
+          "lens2_valid_pct": 66.70876736111111,
+          "overlap_with_lens1_pct": 66.27478780864197,
+          "lens1_exclusive_pct": 0.43379267939814814,
+          "lens2_exclusive_pct": 0.4339795524691358
+        }
+      ],
+      "interpretation": "High overlap likely from BOTH Ry(\u03c0) and yaw_offset=\u03c0: actual overlap 66.3% vs body_flip_only 33.4% vs yaw_offset_only 33.4%.",
+      "note": "yaw_offset shifts lon before sphere_dirs; body_flip composes R2 @ Ry(\u03c0). They are independent. If stitched_actual overlap \u226b body_flip_only and \u226b yaw_offset_only individually, both may be steering lens2 onto lens1 longitudes."
+    }
+  },
+  "world_frame_measurements": {
+    "world_frame": "X=cos(lat)*sin(lon), Y=sin(lat), Z=cos(lat)*cos(lon)",
+    "world_axes": [
+      {
+        "label": "+X",
+        "world_vector": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "longitude_deg": 90.0,
+        "latitude_deg": 0.0
+      },
+      {
+        "label": "-X",
+        "world_vector": [
+          -1.0,
+          0.0,
+          0.0
+        ],
+        "longitude_deg": -90.0,
+        "latitude_deg": 0.0
+      },
+      {
+        "label": "+Y",
+        "world_vector": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "longitude_deg": 0.0,
+        "latitude_deg": 90.0
+      },
+      {
+        "label": "-Y",
+        "world_vector": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "longitude_deg": 0.0,
+        "latitude_deg": -90.0
+      },
+      {
+        "label": "+Z",
+        "world_vector": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "longitude_deg": 0.0,
+        "latitude_deg": 0.0
+      },
+      {
+        "label": "-Z",
+        "world_vector": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "longitude_deg": 180.0,
+        "latitude_deg": 0.0
+      }
+    ],
+    "lens1_optical_axis": {
+      "world_vector": [
+        -0.014782395979120731,
+        0.0007679447953962922,
+        0.9998904395132038
+      ],
+      "longitude_deg": -0.847,
+      "latitude_deg": 0.044,
+      "rotation": "Rz(-179.356) @ Rx(0.044) @ Ry(0.847)",
+      "yaw_offset_deg": 0.0,
+      "body_flip": false
+    },
+    "lens2_optical_axis": {
+      "world_vector": [
+        -0.016335528275891638,
+        -0.001815141425336601,
+        -0.9998649187653068
+      ],
+      "longitude_deg": -179.064,
+      "latitude_deg": -0.104,
+      "rotation": "Rz(0.012) @ Rx(-0.104) @ Ry(-0.936) @ Ry(\u03c0)",
+      "yaw_offset_deg": 0.0,
+      "body_flip": true
+    },
+    "seam": {
+      "expected_seam_longitude_deg": [
+        89.15300000000002,
+        -90.847
+      ],
+      "expected_seam_note": "\u00b190\u00b0 from lens1 optical-axis longitude (dual-fisheye hemisphere boundary)",
+      "actual_overlap_longitude_centroid_deg": -89.61157739149135,
+      "actual_overlap_longitude_equator_deg": -89.77030555764938,
+      "actual_overlap_longitude_range_deg": [
+        -102.99999999999999,
+        101.25000000000001
+      ]
+    },
+    "body_flip_axis": "Ry (\u03c0)",
+    "body_flip_detail": "_rot_matrix(180, 0, 0) \u2192 Ry(\u03c0) only; first calibration arg (ra) is the Ry axis. Not Rx or Rz."
+  },
+  "world_direction_fisheye": {
+    "note": "yaw_offset not used; lens2 uses R2 @ Ry(\u03c0) body flip",
+    "lens1_params": {
+      "cx": 1480.16,
+      "cy": 1524.46,
+      "radius": 1513.26,
+      "rot": [
+        0.847,
+        0.044,
+        -179.356
+      ]
+    },
+    "lens2_params": {
+      "cx": 1480.61,
+      "cy": 1514.34,
+      "radius": 1513.26,
+      "rot": [
+        -0.936,
+        -0.104,
+        0.012
+      ]
+    },
+    "projections": [
+      {
+        "direction": "+X",
+        "world_vector": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "color_bgr": [
+          0,
+          0,
+          255
+        ],
+        "lens1": {
+          "pixel_x": 132.44990817936855,
+          "pixel_y": 1509.2959050155866,
+          "valid": true,
+          "theta_deg": 90.84699975022721,
+          "inside_fisheye_circle": true,
+          "inside_image": true,
+          "unexpected_outside": false,
+          "dist_from_center_px": 1347.7954004120475
+        },
+        "lens2": {
+          "pixel_x": 131.4942637929969,
+          "pixel_y": 1514.0174334229894,
+          "valid": true,
+          "theta_deg": 90.93599845792399,
+          "inside_fisheye_circle": true,
+          "inside_image": true,
+          "unexpected_outside": false,
+          "dist_from_center_px": 1349.1157747690004
+        }
+      },
+      {
+        "direction": "-X",
+        "world_vector": [
+          -1.0,
+          0.0,
+          0.0
+        ],
+        "color_bgr": [
+          0,
+          0,
+          128
+        ],
+        "lens1": {
+          "pixel_x": 2802.739705252243,
+          "pixel_y": 1539.3413341954051,
+          "valid": true,
+          "theta_deg": 89.1530002497728,
+          "inside_fisheye_circle": true,
+          "inside_image": true,
+          "unexpected_outside": false,
+          "dist_from_center_px": 1322.6634231173646
+        },
+        "lens2": {
+          "pixel_x": 2801.953010992246,
+          "pixel_y": 1514.6559262624205,
+          "valid": true,
+          "theta_deg": 89.06400154207601,
+          "inside_fisheye_circle": true,
+          "inside_image": true,
+          "unexpected_outside": false,
+          "dist_from_center_px": 1321.3430487604114
+        }
+      },
+      {
+        "direction": "+Y",
+        "world_vector": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "color_bgr": [
+          0,
+          255,
+          0
+        ],
+        "lens1": {
+          "pixel_x": 1495.1602192502648,
+          "pixel_y": 189.9676685813995,
+          "valid": true,
+          "theta_deg": 89.956,
+          "inside_fisheye_circle": true,
+          "inside_image": true,
+          "unexpected_outside": false,
+          "dist_from_center_px": 1334.5766329411765
+        },
+        "lens2": {
+          "pixel_x": 1480.3300270571165,
+          "pixel_y": 2851.1123142107135,
+          "valid": true,
+          "theta_deg": 90.10400000000001,
+          "inside_fisheye_circle": true,
+          "inside_image": true,
+          "unexpected_outside": false,
+          "dist_from_center_px": 1336.7723435294117
+        }
+      },
+      {
+        "direction": "-Y",
+        "world_vector": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "color_bgr": [
+          0,
+          160,
+          0
+        ],
+        "lens1": {
+          "pixel_x": 1465.145106694708,
+          "pixel_y": 2860.257806597186,
+          "valid": true,
+          "theta_deg": 90.044,
+          "inside_fisheye_circle": true,
+          "inside_image": true,
+          "unexpected_outside": false,
+          "dist_from_center_px": 1335.8821905882355
+        },
+        "lens2": {
+          "pixel_x": 1480.8893266411417,
+          "pixel_y": 180.6535492510177,
+          "valid": true,
+          "theta_deg": 89.896,
+          "inside_fisheye_circle": true,
+          "inside_image": true,
+          "unexpected_outside": false,
+          "dist_from_center_px": 1333.6864799999998
+        }
+      },
+      {
+        "direction": "+Z",
+        "world_vector": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "color_bgr": [
+          255,
+          160,
+          0
+        ],
+        "lens1": {
+          "pixel_x": 1467.5874636781189,
+          "pixel_y": 1524.971452246348,
+          "valid": true,
+          "theta_deg": 0.8481420040119693,
+          "inside_fisheye_circle": true,
+          "inside_image": true,
+          "unexpected_outside": false,
+          "dist_from_center_px": 12.582934990109298
+        },
+        "lens2": {
+          "pixel_x": 4120.91347016822,
+          "pixel_y": 1221.5590032473378,
+          "valid": false,
+          "theta_deg": 179.05824045647918,
+          "inside_fisheye_circle": false,
+          "inside_image": false,
+          "unexpected_outside": false,
+          "dist_from_center_px": 2656.486989736977
+        }
+      },
+      {
+        "direction": "-Z",
+        "world_vector": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "color_bgr": [
+          255,
+          0,
+          255
+        ],
+        "lens1": {
+          "pixel_x": 4135.839392286396,
+          "pixel_y": 1416.4266520747326,
+          "valid": false,
+          "theta_deg": 179.15185799598805,
+          "inside_fisheye_circle": false,
+          "inside_image": false,
+          "unexpected_outside": false,
+          "dist_from_center_px": 2657.875888539302
+        },
+        "lens2": {
+          "pixel_x": 1466.723283675283,
+          "pixel_y": 1515.8798861127555,
+          "valid": true,
+          "theta_deg": 0.9417595435208184,
+          "inside_fisheye_circle": true,
+          "inside_image": true,
+          "unexpected_outside": false,
+          "dist_from_center_px": 13.971833792434529
+        }
+      }
+    ],
+    "checks": {
+      "plus_z_at_lens1_center_px": 12.582934990109298,
+      "minus_z_at_lens2_center_px": 13.971833792434529,
+      "lens1_x_opposite": {
+        "opposite": true,
+        "cos_angle": -1.0,
+        "angle_deg": 180.0
+      },
+      "lens1_y_opposite": {
+        "opposite": true,
+        "cos_angle": -1.0,
+        "angle_deg": 180.0
+      },
+      "lens2_x_opposite": {
+        "opposite": true,
+        "cos_angle": -1.0,
+        "angle_deg": 180.0
+      },
+      "lens2_y_opposite": {
+        "opposite": true,
+        "cos_angle": -0.9999999999999999,
+        "angle_deg": 179.99999914622634
+      },
+      "unexpected_outside": []
+    }
+  }
+}

@@ -1,0 +1,65 @@
+── Stitcher orientation audit (matches current stitcher) ──
+
+── Code path (_hemisphere_map) ──
+  1. lon_output, lat from equirect grid
+  2. lon = lon_output + yaw_offset   # lens2: 0
+  3. v_world = sphere_dirs(lon, lat)
+  4. v_lens = R_eff @ v_world   # lens2: R2 @ Ry(π)
+  5. theta = acos(Z_lens), fisheye UV
+  yaw_offset composes with R: False
+
+── Calibration (per-lens, from blob) ──
+  lens1 rot (ra,rb,rc) = (0.847, 0.044, -179.356)
+  lens2 rot (ra,rb,rc) = (-0.936, -0.104, 0.012)
+  Δra=1.783°  Δrb=0.148°  Δrc=-179.368°  (|Δrc|≈180°: True)
+
+── Lens 1 ──
+  Rz(-179.356) @ Rx(0.044) @ Ry(0.847)
+  body_flip = False
+  rotation matrix R:
+    [-0.99982745, +0.01123968, -0.01479010]
+    [-0.01124981, -0.99993654, +0.00060166]
+    [-0.01478240, +0.00076794, +0.99989044]
+  optical axis BEFORE yaw_offset (world boresight R.T @ [0,0,1]):
+    world vector = (-0.014782, +0.000768, +0.999890)
+    longitude = -0.85°
+    latitude  = +0.04°
+  yaw_offset = 0.0° (applied to equirect lon, not R)
+  optical axis AFTER yaw_offset (output equirect assignment only — world vector unchanged):
+    output equirect longitude = -0.85°
+    output equirect latitude  = +0.04°
+
+── Lens 2 ──
+  Rz(0.012) @ Rx(-0.104) @ Ry(-0.936) @ Ry(π)
+  body_flip = True
+  rotation matrix R:
+    [-0.99986654, -0.00020944, +0.01633593]
+    [-0.00023906, +0.99999833, -0.00181148]
+    [-0.01633553, -0.00181514, -0.99986492]
+  optical axis BEFORE yaw_offset (world boresight R.T @ [0,0,1]):
+    world vector = (-0.016336, -0.001815, -0.999865)
+    longitude = -179.06°
+    latitude  = -0.10°
+  yaw_offset = 0.0° (applied to equirect lon, not R)
+  optical axis AFTER yaw_offset (output equirect assignment only — world vector unchanged):
+    output equirect longitude = -179.06°
+    output equirect latitude  = -0.10°
+
+── Lens 2 composition reference (lens2 now uses R2 @ Ry(π)) ──
+  R2 (no body flip): world=(+0.0163,-0.0018,+0.9999) lon=+0.94° lat=-0.10° sep from lens1=1.79°
+  R2 @ Ry(π) [stitcher]: world=(-0.0163,-0.0018,-0.9999) lon=-179.06° lat=-0.10° sep from lens1=178.22°
+  Ry(π) @ R2: world=(-0.0163,+0.0018,-0.9999) lon=-179.06° lat=+0.10° sep from lens1=178.21°
+
+── Separations ──
+  lens1 ↔ lens2 world boresight: 178.22°  (expected ≈180°)
+  lens1 ↔ lens2 output equirect lon: 178.22°  (yaw_offset-only hemisphere split)
+  lens1 ↔ forward +Z: 0.85°
+  lens2 ↔ forward +Z: 179.06°
+
+── Findings ──
+  1. Lens1 uses R1 = Rz(rc) @ Rx(rb) @ Ry(ra). Lens2 uses R2 @ Ry(π) with the same Ry axis as calibration ra.
+  2. yaw_offset is applied BEFORE R: `lon = lon_output + yaw_offset`, then `v_lens = R_eff @ v_world`. It does not replace the body flip.
+  3. World boresight separation lens1 ↔ lens2: 178.22° (expected ≈180° for back-to-back fisheyes).
+  4. Lens1 boresight near +Z: z=+0.9999, sep from forward=0.85°.
+  5. Lens2 boresight near −Z: z=-0.9999, sep from forward=179.06°.
+  6. Calibration Δrc=-179.368° alone did not flip lens2; R2 @ Ry(π) was required (audit candidate sep=178.22°).

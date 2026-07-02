@@ -1,0 +1,25 @@
+── Hemisphere ownership diagnostics ──
+
+Total pixels: 1843200
+  Lens1 valid:      66.7%
+  Lens2 valid:      66.8%
+  Lens1 exclusive:  33.2%
+  Lens2 exclusive:  33.3%
+  Overlap:          33.5%
+  Neither:          0.0%
+
+Blend weight w1 (lens1 fraction, 0=lens2 .. 1=lens1):
+  min=0.0  max=1.0  mean_in_overlap=0.4999009008774688
+
+Per output-longitude column (fraction of rows valid):
+  mean lens1=0.667  lens2=0.668  both=0.335
+  columns with both >50% rows: 702
+  sample contested longitudes (deg): [-123.74999999999999, -123.56250000000001, -123.37500000000001, -123.18750000000001, -123.00000000000001, -122.8125, -122.625, -122.4375, -122.25, -122.0625, -121.875, -121.6875, -121.5, -121.3125, -121.125, -120.9375, -120.75000000000001, -120.5625, -120.37500000000001, -120.18749999999999, '...']
+
+── Lens2 rotation hypothesis (no stitch math changed) ──
+  stitched_actual: overlap=66.3%  L1-excl=0.4%  L2-excl=0.4%  (Ry(π) + yaw_offset=π [current lens2])
+  body_flip_only: overlap=33.5%  L1-excl=33.2%  L2-excl=33.3%  (Ry(π) only, yaw_offset=0)
+  yaw_offset_only: overlap=33.5%  L1-excl=33.2%  L2-excl=33.3%  (yaw_offset=π only, no Ry(π))
+  calib_only: overlap=66.3%  L1-excl=0.4%  L2-excl=0.4%  (calibration R2 only)
+
+  → High overlap likely from BOTH Ry(π) and yaw_offset=π: actual overlap 66.3% vs body_flip_only 33.5% vs yaw_offset_only 33.5%.

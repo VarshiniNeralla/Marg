@@ -1,0 +1,40 @@
+── World direction → fisheye pixel (per lens) ──
+
+Lens1: cx=1480.2 cy=1524.5 r=1513.3
+Lens2: cx=1480.6 cy=1514.3 r=1513.3
+
+Expected: +Z at lens1 optical center; -Z at lens2 center; ±X/±Y opposite.
+unexpected_outside=True → valid in FOV but outside fisheye circle or image bounds.
+
++X  world=(1.0, 0.0, 0.0)
+  lens1: x=132.4 y=1509.3  valid=True  theta=90.85°  in_circle=True  unexpected_outside=False
+  lens2: x=131.5 y=1514.0  valid=True  theta=90.94°  in_circle=True  unexpected_outside=False
+
+-X  world=(-1.0, 0.0, 0.0)
+  lens1: x=2802.7 y=1539.3  valid=True  theta=89.15°  in_circle=True  unexpected_outside=False
+  lens2: x=2802.0 y=1514.7  valid=True  theta=89.06°  in_circle=True  unexpected_outside=False
+
++Y  world=(0.0, 1.0, 0.0)
+  lens1: x=1495.2 y=190.0  valid=True  theta=89.96°  in_circle=True  unexpected_outside=False
+  lens2: x=1480.3 y=2851.1  valid=True  theta=90.10°  in_circle=True  unexpected_outside=False
+
+-Y  world=(0.0, -1.0, 0.0)
+  lens1: x=1465.1 y=2860.3  valid=True  theta=90.04°  in_circle=True  unexpected_outside=False
+  lens2: x=1480.9 y=180.7  valid=True  theta=89.90°  in_circle=True  unexpected_outside=False
+
++Z  world=(0.0, 0.0, 1.0)
+  lens1: x=1467.6 y=1525.0  valid=True  theta=0.85°  in_circle=True  unexpected_outside=False
+  lens2: x=4120.9 y=1221.6  valid=False  theta=179.06°  in_circle=False  unexpected_outside=False
+
+-Z  world=(0.0, 0.0, -1.0)
+  lens1: x=4135.8 y=1416.4  valid=False  theta=179.15°  in_circle=False  unexpected_outside=False
+  lens2: x=1466.7 y=1515.9  valid=True  theta=0.94°  in_circle=True  unexpected_outside=False
+
+── Validation summary ──
++Z vs lens1 center: 12.6 px
+-Z vs lens2 center: 14.0 px
+lens1 ±X opposite: yes (angle 180.0°)
+lens1 ±Y opposite: yes (angle 180.0°)
+lens2 ±X opposite: yes (angle 180.0°)
+lens2 ±Y opposite: yes (angle 180.0°)
+unexpected_outside: none

@@ -41,12 +41,15 @@ class Settings(BaseSettings):
     CLOUDINARY_CLOUD_NAME: str = ""
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
-    # Max upload size per file (bytes). Cloudinary's FREE plan hard-caps uploads
-    # at 10 MB/file (image and raw) — a larger file transfers fully and is THEN
-    # rejected, wasting ~15s and returning an opaque 422. So we cap at 10 MB and
-    # fail fast with a clear message. Raise this (and set the env var) after
-    # upgrading the Cloudinary plan, which allows larger files.
+    # Max upload size for images sent to Cloudinary (bytes). Cloudinary's FREE
+    # plan hard-caps at 10 MB/file, so we cap here and fail fast with a clear
+    # message. Raise (via env) after upgrading the plan.
     MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
+    # Raw 360 files (.dng/.insp/.insv) are stitched server-side into a small
+    # equirectangular JPEG BEFORE reaching Cloudinary, so the raw INPUT gets a
+    # larger cap — a raw Insta360 .dng is ~35 MB. Only the stitched output must
+    # fit MAX_UPLOAD_BYTES.
+    MAX_RAW_UPLOAD_BYTES: int = 64 * 1024 * 1024
     # Seconds before a Cloudinary upload call is abandoned (frees the worker).
     CLOUDINARY_UPLOAD_TIMEOUT: int = 120
 

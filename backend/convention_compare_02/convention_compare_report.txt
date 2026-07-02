@@ -1,0 +1,13 @@
+Convention stitch comparison (temporary analysis)
+
+DNG: \\192.168.8.91\pmo\Insta_360\02-05-2025\IMG_20250502_162926_00_002.dng
+Output size: 2880x1440
+
+Orientation delta = rotation (yaw, pitch, roll) to apply to COLUMN panorama
+so it matches the ROW reference (same convention as stitch_compare).
+
+── vs baseline ──
+  r_transpose   yaw=  +1.00  pitch=  -1.00  roll=  -1.00  |sum|=3.00  corr=0.9419
+  phi_swap      yaw= +15.00  pitch= -19.00  roll= -13.00  |sum|=47.00  corr=0.5813
+  phi_plus90    yaw= +15.00  pitch=  +5.00  roll= -17.00  |sum|=37.00  corr=0.5667
+

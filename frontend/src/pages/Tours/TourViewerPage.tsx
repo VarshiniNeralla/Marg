@@ -142,6 +142,44 @@ function PublishingStatus({ tour, onPublish }: { tour: NonNullable<ReturnType<ty
 
 // ── PanoramaViewer (Photo Sphere Viewer v5 — imperative mount) ────────────────
 
+/** GPano pose / initial-view (degrees). Matches backend stitch metadata + XMP. */
+export interface GpanoOrientation {
+  poseHeadingDegrees: number;
+  posePitchDegrees: number;
+  poseRollDegrees: number;
+  initialViewHeadingDegrees: number;
+  initialViewPitchDegrees: number;
+  initialHorizontalFovDegrees: number;
+}
+
+export const DEFAULT_GPANO_ORIENTATION: GpanoOrientation = {
+  poseHeadingDegrees: 0,
+  posePitchDegrees: 0,
+  poseRollDegrees: 0,
+  initialViewHeadingDegrees: 0,
+  initialViewPitchDegrees: 0,
+  initialHorizontalFovDegrees: 72,
+};
+
+function gpanoFromStitch(stitch: unknown): GpanoOrientation {
+  const g = (stitch as { gpano?: Partial<GpanoOrientation> } | null | undefined)?.gpano;
+  if (!g) return DEFAULT_GPANO_ORIENTATION;
+  return {
+    poseHeadingDegrees: g.poseHeadingDegrees ?? 0,
+    posePitchDegrees: g.posePitchDegrees ?? 0,
+    poseRollDegrees: g.poseRollDegrees ?? 0,
+    initialViewHeadingDegrees: g.initialViewHeadingDegrees ?? 0,
+    initialViewPitchDegrees: g.initialViewPitchDegrees ?? 0,
+    initialHorizontalFovDegrees: g.initialHorizontalFovDegrees ?? 72,
+  };
+}
+
+/** Map GPano InitialHorizontalFOVDegrees to PSV defaultZoomLvl (minFov=30, maxFov=90). */
+function zoomLvlFromHfov(hfov: number, minFov = 30, maxFov = 90): number {
+  const clamped = Math.min(maxFov, Math.max(minFov, hfov));
+  return Math.round(((maxFov - clamped) / (maxFov - minFov)) * 100);
+}
+
 interface PanoramaViewerProps {
   panoramaUrl: string;
   tourId: string;
@@ -149,13 +187,42 @@ interface PanoramaViewerProps {
   onAutoRotateChange: (v: boolean) => void;
   hotspots: Array<{ id: string; yaw: number; pitch: number; label: string; targetTourId?: string }>;
   onHotspotClick: (targetTourId: string) => void;
+  panoOrientation?: GpanoOrientation;
+}
+
+type CaptureMediaAsset = {
+  original_url?: string;
+  secure_url?: string;
+  processed_panorama_url?: string | null;
+  processedPanoramaUrl?: string | null;
+  thumbnail_url?: string;
+};
+
+/** Prefer the stitched equirectangular URL over the raw upload original. */
+function resolveCapturePanoramaUrl(
+  mediaAssets: CaptureMediaAsset[] | undefined,
+  cap?: MockCapture & Record<string, unknown>,
+): string | null {
+  const first = mediaAssets?.[0];
+  return (
+    first?.processed_panorama_url ??
+    first?.processedPanoramaUrl ??
+    (cap?.processedPanoramaUrl as string | undefined) ??
+    (cap?.processed_panorama_url as string | undefined) ??
+    first?.original_url ??
+    first?.secure_url ??
+    (cap?.originalFileUrl as string | undefined) ??
+    null
+  );
 }
 
 // How a capture should be projected in the viewer.
 //   'flat'           → not ~2:1; a normal photo, shown as a plain image.
 //   'dualfisheye'    → ~2:1 with dark corners; a RAW 360-camera file (two
-//                      fisheye circles). Rendered with PSV's DualFisheyeAdapter.
-//   'equirectangular'→ ~2:1 with filled corners; a genuine stitched 360.
+//                      fisheye circles). Render with PSV's DualFisheyeAdapter as
+//                      the legacy fallback when the backend couldn't stitch it.
+//   'equirectangular'→ ~2:1 with filled corners; a genuine stitched 360. Rendered
+//                      with the equirectangular adapter — seamless, correct drag.
 type Projection = 'flat' | 'dualfisheye' | 'equirectangular';
 
 const _RATIO_MIN = 1.8;
@@ -209,7 +276,7 @@ function classifyProjection(img: HTMLImageElement): Projection {
   }
 }
 
-function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick }: PanoramaViewerProps) {
+function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, panoOrientation = DEFAULT_GPANO_ORIENTATION }: PanoramaViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<import('@photo-sphere-viewer/core').Viewer | null>(null);
   const [loading, setLoading] = useState(true);
@@ -244,20 +311,10 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick }: P
     if (!containerRef.current) return;
     let destroyed = false;
 
-    // Swap the texture in place with setPanorama() when the viewer already
-    // exists AND uses the same adapter — this preserves the WebGL context and
-    // avoids a jarring remount/camera snap. A change of projection type
-    // (equirectangular ↔ dual-fisheye) needs a full rebuild, so tear down first.
-    if (viewerRef.current && builtProjectionRef.current === projection) {
-      setLoading(true);
-      viewerRef.current
-        .setPanorama(panoramaUrl, { transition: false })
-        .then(() => { if (!destroyed) setLoading(false); })
-        .catch(() => { if (!destroyed) { setLoading(false); setError(true); } });
-      return () => { destroyed = true; };
-    }
+    // Defensive: ensure no stale viewer survives on the container before we
+    // create a new one (handles any prior leak).
     if (viewerRef.current) {
-      viewerRef.current.destroy();
+      try { viewerRef.current.destroy(); } catch { /* already gone */ }
       viewerRef.current = null;
     }
 
@@ -272,29 +329,45 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick }: P
 
         if (destroyed || !containerRef.current) return;
 
-        // Raw dual-fisheye 360-camera files use the DualFisheyeAdapter, which
-        // maps the two lens circles onto the sphere — NO black cones, unlike
-        // feeding a dual-fisheye to the default equirectangular adapter.
+        const minFov = 30;
+        const maxFov = 90;
         const isDual = currentProjection === 'dualfisheye';
-        // Initial heading: for a dual-fisheye the stitch seam sits at yaw ±90°,
-        // so we open facing the FRONT lens centre (yaw 0 in the adapter maps to a
-        // lens boundary → opening there is why left/right felt wrong until you
-        // rotated ~180°). Facing the lens centre gives a natural forward view and
-        // keeps the seam off to the side. Equirectangular exports are already
-        // centred on their forward direction, so no offset is needed.
-        const initialYaw = isDual ? Math.PI : 0; // radians (PSV v5 uses radians)
+        const {
+          initialViewHeadingDegrees,
+          initialViewPitchDegrees,
+          initialHorizontalFovDegrees,
+          poseHeadingDegrees,
+          posePitchDegrees,
+          poseRollDegrees,
+        } = panoOrientation;
 
+        // Cloudinary may strip JPEG XMP — pass GPano pose explicitly via panoData so
+        // PSV matches Google Street View / Insta360 viewer conventions.
         const viewer = new Viewer({
           container: containerRef.current,
           panorama: panoramaUrl,
           ...(isDual ? { adapter: DualFisheyeAdapter } : {}),
-          defaultZoomLvl: 30,
-          // Allow free 360° horizontal + full vertical look-around.
-          minFov: 30,
-          maxFov: 90,
-          defaultYaw: initialYaw,
-          defaultPitch: 0,
-          // Single-finger drag + one-finger touch move so mobile can pan freely.
+          defaultZoomLvl: zoomLvlFromHfov(initialHorizontalFovDegrees, minFov, maxFov),
+          minFov,
+          maxFov,
+          defaultYaw: isDual ? Math.PI : `${initialViewHeadingDegrees}deg`,
+          defaultPitch: `${initialViewPitchDegrees}deg`,
+          ...(isDual ? {} : {
+            panoData: (image: { width: number; height: number }) => ({
+              fullWidth: image.width,
+              fullHeight: image.height,
+              croppedWidth: image.width,
+              croppedHeight: image.height,
+              croppedX: 0,
+              croppedY: 0,
+              poseHeading: poseHeadingDegrees,
+              posePitch: posePitchDegrees,
+              poseRoll: poseRollDegrees,
+              initialHeading: initialViewHeadingDegrees,
+              initialPitch: initialViewPitchDegrees,
+              initialFov: initialHorizontalFovDegrees,
+            }),
+          }),
           touchmoveTwoFingers: false,
           mousewheelCtrlKey: false,
           moveInertia: true,
@@ -321,51 +394,61 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick }: P
 
     initViewer();
 
+    // Cleanup MUST destroy the viewer this effect created. React.StrictMode
+    // double-invokes effects in dev (mount → cleanup → mount); if we only set a
+    // flag and defer destroy to unmount, the first viewer leaks onto the same
+    // container while a second is created — two live WebGL viewers with their own
+    // render/animation loops = the "continuous, uncontrollable rotation" bug.
+    // Destroying here guarantees exactly one live viewer at all times.
     return () => {
       destroyed = true;
+      if (viewerRef.current) {
+        try { viewerRef.current.destroy(); } catch { /* already gone */ }
+        viewerRef.current = null;
+        builtProjectionRef.current = null;
+      }
     };
-  }, [panoramaUrl, projection, is360]);
+  }, [panoramaUrl, projection, is360, panoOrientation]);
 
-  // Destroy the viewer only when the component actually unmounts.
-  useEffect(() => {
-    return () => {
-      viewerRef.current?.destroy();
-      viewerRef.current = null;
-    };
-  }, []);
-
-  // Auto-rotate: advance yaw each frame, but YIELD to the user. While the user
-  // is dragging/zooming we suspend the loop entirely so it never fights or
-  // rubber-bands the manual rotation (the previous version wrote yaw every frame
-  // regardless, which is what made free dragging feel constrained).
+  // Auto-rotate: advance yaw a small step each frame ONLY while enabled and the
+  // user isn't interacting. Two correctness points learned the hard way:
+  //   • PSV v5 has NO 'move-start'/'move-end' events (that was a silent no-op, so
+  //     the loop never paused). The real pre-interaction event is 'before-rotate';
+  //     we pause on it and resume shortly after the last one fires.
+  //   • We write yaw directly via setOption-free `rotate()` with the CURRENT
+  //     pitch so we never touch pitch/roll — no gimbal/tumble.
   const rafRef = useRef<number>(0);
-  const userInteractingRef = useRef(false);
+  const lastUserInteractRef = useRef(0);
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !autoRotate) {
       cancelAnimationFrame(rafRef.current);
       return;
     }
-    const onInteractStart = () => { userInteractingRef.current = true; };
-    const onInteractStop = () => { userInteractingRef.current = false; };
-    // PSV emits these around user gestures; pausing on them removes the fight.
-    viewer.addEventListener('move-start' as never, onInteractStart);
-    viewer.addEventListener('move-end' as never, onInteractStop);
+    // 'before-rotate' fires for BOTH programmatic and user rotation. We only want
+    // to detect USER drags, so we stamp the time and treat any rotation within a
+    // short window as "user active" — our own tiny auto-steps don't refresh it
+    // because they happen on the next frame, well within the debounce.
+    const onBeforeRotate = () => { lastUserInteractRef.current = performance.now(); };
+    viewer.addEventListener('before-rotate' as never, onBeforeRotate);
 
+    let last = performance.now();
     const tick = () => {
-      if (!userInteractingRef.current) {
+      const now = performance.now();
+      // Pause while the user was rotating in the last 400ms.
+      if (now - lastUserInteractRef.current > 400) {
         try {
           const pos = viewer.getPosition();
-          viewer.rotate({ yaw: pos.yaw + 0.002, pitch: pos.pitch });
-        } catch { /* viewer may be mid-transition */ }
+          viewer.rotate({ yaw: pos.yaw + 0.12 * ((now - last) / 1000), pitch: pos.pitch });
+        } catch { /* mid-transition */ }
       }
+      last = now;
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(rafRef.current);
-      viewer.removeEventListener('move-start' as never, onInteractStart);
-      viewer.removeEventListener('move-end' as never, onInteractStop);
+      viewer.removeEventListener('before-rotate' as never, onBeforeRotate);
     };
   }, [autoRotate]);
 
@@ -378,8 +461,7 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick }: P
     );
   }
 
-  // Regular (non-360) photo: show it flat, contained, no sphere projection —
-  // avoids the black zenith/nadir cones that a sphere produces for a flat image.
+  // Flat photo: show the frame contained with no sphere projection.
   if (projection === 'flat') {
     return (
       <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0f1929' }}>
@@ -404,18 +486,6 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick }: P
       {loading && (
         <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(15,23,42,0.7)', zIndex: 2 }}>
           <CircularProgress size={36} sx={{ color: '#fff' }} />
-        </Box>
-      )}
-      {/* Raw dual-fisheye: navigable but shows the camera's lens seam because it
-          was never stitched. The generic dual-fisheye projection can't reproduce
-          the per-model (X3/X4/X5) calibration, so we flag it and point the user at
-          the stitched export, which renders seamlessly via the equirectangular path. */}
-      {!loading && projection === 'dualfisheye' && (
-        <Box sx={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 16, maxWidth: '90%', px: 1.5, py: 0.75, borderRadius: '999px', backgroundColor: 'rgba(217,119,6,0.92)', backdropFilter: 'blur(8px)', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', gap: 0.75 }}>
-          <ThreeSixtyRounded sx={{ fontSize: 14, color: '#fff', flexShrink: 0 }} />
-          <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: '#fff', lineHeight: 1.3 }}>
-            Unstitched 360 — upload the Insta360 app export for a seamless view
-          </Typography>
         </Box>
       )}
       {/* Hotspot overlay layer — rendered on top of PSV canvas.
@@ -532,8 +602,8 @@ export default function TourViewerPage() {
       const latestCaptureId = pin.captureIds[pin.captureIds.length - 1];
       if (!latestCaptureId) return [];
       const cap = captures.find(c => c.id === latestCaptureId) as (MockCapture & Record<string, unknown>) | undefined;
-      const mediaAssets = (cap?.mediaAssets as Array<{ original_url?: string; secure_url?: string; thumbnail_url?: string }> | undefined) ?? [];
-      const panoramaUrl = mediaAssets[0]?.original_url ?? mediaAssets[0]?.secure_url ?? (cap?.processedPanoramaUrl as string | undefined) ?? null;
+      const mediaAssets = (cap?.mediaAssets as CaptureMediaAsset[] | undefined) ?? [];
+      const panoramaUrl = resolveCapturePanoramaUrl(mediaAssets, cap);
       return [{
         pinId: pin.id,
         captureId: latestCaptureId,
@@ -636,15 +706,22 @@ export default function TourViewerPage() {
   const resolvePanorama = useCallback((captureId: string): string | null => {
     const cap = captures.find(c => c.id === captureId) as (MockCapture & Record<string, unknown>) | undefined;
     if (!cap) return null;
-    const mediaAssets = (cap.mediaAssets as Array<{ original_url?: string; secure_url?: string }> | undefined) ?? [];
-    return (
-      mediaAssets[0]?.original_url ??
-      mediaAssets[0]?.secure_url ??
-      (cap.processedPanoramaUrl as string | undefined) ??
-      (cap.originalFileUrl as string | undefined) ??
-      null
-    );
+    const mediaAssets = (cap.mediaAssets as CaptureMediaAsset[] | undefined) ?? [];
+    return resolveCapturePanoramaUrl(mediaAssets, cap);
   }, [captures]);
+
+  const resolveGpanoOrientation = useCallback((captureId: string): GpanoOrientation => {
+    const cap = captures.find(c => c.id === captureId) as (MockCapture & Record<string, unknown>) | undefined;
+    if (!cap) return DEFAULT_GPANO_ORIENTATION;
+    const mediaAssets = (cap.mediaAssets as Array<{ stitch?: unknown }> | undefined) ?? [];
+    return gpanoFromStitch(mediaAssets[0]?.stitch);
+  }, [captures]);
+
+  const activeCaptureId = validActiveSnapId ?? currentStep?.captureId ?? tour.captureId ?? '';
+  const panoOrientation = useMemo(
+    () => (activeCaptureId ? resolveGpanoOrientation(activeCaptureId) : DEFAULT_GPANO_ORIENTATION),
+    [activeCaptureId, resolveGpanoOrientation],
+  );
 
   const handleSnapSelect = useCallback((snap: CaptureSnapshot) => {
     setCompareIds(prev => {
@@ -712,6 +789,7 @@ export default function TourViewerPage() {
         onAutoRotateChange={setAutoRotate}
         hotspots={hotspots}
         onHotspotClick={handleHotspotClick}
+        panoOrientation={panoOrientation}
       />
 
       {/* Top-right controls */}

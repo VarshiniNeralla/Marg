@@ -1,0 +1,45 @@
+{
+  "dng": "\\\\192.168.8.91\\pmo\\Insta_360\\02-05-2025\\IMG_20250502_162926_00_002.dng",
+  "output_width": 2880,
+  "output_height": 1440,
+  "conventions": {
+    "baseline": "Baseline: R @ v, phi=atan2(Yr,Xr)",
+    "r_transpose": "R.T @ v, phi=atan2(Yr,Xr)",
+    "phi_swap": "R @ v, phi=atan2(Xr,Yr)",
+    "phi_plus90": "R @ v, phi=atan2(Yr,Xr)+90deg"
+  },
+  "vs_baseline": {
+    "baseline": {
+      "yaw_deg": 0.0,
+      "pitch_deg": 0.0,
+      "roll_deg": 0.0,
+      "mse": 0.0,
+      "correlation": 1.0,
+      "abs_sum_deg": 0.0
+    },
+    "r_transpose": {
+      "yaw_deg": 1.0,
+      "pitch_deg": -1.0,
+      "roll_deg": -1.0,
+      "mse": 0.0023950054310262203,
+      "correlation": 0.9418863977055626,
+      "abs_sum_deg": 3.0
+    },
+    "phi_swap": {
+      "yaw_deg": 15.0,
+      "pitch_deg": -19.0,
+      "roll_deg": -13.0,
+      "mse": 0.015560988336801529,
+      "correlation": 0.5813122720559027,
+      "abs_sum_deg": 47.0
+    },
+    "phi_plus90": {
+      "yaw_deg": 15.0,
+      "pitch_deg": 5.0,
+      "roll_deg": -17.0,
+      "mse": 0.01601465977728367,
+      "correlation": 0.5666910550819003,
+      "abs_sum_deg": 37.0
+    }
+  }
+}
