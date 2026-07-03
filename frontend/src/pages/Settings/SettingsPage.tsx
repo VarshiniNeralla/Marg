@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Box, Typography, TextField, Switch, Select, MenuItem, Snackbar, Alert, InputAdornment, IconButton } from '@mui/material';
 import {
   PersonRounded,
-  LockRounded, CheckRounded, WarningAmberRounded, StorageRounded,
+  LockRounded, StorageRounded,
   VisibilityRounded, VisibilityOffRounded, ArrowBackRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
@@ -51,32 +51,6 @@ function FieldRow({ label, helper, children }: { label: string; helper?: string;
         {helper && <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.25 }}>{helper}</Typography>}
       </Box>
       <Box sx={{ flex: 1, minWidth: 0 }}>{children}</Box>
-    </Box>
-  );
-}
-
-interface FormActionsProps {
-  isDirty: boolean;
-  onSave: () => void;
-  onDiscard: () => void;
-}
-
-function FormActions({ isDirty, onSave, onDiscard }: FormActionsProps) {
-  return (
-    <Box sx={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 1.5 }}>
-      {isDirty && (
-        <>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 1.5, py: 0.5, borderRadius: '8px', backgroundColor: 'rgba(217,119,6,0.08)', fontSize: '0.8125rem', color: '#d97706', fontWeight: 500 }}>
-            <WarningAmberRounded sx={{ fontSize: 14 }} /> Unsaved changes
-          </Box>
-          <Box onClick={onDiscard} sx={{ px: 2, py: 0.875, borderRadius: '8px', border: `1px solid ${colors.border}`, color: colors.textSecondary, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', '&:hover': { color: colors.textStrong, borderColor: colors.textSubdued }, transition: `all ${motion.durationFast}` }}>
-            Discard
-          </Box>
-        </>
-      )}
-      <Box onClick={onSave} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.5, py: 1, borderRadius: '8px', background: isDirty ? colors.primaryGradient : 'rgba(22,163,74,0.12)', color: isDirty ? '#fff' : '#16a34a', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', boxShadow: isDirty ? '0 4px 14px rgba(37,99,235,0.28)' : 'none', transition: `all ${motion.durationFast}` }}>
-        {isDirty ? 'Save changes' : <><CheckRounded sx={{ fontSize: 14 }} /> Saved</>}
-      </Box>
     </Box>
   );
 }
@@ -286,12 +260,20 @@ function PwField({ label, value, onChange }: { label: string; value: string; onC
 function SecurityTab({ onSaved }: { onSaved: () => void }) {
   const security = useSettingsStore(s => s.security);
   const patchSecurity = useSettingsStore(s => s.patchSecurity);
+  const [isEditing, setIsEditing] = useState(false);
   const [form, setForm] = useState({ current: '', newPw: '', confirm: '' });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const isDirty = !!(form.current || form.newPw || form.confirm);
 
+  function handleDiscard() {
+    setForm({ current: '', newPw: '', confirm: '' });
+    setError('');
+    setIsEditing(false);
+  }
+
   async function handleSave() {
+    if (!isDirty) { setIsEditing(false); return; }
     if (!form.current || !form.newPw || !form.confirm) { setError('Please fill in all password fields.'); return; }
     if (form.newPw !== form.confirm) { setError('New passwords do not match.'); return; }
     if (form.newPw.length < 8) { setError('New password must be at least 8 characters.'); return; }
@@ -300,6 +282,7 @@ function SecurityTab({ onSaved }: { onSaved: () => void }) {
     try {
       await authService.changePassword({ current_password: form.current, new_password: form.newPw });
       setForm({ current: '', newPw: '', confirm: '' });
+      setIsEditing(false);
       onSaved();
     } catch (e: any) {
       setError(e?.message ?? 'Failed to change password. Check your current password.');
@@ -312,9 +295,17 @@ function SecurityTab({ onSaved }: { onSaved: () => void }) {
     <>
       {error && <Alert severity="error" sx={{ mb: 2, borderRadius: '10px' }}>{error}</Alert>}
       <SectionCard title="Change Password">
-        <PwField label="Current password" value={form.current} onChange={v => setForm(f => ({ ...f, current: v }))} />
-        <PwField label="New password" value={form.newPw} onChange={v => setForm(f => ({ ...f, newPw: v }))} />
-        <PwField label="Confirm new password" value={form.confirm} onChange={v => setForm(f => ({ ...f, confirm: v }))} />
+        {isEditing ? (
+          <>
+            <PwField label="Current password" value={form.current} onChange={v => setForm(f => ({ ...f, current: v }))} />
+            <PwField label="New password" value={form.newPw} onChange={v => setForm(f => ({ ...f, newPw: v }))} />
+            <PwField label="Confirm new password" value={form.confirm} onChange={v => setForm(f => ({ ...f, confirm: v }))} />
+          </>
+        ) : (
+          <FieldRow label="Password" helper="Change your account password">
+            <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted, py: 1 }}>••••••••</Typography>
+          </FieldRow>
+        )}
       </SectionCard>
       <SectionCard title="Two-Factor Authentication">
         <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, alignItems: { xs: 'flex-start', sm: 'center' }, justifyContent: 'space-between', gap: { xs: 1.5, sm: 0 } }}>
@@ -328,7 +319,23 @@ function SecurityTab({ onSaved }: { onSaved: () => void }) {
           </Box>
         </Box>
       </SectionCard>
-      <FormActions isDirty={isDirty || saving} onSave={handleSave} onDiscard={() => { setForm({ current: '', newPw: '', confirm: '' }); setError(''); }} />
+
+      <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1.5 }}>
+        {!isEditing ? (
+          <Box onClick={() => setIsEditing(true)} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 3, py: 1.125, borderRadius: '10px', border: `1px solid ${colors.border}`, color: colors.textStrong, fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: colors.textSubdued, backgroundColor: colors.bg } }}>
+            Edit password
+          </Box>
+        ) : (
+          <>
+            <Box onClick={handleDiscard} sx={{ px: 2.5, py: 1.125, borderRadius: '10px', border: `1px solid ${colors.border}`, color: colors.textSecondary, fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', '&:hover': { color: colors.textStrong, borderColor: colors.textSubdued }, transition: `all ${motion.durationFast}` }}>
+              Cancel
+            </Box>
+            <Box onClick={handleSave} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 3, py: 1.125, borderRadius: '10px', background: isDirty ? colors.primaryGradient : colors.borderLight, color: isDirty ? '#fff' : colors.textMuted, fontSize: '0.875rem', fontWeight: 600, cursor: isDirty ? 'pointer' : 'default', boxShadow: isDirty ? '0 4px 14px rgba(37,99,235,0.28)' : 'none', transition: `all ${motion.durationFast}` }}>
+              {saving ? 'Saving…' : 'Save changes'}
+            </Box>
+          </>
+        )}
+      </Box>
     </>
   );
 }
@@ -401,7 +408,7 @@ export default function SettingsPage() {
         }}>
           <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
         </Box>
-        <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.5rem', md: '2rem' }, fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1, mb: 0.75 }}>
+        <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.75rem', md: '2.25rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.05em', lineHeight: 1.05, mb: 0.5 }}>
           Settings
         </Typography>
         <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>Manage your account, team, and preferences</Typography>

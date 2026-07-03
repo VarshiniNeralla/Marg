@@ -31,8 +31,8 @@ export default function NewProjectPage() {
   const createProject = useWorkflowStore(s => s.createProject);
   const [saved, setSaved] = useState(false);
   const [form, setForm] = useState({
-    name: '', client: 'My Home Constructions', address: '',
-    city: 'Hyderabad', state: 'Telangana', description: '',
+    name: '',
+    city: 'Hyderabad', state: 'Telangana',
     status: 'active', startDate: '', endDate: '',
   });
 
@@ -77,11 +77,9 @@ export default function NewProjectPage() {
     if (!form.name.trim()) return;
     const newId = createProject({
       name: form.name,
-      location: form.address ? `${form.address}, ${form.city}` : `${form.city}, ${form.state}`,
+      location: `${form.city}, ${form.state}`,
       city: form.city,
       state: form.state,
-      client: form.client,
-      description: form.description,
       status: form.status as 'active' | 'draft',
       startDate: form.startDate,
       endDate: form.endDate,
@@ -92,18 +90,31 @@ export default function NewProjectPage() {
   }
 
   return (
-    <Box>
-      {/* Header */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 5 }}>
-        <Box component={Link} to="/projects" sx={{ display: 'flex', alignItems: 'center', color: colors.textMuted, textDecoration: 'none', '&:hover': { color: colors.textStrong } }}>
-          <ArrowBackRounded sx={{ fontSize: 20 }} />
+    <Box sx={{ maxWidth: 800, mx: 'auto' }}>
+      {/* Back to projects */}
+      <Box component={Link} to="/projects" sx={{
+          display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+          px: 1.25, py: 0.625, borderRadius: '8px',
+          border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+          fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+          transition: `all ${motion.durationFast} ${motion.easeOut}`,
+          '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+        }}>
+          <ArrowBackRounded sx={{ fontSize: 15 }} /> Projects
         </Box>
-        <Box>
-          <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.5rem', md: '2rem' }, fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>
-            New Project
-          </Typography>
-          <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>Fill in the project details to get started</Typography>
-        </Box>
+
+      {/* Heading */}
+      <Box sx={{ mb: 4 }}>
+        <Typography sx={{
+          fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
+          fontSize: { xs: '1.75rem', md: '2.25rem' }, fontWeight: 800,
+          color: colors.textStrong, letterSpacing: '-0.05em', lineHeight: 1.05, mb: 0.5,
+        }}>
+          New Project
+        </Typography>
+        <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>
+          Fill in the project details to get started
+        </Typography>
       </Box>
 
       {saved && <Alert severity="success" sx={{ mb: 3, borderRadius: '10px' }}>Project created! Redirecting…</Alert>}
@@ -115,42 +126,25 @@ export default function NewProjectPage() {
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
 
               <SectionCard title="Basic Information">
-                <Grid container spacing={2}>
-                  <Grid size={{ xs: 12 }}>
-                    <TextField fullWidth label="Project Name" required value={form.name}
-                      onChange={e => handleChange('name', e.target.value)} sx={fieldSx}
-                      placeholder="e.g. My Home Udyan Phase 2" />
-                  </Grid>
-                  <Grid size={{ xs: 12 }}>
-                    <TextField fullWidth label="Client Name" value={form.client}
-                      onChange={e => handleChange('client', e.target.value)} sx={fieldSx} />
-                  </Grid>
-                  <Grid size={{ xs: 12 }}>
-                    <TextField fullWidth label="Description" multiline rows={3} value={form.description}
-                      onChange={e => handleChange('description', e.target.value)} sx={fieldSx}
-                      placeholder="Brief description of the project scope…" />
-                  </Grid>
-                </Grid>
+                <TextField fullWidth label="Project Name" required value={form.name}
+                  onChange={e => handleChange('name', e.target.value)} sx={fieldSx}
+                  placeholder="e.g. My Home Udyan Phase 2" />
               </SectionCard>
 
               <SectionCard title="Location">
-                <Grid container spacing={2}>
-                  <Grid size={{ xs: 12 }}>
-                    <TextField fullWidth label="Address / Area" value={form.address}
-                      onChange={e => handleChange('address', e.target.value)} sx={fieldSx}
-                      placeholder="e.g. Kokapet Road, Nanakramguda" />
-                  </Grid>
-                  <Grid size={{ xs: 12, sm: 6 }}>
-                    <TextField fullWidth label="City" value={form.city}
-                      onChange={e => handleChange('city', e.target.value)} sx={fieldSx} />
-                  </Grid>
-                  <Grid size={{ xs: 12, sm: 6 }}>
-                    <TextField select fullWidth label="State" value={form.state}
-                      onChange={e => handleChange('state', e.target.value)} sx={fieldSx}>
-                      {STATES.map(s => <MenuItem key={s} value={s}>{s}</MenuItem>)}
-                    </TextField>
-                  </Grid>
-                </Grid>
+                <Box sx={{
+                  display: 'grid',
+                  width: '100%',
+                  gridTemplateColumns: 'repeat(2, 1fr)',
+                  gap: { xs: '6px', sm: '12px', md: '16px' },
+                }}>
+                  <TextField fullWidth label="City" value={form.city}
+                    onChange={e => handleChange('city', e.target.value)} sx={fieldSx} />
+                  <TextField select fullWidth label="State" value={form.state}
+                    onChange={e => handleChange('state', e.target.value)} sx={fieldSx}>
+                    {STATES.map(s => <MenuItem key={s} value={s}>{s}</MenuItem>)}
+                  </TextField>
+                </Box>
               </SectionCard>
 
               <SectionCard title="Timeline">
@@ -173,8 +167,8 @@ export default function NewProjectPage() {
           {/* Right column */}
           <Grid size={{ xs: 12, md: 4 }}>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
-              <SectionCard title="Project Settings">
-                <TextField select fullWidth label="Status" value={form.status}
+              <SectionCard title="Project Settings" dense>
+                <TextField select fullWidth size="small" label="Status" value={form.status}
                   onChange={e => handleChange('status', e.target.value)} sx={fieldSx}>
                   {STATUSES.map(s => <MenuItem key={s.value} value={s.value}>{s.label}</MenuItem>)}
                 </TextField>
@@ -253,11 +247,11 @@ export default function NewProjectPage() {
                 type="submit"
                 sx={{
                   width: '100%',
-                  height: '48px',
+                  height: '38px',
                   borderRadius: '10px',
                   background: colors.primaryGradient,
                   color: '#fff',
-                  fontSize: '1rem',
+                  fontSize: '0.875rem',
                   fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
                   fontWeight: 600,
                   border: 'none',
@@ -291,10 +285,10 @@ export default function NewProjectPage() {
   );
 }
 
-function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
+function SectionCard({ title, children, dense = false }: { title: string; children: React.ReactNode; dense?: boolean }) {
   return (
-    <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, p: 2.5, boxShadow: '0 2px 8px rgba(15,23,42,0.05)' }}>
-      <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.07em', textTransform: 'uppercase', mb: 2 }}>
+    <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, p: dense ? 1.75 : 2.5, boxShadow: '0 2px 8px rgba(15,23,42,0.05)' }}>
+      <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.07em', textTransform: 'uppercase', mb: dense ? 1 : 2 }}>
         {title}
       </Typography>
       {children}

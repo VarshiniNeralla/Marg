@@ -80,7 +80,7 @@ export default function FloorPlanUploadPage() {
   }
 
   return (
-    <Box>
+    <Box sx={{ maxWidth: 800, mx: 'auto' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 4 }}>
         <Box component={Link} to={backUrl} sx={{ color: colors.textMuted, textDecoration: 'none', display: 'flex', '&:hover': { color: colors.textStrong } }}>
           <ArrowBackRounded sx={{ fontSize: 20 }} />

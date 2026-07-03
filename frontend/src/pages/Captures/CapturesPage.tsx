@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Box, Typography, InputBase, Menu, MenuItem, Pagination } from '@mui/material';
+import { Box, Typography, InputBase, Menu, MenuItem, Pagination, useMediaQuery, useTheme } from '@mui/material';
 import { CameraAltRounded, ViewInArRounded, SearchRounded, KeyboardArrowDownRounded, CheckRounded, ArrowBackRounded, LayersRounded, MapRounded, DeleteOutlineRounded, BusinessRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { statusConfig, getRoomHistory } from '@store/workflowSelectors';
@@ -9,6 +9,7 @@ import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore , getRoleLandingPath } from '@store/authStore';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { buildFloorOptions, floorSelectionLabel, locationFilterMenuPaperSx, locationFilterToolbarSx, type FloorOption } from '@/utils/locationFilters';
+import { resolveCaptureThumbnailUrl } from '@/utils/captureMedia';
 
 // Capture gallery — project-wise selection, calm minimal cards.
 
@@ -22,10 +23,17 @@ const STATUS_DOT: Record<string, string> = {
   uploading: colors.info,
 };
 
-function CaptureCard({ capture, hasTour, onDelete }: { capture: MockCapture; hasTour: boolean; onDelete?: (c: MockCapture) => void }) {
+function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: { capture: MockCapture; hasTour: boolean; onDelete?: (c: MockCapture) => void; showProjectName?: boolean; compact?: boolean }) {
   const st = statusConfig.capture[capture.status];
   const history = getRoomHistory(capture);
   const dot = STATUS_DOT[capture.status] ?? colors.textSubdued;
+  const thumbUrl = resolveCaptureThumbnailUrl(capture as MockCapture & Record<string, unknown>);
+  const projectShort = capture.projectName.replace(/^My Home\s+/i, '');
+  const locationLabel = compact && showProjectName
+    ? `${projectShort} · ${capture.floorLabel}`
+    : showProjectName
+      ? `${capture.projectName} · ${capture.towerName} · ${capture.floorLabel}`
+      : `${capture.towerName} · ${capture.floorLabel}`;
 
   return (
     <Box
@@ -33,26 +41,33 @@ function CaptureCard({ capture, hasTour, onDelete }: { capture: MockCapture; has
       to={`/captures/${capture.id}`}
       sx={{
         display: 'block', textDecoration: 'none',
+        minWidth: 0, width: '100%', overflow: 'hidden',
         transition: `transform ${motion.durationNormal} ${motion.easeOut}`,
-        '&:hover': { transform: 'translateY(-3px)' },
-        '&:hover .cap-thumb': { boxShadow: '0 12px 32px rgba(15,23,42,0.14)' },
-        '&:hover .cap-open': { opacity: 1 },
-        '&:hover .cap-delete': { opacity: 1 },
+        '@media (hover: hover)': {
+          '&:hover': { transform: 'translateY(-3px)' },
+          '&:hover .cap-thumb': { boxShadow: '0 12px 32px rgba(15,23,42,0.14)' },
+          '&:hover .cap-open': { opacity: 1 },
+          '&:hover .cap-delete': { opacity: 1 },
+        },
       }}
     >
       {/* Thumbnail — soft, single subtle tint */}
       <Box
         className="cap-thumb"
         sx={{
-          position: 'relative', aspectRatio: '4 / 3', borderRadius: '14px', overflow: 'hidden',
+          position: 'relative', width: '100%', aspectRatio: '4 / 3', borderRadius: { xs: '10px', sm: '14px' }, overflow: 'hidden',
           background: capture.gradient,
           boxShadow: '0 1px 3px rgba(15,23,42,0.08)',
           transition: `box-shadow ${motion.durationNormal} ${motion.easeOut}`,
         }}
       >
-        <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <CameraAltRounded sx={{ color: 'rgba(255,255,255,0.25)', fontSize: 32 }} />
-        </Box>
+        <Box
+          component="img"
+          src={thumbUrl}
+          alt=""
+          loading="lazy"
+          sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+        />
 
         {/* hover: single open hint */}
         <Box className="cap-open" sx={{ position: 'absolute', bottom: 8, left: 8, display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1, py: 0.5, borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', opacity: 0, transition: `opacity ${motion.durationFast}` }}>
@@ -62,8 +77,8 @@ function CaptureCard({ capture, hasTour, onDelete }: { capture: MockCapture; has
 
         {/* tour marker — one quiet glyph */}
         {hasTour && (
-          <Box sx={{ position: 'absolute', top: 8, right: 8, width: 22, height: 22, borderRadius: '7px', backgroundColor: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <ViewInArRounded sx={{ fontSize: 12, color: '#fff' }} />
+          <Box sx={{ position: 'absolute', top: { xs: 4, sm: 8 }, right: { xs: 4, sm: 8 }, width: { xs: 18, sm: 22 }, height: { xs: 18, sm: 22 }, borderRadius: { xs: '5px', sm: '7px' }, backgroundColor: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <ViewInArRounded sx={{ fontSize: { xs: 10, sm: 12 }, color: '#fff' }} />
           </Box>
         )}
 
@@ -80,14 +95,14 @@ function CaptureCard({ capture, hasTour, onDelete }: { capture: MockCapture; has
       </Box>
 
       {/* Metadata — name + status dot */}
-      <Box sx={{ pt: 1.25, px: 0.25 }}>
-        <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong, letterSpacing: '-0.01em' }}>
+      <Box sx={{ pt: { xs: 0.5, sm: 1.25 }, px: 0, minWidth: 0 }}>
+        <Typography noWrap sx={{ fontSize: { xs: '0.6875rem', sm: '0.875rem' }, fontWeight: 600, color: colors.textStrong, letterSpacing: '-0.01em', minWidth: 0 }}>
           {capture.roomName}
         </Typography>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 0.375 }}>
-          <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: dot, flexShrink: 0 }} />
-          <Typography noWrap sx={{ fontSize: '0.75rem', color: colors.textMuted }}>
-            {capture.towerName} · {capture.floorLabel}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.375, sm: 0.75 }, mt: { xs: 0.25, sm: 0.375 }, minWidth: 0 }}>
+          <Box sx={{ width: { xs: 5, sm: 6 }, height: { xs: 5, sm: 6 }, borderRadius: '50%', backgroundColor: dot, flexShrink: 0 }} />
+          <Typography noWrap sx={{ flex: 1, minWidth: 0, fontSize: { xs: '0.5625rem', sm: '0.75rem' }, color: colors.textMuted }}>
+            {locationLabel}
           </Typography>
         </Box>
       </Box>
@@ -105,8 +120,27 @@ function isGalleryVisibleCapture(
   return true;
 }
 
+const CAPTURES_PAGE_SIZE_MOBILE = 9;  // 3 columns × 3 rows
+const CAPTURES_PAGE_SIZE_TABLET = 6;  // 3 columns × 2 rows
+const CAPTURES_PAGE_SIZE_DESKTOP = 8; // 4 columns × 2 rows
+
+const GALLERY_GRID_SX = {
+  display: 'grid',
+  width: '100%',
+  minWidth: 0,
+  gridTemplateColumns: {
+    xs: 'repeat(3, minmax(0, 1fr))',
+    sm: 'repeat(3, minmax(0, 1fr))',
+    md: 'repeat(4, minmax(0, 1fr))',
+  },
+  gap: { xs: 0.75, sm: 1.5, md: 2 },
+} as const;
+
 export default function CapturesPage() {
   const location = useLocation();
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const isMdUp = useMediaQuery(theme.breakpoints.up('md'));
   const isEngineerView = location.pathname === '/my-captures';
   const user = useAuthStore(s => s.user);
   const role = user?.role || 'default';
@@ -184,13 +218,17 @@ export default function CapturesPage() {
   }, [galleryCaptures, projectId, towerId, floorId, availableFloors]);
 
   const [page, setPage] = useState(1);
-  const itemsPerPage = 12;
-  const paginatedFiltered = useMemo(() => filtered.slice((page - 1) * itemsPerPage, page * itemsPerPage), [filtered, page]);
-  const totalPages = Math.ceil(filtered.length / itemsPerPage);
+  const itemsPerPage = isMobile ? CAPTURES_PAGE_SIZE_MOBILE : isMdUp ? CAPTURES_PAGE_SIZE_DESKTOP : CAPTURES_PAGE_SIZE_TABLET;
+  const paginatedFiltered = useMemo(() => filtered.slice((page - 1) * itemsPerPage, page * itemsPerPage), [filtered, page, itemsPerPage]);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / itemsPerPage));
 
   React.useEffect(() => {
     setPage(1);
   }, [projectId, towerId, floorId]);
+
+  React.useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
   // Group captures by Tower → Floor so the history reads structurally:
   // each floor is a section holding its own captures, with a link to its plan.
@@ -211,6 +249,8 @@ export default function CapturesPage() {
       a.floorLabel.localeCompare(b.floorLabel, undefined, { numeric: true })
     );
   }, [filtered, allFloors]);
+
+  const showProjectName = !projectId || projectId === 'all';
 
   const pendingCount = mockCaptures.filter(c => c.status === 'review').length;
 
@@ -284,7 +324,7 @@ export default function CapturesPage() {
   const T = `all 160ms cubic-bezier(0.4,0,0.2,1)`;
 
   return (
-    <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
+    <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6, width: '100%', minWidth: 0, overflow: 'hidden' }}>
       {/* Back to overview — available for all roles */}
       <Box component={Link} to={getRoleLandingPath(user?.role)} sx={{
           display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
@@ -504,7 +544,7 @@ export default function CapturesPage() {
                 </Box>
                 <Box sx={{ minWidth: 0, mr: { xs: 'auto', sm: 0 } }}>
                   <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, letterSpacing: '-0.02em', lineHeight: 1.2 }} noWrap>
-                    {group.towerName} · {group.floorLabel}
+                    {showProjectName ? `${group.projectName} · ` : ''}{group.towerName} · {group.floorLabel}
                   </Typography>
                   <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
                     {group.captures.length} capture{group.captures.length !== 1 ? 's' : ''}
@@ -522,24 +562,27 @@ export default function CapturesPage() {
                 )}
               </Box>
               {/* Captures within this floor */}
-              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2,1fr)', sm: 'repeat(3,1fr)', md: 'repeat(4,1fr)' }, gap: 2 }}>
-                {group.captures.map(c => <CaptureCard key={c.id} capture={c} hasTour={tourCaptureIds.has(c.id)} onDelete={setDeleteTarget} />)}
+              <Box sx={GALLERY_GRID_SX}>
+                {group.captures.map(c => <CaptureCard key={c.id} capture={c} hasTour={tourCaptureIds.has(c.id)} onDelete={setDeleteTarget} showProjectName={showProjectName} compact={isMobile} />)}
               </Box>
             </Box>
           ))}
         </Box>
       ) : (
-        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-          <Box sx={{ display: 'grid', width: '100%', gridTemplateColumns: { xs: 'repeat(2,1fr)', sm: 'repeat(3,1fr)', md: 'repeat(4,1fr)' }, gap: 2 }}>
-            {paginatedFiltered.map(c => <CaptureCard key={c.id} capture={c} hasTour={tourCaptureIds.has(c.id)} />)}
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: { xs: 2, sm: 4 }, width: '100%', minWidth: 0 }}>
+          <Box sx={GALLERY_GRID_SX}>
+            {paginatedFiltered.map(c => <CaptureCard key={c.id} capture={c} hasTour={tourCaptureIds.has(c.id)} showProjectName={showProjectName} compact={isMobile} />)}
           </Box>
           {totalPages > 1 && (
-            <Pagination 
-              count={totalPages} 
-              page={page} 
-              onChange={(_, p) => setPage(p)} 
-              color="primary" 
-              sx={{ '& .MuiPaginationItem-root': { fontWeight: 600 } }}
+            <Pagination
+              count={totalPages}
+              page={page}
+              onChange={(_, p) => setPage(p)}
+              color="primary"
+              size={isMobile ? 'small' : 'medium'}
+              siblingCount={isMobile ? 0 : 1}
+              boundaryCount={1}
+              sx={{ maxWidth: '100%', '& .MuiPaginationItem-root': { fontWeight: 600 } }}
             />
           )}
         </Box>

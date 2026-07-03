@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
-import { Box, Typography, Grid, TextField, MenuItem, Alert, InputAdornment } from '@mui/material';
-import { ArrowBackRounded, ApartmentRounded, LayersRounded, MeetingRoomRounded, HomeWorkRounded, GridViewRounded } from '@mui/icons-material';
+import { Box, Typography, Grid, TextField, MenuItem, Alert, InputAdornment, Tooltip } from '@mui/material';
+import { ArrowBackRounded, ApartmentRounded, LayersRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getProjectById } from '@store/workflowSelectors';
@@ -31,9 +31,6 @@ const fieldSx = {
 const STRUCTURE_FIELDS = [
   { key: 'towers', label: 'Towers', icon: <ApartmentRounded sx={{ fontSize: 17 }} />, helper: 'Number of towers' },
   { key: 'floors', label: 'Floors', icon: <LayersRounded sx={{ fontSize: 17 }} />, helper: 'Total floors across towers' },
-  { key: 'flats', label: 'Flats / floor', icon: <HomeWorkRounded sx={{ fontSize: 17 }} />, helper: 'Units per floor' },
-  { key: 'rooms', label: 'Rooms', icon: <MeetingRoomRounded sx={{ fontSize: 17 }} />, helper: 'Rooms captured so far' },
-  { key: 'totalRooms', label: 'Total rooms', icon: <GridViewRounded sx={{ fontSize: 17 }} />, helper: 'Planned room count' },
 ] as const;
 
 type StructureKey = typeof STRUCTURE_FIELDS[number]['key'];
@@ -42,24 +39,30 @@ export default function EditProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const projects = useWorkflowStore(s => s.projects);
+  const towers = useWorkflowStore(s => s.towers);
+  const floors = useWorkflowStore(s => s.floors);
+  const rooms = useWorkflowStore(s => s.rooms);
+  const captures = useWorkflowStore(s => s.captures);
   const updateProject = useWorkflowStore(s => s.updateProject);
   const project = getProjectById(projects, projectId ?? '');
+
+  const projectTowerIds = new Set(towers.filter(t => t.projectId === projectId).map(t => t.id));
+  const projectFloors = floors.filter(f => projectTowerIds.has(f.towerId));
+  const projectFloorIds = new Set(projectFloors.map(f => f.id));
+  const projectRooms = rooms.filter(r => projectFloorIds.has(r.floorId));
+  const projectRoomIds = new Set(projectRooms.map(r => r.id));
+  const projectCaptures = captures.filter(c => projectRoomIds.has(c.roomId));
 
   const [saved, setSaved] = useState(false);
   const [form, setForm] = useState(() => ({
     name: project?.name ?? '',
-    client: project?.client ?? '',
-    description: project?.description ?? '',
     city: project?.city ?? '',
     state: project?.state ?? 'Telangana',
     status: project?.status ?? 'active',
     startDate: project?.startDate ?? '',
     endDate: project?.endDate ?? '',
-    towers: project?.towers ?? 0,
-    floors: project?.floors ?? 0,
-    flats: project?.flats ?? 0,
-    rooms: project?.rooms ?? 0,
-    totalRooms: project?.totalRooms ?? 0,
+    towers: projectTowerIds.size,
+    floors: projectFloors.length,
   }));
 
   if (!project) {
@@ -84,11 +87,8 @@ export default function EditProjectPage() {
     e.preventDefault();
     if (!form.name.trim() || !project) return;
 
-    const progress = form.totalRooms > 0 ? Math.min(100, Math.round((form.rooms / form.totalRooms) * 100)) : project.progress;
     updateProject(project.id, {
       name: form.name,
-      client: form.client,
-      description: form.description,
       city: form.city,
       state: form.state,
       location: `${form.city}, ${form.state}`,
@@ -97,10 +97,6 @@ export default function EditProjectPage() {
       endDate: form.endDate,
       towers: form.towers,
       floors: form.floors,
-      flats: form.flats,
-      rooms: form.rooms,
-      totalRooms: form.totalRooms,
-      progress,
       lastUpdated: 'Just now',
     });
     setSaved(true);
@@ -108,57 +104,62 @@ export default function EditProjectPage() {
   }
 
   return (
-    <Box>
-      {/* Header */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 5 }}>
-        <Box component={Link} to={`/projects/${project.id}`} sx={{ display: 'flex', alignItems: 'center', color: colors.textMuted, textDecoration: 'none', '&:hover': { color: colors.textStrong } }}>
-          <ArrowBackRounded sx={{ fontSize: 20 }} />
+    <Box sx={{ maxWidth: 800, mx: 'auto' }}>
+      {/* Back to project */}
+      <Box component={Link} to={`/projects/${project.id}`} sx={{
+          display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+          px: 1.25, py: 0.625, borderRadius: '8px',
+          border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+          fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+          transition: `all ${motion.durationFast} ${motion.easeOut}`,
+          '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+        }}>
+          <ArrowBackRounded sx={{ fontSize: 15 }} /> {project.name}
         </Box>
-        <Box>
-          <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.5rem', md: '2rem' }, fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>
-            Edit Project
-          </Typography>
-          <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>{project.name}</Typography>
-        </Box>
+
+      {/* Heading */}
+      <Box sx={{ mb: 4 }}>
+        <Typography sx={{
+          fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
+          fontSize: { xs: '1.75rem', md: '2.25rem' }, fontWeight: 800,
+          color: colors.textStrong, letterSpacing: '-0.05em', lineHeight: 1.05, mb: 0.5,
+        }}>
+          Edit Project
+        </Typography>
+        <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>
+          {project.name}
+        </Typography>
       </Box>
 
       {saved && <Alert severity="success" sx={{ mb: 3, borderRadius: '10px' }}>Changes saved! Redirecting…</Alert>}
 
       <Box component="form" onSubmit={handleSubmit}>
-        <Grid container spacing={3}>
+        <Grid container spacing={{ xs: 2, md: 3 }}>
           {/* Left column */}
           <Grid size={{ xs: 12, md: 8 }}>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: { xs: 2, md: 2.5 } }}>
 
               <SectionCard title="Basic Information">
-                <Grid container spacing={2}>
-                  <Grid size={{ xs: 12 }}>
-                    <TextField fullWidth label="Project Name" required value={form.name}
-                      onChange={e => setText('name', e.target.value)} sx={fieldSx} />
-                  </Grid>
-                  <Grid size={{ xs: 12 }}>
-                    <TextField fullWidth label="Client Name" value={form.client}
-                      onChange={e => setText('client', e.target.value)} sx={fieldSx} />
-                  </Grid>
-                  <Grid size={{ xs: 12 }}>
-                    <TextField fullWidth label="Description" multiline rows={3} value={form.description}
-                      onChange={e => setText('description', e.target.value)} sx={fieldSx} />
-                  </Grid>
-                </Grid>
+                <TextField fullWidth label="Project Name" required value={form.name}
+                  onChange={e => setText('name', e.target.value)} sx={fieldSx} />
               </SectionCard>
 
               {/* ── Structure (editable counts) ──────────────────────────────── */}
               <SectionCard title="Structure">
-                <Grid container spacing={2}>
+                <Box sx={{
+                  display: 'grid',
+                  width: '100%',
+                  gridTemplateColumns: 'repeat(2, 1fr)',
+                  gap: { xs: '10px', sm: '12px', md: '16px' },
+                }}>
                   {STRUCTURE_FIELDS.map(f => (
-                    <Grid key={f.key} size={{ xs: 6, sm: 4 }}>
+                    <Tooltip key={f.key} title={f.helper} placement="top">
                       <TextField
                         fullWidth
                         type="number"
                         label={f.label}
                         value={form[f.key]}
                         onChange={e => setNum(f.key, e.target.value)}
-                        helperText={f.helper}
                         sx={fieldSx}
                         slotProps={{
                           htmlInput: { min: 0 },
@@ -171,65 +172,52 @@ export default function EditProjectPage() {
                           },
                         }}
                       />
-                    </Grid>
+                    </Tooltip>
                   ))}
-                </Grid>
-                <Box sx={{ mt: 1, p: 1.5, borderRadius: '10px', backgroundColor: colors.bgDeep, display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>
-                    Mapping progress recalculates from <b>{form.rooms}</b> of <b>{form.totalRooms}</b> rooms ·
-                  </Typography>
-                  <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: colors.primary }}>
-                    {form.totalRooms > 0 ? Math.min(100, Math.round((form.rooms / form.totalRooms) * 100)) : project.progress}%
-                  </Typography>
                 </Box>
               </SectionCard>
 
-              <SectionCard title="Location & Timeline">
-                <Grid container spacing={2}>
-                  <Grid size={{ xs: 12, sm: 6 }}>
-                    <TextField fullWidth label="City" value={form.city}
-                      onChange={e => setText('city', e.target.value)} sx={fieldSx} />
-                  </Grid>
-                  <Grid size={{ xs: 12, sm: 6 }}>
-                    <TextField select fullWidth label="State" value={form.state}
-                      onChange={e => setText('state', e.target.value)} sx={fieldSx}>
-                      {STATES.map(s => <MenuItem key={s} value={s}>{s}</MenuItem>)}
-                    </TextField>
-                  </Grid>
-                  <Grid size={{ xs: 12, sm: 6 }}>
-                    <TextField fullWidth label="Start Date" type="date" value={form.startDate}
-                      onChange={e => setText('startDate', e.target.value)} sx={fieldSx}
-                      slotProps={{ inputLabel: { shrink: true } }} />
-                  </Grid>
-                  <Grid size={{ xs: 12, sm: 6 }}>
-                    <TextField fullWidth label="End Date" type="date" value={form.endDate}
-                      onChange={e => setText('endDate', e.target.value)} sx={fieldSx}
-                      slotProps={{ inputLabel: { shrink: true } }} />
-                  </Grid>
-                </Grid>
+              <SectionCard title="Location & Timeline" dense>
+                <Box sx={{
+                  display: 'grid',
+                  width: '100%',
+                  gridTemplateColumns: 'repeat(2, 1fr)',
+                  gap: { xs: '10px', sm: '12px', md: '16px' },
+                }}>
+                  <TextField fullWidth size="small" label="City" value={form.city}
+                    onChange={e => setText('city', e.target.value)} sx={fieldSx} />
+                  <TextField select fullWidth size="small" label="State" value={form.state}
+                    onChange={e => setText('state', e.target.value)} sx={fieldSx}>
+                    {STATES.map(s => <MenuItem key={s} value={s}>{s}</MenuItem>)}
+                  </TextField>
+                  <TextField fullWidth size="small" label="Start Date" type="date" value={form.startDate}
+                    onChange={e => setText('startDate', e.target.value)} sx={fieldSx}
+                    slotProps={{ inputLabel: { shrink: true } }} />
+                  <TextField fullWidth size="small" label="End Date" type="date" value={form.endDate}
+                    onChange={e => setText('endDate', e.target.value)} sx={fieldSx}
+                    slotProps={{ inputLabel: { shrink: true } }} />
+                </Box>
               </SectionCard>
             </Box>
           </Grid>
 
           {/* Right column */}
           <Grid size={{ xs: 12, md: 4 }}>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
-              <SectionCard title="Project Settings">
-                <TextField select fullWidth label="Status" value={form.status}
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: { xs: 2, md: 2.5 } }}>
+              <SectionCard title="Project Settings" dense>
+                <TextField select fullWidth size="small" label="Status" value={form.status}
                   onChange={e => setText('status', e.target.value)} sx={fieldSx}>
                   {STATUSES.map(s => <MenuItem key={s.value} value={s.value}>{s.label}</MenuItem>)}
                 </TextField>
               </SectionCard>
 
               {/* Live summary */}
-              <SectionCard title="Summary">
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+              <SectionCard title="Summary" dense>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.875 }}>
                   {[
                     ['Towers', form.towers],
                     ['Floors', form.floors],
-                    ['Flats / floor', form.flats],
-                    ['Rooms captured', form.rooms],
-                    ['Total rooms', form.totalRooms],
+                    ['Captures', projectCaptures.length],
                   ].map(([label, value]) => (
                     <Box key={label as string} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>{label}</Typography>
@@ -240,9 +228,9 @@ export default function EditProjectPage() {
               </SectionCard>
 
               <Box component="button" type="submit" sx={{
-                width: '100%', height: '48px', borderRadius: '10px',
+                width: '100%', height: '38px', borderRadius: '10px',
                 background: colors.primaryGradient, color: '#fff',
-                fontSize: '1rem', fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontWeight: 600,
+                fontSize: '0.875rem', fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontWeight: 600,
                 border: 'none', cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.28)',
                 '&:hover': { opacity: 0.92 }, transition: `opacity ${motion.durationFast}`,
               }}>
@@ -262,10 +250,10 @@ export default function EditProjectPage() {
   );
 }
 
-function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
+function SectionCard({ title, children, dense = false }: { title: string; children: React.ReactNode; dense?: boolean }) {
   return (
-    <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, p: 2.5, boxShadow: '0 2px 8px rgba(15,23,42,0.05)' }}>
-      <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.07em', textTransform: 'uppercase', mb: 2 }}>
+    <Box sx={{ borderRadius: { xs: '12px', md: '16px' }, backgroundColor: colors.card, p: dense ? { xs: 1.5, md: 1.75 } : { xs: 1.75, md: 2.5 }, boxShadow: '0 2px 8px rgba(15,23,42,0.05)' }}>
+      <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.textSubdued, letterSpacing: '0.07em', textTransform: 'uppercase', mb: dense ? 1 : { xs: 1.5, md: 2 } }}>
         {title}
       </Typography>
       {children}

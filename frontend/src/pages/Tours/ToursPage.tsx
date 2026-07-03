@@ -1,6 +1,6 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Box, Typography, InputBase, Menu, MenuItem } from '@mui/material';
+import { Box, Typography, InputBase, Menu, MenuItem, Pagination, useMediaQuery, useTheme } from '@mui/material';
 import {
   ViewInArRounded, PlayArrowRounded, CameraAltRounded,
   KeyboardArrowDownRounded, CheckRounded, SearchRounded, ArrowBackRounded, DeleteRounded,
@@ -8,10 +8,12 @@ import {
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { statusConfig } from '@/data/mockData';
+import type { MockTour } from '@/data/mockData';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore , getRoleLandingPath } from '@store/authStore';
 import { buildFloorOptions, floorSelectionLabel, locationFilterMenuPaperSx, locationFilterToolbarSx, type FloorOption } from '@/utils/locationFilters';
+import { resolveTourThumbnailUrl } from '@/utils/captureMedia';
 
 const STATUS_DOT: Record<string, string> = {
   published:  colors.success,
@@ -32,7 +34,126 @@ const P = {
   bg:       '#f7f8fa',
 };
 
+const TOURS_PAGE_SIZE_DESKTOP = 8; // 4 columns × 2 rows
+const TOURS_PAGE_SIZE_MOBILE = 9;  // 3 columns × 3 rows
+
+const TOURS_GRID_SX = {
+  display: 'grid',
+  width: '100%',
+  minWidth: 0,
+  gridTemplateColumns: {
+    xs: 'repeat(3, minmax(0, 1fr))',
+    sm: 'repeat(4, minmax(0, 1fr))',
+  },
+  gap: { xs: 0.75, sm: 2 },
+} as const;
+
+function TourCard({
+  tour,
+  thumbUrl,
+  showProjectName,
+  compact,
+  onDelete,
+}: {
+  tour: MockTour;
+  thumbUrl: string;
+  showProjectName?: boolean;
+  compact?: boolean;
+  onDelete: () => void;
+}) {
+  const st = (statusConfig.tour as Record<string, { label: string; color: string; bg: string }>)[tour.status] ?? statusConfig.tour.draft;
+  const dot = STATUS_DOT[tour.status] ?? P.subtle;
+  const projectShort = tour.projectName.replace(/^My Home\s+/i, '');
+  const title = compact ? tour.floorLabel : tour.roomName;
+  const locationLabel = compact && showProjectName
+    ? `${projectShort} · ${tour.towerName}`
+    : showProjectName
+      ? `${tour.projectName} · ${tour.towerName} · ${tour.floorLabel}`
+      : `${tour.towerName} · ${tour.floorLabel}`;
+
+  return (
+    <Box
+      component={Link}
+      to={`/tours/${tour.id}`}
+      sx={{
+        display: 'block', textDecoration: 'none',
+        minWidth: 0, width: '100%', overflow: 'hidden',
+        transition: `transform ${motion.durationNormal} ${motion.easeOut}`,
+        '@media (hover: hover)': {
+          '&:hover': { transform: 'translateY(-3px)' },
+          '&:hover .tour-thumb': { boxShadow: '0 12px 32px rgba(15,23,42,0.14)' },
+          '&:hover .tour-play': { opacity: 1, transform: 'scale(1)' },
+          '&:hover .tour-delete': { opacity: 1 },
+        },
+      }}
+    >
+      <Box
+        className="tour-thumb"
+        sx={{
+          position: 'relative', width: '100%', aspectRatio: '4 / 3',
+          borderRadius: { xs: '10px', sm: '14px' }, overflow: 'hidden',
+          background: tour.gradient,
+          boxShadow: '0 1px 3px rgba(15,23,42,0.08)',
+          transition: `box-shadow ${motion.durationNormal} ${motion.easeOut}`,
+        }}
+      >
+        <Box
+          component="img"
+          src={thumbUrl}
+          alt=""
+          loading="lazy"
+          sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+        />
+        <Box className="tour-play" sx={{ position: 'absolute', inset: 0, display: { xs: 'none', sm: 'flex' }, alignItems: 'center', justifyContent: 'center', opacity: 0, transform: 'scale(0.85)', transition: `opacity ${motion.durationNormal} ${motion.easeOut}, transform ${motion.durationNormal} ${motion.easeOut}` }}>
+          <Box sx={{ width: 44, height: 44, borderRadius: '50%', backgroundColor: 'rgba(255,255,255,0.2)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <PlayArrowRounded sx={{ color: '#fff', fontSize: 24 }} />
+          </Box>
+        </Box>
+        <Box sx={{ position: 'absolute', top: { xs: 4, sm: 8 }, left: { xs: 4, sm: 8 }, display: 'flex', alignItems: 'center', gap: 0.5, px: { xs: 0.5, sm: 0.875 }, py: { xs: 0.25, sm: 0.375 }, borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(6px)' }}>
+          <ViewInArRounded sx={{ color: '#fff', fontSize: { xs: 9, sm: 11 } }} />
+          <Typography sx={{ fontSize: { xs: '0.5rem', sm: '0.5625rem' }, fontWeight: 700, color: '#fff', letterSpacing: '0.05em', display: { xs: 'none', sm: 'block' } }}>360°</Typography>
+        </Box>
+        <Box sx={{ position: 'absolute', top: { xs: 4, sm: 8 }, right: { xs: 4, sm: 8 }, px: { xs: 0.5, sm: 1 }, py: { xs: 0.25, sm: 0.375 }, borderRadius: '5px', backgroundColor: st.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {compact ? (
+            <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: st.color }} />
+          ) : (
+            <Typography sx={{ fontSize: '0.5625rem', fontWeight: 700, color: st.color }}>{st.label}</Typography>
+          )}
+        </Box>
+        <Box className="tour-delete" sx={{ position: 'absolute', bottom: 8, right: 8, zIndex: 10, opacity: 0, display: { xs: 'none', sm: 'block' }, transition: `opacity ${motion.durationNormal} ${motion.easeOut}` }}>
+          <Box
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(); }}
+            sx={{ width: 32, height: 32, borderRadius: '8px', backgroundColor: 'rgba(239,68,68,0.9)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'background-color 150ms ease, transform 150ms ease', '&:hover': { backgroundColor: 'rgba(220,38,38,1)', transform: 'scale(1.05)' } }}
+          >
+            <DeleteRounded sx={{ color: '#fff', fontSize: 16 }} />
+          </Box>
+        </Box>
+      </Box>
+
+      <Box sx={{ pt: { xs: 0.5, sm: 1.25 }, px: 0, minWidth: 0 }}>
+        <Typography noWrap sx={{ fontSize: { xs: '0.6875rem', sm: '0.875rem' }, fontWeight: 600, color: P.strong, letterSpacing: '-0.01em', minWidth: 0 }}>
+          {title}
+        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.375, sm: 0.75 }, mt: { xs: 0.25, sm: 0.375 }, minWidth: 0 }}>
+          <Box sx={{ width: { xs: 5, sm: 6 }, height: { xs: 5, sm: 6 }, borderRadius: '50%', backgroundColor: dot, flexShrink: 0 }} />
+          <Typography noWrap sx={{ flex: 1, minWidth: 0, fontSize: { xs: '0.5625rem', sm: '0.75rem' }, color: P.muted }}>
+            {locationLabel}
+          </Typography>
+        </Box>
+        {!compact && (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.375, color: P.subtle }}>
+            <CameraAltRounded sx={{ fontSize: 11 }} />
+            <Typography sx={{ fontSize: '0.6875rem', color: 'inherit' }}>{tour.captures} captures</Typography>
+          </Box>
+        )}
+      </Box>
+    </Box>
+  );
+}
+
 export default function ToursPage() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const user = useAuthStore(s => s.user);
   const role = user?.role || 'default';
   
@@ -48,12 +169,15 @@ export default function ToursPage() {
   const [floorMenuWidth, setFloorMenuWidth] = useState<number | undefined>();
 
   const allTours    = useWorkflowStore(s => s.tours);
+  const allCaptures = useWorkflowStore(s => s.captures);
   const allProjects = useWorkflowStore(s => s.projects);
   const allTowers   = useWorkflowStore(s => s.towers);
   const allFloors   = useWorkflowStore(s => s.floors);
   const deleteTour  = useWorkflowStore(s => s.deleteTour);
   
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
+  const [page, setPage] = useState(1);
+  const toursPerPage = isMobile ? TOURS_PAGE_SIZE_MOBILE : TOURS_PAGE_SIZE_DESKTOP;
 
   const handleProjectSelect = (id: string) => { 
     setProjectId(id); setTowerId(id === 'all' ? '' : 'all'); setFloorId(id === 'all' ? '' : 'all'); setMenuAnchor(null); 
@@ -90,6 +214,20 @@ export default function ToursPage() {
     return matchProject && matchTower && matchFloor && matchQuery;
   }), [allTours, projectId, towerId, floorId, availableFloors, query]);
 
+  const totalPages = Math.max(1, Math.ceil(filtered.length / toursPerPage));
+  const paginatedTours = useMemo(
+    () => filtered.slice((page - 1) * toursPerPage, page * toursPerPage),
+    [filtered, page, toursPerPage],
+  );
+
+  useEffect(() => {
+    setPage(1);
+  }, [projectId, towerId, floorId, query]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
   const selectedProject = projects.find(p => p.id === projectId);
   const selectedTower   = availableTowers.find(t => t.id === towerId);
   const selectedFloor   = availableFloors.find(f => f.id === floorId);
@@ -117,9 +255,10 @@ export default function ToursPage() {
   const showFloorFilter = showTowerFilter && Boolean(towerId);
   const filterCount = 1 + (showTowerFilter ? 1 : 0) + (showFloorFilter ? 1 : 0);
   const toolbarLayout = locationFilterToolbarSx(filterCount);
+  const showProjectName = !projectId || projectId === 'all';
 
   return (
-    <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
+    <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6, width: '100%', minWidth: 0, overflow: 'hidden' }}>
       {/* Back to overview (all roles) */}
       <Box component={Link} to={getRoleLandingPath(user?.role)} sx={{
           display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
@@ -371,79 +510,31 @@ export default function ToursPage() {
           <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Try a different search or filter.</Typography>
         </Box>
       ) : (
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2,1fr)', sm: 'repeat(3,1fr)' }, gap: 2 }}>
-          {filtered.map(tour => {
-            const st = (statusConfig.tour as Record<string, { label: string; color: string; bg: string }>)[tour.status] ?? statusConfig.tour.draft;
-            const dot = STATUS_DOT[tour.status] ?? P.subtle;
-            return (
-              <Box
-                key={tour.id}
-                component={Link}
-                to={`/tours/${tour.id}`}
-                sx={{
-                  display: 'block', textDecoration: 'none',
-                  transition: `transform ${motion.durationNormal} ${motion.easeOut}`,
-                  '&:hover': { transform: 'translateY(-3px)' },
-                  '&:hover .tour-thumb': { boxShadow: '0 12px 32px rgba(15,23,42,0.14)' },
-                  '&:hover .tour-play': { opacity: 1, transform: 'scale(1)' },
-                  '&:hover .tour-delete': { opacity: 1 },
-                }}
-              >
-                {/* Thumbnail */}
-                <Box
-                  className="tour-thumb"
-                  sx={{
-                    position: 'relative', aspectRatio: '4 / 3', borderRadius: '14px', overflow: 'hidden',
-                    background: tour.gradient,
-                    boxShadow: '0 1px 3px rgba(15,23,42,0.08)',
-                    transition: `box-shadow ${motion.durationNormal} ${motion.easeOut}`,
-                  }}
-                >
-                  {/* Play button on hover */}
-                  <Box className="tour-play" sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transform: 'scale(0.85)', transition: `opacity ${motion.durationNormal} ${motion.easeOut}, transform ${motion.durationNormal} ${motion.easeOut}` }}>
-                    <Box sx={{ width: 44, height: 44, borderRadius: '50%', backgroundColor: 'rgba(255,255,255,0.2)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <PlayArrowRounded sx={{ color: '#fff', fontSize: 24 }} />
-                    </Box>
-                  </Box>
-                  {/* 360° badge */}
-                  <Box sx={{ position: 'absolute', top: 8, left: 8, display: 'flex', alignItems: 'center', gap: 0.5, px: 0.875, py: 0.375, borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(6px)' }}>
-                    <ViewInArRounded sx={{ color: '#fff', fontSize: 11 }} />
-                    <Typography sx={{ fontSize: '0.5625rem', fontWeight: 700, color: '#fff', letterSpacing: '0.05em' }}>360°</Typography>
-                  </Box>
-                  {/* Status badge */}
-                  <Box sx={{ position: 'absolute', top: 8, right: 8, px: 1, py: 0.375, borderRadius: '5px', backgroundColor: st.bg, fontSize: '0.5625rem', fontWeight: 700, color: st.color }}>
-                    {st.label}
-                  </Box>
-                  {/* Delete button on hover */}
-                  <Box className="tour-delete" sx={{ position: 'absolute', bottom: 8, right: 8, zIndex: 10, opacity: 0, transition: `opacity ${motion.durationNormal} ${motion.easeOut}` }}>
-                    <Box
-                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDeleteTarget(tour); }}
-                      sx={{ width: 32, height: 32, borderRadius: '8px', backgroundColor: 'rgba(239,68,68,0.9)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'background-color 150ms ease, transform 150ms ease', '&:hover': { backgroundColor: 'rgba(220,38,38,1)', transform: 'scale(1.05)' } }}
-                    >
-                      <DeleteRounded sx={{ color: '#fff', fontSize: 16 }} />
-                    </Box>
-                  </Box>
-                </Box>
-
-                {/* Metadata */}
-                <Box sx={{ pt: 1.25, px: 0.25 }}>
-                  <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 600, color: P.strong, letterSpacing: '-0.01em' }}>
-                    {tour.roomName}
-                  </Typography>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 0.375 }}>
-                    <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: dot, flexShrink: 0 }} />
-                    <Typography noWrap sx={{ fontSize: '0.75rem', color: P.muted }}>
-                      {tour.towerName} · {tour.floorLabel}
-                    </Typography>
-                  </Box>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.375, color: P.subtle }}>
-                    <CameraAltRounded sx={{ fontSize: 11 }} />
-                    <Typography sx={{ fontSize: '0.6875rem', color: 'inherit' }}>{tour.captures} captures</Typography>
-                  </Box>
-                </Box>
-              </Box>
-            );
-          })}
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: { xs: 2, sm: 3 }, width: '100%', minWidth: 0 }}>
+        <Box sx={TOURS_GRID_SX}>
+          {paginatedTours.map(tour => (
+            <TourCard
+              key={tour.id}
+              tour={tour}
+              thumbUrl={resolveTourThumbnailUrl(tour as typeof tour & Record<string, unknown>, allCaptures)}
+              showProjectName={showProjectName}
+              compact={isMobile}
+              onDelete={() => setDeleteTarget(tour)}
+            />
+          ))}
+        </Box>
+        {totalPages > 1 && (
+          <Pagination
+            count={totalPages}
+            page={page}
+            onChange={(_, p) => setPage(p)}
+            color="primary"
+            size={isMobile ? 'small' : 'medium'}
+            siblingCount={isMobile ? 0 : 1}
+            boundaryCount={1}
+            sx={{ maxWidth: '100%', '& .MuiPaginationItem-root': { fontWeight: 600 } }}
+          />
+        )}
         </Box>
       )}
 

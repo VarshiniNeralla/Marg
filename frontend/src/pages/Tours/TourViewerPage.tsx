@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { Box, Typography, Chip, IconButton, Tooltip, CircularProgress } from '@mui/material';
 import '@photo-sphere-viewer/core/index.css';
 import {
@@ -550,6 +550,7 @@ const TOUR_HOTSPOTS: Record<string, Array<{ id: string; yaw: number; pitch: numb
 export default function TourViewerPage() {
   const { tourId } = useParams<{ tourId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const tours = useWorkflowStore(s => s.tours);
   const captures = useWorkflowStore(s => s.captures);
   const publishTour = useWorkflowStore(s => s.publishTour);
@@ -558,13 +559,20 @@ export default function TourViewerPage() {
   const user = useAuthStore(s => s.user);
   const tour = tours.find(t => t.id === tourId) ?? getTourById(tourId ?? '');
 
+  const navState = location.state as { from?: string; fromLabel?: string } | null;
+  const listBackTo = navState?.from === '/reviews' ? '/reviews' : '/tours';
+  const listBackLabel = navState?.fromLabel ?? (listBackTo === '/reviews' ? 'Reviews' : 'Virtual Tours');
+
+  useEffect(() => {
+    setIsMarkedDone(Boolean(tour?.managerReviewed));
+  }, [tour?.id, tour?.managerReviewed]);
+
   const capturePins = useWorkflowStore(s => s.capturePins);
 
   const [fullscreen, setFullscreen] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
   const [stepIdx, setStepIdx] = useState(0);
   const [isMarkedDone, setIsMarkedDone] = useState(false);
-  // Per-step: which snapshot is selected in the progress timeline (null = latest).
   const [activeSnapId, setActiveSnapId] = useState<string | null>(null);
   // Per-step: panorama override when user selects a historical snapshot.
   const [panoramaOverride, setPanoramaOverride] = useState<string | null>(null);
@@ -751,7 +759,7 @@ export default function TourViewerPage() {
     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '50vh', gap: 2 }}>
       <Typography sx={{ fontSize: '2rem', fontWeight: 700, color: colors.borderLight }}>404</Typography>
       <Typography sx={{ color: colors.textMuted }}>Tour not found</Typography>
-      <Box component={Link} to="/tours" sx={{ color: colors.primary, textDecoration: 'none', fontSize: '0.875rem' }}>← All tours</Box>
+      <Box component={Link} to={listBackTo} sx={{ color: colors.primary, textDecoration: 'none', fontSize: '0.875rem' }}>← {listBackLabel}</Box>
     </Box>
   );
 
@@ -762,7 +770,7 @@ export default function TourViewerPage() {
   const floorId = floors.find(f => f.towerId === tour.towerId && f.label === tour.floorLabel)?.id;
 
   const breadcrumb: { label: string; to?: string }[] = [
-    { label: 'Virtual Tours', to: '/tours' },
+    { label: listBackLabel, to: listBackTo },
     { label: tour.projectName },
     { label: tour.towerName },
     { label: tour.floorLabel },
@@ -890,7 +898,7 @@ export default function TourViewerPage() {
     <Box>
       {/* ── Header bar ────────────────────────────────────────────────────── */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: { xs: 1.5, md: 2.5 } }}>
-        <Box component={Link} to="/tours" sx={{ cursor: 'pointer', border: 'none', color: colors.textMuted, textDecoration: 'none', display: 'flex', alignItems: 'center', width: 30, height: 30, borderRadius: '8px', justifyContent: 'center', backgroundColor: colors.card, boxShadow: '0 1px 3px rgba(15,23,42,0.06)', '&:hover': { color: colors.textStrong }, flexShrink: 0 }}>
+        <Box component={Link} to={listBackTo} sx={{ cursor: 'pointer', border: 'none', color: colors.textMuted, textDecoration: 'none', display: 'flex', alignItems: 'center', width: 30, height: 30, borderRadius: '8px', justifyContent: 'center', backgroundColor: colors.card, boxShadow: '0 1px 3px rgba(15,23,42,0.06)', '&:hover': { color: colors.textStrong }, flexShrink: 0 }}>
           <ArrowBackRounded sx={{ fontSize: 18 }} />
         </Box>
 
@@ -1122,12 +1130,12 @@ export default function TourViewerPage() {
           )}
 
           {/* Mark as Done Action */}
-          {(tour.status === 'in_review' || (user?.role === 'manager' && (!(tour as any).managerReviewed || isMarkedDone))) && (
+          {(tour.status === 'in_review' || (user?.role === 'manager' && (!tour.managerReviewed || isMarkedDone))) && (
             <Box
               component="button"
               onClick={() => {
                 if (!isMarkedDone) {
-                  updateTour(tour.id, { status: 'published', managerReviewed: true } as any);
+                  updateTour(tour.id, { status: 'published', managerReviewed: true });
                   setIsMarkedDone(true);
                 }
               }}
@@ -1285,12 +1293,12 @@ export default function TourViewerPage() {
         )}
 
         {/* Mark as done */}
-        {(tour.status === 'in_review' || (user?.role === 'manager' && (!(tour as any).managerReviewed || isMarkedDone))) && (
+        {(tour.status === 'in_review' || (user?.role === 'manager' && (!tour.managerReviewed || isMarkedDone))) && (
           <Box
             component="button"
             onClick={() => {
               if (!isMarkedDone) {
-                updateTour(tour.id, { status: 'published', managerReviewed: true } as any);
+                updateTour(tour.id, { status: 'published', managerReviewed: true });
                 setIsMarkedDone(true);
               }
             }}

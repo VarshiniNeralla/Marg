@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Box, Typography, Grid, Chip, LinearProgress, Dialog, DialogTitle, DialogContent, DialogActions, Button as MuiButton, Tooltip, IconButton } from '@mui/material';
+import { Box, Typography, Grid, Chip, Dialog, DialogTitle, DialogContent, DialogActions, Button as MuiButton, Tooltip, IconButton } from '@mui/material';
 import {
   DomainRounded, LayersRounded, MeetingRoomRounded, CameraAltRounded,
   ArrowForwardRounded, AddRounded, DeleteRounded, EditRounded, ArrowBackRounded
@@ -21,6 +21,10 @@ const statusConfig: Record<string, { label: string; color: string; bg: string }>
 
 export default function ProjectsPage() {
   const allProjects = useWorkflowStore(s => s.projects);
+  const towers = useWorkflowStore(s => s.towers);
+  const floors = useWorkflowStore(s => s.floors);
+  const rooms = useWorkflowStore(s => s.rooms);
+  const captures = useWorkflowStore(s => s.captures);
   const archiveProject = useWorkflowStore(s => s.archiveProject);
   const { user } = useAuthStore();
   const orgName = useSettingsStore(s => s.organization.name);
@@ -55,12 +59,12 @@ export default function ProjectsPage() {
           <Typography
             sx={{
               fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
-              fontSize: { xs: '1.5rem', md: '2rem' },
-              fontWeight: 700,
+              fontSize: { xs: '1.75rem', md: '2.25rem' },
+              fontWeight: 800,
               color: colors.textStrong,
-              letterSpacing: '-0.04em',
-              lineHeight: 1.1,
-              mb: 0.75,
+              letterSpacing: '-0.05em',
+              lineHeight: 1.05,
+              mb: 0.5,
             }}
           >
             Projects
@@ -102,6 +106,18 @@ export default function ProjectsPage() {
       <Grid container spacing={2.5}>
         {activeProjects.map((project) => {
           const status = statusConfig[project.status] ?? statusConfig.draft;
+          const projectTowerIds = new Set(towers.filter(t => t.projectId === project.id).map(t => t.id));
+          const projectFloors = floors.filter(f => projectTowerIds.has(f.towerId));
+          const projectFloorIds = new Set(projectFloors.map(f => f.id));
+          const projectRooms = rooms.filter(r => projectFloorIds.has(r.floorId));
+          const projectRoomIds = new Set(projectRooms.map(r => r.id));
+          const projectCaptures = captures.filter(c => projectRoomIds.has(c.roomId));
+          const liveCounts = {
+            towers: projectTowerIds.size,
+            floors: projectFloors.length,
+            rooms: projectRooms.length,
+            captures: projectCaptures.length,
+          };
           return (
             <Grid key={project.id} size={{ xs: 12, sm: 6 }}>
               <Box
@@ -120,13 +136,13 @@ export default function ProjectsPage() {
                 {/* Cover image area */}
                 <Box
                   sx={{
-                    height: 180,
+                    height: 130,
                     background: project.thumbnail ? `url(${project.thumbnail}) center/cover no-repeat` : project.gradient,
                     position: 'relative',
                     display: 'flex',
                     flexDirection: 'column',
                     justifyContent: 'space-between',
-                    p: 2.5,
+                    p: 2,
                   }}
                 >
                   {/* dark overlay so text stays readable over photos */}
@@ -173,7 +189,7 @@ export default function ProjectsPage() {
                     <Typography
                       sx={{
                         fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
-                        fontSize: '1.25rem',
+                        fontSize: '1.125rem',
                         fontWeight: 700,
                         color: 'rgba(255,255,255,0.92)',
                         letterSpacing: '-0.025em',
@@ -183,61 +199,38 @@ export default function ProjectsPage() {
                     >
                       {project.name}
                     </Typography>
-                    <Typography sx={{ fontSize: '0.8125rem', color: 'rgba(255,255,255,0.5)', fontWeight: 400 }}>
+                    <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)', fontWeight: 400 }}>
                       {project.location}
                     </Typography>
                   </Box>
                 </Box>
 
                 {/* Card body */}
-                <Box sx={{ px: 2.5, pt: 2.5, pb: 2 }}>
+                <Box sx={{ px: 2.5, pt: 2, pb: 1.75 }}>
                   {/* Stats row */}
                   <Box
                     sx={{
                       display: 'grid',
                       gridTemplateColumns: 'repeat(4, 1fr)',
-                      mb: 2.5,
+                      mb: 1.75,
                     }}
                   >
                     {[
-                      { icon: <DomainRounded sx={{ fontSize: 13 }} />,       val: project.towers,   label: 'Towers' },
-                      { icon: <LayersRounded sx={{ fontSize: 13 }} />,       val: project.floors,   label: 'Floors' },
-                      { icon: <MeetingRoomRounded sx={{ fontSize: 13 }} />,  val: project.rooms,    label: 'Rooms' },
-                      { icon: <CameraAltRounded sx={{ fontSize: 13 }} />,    val: project.captures, label: 'Captures' },
+                      { icon: <DomainRounded sx={{ fontSize: 13 }} />,       val: liveCounts.towers,   label: 'Towers' },
+                      { icon: <LayersRounded sx={{ fontSize: 13 }} />,       val: liveCounts.floors,   label: 'Floors' },
+                      { icon: <MeetingRoomRounded sx={{ fontSize: 13 }} />,  val: liveCounts.rooms,    label: 'Rooms' },
+                      { icon: <CameraAltRounded sx={{ fontSize: 13 }} />,    val: liveCounts.captures, label: 'Captures' },
                     ].map(({ icon, val, label }) => (
                       <Box key={label} sx={{ textAlign: 'center' }}>
                         <Typography sx={{ fontSize: '1.125rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.03em', lineHeight: 1 }}>
                           {val}
                         </Typography>
-                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.25, mt: 0.375, color: colors.textSubdued }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.25, mt: 0.25, color: colors.textSubdued }}>
                           {icon}
                           <Typography sx={{ fontSize: '0.625rem', color: 'inherit' }}>{label}</Typography>
                         </Box>
                       </Box>
                     ))}
-                  </Box>
-
-                  {/* Progress */}
-                  <Box sx={{ mb: 2.5 }}>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.75 }}>
-                      <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>Capture progress</Typography>
-                      <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: project.accent }}>
-                        {project.progress}%
-                      </Typography>
-                    </Box>
-                    <LinearProgress
-                      variant="determinate"
-                      value={project.progress}
-                      sx={{
-                        height: 4,
-                        borderRadius: '99px',
-                        backgroundColor: `${project.accent}18`,
-                        '& .MuiLinearProgress-bar': {
-                          borderRadius: '99px',
-                          background: project.accent,
-                        },
-                      }}
-                    />
                   </Box>
 
                   {/* Footer */}

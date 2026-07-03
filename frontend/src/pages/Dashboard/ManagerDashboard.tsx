@@ -18,8 +18,8 @@ export default function ManagerDashboard() {
   const tours     = useWorkflowStore(s => s.tours);
   const [toursPage, setToursPage] = useState(1);
 
-  const pendingReviews = captures.filter(c => c.status === 'review');
-  const reviewed       = captures.filter(c => c.status === 'processed');
+  const pendingReviews = tours.filter(t => t.status === 'published' && !t.managerReviewed).length;
+  const reviewedCount  = tours.filter(t => t.status === 'published' && t.managerReviewed).length;
   const publishedTours = tours.filter(t => t.status === 'published');
   const toursTotalPages = Math.max(1, Math.ceil(publishedTours.length / TOURS_PAGE_SIZE));
   const paginatedTours = publishedTours.slice(
@@ -33,21 +33,21 @@ export default function ManagerDashboard() {
   const kpis = [
     {
       label: 'Pending Reviews',
-      value: pendingReviews.length,
+      value: pendingReviews,
       sub: 'awaiting your action',
       color: '#d97706',
       bg: 'rgba(217,119,6,0.08)',
       icon: <RateReviewRounded />,
-      to: '/reviews',
+      to: { pathname: '/reviews', state: { tab: 'pending' } },
     },
     {
       label: 'Reviewed',
-      value: reviewed.length,
-      sub: 'captures processed',
+      value: reviewedCount,
+      sub: 'marked as done',
       color: '#059669',
       bg: 'rgba(5,150,105,0.08)',
       icon: <CheckCircleRounded />,
-      to: '/captures',
+      to: { pathname: '/reviews', state: { tab: 'reviewed' } },
     },
     {
       label: 'Published Tours',

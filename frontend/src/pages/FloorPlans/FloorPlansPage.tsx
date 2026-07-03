@@ -1,16 +1,30 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Box, Typography, useMediaQuery, useTheme, Drawer, Menu, MenuItem } from '@mui/material';
+import { Box, Typography, useMediaQuery, useTheme, Menu, MenuItem, Pagination } from '@mui/material';
 import {
   LayersRounded, MapRounded, CheckCircleRounded, AddRounded,
   CameraAltRounded, ViewInArRounded, UploadFileRounded, ArrowBackRounded,
-  DomainRounded, KeyboardArrowDownRounded,
+  BusinessRounded, KeyboardArrowDownRounded, CheckRounded,
 } from '@mui/icons-material';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, isFieldEngineer , getRoleLandingPath } from '@store/authStore';
 import { getTowersByProject, getFloorsByTower, getFloorPlanByFloor, enrichFloorStats } from '@store/workflowSelectors';
 import EmptyState from '@shared/components/EmptyState/EmptyState';
-import { motion as m } from 'framer-motion';
+import { locationFilterMenuPaperSx, locationFilterToolbarSx } from '@/utils/locationFilters';
+
+const PLANS_PAGE_SIZE_MOBILE = 9;  // 3 × 3
+const PLANS_PAGE_SIZE_DESKTOP = 8; // 4 × 2
+
+const FLOOR_PLANS_GRID_SX = {
+  display: 'grid',
+  width: '100%',
+  minWidth: 0,
+  gridTemplateColumns: {
+    xs: 'repeat(3, minmax(0, 1fr))',
+    sm: 'repeat(4, minmax(0, 1fr))',
+  },
+  gap: { xs: 0.75, sm: 1.5 },
+} as const;
 
 /* ── palette ────────────────────────────────────────────────────────────── */
 const P = {
@@ -36,8 +50,9 @@ export default function FloorPlansPage() {
   const user       = useAuthStore(s => s.user);
   const isEngineer = isFieldEngineer(user);
 
-  const [towerSheetOpen, setTowerSheetOpen] = useState(false);
+  const [towerMenuAnchor, setTowerMenuAnchor] = useState<null | HTMLElement>(null);
   const [projectMenuAnchor, setProjectMenuAnchor] = useState<null | HTMLElement>(null);
+  const [page, setPage] = useState(1);
 
   const projects   = useWorkflowStore(s => s.projects);
   const towers     = useWorkflowStore(s => s.towers);
@@ -92,10 +107,28 @@ export default function FloorPlansPage() {
     setProjectId(id);
     const sorted = [...getTowersByProject(towers, id)].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
     setTowerId(sorted[0]?.id ?? '');
+    setPage(1);
   }
 
   const dataSlice = { flats, rooms, captures, tours, floorPlans };
   const mappedCount = towerFloors.filter(f => getFloorPlanByFloor(floorPlans, tower?.id ?? '', f.id)).length;
+  const plansPerPage = isMobile ? PLANS_PAGE_SIZE_MOBILE : PLANS_PAGE_SIZE_DESKTOP;
+  const totalPages = Math.max(1, Math.ceil(visibleFloors.length / plansPerPage));
+  const paginatedFloors = useMemo(
+    () => visibleFloors.slice((page - 1) * plansPerPage, page * plansPerPage),
+    [visibleFloors, page, plansPerPage],
+  );
+
+  useEffect(() => {
+    setPage(1);
+  }, [towerId]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  const filterCount = project ? 2 : 1;
+  const toolbarLayout = locationFilterToolbarSx(filterCount);
 
   if (activeProjects.length === 0) {
     return (
@@ -109,7 +142,7 @@ export default function FloorPlansPage() {
   }
 
   return (
-    <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
+    <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6, width: '100%', minWidth: 0, overflow: 'hidden' }}>
 
       {/* ── Back to overview (all roles) ──────────────────────────────── */}
       <Box
@@ -137,300 +170,157 @@ export default function FloorPlansPage() {
           Floor Plans
         </Typography>
         <Typography sx={{ fontSize: '0.9375rem', color: P.muted }}>
-          {isEngineer
-            ? 'View uploaded floor plans for your project sites'
-            : 'Architectural blueprint view — map rooms, captures, and tours'}
+          {project && tower
+            ? `${towerFloors.length} floor${towerFloors.length !== 1 ? 's' : ''} · ${mappedCount} uploaded`
+            : isEngineer
+              ? 'View uploaded floor plans for your project sites'
+              : 'Architectural blueprint view — map rooms, captures, and tours'}
         </Typography>
       </Box>
 
-      {/* ── Project selector (if multiple) ───────────────────────────────── */}
-      {activeProjects.length > 1 && (
-        <Box sx={{ mb: 3 }}>
-          <Typography sx={{
-            fontSize: '0.625rem', fontWeight: 700, color: P.subtle,
-            letterSpacing: '0.1em', textTransform: 'uppercase', mb: 1.25,
-          }}>
-            Project
-          </Typography>
-          {(() => {
-            const sel        = project;
-            const open       = !!projectMenuAnchor;
-            const accent     = (sel as { accent?: string } | undefined)?.accent ?? P.blue;
-            const gradient   = (sel as { gradient?: string } | undefined)?.gradient
-              ?? `linear-gradient(135deg, ${P.subtle}, ${P.muted})`;
-            const initial    = sel?.name.trim().split(/\s+/).pop()?.[0]?.toUpperCase() ?? '';
-            const towerCount = sel ? getTowersByProject(towers, sel.id).length : 0;
-            return (
-              <>
-                {/* Trigger */}
-                <Box
-                  onClick={e => setProjectMenuAnchor(e.currentTarget)}
-                  sx={{
-                    display: 'inline-flex', alignItems: 'center', gap: 1.25,
-                    pl: 0.75, pr: 1.5, height: 52, minWidth: { xs: '100%', sm: 280 },
-                    borderRadius: '14px', cursor: 'pointer',
-                    border: `1.5px solid ${open ? accent : P.border}`,
-                    backgroundColor: P.white,
-                    boxShadow: open ? `0 6px 18px ${accent}22` : '0 1px 2px rgba(16,24,40,0.04)',
-                    transition: T,
-                    '&:hover': { borderColor: accent, backgroundColor: P.bg },
-                  }}
-                >
-                  <Box sx={{
-                    width: 38, height: 38, borderRadius: '11px', flexShrink: 0,
-                    background: gradient,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    boxShadow: `0 2px 6px ${accent}33`,
-                  }}>
-                    {sel
-                      ? <Typography sx={{ fontSize: '1rem', fontWeight: 800, color: '#fff', lineHeight: 1, letterSpacing: '-0.02em' }}>{initial}</Typography>
-                      : <DomainRounded sx={{ fontSize: 19, color: '#fff' }} />}
-                  </Box>
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 700, color: sel ? P.ink : P.muted, letterSpacing: '-0.01em', lineHeight: 1.25 }}>
-                      {sel ? sel.name : 'Select a project'}
-                    </Typography>
-                    {sel && (
-                      <Typography noWrap sx={{ fontSize: '0.6875rem', fontWeight: 600, color: P.subtle, lineHeight: 1.3 }}>
-                        {towerCount} tower{towerCount !== 1 ? 's' : ''}
-                      </Typography>
-                    )}
-                  </Box>
-                  <KeyboardArrowDownRounded sx={{ fontSize: 20, color: P.muted, flexShrink: 0, transform: open ? 'rotate(180deg)' : 'none', transition: T }} />
-                </Box>
+      {/* ── Toolbar: project + tower pills ─────────────────────────────── */}
+      <Box sx={{ ...toolbarLayout.row, mb: 3 }}>
+        <Box sx={toolbarLayout.group}>
+          <Box
+            onClick={e => setProjectMenuAnchor(e.currentTarget)}
+            sx={{
+              ...toolbarLayout.pill,
+              display: 'flex', alignItems: 'center', gap: 1,
+              px: 1.5, py: 0.875, borderRadius: '10px', cursor: 'pointer',
+              border: `1.5px solid ${projectMenuAnchor ? P.blue : P.border}`,
+              backgroundColor: projectMenuAnchor ? P.blueSoft : P.white,
+              transition: T, '&:hover': { borderColor: P.blue },
+              justifyContent: 'space-between',
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, overflow: 'hidden', minWidth: 0 }}>
+              <Box sx={{ width: 18, height: 18, borderRadius: '5px', background: project?.gradient ?? `linear-gradient(135deg,${P.subtle},${P.muted})`, flexShrink: 0 }} />
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: P.strong, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {project ? project.name : 'Select a project'}
+              </Typography>
+            </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0 }}>
+              <Box sx={{ px: 0.75, py: 0.25, borderRadius: '6px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: P.bg, color: P.muted }}>
+                {project ? projectTowers.length : activeProjects.length}
+              </Box>
+              <KeyboardArrowDownRounded sx={{ fontSize: 16, color: P.muted, transform: projectMenuAnchor ? 'rotate(180deg)' : 'none', transition: T }} />
+            </Box>
+          </Box>
 
-                {/* Menu */}
-                <Menu
-                  anchorEl={projectMenuAnchor}
-                  open={open}
-                  onClose={() => setProjectMenuAnchor(null)}
-                  anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-                  transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-                  slotProps={{ paper: { sx: {
-                    mt: 1, minWidth: { xs: 'calc(100vw - 48px)', sm: 300 }, maxWidth: 'calc(100vw - 32px)',
-                    borderRadius: '14px', boxShadow: '0 12px 40px rgba(15,23,42,0.16)',
-                    border: `1px solid ${P.border}`, p: 0.75,
-                  } } }}
-                >
-                  {activeProjects.map(proj => {
-                    const isActive = projectId === proj.id;
-                    const pAccent  = (proj as { accent?: string }).accent ?? P.blue;
-                    const pGrad    = (proj as { gradient?: string }).gradient ?? `linear-gradient(135deg, ${P.blue}, ${P.blueHover})`;
-                    const pInit    = proj.name.trim().split(/\s+/).pop()?.[0]?.toUpperCase() ?? '#';
-                    const pTowers  = getTowersByProject(towers, proj.id).length;
-                    return (
-                      <MenuItem
-                        key={proj.id}
-                        onClick={() => { selectProject(proj.id); setProjectMenuAnchor(null); }}
-                        sx={{ borderRadius: '10px', py: 1, px: 1, gap: 1.25, backgroundColor: isActive ? `${pAccent}0F` : 'transparent', '&:hover': { backgroundColor: isActive ? `${pAccent}1A` : P.bg } }}
-                      >
-                        <Box sx={{ width: 32, height: 32, borderRadius: '9px', flexShrink: 0, background: pGrad, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: `0 2px 6px ${pAccent}33` }}>
-                          <Typography sx={{ fontSize: '0.875rem', fontWeight: 800, color: '#fff', lineHeight: 1 }}>{pInit}</Typography>
-                        </Box>
-                        <Box sx={{ flex: 1, minWidth: 0 }}>
-                          <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: isActive ? 700 : 600, color: isActive ? P.ink : P.strong, letterSpacing: '-0.01em' }}>
-                            {proj.name}
-                          </Typography>
-                          <Typography noWrap sx={{ fontSize: '0.6875rem', fontWeight: 600, color: isActive ? pAccent : P.subtle }}>
-                            {pTowers} tower{pTowers !== 1 ? 's' : ''}
-                          </Typography>
-                        </Box>
-                        {isActive && <CheckCircleRounded sx={{ fontSize: 18, color: pAccent, flexShrink: 0 }} />}
-                      </MenuItem>
-                    );
-                  })}
-                </Menu>
-              </>
-            );
-          })()}
+          {project && projectTowers.length > 0 && (
+            <Box
+              onClick={e => setTowerMenuAnchor(e.currentTarget)}
+              sx={{
+                ...toolbarLayout.pill,
+                display: 'flex', alignItems: 'center', gap: 1,
+                px: 1.5, py: 0.875, borderRadius: '10px', cursor: 'pointer',
+                border: `1.5px solid ${towerMenuAnchor ? P.blue : P.border}`,
+                backgroundColor: towerMenuAnchor ? P.blueSoft : P.white,
+                transition: T, '&:hover': { borderColor: P.blue },
+                justifyContent: 'space-between',
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, overflow: 'hidden', minWidth: 0 }}>
+                <BusinessRounded sx={{ fontSize: 18, color: P.subtle, flexShrink: 0 }} />
+                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: P.strong, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {tower?.name ?? 'Select a tower'}
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0 }}>
+                <Box sx={{ px: 0.75, py: 0.25, borderRadius: '6px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: P.bg, color: P.muted }}>
+                  {visibleFloors.length}
+                </Box>
+                <KeyboardArrowDownRounded sx={{ fontSize: 16, color: P.muted, transform: towerMenuAnchor ? 'rotate(180deg)' : 'none', transition: T }} />
+              </Box>
+            </Box>
+          )}
         </Box>
+      </Box>
+
+      <Menu
+        anchorEl={projectMenuAnchor}
+        open={!!projectMenuAnchor}
+        onClose={() => setProjectMenuAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        slotProps={{ paper: { sx: locationFilterMenuPaperSx(280, P.border) } }}
+      >
+        {activeProjects.map(proj => {
+          const isActive = projectId === proj.id;
+          const pTowers = getTowersByProject(towers, proj.id).length;
+          return (
+            <MenuItem
+              key={proj.id}
+              onClick={() => { selectProject(proj.id); setProjectMenuAnchor(null); }}
+              sx={{ borderRadius: '10px', py: 0.875, px: 1, gap: 1.25, '&:hover': { backgroundColor: P.bg }, backgroundColor: isActive ? P.blueSoft : 'transparent' }}
+            >
+              <Box sx={{ width: 22, height: 22, borderRadius: '7px', background: proj.gradient, flexShrink: 0 }} />
+              <Typography sx={{ flex: 1, fontSize: '0.875rem', fontWeight: isActive ? 700 : 500, color: isActive ? P.blue : P.strong }}>
+                {proj.name}
+              </Typography>
+              <Box sx={{ px: 0.875, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: P.bg, color: P.muted }}>
+                {pTowers}
+              </Box>
+              {isActive && <CheckRounded sx={{ fontSize: 17, color: P.blue }} />}
+            </MenuItem>
+          );
+        })}
+      </Menu>
+
+      {project && (
+        <Menu
+          anchorEl={towerMenuAnchor}
+          open={!!towerMenuAnchor}
+          onClose={() => setTowerMenuAnchor(null)}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+          slotProps={{ paper: { sx: locationFilterMenuPaperSx(260, P.border) } }}
+        >
+          {projectTowers.map(t => {
+            const isActive = towerId === t.id;
+            const tFloors = getFloorsByTower(floors, t.id);
+            const tMapped = tFloors.filter(f => getFloorPlanByFloor(floorPlans, t.id, f.id)).length;
+            const floorCount = isEngineer ? tMapped : tFloors.length;
+            return (
+              <MenuItem
+                key={t.id}
+                onClick={() => { setTowerId(t.id); setTowerMenuAnchor(null); setPage(1); }}
+                sx={{ borderRadius: '10px', py: 0.875, px: 1, gap: 1.25, '&:hover': { backgroundColor: P.bg }, backgroundColor: isActive ? P.blueSoft : 'transparent' }}
+              >
+                <BusinessRounded sx={{ fontSize: 18, color: isActive ? P.blue : P.muted }} />
+                <Typography sx={{ flex: 1, fontSize: '0.875rem', fontWeight: isActive ? 700 : 500, color: isActive ? P.blue : P.strong }}>
+                  {t.name}
+                </Typography>
+                <Box sx={{ px: 0.875, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: P.bg, color: P.muted }}>
+                  {floorCount}
+                </Box>
+                {isActive && <CheckRounded sx={{ fontSize: 17, color: P.blue }} />}
+              </MenuItem>
+            );
+          })}
+        </Menu>
       )}
 
-      {/* ── Prompt to pick a project before anything else loads ──────────── */}
+      {/* ── Prompt to pick a project ───────────────────────────────────── */}
       {!project && (
         <Box sx={{
           py: 8, textAlign: 'center',
           border: `1.5px dashed ${P.border}`,
           borderRadius: '18px', backgroundColor: P.white,
         }}>
-          <DomainRounded sx={{ fontSize: 44, color: P.subtle, mb: 1.5 }} />
+          <MapRounded sx={{ fontSize: 44, color: P.subtle, mb: 1.5 }} />
           <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>
             Select a project to begin
           </Typography>
           <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>
-            Choose a project above to view its towers and floor plans.
+            Choose a project and tower above to view floor plans.
           </Typography>
         </Box>
       )}
 
       {/* Everything below depends on a chosen project */}
-      {project && (
+      {project && tower && (
       <>
-      {/* ── Tower selector ────────────────────────────────────────────────── */}
-      {projectTowers.length > 0 && (
-        <Box sx={{ mb: 3 }}>
-          <Typography sx={{
-            fontSize: '0.5625rem', fontWeight: 700, color: P.subtle,
-            letterSpacing: '0.12em', textTransform: 'uppercase', mb: 1.5,
-          }}>
-            Select Tower
-          </Typography>
-
-          {/* Mobile: compact dropdown trigger → bottom sheet */}
-          {isMobile ? (
-            <>
-              <Box
-                onClick={() => setTowerSheetOpen(true)}
-                sx={{
-                  display: 'flex', alignItems: 'center', gap: 1.25,
-                  px: 1.5, py: 1.25, borderRadius: '12px',
-                  border: `1.5px solid ${towerSheetOpen ? P.blue : P.border}`,
-                  backgroundColor: P.white, cursor: 'pointer', transition: T,
-                  '&:hover': { borderColor: P.blue },
-                }}
-              >
-                <Box sx={{
-                  width: 32, height: 32, borderRadius: '8px',
-                  backgroundColor: P.ink,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                }}>
-                  <DomainRounded sx={{ fontSize: 16, color: P.white }} />
-                </Box>
-                <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong, lineHeight: 1.2 }}>
-                    {tower?.name ?? 'Select tower'}
-                  </Typography>
-                  {tower && (() => {
-                    const tFloors = getFloorsByTower(floors, tower.id);
-                    const tMapped = tFloors.filter(f => getFloorPlanByFloor(floorPlans, tower.id, f.id)).length;
-                    return (
-                      <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
-                        {tFloors.length} floor{tFloors.length !== 1 ? 's' : ''}{tMapped > 0 ? ` · ${tMapped} plan${tMapped !== 1 ? 's' : ''}` : ''}
-                      </Typography>
-                    );
-                  })()}
-                </Box>
-                <KeyboardArrowDownRounded sx={{
-                  fontSize: 18, color: P.muted, flexShrink: 0,
-                  transform: towerSheetOpen ? 'rotate(180deg)' : 'none', transition: T,
-                }} />
-              </Box>
-              <Drawer
-                anchor="bottom"
-                open={towerSheetOpen}
-                onClose={() => setTowerSheetOpen(false)}
-                slotProps={{ paper: { sx: { borderRadius: '20px 20px 0 0', px: 0, pt: 0, pb: 'env(safe-area-inset-bottom, 16px)', maxHeight: '75vh' } } }}
-              >
-                <Box sx={{ width: 36, height: 4, borderRadius: '99px', backgroundColor: '#e4e7ec', mx: 'auto', mt: 1.5, mb: 2 }} />
-                <Typography sx={{ px: 2.5, pb: 1.5, fontSize: '0.6875rem', fontWeight: 700, color: '#9ca3af', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-                  Select Tower
-                </Typography>
-                <Box sx={{ overflowY: 'auto', px: 1.5, pb: 2 }}>
-                  {projectTowers.map(t => {
-                    const isActive = tower?.id === t.id;
-                    const tFloors = getFloorsByTower(floors, t.id);
-                    const tMapped = tFloors.filter(f => getFloorPlanByFloor(floorPlans, t.id, f.id)).length;
-                    return (
-                      <Box
-                        key={t.id}
-                        onClick={() => { setTowerId(t.id); setTowerSheetOpen(false); }}
-                        sx={{ display: 'flex', alignItems: 'center', gap: 1.25, px: 1.25, py: 1, borderRadius: '9px', cursor: 'pointer', backgroundColor: isActive ? P.blueSoft : 'transparent', '&:hover': { backgroundColor: isActive ? P.blueSoft : P.bg } }}
-                      >
-                        <Box sx={{ width: 28, height: 28, borderRadius: '7px', backgroundColor: isActive ? P.ink : P.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                          <DomainRounded sx={{ fontSize: 15, color: isActive ? P.white : P.blue }} />
-                        </Box>
-                        <Box sx={{ flex: 1, minWidth: 0 }}>
-                          <Typography sx={{ fontSize: '0.875rem', fontWeight: isActive ? 700 : 500, color: isActive ? P.blue : P.strong }}>
-                            {t.name}
-                          </Typography>
-                          <Typography sx={{ fontSize: '0.6875rem', color: P.muted }}>
-                            {tFloors.length} floor{tFloors.length !== 1 ? 's' : ''}{tMapped > 0 ? ` · ${tMapped} plan${tMapped !== 1 ? 's' : ''}` : ''}
-                          </Typography>
-                        </Box>
-                        {isActive && <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: P.blue, flexShrink: 0 }} />}
-                      </Box>
-                    );
-                  })}
-                </Box>
-              </Drawer>
-            </>
-          ) : (
-            /* Desktop: horizontal scrollable cards */
-            <Box sx={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))',
-              gap: 1.5, pt: 0.5, pb: 1.5,
-            }}>
-              {projectTowers.map(t => {
-                const isActive = tower?.id === t.id;
-                const tFloors = getFloorsByTower(floors, t.id);
-                const tMapped = tFloors.filter(f => getFloorPlanByFloor(floorPlans, t.id, f.id)).length;
-                return (
-                  <Box
-                    key={t.id}
-                    onClick={() => setTowerId(t.id)}
-                    sx={{
-                      minWidth: 110, flexShrink: 0, borderRadius: '14px',
-                      position: 'relative',
-                      border: `1.5px solid ${isActive ? 'transparent' : P.border}`,
-                      backgroundColor: P.white,
-                      cursor: 'pointer', 
-                      transition: 'transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s, box-shadow 0.2s',
-                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                      px: 1.5, py: 1.75, gap: 0.5,
-                      transform: 'translateY(0) scale(1)',
-                      '&:hover': isActive ? {} : { borderColor: P.blue, transform: 'translateY(-2px)', boxShadow: '0 4px 16px rgba(37,99,235,0.10)' },
-                      '&:active': { transform: 'scale(0.96)' },
-                    }}
-                  >
-                    {isActive && (
-                      <Box
-                        component={m.div}
-                        layoutId="activeTowerFloorPlan"
-                        transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
-                        sx={{ position: 'absolute', inset: 0, backgroundColor: P.ink, borderRadius: '14px', zIndex: 0 }}
-                      />
-                    )}
-                    <Box sx={{ position: 'relative', zIndex: 1, width: 44, height: 44, borderRadius: '10px', backgroundColor: isActive ? 'rgba(255,255,255,0.12)' : P.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 0.25, transition: 'background-color 0.3s' }}>
-                      <DomainRounded sx={{ fontSize: 22, color: isActive ? P.white : P.blue, transition: 'color 0.3s' }} />
-                    </Box>
-                    <Typography sx={{ position: 'relative', zIndex: 1, fontSize: '0.8125rem', fontWeight: 700, lineHeight: 1.2, color: isActive ? P.white : P.strong, textAlign: 'center', transition: 'color 0.3s' }}>
-                      {t.name}
-                    </Typography>
-                    <Typography sx={{ position: 'relative', zIndex: 1, fontSize: '0.6875rem', color: isActive ? 'rgba(255,255,255,0.55)' : P.subtle, textAlign: 'center', transition: 'color 0.3s' }}>
-                      {tFloors.length} floor{tFloors.length !== 1 ? 's' : ''}{tMapped > 0 ? ` · ${tMapped} plan${tMapped !== 1 ? 's' : ''}` : ''}
-                    </Typography>
-                  </Box>
-                );
-              })}
-            </Box>
-          )}
-        </Box>
-      )}
-
-      {/* ── Stats row ─────────────────────────────────────────────────────── */}
-      {tower && (
-        <Box sx={{ mb: 3, display: 'flex', alignItems: 'center', gap: 2 }}>
-          <Typography sx={{ fontSize: '0.8125rem', color: P.muted, flexShrink: 0 }}>
-            <Box component="span" sx={{ fontWeight: 700, color: P.strong }}>{towerFloors.length}</Box>
-            {' floors · '}
-            <Box component="span" sx={{ fontWeight: 700, color: mappedCount > 0 ? P.blue : P.muted }}>{mappedCount}</Box>
-            {' uploaded'}
-          </Typography>
-          {towerFloors.length > 0 && (
-            <Box sx={{ flex: 1, height: 4, borderRadius: '99px', backgroundColor: P.border, overflow: 'hidden' }}>
-              <Box sx={{
-                height: '100%',
-                width: `${Math.round((mappedCount / towerFloors.length) * 100)}%`,
-                borderRadius: '99px',
-                backgroundColor: mappedCount === towerFloors.length && towerFloors.length > 0 ? P.success : P.blue,
-                transition: T,
-              }} />
-            </Box>
-          )}
-        </Box>
-      )}
-
       {/* ── Floor cards grid ─────────────────────────────────────────────── */}
       {visibleFloors.length === 0 ? (
         <Box sx={{
@@ -449,12 +339,9 @@ export default function FloorPlansPage() {
           </Typography>
         </Box>
       ) : (
-        <Box sx={{
-          display: 'grid',
-          gridTemplateColumns: { xs: 'repeat(2,1fr)', sm: 'repeat(3,1fr)', md: 'repeat(4,1fr)' },
-          gap: 1.25,
-        }}>
-          {visibleFloors.map(floor => {
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: { xs: 2, sm: 3 }, width: '100%', minWidth: 0 }}>
+        <Box sx={FLOOR_PLANS_GRID_SX}>
+          {paginatedFloors.map(floor => {
             const stats      = enrichFloorStats(floor, dataSlice);
             const hasPlan    = !!stats.plan;
             const pct        = stats.roomCount > 0 ? Math.round((stats.mapped / stats.roomCount) * 100) : 0;
@@ -474,23 +361,27 @@ export default function FloorPlansPage() {
 
             const card = (
               <Box sx={{
-                borderRadius: '14px',
+                borderRadius: { xs: '10px', sm: '14px' },
                 overflow: 'hidden',
+                minWidth: 0,
+                width: '100%',
                 border: `1.5px solid ${hasPlan ? P.blueRing : P.border}`,
                 backgroundColor: P.white,
                 transition: T,
                 ...(href ? {
                   cursor: 'pointer',
-                  '&:hover': {
-                    borderColor: P.blue,
-                    transform: 'translateY(-2px)',
-                    boxShadow: `0 6px 20px rgba(37,99,235,0.10)`,
+                  '@media (hover: hover)': {
+                    '&:hover': {
+                      borderColor: P.blue,
+                      transform: 'translateY(-2px)',
+                      boxShadow: `0 6px 20px rgba(37,99,235,0.10)`,
+                    },
                   },
                 } : { opacity: 0.5 }),
               }}>
                 {/* Thumbnail */}
                 <Box sx={{
-                  height: 120, position: 'relative', overflow: 'hidden',
+                  aspectRatio: '4 / 3', position: 'relative', overflow: 'hidden',
                   backgroundColor: hasPlan ? P.blueSoft : P.bg,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}>
@@ -508,11 +399,11 @@ export default function FloorPlansPage() {
                   {/* Gradient label overlay */}
                   <Box sx={{
                     position: 'absolute', bottom: 0, left: 0, right: 0,
-                    px: 1.5, py: 0.875,
+                    px: { xs: 1, sm: 1.5 }, py: { xs: 0.625, sm: 0.875 },
                     background: 'linear-gradient(0deg,rgba(0,0,0,0.62) 0%,transparent 100%)',
                     display: 'flex', alignItems: 'center', gap: 0.75,
                   }}>
-                    <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.white }}>
+                    <Typography sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' }, fontWeight: 700, color: P.white }}>
                       {floor.label}
                     </Typography>
                     {isComplete && <CheckCircleRounded sx={{ fontSize: 13, color: '#22c55e' }} />}
@@ -528,6 +419,7 @@ export default function FloorPlansPage() {
                 </Box>
 
                 {/* Stats footer */}
+                {!isMobile && (
                 <Box sx={{ px: 1.5, py: 1.25, display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                   {hasPlan ? (
                     <>
@@ -570,17 +462,31 @@ export default function FloorPlansPage() {
                     )
                   )}
                 </Box>
+                )}
               </Box>
             );
 
             return href ? (
-              <Box key={floor.id} component={Link} to={href} sx={{ textDecoration: 'none' }}>
+              <Box key={floor.id} component={Link} to={href} sx={{ textDecoration: 'none', minWidth: 0, width: '100%' }}>
                 {card}
               </Box>
             ) : (
-              <Box key={floor.id}>{card}</Box>
+              <Box key={floor.id} sx={{ minWidth: 0, width: '100%' }}>{card}</Box>
             );
           })}
+        </Box>
+        {totalPages > 1 && (
+          <Pagination
+            count={totalPages}
+            page={page}
+            onChange={(_, p) => setPage(p)}
+            color="primary"
+            size={isMobile ? 'small' : 'medium'}
+            siblingCount={isMobile ? 0 : 1}
+            boundaryCount={1}
+            sx={{ maxWidth: '100%', '& .MuiPaginationItem-root': { fontWeight: 600 } }}
+          />
+        )}
         </Box>
       )}
       </>

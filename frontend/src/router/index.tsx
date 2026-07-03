@@ -155,9 +155,6 @@ const router = createBrowserRouter([
         children: [
           { path: '/projects',                                                  element: <PageSuspense><ProjectsPage /></PageSuspense> },
           { path: '/projects/:projectId',                                       element: <PageSuspense><ProjectDetailPage /></PageSuspense> },
-          { path: '/projects/:projectId/towers',                                element: <PageSuspense><TowersPage /></PageSuspense> },
-          { path: '/projects/:projectId/towers/:towerId',                       element: <PageSuspense><FloorListPage /></PageSuspense> },
-          { path: '/projects/:projectId/towers/:towerId/floors/:floorId',       element: <PageSuspense><RoomListPage /></PageSuspense> },
           { path: '/analytics', element: <PageSuspense><AnalyticsPage /></PageSuspense> },
           { path: '/defects',   element: <PageSuspense><DefectsPage /></PageSuspense> },
           { path: '/captures',                element: <PageSuspense><CapturesPage /></PageSuspense> },
@@ -170,6 +167,9 @@ const router = createBrowserRouter([
         children: [
           { path: '/projects/new',                      element: <PageSuspense><NewProjectPage /></PageSuspense> },
           { path: '/projects/:projectId/edit',          element: <PageSuspense><EditProjectPage /></PageSuspense> },
+          { path: '/projects/:projectId/towers',                                element: <PageSuspense><TowersPage /></PageSuspense> },
+          { path: '/projects/:projectId/towers/:towerId',                       element: <PageSuspense><FloorListPage /></PageSuspense> },
+          { path: '/projects/:projectId/towers/:towerId/floors/:floorId',       element: <PageSuspense><RoomListPage /></PageSuspense> },
           { path: '/floor-plans/:projectId/:towerId/:floorId/upload', element: <PageSuspense><FloorPlanUploadPage /></PageSuspense> },
           { path: '/workflow',                          element: <PageSuspense><WorkflowPage /></PageSuspense> },
           { path: '/users',                             element: <PageSuspense><UserManagementPage /></PageSuspense> },

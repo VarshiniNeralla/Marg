@@ -61,20 +61,28 @@ export default function RoomListPage() {
   }
 
   return (
-    <Box>
-      {/* Header */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 4 }}>
-        <Box component={Link} to={`/projects/${project.id}/towers/${tower.id}`} sx={{ color: colors.textMuted, textDecoration: 'none', display: 'flex', alignItems: 'center', '&:hover': { color: colors.textStrong } }}>
-          <ArrowBackRounded sx={{ fontSize: 20 }} />
+    <Box sx={{ maxWidth: 800, mx: 'auto' }}>
+      {/* Back to floors */}
+      <Box component={Link} to={`/projects/${project.id}/towers/${tower.id}`} sx={{
+          display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+          px: 1.25, py: 0.625, borderRadius: '8px',
+          border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+          fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+          transition: `all ${motion.durationFast}`,
+          '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+        }}>
+          <ArrowBackRounded sx={{ fontSize: 15 }} /> {project.name} · {tower.name}
         </Box>
-        <Box sx={{ flex: 1 }}>
-          <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mb: 0.25 }}>
-            {project.name} · {tower.name}
-          </Typography>
-          <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: '1.5rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>
-            {floor.label}
-          </Typography>
-        </Box>
+
+      {/* Heading */}
+      <Box sx={{ mb: 4 }}>
+        <Typography sx={{
+          fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
+          fontSize: { xs: '1.75rem', md: '2.25rem' }, fontWeight: 800,
+          color: colors.textStrong, letterSpacing: '-0.05em', lineHeight: 1.05,
+        }}>
+          {floor.label}
+        </Typography>
       </Box>
 
       {/* Floor Plan Section — primary action */}

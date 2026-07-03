@@ -135,6 +135,8 @@ export interface MockTour {
   lastCapture: string;
   gradient: string;
   viewCount: number;
+  /** Manager has completed their review walkthrough. */
+  managerReviewed?: boolean;
   // Sequential walkthrough steps — one per pin, in pin order (1 → 2 → 3 …).
   // Each step is a panorama the viewer steps through with prev/next arrows.
   steps?: TourStep[];

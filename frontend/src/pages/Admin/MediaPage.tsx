@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import { Link } from 'react-router-dom';
-import { Box, Typography, useTheme, useMediaQuery } from '@mui/material';
+import { Box, Typography, Pagination, Menu, MenuItem } from '@mui/material';
 import {
-  CloudUploadRounded, PanoramaRounded, WarningAmberRounded, StorageRounded,
+  CloudUploadRounded, PanoramaRounded, StorageRounded,
   MapRounded, CameraAltRounded, ViewInArRounded, InsertDriveFileRounded,
-  ImageRounded, PictureAsPdfRounded, ChevronLeftRounded, ChevronRightRounded,
-  ArrowBackRounded,
+  ImageRounded, PictureAsPdfRounded, ArrowBackRounded, SortRounded,
+  ArrowUpwardRounded, ArrowDownwardRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
@@ -71,12 +71,12 @@ export default function MediaPage() {
   const floorPlans = useWorkflowStore(s => s.floorPlans);
   const user = useAuthStore(s => s.user);
 
-  const theme = useTheme();
-  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const pageSize = 5;
 
   const [filter, setFilter] = useState<'all' | MediaKind>('all');
   const [page, setPage] = useState(1);
+  const [sortOrder, setSortOrder] = useState<'recent' | 'oldest'>('recent');
+  const [sortAnchor, setSortAnchor] = useState<null | HTMLElement>(null);
 
   const items = useMemo<MediaItem[]>(() => {
     const out: MediaItem[] = [];
@@ -147,26 +147,28 @@ export default function MediaPage() {
     return out.sort((a, b) => b.sortKey.localeCompare(a.sortKey));
   }, [captures, floorPlans, tours]);
 
-  const filtered = filter === 'all' ? items : items.filter(i => i.kind === filter);
+  const filtered = useMemo(() => {
+    const base = filter === 'all' ? items : items.filter(i => i.kind === filter);
+    return sortOrder === 'oldest' ? [...base].reverse() : base;
+  }, [items, filter, sortOrder]);
 
-  // Reset to the first page whenever the filter changes or the list shrinks below the current page.
+  // Reset to the first page whenever the filter/sort changes or the list shrinks below the current page.
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
-  useEffect(() => { setPage(1); }, [filter, pageSize]);
+  useEffect(() => { setPage(1); }, [filter, sortOrder, pageSize]);
   const currentPage = Math.min(page, pageCount);
   const start = (currentPage - 1) * pageSize;
   const visible = filtered.slice(start, start + pageSize);
 
   const storageBytes = items.reduce((sum, i) => sum + i.sizeBytes, 0);
-  const failed = items.filter(i => ['failed', 'error'].includes(i.status.toLowerCase())).length;
   const captureCount = items.filter(i => i.kind === 'capture').length;
   const floorPlanCount = items.filter(i => i.kind === 'floor_plan').length;
   const tourCount = items.filter(i => i.kind === 'tour').length;
 
-  const filters: { key: 'all' | MediaKind; label: string; count: number }[] = [
-    { key: 'all', label: 'All', count: items.length },
-    { key: 'capture', label: 'Captures', count: captureCount },
-    { key: 'floor_plan', label: 'Floor Plans', count: floorPlanCount },
-    { key: 'tour', label: 'Tours', count: tourCount },
+  const filters: { key: 'all' | MediaKind; label: string }[] = [
+    { key: 'all', label: 'All' },
+    { key: 'capture', label: 'Captures' },
+    { key: 'floor_plan', label: 'Floor Plans' },
+    { key: 'tour', label: 'Tours' },
   ];
 
   return (
@@ -182,47 +184,75 @@ export default function MediaPage() {
         }}>
           <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
         </Box>
-        <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.5rem', md: '2rem' }, fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em' }}>
+        <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.75rem', md: '2.25rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.05em', lineHeight: 1.05, mb: 0.5 }}>
           Media Library
         </Typography>
         <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>Every upload across the platform — captures, floor plans and published tours</Typography>
       </Box>
 
       {/* Metrics */}
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', md: 'repeat(5, 1fr)' }, gap: { xs: 1, sm: 1.25, md: 1.5 }, mb: 3 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', md: 'repeat(4, 1fr)' }, gap: { xs: 1, sm: 1.25, md: 1.5 }, mb: 3 }}>
         <Metric icon={<StorageRounded />} label="Storage used" value={formatBytes(storageBytes)} color="#2563eb" />
         <Metric icon={<CameraAltRounded />} label="Captures" value={String(captureCount)} color="#0891b2" />
         <Metric icon={<MapRounded />} label="Floor plans" value={String(floorPlanCount)} color="#7c3aed" />
         <Metric icon={<PanoramaRounded />} label="Tours" value={String(tourCount)} color="#059669" />
-        <Metric icon={<WarningAmberRounded />} label="Failed" value={String(failed)} color="#dc2626" />
       </Box>
 
-      {/* Filter pills */}
-      <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap' }}>
-        {filters.map(f => {
-          const on = filter === f.key;
-          return (
-            <Box
-              key={f.key}
-              onClick={() => setFilter(f.key)}
-              sx={{
-                display: 'flex', alignItems: 'center', gap: 0.75,
-                px: 1.75, py: 0.75, borderRadius: '999px', cursor: 'pointer',
-                fontSize: '0.8125rem', fontWeight: 600,
-                border: `1px solid ${on ? colors.primary : colors.border}`,
-                backgroundColor: on ? colors.primary : colors.card,
-                color: on ? '#fff' : colors.textSecondary,
-                transition: `all ${motion.durationFast} ${motion.easeOut}`,
-                '&:hover': { borderColor: colors.primary },
-              }}
-            >
-              {f.label}
-              <Box sx={{ px: 0.75, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: on ? 'rgba(255,255,255,0.22)' : colors.bgDeep, color: on ? '#fff' : colors.textMuted }}>
-                {f.count}
+      {/* Filter pills + sort */}
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 2.5, flexWrap: 'wrap' }}>
+        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+          {filters.map(f => {
+            const on = filter === f.key;
+            return (
+              <Box
+                key={f.key}
+                onClick={() => setFilter(f.key)}
+                sx={{
+                  px: 1.75, py: 0.75, borderRadius: '999px', cursor: 'pointer',
+                  fontSize: '0.8125rem', fontWeight: 600,
+                  border: `1px solid ${on ? colors.primary : colors.border}`,
+                  backgroundColor: on ? colors.primary : colors.card,
+                  color: on ? '#fff' : colors.textSecondary,
+                  transition: `all ${motion.durationFast} ${motion.easeOut}`,
+                  '&:hover': { borderColor: colors.primary },
+                }}
+              >
+                {f.label}
               </Box>
-            </Box>
-          );
-        })}
+            );
+          })}
+        </Box>
+
+        <Box
+          onClick={e => setSortAnchor(e.currentTarget)}
+          sx={{
+            display: 'flex', alignItems: 'center', gap: 0.75, px: 1.5, py: 0.75,
+            borderRadius: '999px', border: `1px solid ${colors.border}`,
+            backgroundColor: colors.card, color: colors.textSecondary,
+            fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer',
+            '&:hover': { borderColor: colors.primary }, transition: `all ${motion.durationFast}`,
+          }}
+        >
+          <SortRounded sx={{ fontSize: 16 }} />
+          {sortOrder === 'recent' ? 'Recent first' : 'Oldest first'}
+          {sortOrder === 'recent' ? <ArrowDownwardRounded sx={{ fontSize: 13 }} /> : <ArrowUpwardRounded sx={{ fontSize: 13 }} />}
+        </Box>
+        <Menu anchorEl={sortAnchor} open={Boolean(sortAnchor)} onClose={() => setSortAnchor(null)} slotProps={{ paper: { sx: { borderRadius: '12px', boxShadow: '0 8px 24px rgba(15,23,42,0.12)', mt: 0.5 } } }}>
+          <MenuItem
+            selected={sortOrder === 'recent'}
+            onClick={() => { setSortOrder('recent'); setSortAnchor(null); }}
+            sx={{ fontSize: '0.875rem', gap: 1, minWidth: 160, borderRadius: '8px', mx: 0.5 }}
+          >
+            <ArrowDownwardRounded sx={{ fontSize: 15, color: sortOrder === 'recent' ? colors.primary : colors.textMuted }} /> Recent first
+          </MenuItem>
+          <MenuItem
+            selected={sortOrder === 'oldest'}
+            onClick={() => { setSortOrder('oldest'); setSortAnchor(null); }}
+            sx={{ fontSize: '0.875rem', gap: 1, minWidth: 160, borderRadius: '8px', mx: 0.5 }}
+          >
+            <ArrowUpwardRounded sx={{ fontSize: 15, color: sortOrder === 'oldest' ? colors.primary : colors.textMuted }} /> Oldest first
+          </MenuItem>
+        </Menu>
       </Box>
 
       {/* Upload list — fixed height for rows so the page never reflows between tabs */}
@@ -260,14 +290,11 @@ export default function MediaPage() {
 
                 {/* Name + context */}
                 <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.25 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.25 }}>
+                    <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: meta.color, flexShrink: 0 }} />
                     <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong }}>{item.name}</Typography>
-                    {/* Type badge */}
-                    <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.375, px: 0.875, py: 0.25, borderRadius: '999px', backgroundColor: meta.color + '14', color: meta.color, fontSize: '0.6875rem', fontWeight: 700, flexShrink: 0 }}>
-                      {meta.icon} {meta.label}
-                    </Box>
                   </Box>
-                  <Typography noWrap sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{item.context || '—'}</Typography>
+                  <Typography noWrap sx={{ fontSize: '0.75rem', color: colors.textMuted, pl: 1.75 }}>{item.context || '—'}</Typography>
                 </Box>
 
                 {/* Format + size */}
@@ -294,64 +321,23 @@ export default function MediaPage() {
         )}
       </Box>
 
-      {/* Minimalistic pagination */}
+      {/* Pagination */}
       {filtered.length > pageSize && (
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mt: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mt: 2.5, flexWrap: 'wrap', gap: 1.5 }}>
           <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>
             {start + 1}–{Math.min(start + pageSize, filtered.length)} of {filtered.length}
           </Typography>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-            <PageBtn disabled={currentPage <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>
-              <ChevronLeftRounded sx={{ fontSize: 18 }} />
-            </PageBtn>
-            {!isMobile && Array.from({ length: pageCount }, (_, i) => i + 1).map(n => {
-              const on = n === currentPage;
-              return (
-                <Box
-                  key={n}
-                  onClick={() => setPage(n)}
-                  sx={{
-                    minWidth: 30, height: 30, px: 0.75, borderRadius: '8px',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    cursor: 'pointer', userSelect: 'none',
-                    fontSize: '0.8125rem', fontWeight: on ? 700 : 500,
-                    color: on ? '#fff' : colors.textSecondary,
-                    backgroundColor: on ? colors.primary : 'transparent',
-                    border: `1px solid ${on ? colors.primary : colors.border}`,
-                    transition: `all ${motion.durationFast} ${motion.easeOut}`,
-                    '&:hover': { borderColor: colors.primary, color: on ? '#fff' : colors.primary },
-                  }}
-                >
-                  {n}
-                </Box>
-              );
-            })}
-            <PageBtn disabled={currentPage >= pageCount} onClick={() => setPage(p => Math.min(pageCount, p + 1))}>
-              <ChevronRightRounded sx={{ fontSize: 18 }} />
-            </PageBtn>
-          </Box>
+          <Pagination
+            count={pageCount}
+            page={currentPage}
+            onChange={(_, n) => setPage(n)}
+            shape="rounded"
+            size="small"
+            siblingCount={0}
+            boundaryCount={1}
+          />
         </Box>
       )}
-    </Box>
-  );
-}
-
-function PageBtn({ disabled, onClick, children }: { disabled: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <Box
-      onClick={disabled ? undefined : onClick}
-      sx={{
-        width: 30, height: 30, borderRadius: '8px',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        border: `1px solid ${colors.border}`,
-        color: disabled ? colors.textSubdued : colors.textSecondary,
-        cursor: disabled ? 'default' : 'pointer',
-        opacity: disabled ? 0.5 : 1,
-        transition: `all ${motion.durationFast} ${motion.easeOut}`,
-        '&:hover': disabled ? {} : { borderColor: colors.primary, color: colors.primary },
-      }}
-    >
-      {children}
     </Box>
   );
 }

@@ -1,18 +1,161 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Box, Typography, Grid } from '@mui/material';
 import {
-  CameraAltRounded, ViewInArRounded, CheckCircleRounded,
+  CameraAltRounded, ViewInArRounded,
   AccessTimeRounded, ArrowBackRounded
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, getRoleLandingPath } from '@store/authStore';
 
+// ── Interactive chart primitives ───────────────────────────────────────────────
+interface ChartPoint {
+  label: string;
+  value: number;
+  displayValue: string;
+}
+
+function TrendLineChart({
+  data,
+  maxValue,
+  height = 168,
+  accent,
+  onHoverChange,
+}: {
+  data: ChartPoint[];
+  maxValue: number;
+  height?: number;
+  accent: string;
+  onHoverChange?: (point: ChartPoint | null) => void;
+}) {
+  const [hovered, setHovered] = useState<number | null>(null);
+  const width = 100; // viewBox units — scales with container via preserveAspectRatio
+  const padX = 4;
+  const padTop = 10;
+  const padBottom = 20;
+  const plotH = height - padTop - padBottom;
+  const step = data.length > 1 ? (width - padX * 2) / (data.length - 1) : 0;
+
+  const points = data.map((d, i) => ({
+    x: padX + step * i,
+    y: padTop + plotH - (Math.max(0, d.value) / maxValue) * plotH,
+    d,
+  }));
+
+  const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+  const areaPath = `${linePath} L ${points[points.length - 1]?.x ?? 0} ${padTop + plotH} L ${points[0]?.x ?? 0} ${padTop + plotH} Z`;
+  const gradientId = `trend-fill-${accent.replace('#', '')}`;
+
+  function handleHover(i: number | null) {
+    setHovered(i);
+    onHoverChange?.(i !== null ? data[i] : null);
+  }
+
+  return (
+    <Box sx={{ position: 'relative', height, overflow: 'visible' }}>
+      {/* faint grid lines */}
+      {[0.25, 0.5, 0.75, 1].map(pct => (
+        <Box
+          key={pct}
+          sx={{
+            position: 'absolute', left: 0, right: 0,
+            bottom: padBottom + plotH * pct,
+            height: '1px', backgroundColor: colors.borderLight, opacity: 0.55, pointerEvents: 'none',
+          }}
+        />
+      ))}
+
+      <Box
+        component="svg"
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        sx={{ width: '100%', height, display: 'block', overflow: 'visible' }}
+      >
+        <defs>
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={accent} stopOpacity="0.28" />
+            <stop offset="100%" stopColor={accent} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <path d={areaPath} fill={`url(#${gradientId})`} stroke="none" />
+        <path
+          d={linePath}
+          fill="none"
+          stroke={accent}
+          strokeWidth={1.6}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+        {hovered !== null && (
+          <line
+            x1={points[hovered].x} x2={points[hovered].x}
+            y1={padTop} y2={padTop + plotH}
+            stroke={accent} strokeOpacity={0.25} strokeWidth={1}
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+      </Box>
+
+      {/* hover dot — rendered in HTML/CSS (not SVG) so it stays perfectly round regardless of the chart's aspect ratio */}
+      {hovered !== null && (
+        <Box
+          sx={{
+            position: 'absolute',
+            left: `${(points[hovered].x / width) * 100}%`,
+            top: points[hovered].y,
+            width: 8,
+            height: 8,
+            borderRadius: '50%',
+            backgroundColor: accent,
+            border: `1.5px solid ${colors.card}`,
+            boxShadow: `0 1px 4px rgba(0,0,0,0.2)`,
+            transform: 'translate(-50%, -50%)',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+
+      {/* invisible hit targets + x-axis labels */}
+      <Box sx={{ position: 'absolute', inset: 0, display: 'flex' }}>
+        {data.map((d, i) => (
+          <Box
+            key={d.label}
+            onMouseEnter={() => handleHover(i)}
+            onMouseLeave={() => handleHover(null)}
+            onFocus={() => handleHover(i)}
+            onBlur={() => handleHover(null)}
+            tabIndex={0}
+            role="img"
+            aria-label={`${d.label}: ${d.displayValue}`}
+            sx={{ flex: 1, minWidth: 0, position: 'relative', cursor: 'pointer', outline: 'none' }}
+          >
+            <Typography
+              noWrap
+              sx={{
+                position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)',
+                fontSize: { xs: '0.5rem', sm: '0.625rem' },
+                fontWeight: hovered === i ? 700 : 500,
+                color: hovered === i ? colors.textStrong : colors.textSubdued,
+                whiteSpace: 'nowrap',
+                visibility: hovered === i || i % 2 === 0 ? 'visible' : 'hidden',
+                transition: `color ${motion.durationFast}`,
+              }}
+            >
+              {d.label}
+            </Typography>
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  );
+}
+
 // ── Reusable surface ───────────────────────────────────────────────────────────
 function Card({ title, subtitle, right, children }: { title?: string; subtitle?: string; right?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <Box sx={{ p: 3, borderRadius: '18px', backgroundColor: colors.card, border: `1px solid ${colors.borderLight}`, height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <Box sx={{ p: 3, borderRadius: '18px', backgroundColor: colors.card, border: `1px solid ${colors.borderLight}`, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'visible' }}>
       {(title || right) && (
         <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 4 }}>
           <Box>
@@ -75,67 +218,100 @@ function CaptureVolumeChart() {
 
   const maxCount = Math.max(...weeks.map(w => w.count), 1);
   const total = captures.length;
+  const chartData: ChartPoint[] = weeks.map(w => ({
+    label: w.week,
+    value: w.count,
+    displayValue: String(w.count),
+  }));
+  const [hoverPoint, setHoverPoint] = useState<ChartPoint | null>(null);
+  const accent = '#16a34a';
 
   return (
-    <Card title="Capture Volume" subtitle="8-week trend across all projects" right={<Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#16a34a', letterSpacing: '-0.03em' }}>{total} Total</Typography>}>
-      <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: { xs: 0.5, sm: 1.5 }, height: 160 }}>
-        {weeks.map((w, i) => (
-          <Box key={i} sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
-            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: colors.textSubdued }}>{w.count}</Typography>
-            <Box sx={{ width: '100%', borderRadius: '6px 6px 0 0', height: `${(w.count / maxCount) * 110}px`, background: i === weeks.length - 1 ? colors.primaryGradient : 'rgba(37,99,235,0.16)', minHeight: 8, transition: `height ${motion.durationSlow} ${motion.easeOut}`, '&:hover': { filter: 'brightness(1.1)' } }} />
-            <Typography sx={{ fontSize: { xs: '0.5rem', sm: '0.625rem' }, color: colors.textSubdued, textAlign: 'center', whiteSpace: 'nowrap' }}>{w.week}</Typography>
-          </Box>
-        ))}
-      </Box>
+    <Card
+      title="Capture Volume"
+      subtitle={hoverPoint ? hoverPoint.label : '8-week trend across all projects'}
+      right={
+        <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: accent, letterSpacing: '-0.03em' }}>
+          {hoverPoint ? hoverPoint.displayValue : total}
+          {!hoverPoint && <Typography component="span" sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textMuted, ml: 0.5 }}>Total</Typography>}
+        </Typography>
+      }
+    >
+      <TrendLineChart
+        data={chartData}
+        maxValue={maxCount}
+        height={168}
+        accent={accent}
+        onHoverChange={setHoverPoint}
+      />
     </Card>
   );
 }
 
-function ApprovalTrendChart() {
+function ReviewRateChart() {
+  const tours = useWorkflowStore(s => s.tours);
   const captures = useWorkflowStore(s => s.captures);
 
-  const weeks = Array.from({length: 8}, (_, i) => {
+  const weeks = Array.from({ length: 8 }, (_, i) => {
     const d = new Date();
     d.setDate(d.getDate() - (7 - i) * 7);
     return {
       week: `${d.toLocaleString('default', { month: 'short' })} W${Math.ceil(d.getDate() / 7)}`,
       total: 0,
-      approved: 0,
+      reviewed: 0,
       start: new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay()),
-      end: new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay() + 7)
+      end: new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay() + 7),
     };
   });
 
-  captures.forEach(c => {
-    if (c.status === 'processed' || c.status === 'rejected') {
-      const d = new Date(c.capturedAt || (c as any).timestamp || Date.now());
+  const resolveTourDate = (tour: (typeof tours)[number]) => {
+    const capture = captures.find(c => c.id === tour.captureId);
+    const raw = capture?.capturedAt || tour.lastCapture;
+    const parsed = raw ? new Date(raw) : null;
+    return parsed && !Number.isNaN(parsed.getTime()) ? parsed : new Date();
+  };
+
+  tours
+    .filter(t => t.status === 'published')
+    .forEach(t => {
+      const d = resolveTourDate(t);
       for (const w of weeks) {
         if (d >= w.start && d < w.end) {
           w.total++;
-          if (c.status === 'processed') w.approved++;
+          if (t.managerReviewed) w.reviewed++;
           break;
         }
       }
-    }
-  });
+    });
 
-  const rates = weeks.map(w => w.total > 0 ? Math.round((w.approved / w.total) * 100) : 0);
-  const maxRev = 100;
-  const overallApproved = weeks.reduce((acc, w) => acc + w.approved, 0);
+  const rates = weeks.map(w => (w.total > 0 ? Math.round((w.reviewed / w.total) * 100) : 0));
+  const overallReviewed = weeks.reduce((acc, w) => acc + w.reviewed, 0);
   const overallTotal = weeks.reduce((acc, w) => acc + w.total, 0);
-  const overallRate = overallTotal > 0 ? Math.round((overallApproved / overallTotal) * 100) : 0;
+  const overallRate = overallTotal > 0 ? Math.round((overallReviewed / overallTotal) * 100) : 0;
+  const chartData: ChartPoint[] = weeks.map((w, i) => ({
+    label: w.week,
+    value: rates[i],
+    displayValue: `${rates[i]}%`,
+  }));
+  const [hoverPoint, setHoverPoint] = useState<ChartPoint | null>(null);
 
   return (
-    <Card title="Review Approval Rate" subtitle="First-pass weekly trend" right={<Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: colors.primary, letterSpacing: '-0.03em' }}>{overallRate}%</Typography>}>
-      <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: { xs: 0.5, sm: 1 }, height: 140 }}>
-        {rates.map((v, i) => (
-          <Box key={i} sx={{ flex: 1, height: `${(v / maxRev) * 118}px`, borderRadius: '4px 4px 0 0', backgroundColor: i === rates.length - 1 ? colors.primary : 'rgba(37,99,235,0.18)', minHeight: 6, transition: `height ${motion.durationSlow} ${motion.easeOut}`, '&:hover': { filter: 'brightness(1.1)' } }} />
-        ))}
-      </Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 1.5 }}>
-        <Typography sx={{ fontSize: '0.625rem', color: colors.textSubdued, fontWeight: 500 }}>{weeks[0].week}</Typography>
-        <Typography sx={{ fontSize: '0.625rem', color: colors.textSubdued, fontWeight: 500 }}>{weeks[weeks.length-1].week}</Typography>
-      </Box>
+    <Card
+      title="Review Rate"
+      subtitle={hoverPoint ? hoverPoint.label : 'Walkthroughs marked as done'}
+      right={
+        <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: colors.primary, letterSpacing: '-0.03em' }}>
+          {hoverPoint ? hoverPoint.displayValue : `${overallRate}%`}
+        </Typography>
+      }
+    >
+      <TrendLineChart
+        data={chartData}
+        maxValue={100}
+        height={168}
+        accent={colors.primary}
+        onHoverChange={setHoverPoint}
+      />
     </Card>
   );
 }
@@ -170,8 +346,8 @@ export default function AnalyticsPage() {
         }}>
           <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
         </Box>
-        <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.5rem', md: '2.25rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1, mb: 1 }}>Dashboard Analytics</Typography>
-        <Typography sx={{ fontSize: { xs: '0.875rem', md: '1rem' }, color: colors.textMuted }}>Your construction intelligence and operational performance at a glance.</Typography>
+        <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.75rem', md: '2.25rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.05em', lineHeight: 1.05, mb: 0.5 }}>Dashboard Analytics</Typography>
+        <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>Your construction intelligence and operational performance at a glance.</Typography>
       </Box>
 
       {/* KPI strip */}
@@ -185,7 +361,7 @@ export default function AnalyticsPage() {
           <CaptureVolumeChart />
         </Grid>
         <Grid size={{ xs: 12, md: 5 }}>
-          <ApprovalTrendChart />
+          <ReviewRateChart />
         </Grid>
       </Grid>
     </Box>

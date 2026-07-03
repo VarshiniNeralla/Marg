@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Box, Typography, Grid, Chip, LinearProgress, Tab, Tabs, Dialog, DialogTitle, DialogContent, DialogActions, Button, TextField, InputAdornment } from '@mui/material';
+import { Box, Typography, Grid, Chip, Pagination } from '@mui/material';
 import {
-  ArrowBackRounded, DomainRounded, LayersRounded, MeetingRoomRounded,
-  CameraAltRounded, PeopleRounded, AddRounded, ArrowForwardRounded,
-  EditRounded, SearchRounded, PersonRemoveRounded,
+  ArrowBackRounded, DomainRounded, LayersRounded,
+  CameraAltRounded, AddRounded,
+  EditRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { statusConfig } from '@store/workflowSelectors';
@@ -14,16 +14,6 @@ import {
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, isAdmin } from '@store/authStore';
 
-const ROLE_COLORS: Record<string, { color: string; bg: string }> = {
-  admin:          { color: '#2563eb', bg: 'rgba(37,99,235,0.08)' },
-  manager:        { color: '#7c3aed', bg: 'rgba(124,58,237,0.08)' },
-  field_engineer: { color: '#059669', bg: 'rgba(5,150,105,0.08)' },
-};
-const ROLE_LABELS: Record<string, string> = {
-  admin: 'Admin', manager: 'Manager', field_engineer: 'Field Engineer',
-};
-const AVATAR_COLORS = ['#2563eb','#7c3aed','#059669','#d97706','#dc2626','#0891b2'];
-
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const projects    = useWorkflowStore(s => s.projects);
@@ -31,18 +21,11 @@ export default function ProjectDetailPage() {
   const floors      = useWorkflowStore(s => s.floors);
   const rooms       = useWorkflowStore(s => s.rooms);
   const captures    = useWorkflowStore(s => s.captures);
-  const users       = useWorkflowStore(s => s.users);
-  const addUserToProject    = useWorkflowStore(s => s.addUserToProject);
-  const removeUserFromProject = useWorkflowStore(s => s.removeUserFromProject);
   const { user: currentUser } = useAuthStore();
   const hasAdminRole = isAdmin(currentUser);
+  const [towerPage, setTowerPage] = useState(1);
 
   const project = getProjectById(projects, projectId ?? '');
-  const [tab, setTab] = useState(0);
-
-  // Add member dialog
-  const [addOpen, setAddOpen] = useState(false);
-  const [memberSearch, setMemberSearch] = useState('');
 
   if (!project) {
     return (
@@ -63,14 +46,15 @@ export default function ProjectDetailPage() {
   const projectRooms     = rooms.filter(r => projectFloorIds.has(r.floorId));
   const projectRoomIds   = new Set(projectRooms.map(r => r.id));
   const projectCaptures  = captures.filter(c => projectRoomIds.has(c.roomId));
-  const teamMembers    = users.filter(u => u.projectIds?.includes(project.id));
-  const nonMembers     = users.filter(u => !u.projectIds?.includes(project.id) &&
-    (u.name.toLowerCase().includes(memberSearch.toLowerCase()) || u.email?.toLowerCase().includes(memberSearch.toLowerCase()))
-  );
   const st = statusConfig.project[project.status];
 
+  const TOWERS_PER_PAGE = 6; // 3 columns × 2 rows
+  const towerTotalPages = Math.max(1, Math.ceil(projectTowers.length / TOWERS_PER_PAGE));
+  const safeTowerPage = Math.min(towerPage, towerTotalPages);
+  const pagedTowers = projectTowers.slice((safeTowerPage - 1) * TOWERS_PER_PAGE, safeTowerPage * TOWERS_PER_PAGE);
+
   return (
-    <Box>
+    <Box sx={{ maxWidth: 800, mx: 'auto' }}>
       {/* Back */}
       <Box sx={{ mb: 3 }}>
         <Box component={Link} to="/projects" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, color: colors.textMuted, textDecoration: 'none', fontSize: '0.875rem', '&:hover': { color: colors.textStrong } }}>
@@ -79,19 +63,19 @@ export default function ProjectDetailPage() {
       </Box>
 
       {/* Hero */}
-      <Box sx={{ borderRadius: '20px', background: project.gradient, p: { xs: 3, md: 4 }, mb: 4, position: 'relative', overflow: 'hidden' }}>
+      <Box sx={{ borderRadius: { xs: '16px', md: '20px' }, background: project.gradient, p: { xs: 2, md: 4 }, mb: { xs: 2.5, md: 4 }, position: 'relative', overflow: 'hidden' }}>
         <Box sx={{ position: 'absolute', inset: 0, background: 'radial-gradient(ellipse 60% 80% at 10% 50%, rgba(255,255,255,0.05) 0%, transparent 70%)', pointerEvents: 'none' }} />
-        <Grid container spacing={3} sx={{ alignItems: 'flex-end' }}>
+        <Grid container spacing={{ xs: 1.5, md: 3 }} sx={{ alignItems: 'flex-end' }}>
           <Grid size={{ xs: 12, md: 8 }}>
-            <Chip label={st.label} size="small" sx={{ height: 22, fontSize: '0.6875rem', fontWeight: 600, color: st.color, backgroundColor: st.bg, borderRadius: '6px', mb: 1.5 }} />
-            <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.5rem', md: '2rem' }, fontWeight: 700, color: '#fff', letterSpacing: '-0.04em', lineHeight: 1.1, mb: 0.5 }}>
+            <Chip label={st.label} size="small" sx={{ height: { xs: 18, md: 22 }, fontSize: { xs: '0.625rem', md: '0.6875rem' }, fontWeight: 600, color: st.color, backgroundColor: st.bg, borderRadius: '6px', mb: { xs: 1, md: 1.5 } }} />
+            <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.125rem', md: '2rem' }, fontWeight: 700, color: '#fff', letterSpacing: '-0.04em', lineHeight: 1.1, mb: 0.5 }}>
               {project.name}
             </Typography>
-            <Typography sx={{ fontSize: '0.9375rem', color: 'rgba(255,255,255,0.55)', mb: 2 }}>
+            <Typography sx={{ fontSize: { xs: '0.75rem', md: '0.9375rem' }, color: 'rgba(255,255,255,0.55)', mb: { xs: 0, md: 2 } }}>
               {project.location} · {project.client}
             </Typography>
             {project.description && (
-              <Typography sx={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.45)', maxWidth: 520, lineHeight: 1.6 }}>
+              <Typography sx={{ display: { xs: 'none', md: 'block' }, fontSize: '0.875rem', color: 'rgba(255,255,255,0.45)', maxWidth: 520, lineHeight: 1.6 }}>
                 {project.description}
               </Typography>
             )}
@@ -100,203 +84,92 @@ export default function ProjectDetailPage() {
             <Grid size={{ xs: 12, md: 4 }}>
               <Box sx={{ display: 'flex', gap: 1, justifyContent: { xs: 'flex-start', md: 'flex-end' } }}>
                 <Box component={Link} to={`/projects/${project.id}/edit`}
-                  sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 1, borderRadius: '8px', backgroundColor: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)', color: 'rgba(255,255,255,0.8)', fontSize: '0.875rem', fontWeight: 500, textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(255,255,255,0.18)' }, transition: `background ${motion.durationFast}` }}>
+                  sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: { xs: 1.25, md: 2 }, py: { xs: 0.5, md: 1 }, borderRadius: '8px', backgroundColor: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)', color: 'rgba(255,255,255,0.8)', fontSize: { xs: '0.75rem', md: '0.875rem' }, fontWeight: 500, textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(255,255,255,0.18)' }, transition: `background ${motion.durationFast}` }}>
                   <EditRounded sx={{ fontSize: 15 }} /> Edit
                 </Box>
               </Box>
             </Grid>
           )}
         </Grid>
-
-        {/* Progress bar */}
-        <Box sx={{ mt: 3 }}>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.75 }}>
-            <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)' }}>Capture progress</Typography>
-            <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: 'rgba(255,255,255,0.9)' }}>{project.progress}%</Typography>
-          </Box>
-          <LinearProgress variant="determinate" value={project.progress} sx={{ height: 4, borderRadius: '99px', backgroundColor: 'rgba(255,255,255,0.15)', '& .MuiLinearProgress-bar': { borderRadius: '99px', backgroundColor: 'rgba(255,255,255,0.8)' } }} />
-        </Box>
       </Box>
 
       {/* Stat row */}
-      <Grid container spacing={2} sx={{ mb: 4 }}>
+      <Grid container spacing={{ xs: 1, sm: 2 }} sx={{ mb: { xs: 2.5, md: 4 } }}>
         {[
-          { icon: <DomainRounded sx={{ fontSize: 18 }} />,      label: 'Towers',   value: projectTowers.length,   color: '#2563eb' },
-          { icon: <LayersRounded sx={{ fontSize: 18 }} />,      label: 'Floors',   value: projectFloors.length,   color: '#0891b2' },
-          { icon: <MeetingRoomRounded sx={{ fontSize: 18 }} />, label: 'Rooms',    value: projectRooms.length,    color: '#7c3aed' },
-          { icon: <CameraAltRounded sx={{ fontSize: 18 }} />,   label: 'Captures', value: projectCaptures.length, color: '#059669' },
-          { icon: <PeopleRounded sx={{ fontSize: 18 }} />,      label: 'Team',     value: teamMembers.length,     color: '#64748b' },
+          { icon: <DomainRounded sx={{ fontSize: { xs: 16, sm: 20 } }} />,    label: 'Towers',   value: projectTowers.length,   color: '#2563eb' },
+          { icon: <LayersRounded sx={{ fontSize: { xs: 16, sm: 20 } }} />,    label: 'Floors',   value: projectFloors.length,   color: '#0891b2' },
+          { icon: <CameraAltRounded sx={{ fontSize: { xs: 16, sm: 20 } }} />, label: 'Captures', value: projectCaptures.length, color: '#059669' },
         ].map(({ icon, label, value, color }) => (
-          <Grid key={label} size={{ xs: 6, sm: 4, md: 2 }}>
-            <Box sx={{ p: 2, borderRadius: '14px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', textAlign: 'center' }}>
-              <Box sx={{ color, mb: 0.5 }}>{icon}</Box>
-              <Typography sx={{ fontSize: '1.5rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.03em', lineHeight: 1 }}>{value}</Typography>
-              <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.25 }}>{label}</Typography>
+          <Grid key={label} size={4}>
+            <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, alignItems: { xs: 'flex-start', sm: 'center' }, gap: { xs: 0.75, sm: 1.75 }, p: { xs: 1.25, sm: 2.25 }, borderRadius: { xs: '10px', sm: '14px' }, backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)' }}>
+              <Box sx={{ width: { xs: 30, sm: 44 }, height: { xs: 30, sm: 44 }, borderRadius: { xs: '8px', sm: '11px' }, display: 'flex', alignItems: 'center', justifyContent: 'center', color, backgroundColor: `${color}14`, flexShrink: 0 }}>
+                {icon}
+              </Box>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography sx={{ fontSize: { xs: '1rem', sm: '1.375rem' }, fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.03em', lineHeight: 1 }}>{value}</Typography>
+                <Typography noWrap sx={{ fontSize: { xs: '0.625rem', sm: '0.75rem' }, color: colors.textMuted, mt: { xs: 0.125, sm: 0.375 } }}>{label}</Typography>
+              </Box>
             </Box>
           </Grid>
         ))}
       </Grid>
 
-      {/* Tabs */}
-      <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 3, borderBottom: `1px solid ${colors.borderLight}`, '& .MuiTab-root': { fontSize: '0.875rem', fontWeight: 500, textTransform: 'none', minWidth: 0, px: 2 }, '& .Mui-selected': { color: colors.primary }, '& .MuiTabs-indicator': { backgroundColor: colors.primary } }}>
-        <Tab label="Towers" />
-        <Tab label="Team" />
-      </Tabs>
-
-      {/* Towers tab */}
-      {tab === 0 && (
-        <Box>
+      {/* Towers */}
+      <Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2.5 }}>
+          <Typography sx={{ fontSize: '1.0625rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em' }}>Towers</Typography>
           {hasAdminRole && (
-            <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
-              <Box component={Link} to={`/projects/${project.id}/towers`} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 0.875, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none', boxShadow: '0 4px 14px rgba(37,99,235,0.28)' }}>
-                <AddRounded sx={{ fontSize: 16 }} /> Add Tower
-              </Box>
+            <Box component={Link} to={`/projects/${project.id}/towers`} sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.5, sm: 0.75 }, px: { xs: 1.25, sm: 2 }, py: { xs: 0.625, sm: 0.875 }, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: { xs: '0.75rem', sm: '0.875rem' }, fontWeight: 600, textDecoration: 'none', boxShadow: '0 4px 14px rgba(37,99,235,0.28)', whiteSpace: 'nowrap' }}>
+              <AddRounded sx={{ fontSize: { xs: 14, sm: 16 } }} /> Add Tower
             </Box>
           )}
-          <Grid container spacing={2}>
-            {projectTowers.map(tower => (
-              <Grid key={tower.id} size={{ xs: 12, sm: 6, md: 4 }}>
-                <Box
-                  component={Link}
-                  to={`/projects/${project.id}/towers/${tower.id}`}
-                  sx={{ display: 'block', p: 2.5, borderRadius: '16px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', textDecoration: 'none', transition: `all ${motion.durationNormal}`, '&:hover': { boxShadow: '0 8px 32px rgba(15,23,42,0.10)', transform: 'translateY(-2px)' } }}
-                >
-                  <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 1.5 }}>
-                    <Box sx={{ width: 36, height: 36, borderRadius: '9px', background: project.gradient, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <DomainRounded sx={{ color: 'rgba(255,255,255,0.7)', fontSize: 18 }} />
-                    </Box>
-                  </Box>
-                  <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600, color: colors.textStrong, mb: 0.25 }}>{tower.name}</Typography>
-                  <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mb: 1.5 }}>{tower.floors} floors · {tower.rooms} rooms</Typography>
-                  <Box sx={{ mb: 0.75 }}>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                      <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>Captured</Typography>
-                      <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: project.accent }}>{tower.progress}%</Typography>
-                    </Box>
-                    <LinearProgress variant="determinate" value={tower.progress} sx={{ height: 3, borderRadius: '99px', backgroundColor: `${project.accent}18`, '& .MuiLinearProgress-bar': { borderRadius: '99px', background: project.accent } }} />
-                  </Box>
-                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
-                    <Typography sx={{ fontSize: '0.75rem', color: project.accent, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 0.25 }}>
-                      View floors <ArrowForwardRounded sx={{ fontSize: 13 }} />
-                    </Typography>
-                  </Box>
-                </Box>
-              </Grid>
-            ))}
-            {projectTowers.length === 0 && (
-              <Grid size={{ xs: 12 }}>
-                <Box sx={{ textAlign: 'center', py: 6, color: colors.textMuted }}>
-                  <DomainRounded sx={{ fontSize: 40, mb: 1, opacity: 0.3 }} />
-                  <Typography sx={{ fontSize: '0.9rem' }}>No towers yet. Go to the Towers page to add one.</Typography>
-                </Box>
-              </Grid>
-            )}
-          </Grid>
         </Box>
-      )}
-
-      {/* Team tab */}
-      {tab === 1 && (
-        <Box>
-          {/* Header */}
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2.5 }}>
-            <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted }}>
-              {teamMembers.length} member{teamMembers.length !== 1 ? 's' : ''} assigned to this project
-            </Typography>
-            {hasAdminRole && (
+        <Box sx={{
+          display: 'grid',
+          width: '100%',
+          gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(3, 1fr)' },
+          gap: { xs: '10px', sm: '12px', md: '16px' },
+        }}>
+          {pagedTowers.map(tower => {
+            const towerFloorCount = projectFloors.filter(f => f.towerId === tower.id).length;
+            const towerFloorIds = new Set(projectFloors.filter(f => f.towerId === tower.id).map(f => f.id));
+            const towerRoomIds = new Set(projectRooms.filter(r => towerFloorIds.has(r.floorId)).map(r => r.id));
+            const towerCaptureCount = projectCaptures.filter(c => towerRoomIds.has(c.roomId)).length;
+            return (
               <Box
-                onClick={() => { setMemberSearch(''); setAddOpen(true); }}
-                sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 0.875, borderRadius: '8px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.28)', userSelect: 'none' }}
+                key={tower.id}
+                {...(hasAdminRole ? { component: Link, to: `/projects/${project.id}/towers/${tower.id}` } : {})}
+                sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', p: 1.25, borderRadius: '12px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', textDecoration: 'none', transition: `all ${motion.durationNormal}`, ...(hasAdminRole && { '&:hover': { boxShadow: '0 8px 32px rgba(15,23,42,0.10)', transform: 'translateY(-2px)' } }) }}
               >
-                <AddRounded sx={{ fontSize: 16 }} /> Add Member
-              </Box>
-            )}
-          </Box>
-
-          {/* Member list */}
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {teamMembers.map((u, i) => {
-              const rc = ROLE_COLORS[u.role] ?? ROLE_COLORS.field_engineer;
-              const avatarColor = AVATAR_COLORS[i % AVATAR_COLORS.length];
-              return (
-                <Box key={u.id} sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 2, borderRadius: '12px', backgroundColor: colors.card, boxShadow: '0 1px 4px rgba(15,23,42,0.04)' }}>
-                  <Box sx={{ width: 40, height: 40, borderRadius: '50%', backgroundColor: avatarColor, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: '#fff' }}>{u.name[0].toUpperCase()}</Typography>
-                  </Box>
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong }}>{u.name}</Typography>
-                    <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{u.designation || u.email || '—'}</Typography>
-                  </Box>
-                  <Chip label={ROLE_LABELS[u.role] ?? u.role} size="small" sx={{ height: 22, fontSize: '0.6875rem', fontWeight: 600, color: rc.color, backgroundColor: rc.bg, borderRadius: '6px' }} />
-                  {hasAdminRole && (
-                    <Box
-                      onClick={() => removeUserFromProject(u.id, project.id)}
-                      title="Remove from project"
-                      sx={{ width: 28, height: 28, borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: colors.textSubdued, '&:hover': { backgroundColor: 'rgba(239,68,68,0.08)', color: '#ef4444' }, transition: 'all 150ms' }}
-                    >
-                      <PersonRemoveRounded sx={{ fontSize: 16 }} />
-                    </Box>
-                  )}
+                <Box sx={{ width: 40, height: 40, borderRadius: '10px', background: project.gradient, display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 1 }}>
+                  <DomainRounded sx={{ color: '#fff', fontSize: 18 }} />
                 </Box>
-              );
-            })}
-            {teamMembers.length === 0 && (
-              <Box sx={{ textAlign: 'center', py: 6, color: colors.textMuted }}>
-                <PeopleRounded sx={{ fontSize: 40, mb: 1, opacity: 0.3 }} />
-                <Typography sx={{ fontSize: '0.9rem' }}>No members assigned yet.</Typography>
+                <Typography noWrap sx={{ fontSize: '0.8125rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.01em', maxWidth: '100%', mb: 0.375 }}>{tower.name}</Typography>
+                <Typography sx={{ fontSize: '0.625rem', color: colors.textMuted, lineHeight: 1.4 }}>
+                  {towerFloorCount} floor{towerFloorCount === 1 ? '' : 's'} · {towerCaptureCount} capture{towerCaptureCount === 1 ? '' : 's'}
+                </Typography>
               </Box>
-            )}
-          </Box>
+            );
+          })}
+          {projectTowers.length === 0 && (
+            <Box sx={{ gridColumn: '1 / -1', textAlign: 'center', py: 6, color: colors.textMuted }}>
+              <DomainRounded sx={{ fontSize: 40, mb: 1, opacity: 0.3 }} />
+              <Typography sx={{ fontSize: '0.9rem' }}>No towers yet. Go to the Towers page to add one.</Typography>
+            </Box>
+          )}
         </Box>
-      )}
-
-
-      {/* Add Member dialog */}
-      <Dialog open={addOpen} onClose={() => setAddOpen(false)} maxWidth="sm" fullWidth slotProps={{ paper: { sx: { borderRadius: '20px' } } }}>
-        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', pb: 1 }}>Add Member to Project</DialogTitle>
-        <DialogContent sx={{ pt: '8px !important' }}>
-          <TextField
-            fullWidth
-            placeholder="Search by name or email…"
-            value={memberSearch}
-            onChange={e => setMemberSearch(e.target.value)}
-            size="small"
-            slotProps={{ input: { startAdornment: <InputAdornment position="start"><SearchRounded sx={{ fontSize: 18, color: colors.textMuted }} /></InputAdornment> } }}
-            sx={{ mb: 2, '& .MuiOutlinedInput-root': { borderRadius: '10px' } }}
-          />
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75, maxHeight: 340, overflowY: 'auto' }}>
-            {nonMembers.length === 0 && (
-              <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted, textAlign: 'center', py: 3 }}>
-                {memberSearch ? 'No users match your search.' : 'All users are already members of this project.'}
-              </Typography>
-            )}
-            {nonMembers.map((u, i) => {
-              const rc = ROLE_COLORS[u.role] ?? ROLE_COLORS.field_engineer;
-              const avatarColor = AVATAR_COLORS[i % AVATAR_COLORS.length];
-              return (
-                <Box
-                  key={u.id}
-                  onClick={() => { addUserToProject(u.id, project.id); }}
-                  sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 1.75, borderRadius: '10px', cursor: 'pointer', '&:hover': { backgroundColor: colors.bg }, transition: 'background 140ms' }}
-                >
-                  <Box sx={{ width: 36, height: 36, borderRadius: '50%', backgroundColor: avatarColor, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: '#fff' }}>{u.name[0].toUpperCase()}</Typography>
-                  </Box>
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong }}>{u.name}</Typography>
-                    <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email || u.designation || '—'}</Typography>
-                  </Box>
-                  <Chip label={ROLE_LABELS[u.role] ?? u.role} size="small" sx={{ height: 20, fontSize: '0.625rem', fontWeight: 600, color: rc.color, backgroundColor: rc.bg, borderRadius: '5px' }} />
-                  <Box sx={{ fontSize: '0.75rem', color: colors.primary, fontWeight: 600, whiteSpace: 'nowrap' }}>+ Add</Box>
-                </Box>
-              );
-            })}
+        {towerTotalPages > 1 && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2.5 }}>
+            <Pagination
+              count={towerTotalPages}
+              page={safeTowerPage}
+              onChange={(_, page) => setTowerPage(page)}
+              shape="rounded"
+              size="small"
+            />
           </Box>
-        </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 3 }}>
-          <Button onClick={() => setAddOpen(false)} sx={{ borderRadius: '8px', textTransform: 'none', color: colors.textMuted }}>Done</Button>
-        </DialogActions>
-      </Dialog>
+        )}
+      </Box>
     </Box>
   );
 }

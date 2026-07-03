@@ -12,7 +12,6 @@ import {
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
-import PageHeader from '@shared/components/PageHeader/PageHeader';
 import Button from '@shared/components/Button/Button';
 import { userService } from '@services/userService';
 import { authService as backendAuth } from '@services/authService';
@@ -259,23 +258,30 @@ export default function UserManagementPage() {
           <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
         </Box>
 
-      <PageHeader
-        title="User Management"
-        subtitle={`${users.length} members · ${activeCount} active`}
-        breadcrumbs={[{ label: 'Users' }]}
-        actions={
-          <Box sx={{ display: 'flex', gap: 1 }}>
-            <Tooltip title="Refresh">
-              <IconButton onClick={load} size="small" sx={{ border: `1px solid ${colors.border}`, borderRadius: '8px' }}>
-                <RefreshRounded sx={{ fontSize: 18 }} />
-              </IconButton>
-            </Tooltip>
-            <Button variant="primary" onClick={() => { setCreateForm(EMPTY_CREATE); setCreateErr(''); setCreateOpen(true); loadProjects(); }} sx={{ gap: 0.75, height: 38, fontSize: '0.875rem' }}>
-              <AddRounded sx={{ fontSize: 18 }} /> Create User
-            </Button>
-          </Box>
-        }
-      />
+      <Box sx={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 2, mb: 4, flexWrap: 'wrap' }}>
+        <Box>
+          <Typography sx={{
+            fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
+            fontSize: { xs: '1.75rem', md: '2.25rem' }, fontWeight: 800,
+            color: colors.textStrong, letterSpacing: '-0.05em', lineHeight: 1.05, mb: 0.5,
+          }}>
+            User Management
+          </Typography>
+          <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>
+            {users.length} members · {activeCount} active
+          </Typography>
+        </Box>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          <Tooltip title="Refresh">
+            <IconButton onClick={load} size="small" sx={{ border: `1px solid ${colors.border}`, borderRadius: '8px' }}>
+              <RefreshRounded sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
+          <Button variant="primary" onClick={() => { setCreateForm(EMPTY_CREATE); setCreateErr(''); setCreateOpen(true); loadProjects(); }} sx={{ gap: 0.75, height: 38, fontSize: '0.875rem' }}>
+            <AddRounded sx={{ fontSize: 18 }} /> Create User
+          </Button>
+        </Box>
+      </Box>
 
       {error && <ErrorBanner msg={error} />}
 
