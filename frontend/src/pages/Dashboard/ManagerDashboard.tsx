@@ -1,4 +1,5 @@
-import { Box, Typography, Grid } from '@mui/material';
+import { useState } from 'react';
+import { Box, Typography, Grid, Pagination } from '@mui/material';
 import {
   RateReviewRounded, CheckCircleRounded, CameraAltRounded,
   ViewInArRounded, ArrowForwardRounded,
@@ -9,14 +10,22 @@ import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
 import PageHeader from '@shared/components/PageHeader/PageHeader';
 
+const TOURS_PAGE_SIZE = 5;
+
 export default function ManagerDashboard() {
   const user      = useAuthStore((s) => s.user);
   const captures  = useWorkflowStore(s => s.captures);
   const tours     = useWorkflowStore(s => s.tours);
+  const [toursPage, setToursPage] = useState(1);
 
   const pendingReviews = captures.filter(c => c.status === 'review');
   const reviewed       = captures.filter(c => c.status === 'processed');
   const publishedTours = tours.filter(t => t.status === 'published');
+  const toursTotalPages = Math.max(1, Math.ceil(publishedTours.length / TOURS_PAGE_SIZE));
+  const paginatedTours = publishedTours.slice(
+    (toursPage - 1) * TOURS_PAGE_SIZE,
+    toursPage * TOURS_PAGE_SIZE,
+  );
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
@@ -134,34 +143,48 @@ export default function ManagerDashboard() {
                 <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted }}>No published tours yet.</Typography>
               </Box>
             ) : (
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                {publishedTours.map(t => (
-                  <Box
-                    key={t.id}
-                    component={Link}
-                    to={`/tours/${t.id}`}
-                    sx={{
-                      display: 'flex', alignItems: 'center', gap: 1.5,
-                      p: { xs: 1.25, sm: 1.5 }, borderRadius: '12px',
-                      border: `1px solid ${colors.borderLight}`,
-                      textDecoration: 'none', width: '100%',
-                      '&:hover': { backgroundColor: colors.bg, borderColor: colors.border },
-                      transition: `background ${motion.durationFast}, border-color ${motion.durationFast}`,
-                    }}
-                  >
-                    <Box sx={{ width: 42, height: 42, borderRadius: '10px', background: t.gradient, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <ViewInArRounded sx={{ fontSize: 18, color: 'rgba(255,255,255,0.85)' }} />
+              <>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  {paginatedTours.map(t => (
+                    <Box
+                      key={t.id}
+                      component={Link}
+                      to={`/tours/${t.id}`}
+                      sx={{
+                        display: 'flex', alignItems: 'center', gap: 1.5,
+                        p: { xs: 1.25, sm: 1.5 }, borderRadius: '12px',
+                        border: `1px solid ${colors.borderLight}`,
+                        textDecoration: 'none', width: '100%',
+                        '&:hover': { backgroundColor: colors.bg, borderColor: colors.border },
+                        transition: `background ${motion.durationFast}, border-color ${motion.durationFast}`,
+                      }}
+                    >
+                      <Box sx={{ width: 42, height: 42, borderRadius: '10px', background: t.gradient, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <ViewInArRounded sx={{ fontSize: 18, color: 'rgba(255,255,255,0.85)' }} />
+                      </Box>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong }}>{t.roomName}</Typography>
+                        <Typography noWrap sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{t.towerName} · {t.floorLabel}</Typography>
+                      </Box>
+                      <Box sx={{ px: 1.25, py: 0.375, borderRadius: '6px', backgroundColor: 'rgba(37,99,235,0.08)', color: '#2563eb', fontSize: '0.6875rem', fontWeight: 700, flexShrink: 0 }}>
+                        Live
+                      </Box>
                     </Box>
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography noWrap sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong }}>{t.roomName}</Typography>
-                      <Typography noWrap sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{t.towerName} · {t.floorLabel}</Typography>
-                    </Box>
-                    <Box sx={{ px: 1.25, py: 0.375, borderRadius: '6px', backgroundColor: 'rgba(37,99,235,0.08)', color: '#2563eb', fontSize: '0.6875rem', fontWeight: 700, flexShrink: 0 }}>
-                      Live
-                    </Box>
+                  ))}
+                </Box>
+                {toursTotalPages > 1 && (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2.5 }}>
+                    <Pagination
+                      count={toursTotalPages}
+                      page={toursPage}
+                      onChange={(_, p) => setToursPage(p)}
+                      color="primary"
+                      size="small"
+                      sx={{ '& .MuiPaginationItem-root': { fontWeight: 600 } }}
+                    />
                   </Box>
-                ))}
-              </Box>
+                )}
+              </>
             )}
           </Box>
         </Grid>

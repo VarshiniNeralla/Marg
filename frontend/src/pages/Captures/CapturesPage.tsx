@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Box, Typography, InputBase, Menu, MenuItem, Pagination } from '@mui/material';
 import { CameraAltRounded, ViewInArRounded, SearchRounded, KeyboardArrowDownRounded, CheckRounded, ArrowBackRounded, LayersRounded, MapRounded, DeleteOutlineRounded, BusinessRounded } from '@mui/icons-material';
@@ -8,6 +8,7 @@ import type { MockCapture } from '@/data/mockData';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore , getRoleLandingPath } from '@store/authStore';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
+import { buildFloorOptions, floorSelectionLabel, locationFilterMenuPaperSx, locationFilterToolbarSx, type FloorOption } from '@/utils/locationFilters';
 
 // Capture gallery — project-wise selection, calm minimal cards.
 
@@ -94,6 +95,16 @@ function CaptureCard({ capture, hasTour, onDelete }: { capture: MockCapture; has
   );
 }
 
+function isGalleryVisibleCapture(
+  c: MockCapture,
+  allPinCaptureIds: Set<string>,
+  latestPinCaptureIds: Set<string>,
+): boolean {
+  if (allPinCaptureIds.has(c.id) && !latestPinCaptureIds.has(c.id)) return false;
+  if (/^Pin\s+\d+$/i.test(c.roomName ?? '') && !allPinCaptureIds.has(c.id)) return false;
+  return true;
+}
+
 export default function CapturesPage() {
   const location = useLocation();
   const isEngineerView = location.pathname === '/my-captures';
@@ -151,27 +162,26 @@ export default function CapturesPage() {
   }, [allProjects, assignedProjectIds]);
 
   const availableTowers = useMemo(() => !projectId || projectId === 'all' ? [] : allTowers.filter(t => t.projectId === projectId).sort((a,b) => a.name.localeCompare(b.name, undefined, {numeric:true})), [allTowers, projectId]);
-  const availableFloors = useMemo(() => !towerId || towerId === 'all' ? [] : allFloors.filter(f => f.towerId === towerId).sort((a,b) => a.label.localeCompare(b.label, undefined, {numeric:true})), [allFloors, towerId]);
+  const availableFloors = useMemo((): FloorOption[] => {
+    if (!projectId || projectId === 'all' || !towerId) return [];
+    const towerIds = new Set(availableTowers.map(t => t.id));
+    return buildFloorOptions(allFloors, towerId, towerIds);
+  }, [allFloors, projectId, towerId, availableTowers]);
+
+  const galleryCaptures = useMemo(() => mockCaptures.filter(c => {
+    if (assignedProjectIds && !assignedProjectIds.has(c.projectId)) return false;
+    return isGalleryVisibleCapture(c, allPinCaptureIds, latestPinCaptureIds);
+  }), [mockCaptures, assignedProjectIds, allPinCaptureIds, latestPinCaptureIds]);
 
   const filtered = useMemo(() => {
-    return mockCaptures.filter(c => {
-      // Field engineers on /my-captures are always scoped to their assigned projects.
-      if (assignedProjectIds && !assignedProjectIds.has(c.projectId)) return false;
-      const matchesProject = projectId === 'all' || c.projectId === projectId;
-      const matchesTower = towerId === 'all' || c.towerId === towerId;
-      const floorLabel = availableFloors.find(f => f.id === floorId)?.label;
-      const matchesFloor = floorId === 'all' || c.floorLabel === floorLabel;
-      if (!matchesProject || !matchesTower || !matchesFloor) return false;
-      // Suppress older captures that belong to a pin but are not the latest —
-      // they are accessible via the pin's timeline, not as standalone cards.
-      if (allPinCaptureIds.has(c.id) && !latestPinCaptureIds.has(c.id)) return false;
-      // Suppress orphaned pin captures: a "Pin N" capture whose pin was deleted
-      // and re-created leaves the old capture behind with no live pin. It must
-      // not show as a duplicate gallery card alongside the current pin's capture.
-      if (/^Pin\s+\d+$/i.test(c.roomName ?? '') && !allPinCaptureIds.has(c.id)) return false;
-      return true;
+    return galleryCaptures.filter(c => {
+      const matchesProject = !projectId || projectId === 'all' || c.projectId === projectId;
+      const matchesTower = !towerId || towerId === 'all' || c.towerId === towerId;
+      const floorLabel = floorSelectionLabel(floorId, availableFloors);
+      const matchesFloor = !floorId || floorId === 'all' || (floorLabel !== null && c.floorLabel === floorLabel);
+      return matchesProject && matchesTower && matchesFloor;
     });
-  }, [mockCaptures, projectId, towerId, floorId, availableFloors, allPinCaptureIds, latestPinCaptureIds, assignedProjectIds]);
+  }, [galleryCaptures, projectId, towerId, floorId, availableFloors]);
 
   const [page, setPage] = useState(1);
   const itemsPerPage = 12;
@@ -207,11 +217,16 @@ export default function CapturesPage() {
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [towerMenuAnchor, setTowerMenuAnchor] = useState<null | HTMLElement>(null);
   const [floorMenuAnchor, setFloorMenuAnchor] = useState<null | HTMLElement>(null);
+  const towerPillRef = useRef<HTMLDivElement>(null);
+  const [floorMenuWidth, setFloorMenuWidth] = useState<number | undefined>();
   const handleProjectSelect = (id: string) => { 
-    setProjectId(id); setTowerId('all'); setFloorId('all'); setMenuAnchor(null); 
+    setProjectId(id);
+    setTowerId(id === 'all' ? '' : 'all');
+    setFloorId(id === 'all' ? '' : 'all');
+    setMenuAnchor(null); 
     sessionStorage.setItem(`captures_projectId_${role}`, id);
-    sessionStorage.setItem(`captures_towerId_${role}`, 'all');
-    sessionStorage.setItem(`captures_floorId_${role}`, 'all');
+    sessionStorage.setItem(`captures_towerId_${role}`, id === 'all' ? '' : 'all');
+    sessionStorage.setItem(`captures_floorId_${role}`, id === 'all' ? '' : 'all');
   };
   const handleTowerSelect = (id: string) => { 
     setTowerId(id); setFloorId('all'); setTowerMenuAnchor(null); 
@@ -227,7 +242,30 @@ export default function CapturesPage() {
   const selectedTower = availableTowers.find(t => t.id === towerId);
   const selectedFloor = availableFloors.find(f => f.id === floorId);
   
-  const selectedCount = projectId === 'all' ? mockCaptures.length : mockCaptures.filter(c => c.projectId === projectId).length;
+  const selectedCount = !projectId || projectId === 'all'
+    ? galleryCaptures.length
+    : galleryCaptures.filter(c => c.projectId === projectId).length;
+
+  const towerCaptureCount = (id: string) => galleryCaptures.filter(c => {
+    if (projectId && projectId !== 'all' && c.projectId !== projectId) return false;
+    return id === 'all' || c.towerId === id;
+  }).length;
+
+  const floorCaptureCount = (id: string) => {
+    const label = floorSelectionLabel(id, availableFloors);
+    return galleryCaptures.filter(c => {
+      if (projectId && projectId !== 'all' && c.projectId !== projectId) return false;
+      if (towerId && towerId !== 'all' && c.towerId !== towerId) return false;
+      if (id === 'all') return true;
+      return label !== null && c.floorLabel === label;
+    }).length;
+  };
+
+  const isSelectionComplete = Boolean(projectId);
+  const showTowerFilter = Boolean(projectId && projectId !== 'all');
+  const showFloorFilter = showTowerFilter && Boolean(towerId);
+  const filterCount = 1 + (showTowerFilter ? 1 : 0) + (showFloorFilter ? 1 : 0);
+  const toolbarLayout = locationFilterToolbarSx(filterCount);
 
 
   /* ── local palette (matches CaptureWorkflowPage / FloorPlansPage) ── */
@@ -274,22 +312,22 @@ export default function CapturesPage() {
       </Box>
 
       {/* ── Toolbar ───────────────────────────────────────────────────────── */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 1, sm: 1.5 }, mb: 3, flexWrap: 'wrap' }}>
+      <Box sx={toolbarLayout.row}>
+        <Box sx={toolbarLayout.group}>
         {/* Project pill */}
         <Box onClick={(e) => setMenuAnchor(e.currentTarget)} sx={{
+          ...toolbarLayout.pill,
           display: 'flex', alignItems: 'center', gap: 1,
           px: 1.5, py: 0.875, borderRadius: '10px', cursor: 'pointer',
           border: `1.5px solid ${menuAnchor ? P.blue : P.border}`,
           backgroundColor: menuAnchor ? P.blueSoft : P.white,
           transition: T, '&:hover': { borderColor: P.blue },
-          flex: { xs: '1 1 0%', sm: 'initial' },
           justifyContent: 'space-between',
-          order: 1
         }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, overflow: 'hidden' }}>
             <Box sx={{ width: 18, height: 18, borderRadius: '5px', background: selectedProject ? selectedProject.gradient : `linear-gradient(135deg,${P.subtle},${P.muted})`, flexShrink: 0 }} />
             <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: P.strong, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {selectedProject ? selectedProject.name : 'All projects'}
+              {selectedProject ? selectedProject.name : (projectId === 'all' ? 'All projects' : 'Select a project')}
             </Typography>
           </Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0 }}>
@@ -301,16 +339,15 @@ export default function CapturesPage() {
         </Box>
 
         {/* Tower pill */}
-        {projectId && projectId !== 'all' && (
-          <Box onClick={(e) => setTowerMenuAnchor(e.currentTarget)} sx={{
+        {showTowerFilter && (
+          <Box ref={towerPillRef} onClick={(e) => setTowerMenuAnchor(e.currentTarget)} sx={{
+            ...toolbarLayout.pill,
             display: 'flex', alignItems: 'center', gap: 1,
             px: 1.5, py: 0.875, borderRadius: '10px', cursor: 'pointer',
             border: `1.5px solid ${towerMenuAnchor ? P.blue : P.border}`,
             backgroundColor: towerMenuAnchor ? P.blueSoft : P.white,
             transition: T, '&:hover': { borderColor: P.blue },
-            flex: { xs: '1 1 0%', sm: 'initial' },
             justifyContent: 'space-between',
-            order: 1
           }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, overflow: 'hidden' }}>
               <BusinessRounded sx={{ fontSize: 18, color: P.subtle }} />
@@ -323,16 +360,20 @@ export default function CapturesPage() {
         )}
 
         {/* Floor pill */}
-        {projectId && projectId !== 'all' && towerId && towerId !== 'all' && (
-          <Box onClick={(e) => setFloorMenuAnchor(e.currentTarget)} sx={{
+        {showFloorFilter && (
+          <Box
+            onClick={(e) => {
+              setFloorMenuWidth(towerPillRef.current?.offsetWidth ?? e.currentTarget.offsetWidth);
+              setFloorMenuAnchor(e.currentTarget);
+            }}
+            sx={{
+            ...toolbarLayout.pill,
             display: 'flex', alignItems: 'center', gap: 1,
             px: 1.5, py: 0.875, borderRadius: '10px', cursor: 'pointer',
             border: `1.5px solid ${floorMenuAnchor ? P.blue : P.border}`,
             backgroundColor: floorMenuAnchor ? P.blueSoft : P.white,
             transition: T, '&:hover': { borderColor: P.blue },
-            flex: { xs: '1 1 0%', sm: 'initial' },
             justifyContent: 'space-between',
-            order: 1
           }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, overflow: 'hidden' }}>
               <LayersRounded sx={{ fontSize: 18, color: P.subtle }} />
@@ -343,7 +384,7 @@ export default function CapturesPage() {
             <KeyboardArrowDownRounded sx={{ fontSize: 16, color: P.muted, transform: floorMenuAnchor ? 'rotate(180deg)' : 'none', transition: T }} />
           </Box>
         )}
-
+        </Box>
       </Box>
 
       {/* Project menu */}
@@ -353,10 +394,10 @@ export default function CapturesPage() {
         onClose={() => setMenuAnchor(null)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-        slotProps={{ paper: { sx: { mt: 1, width: { xs: menuAnchor ? menuAnchor.offsetWidth : 'auto', sm: 280 }, minWidth: { sm: 280 }, maxWidth: 'calc(100vw - 32px)', borderRadius: '14px', boxShadow: '0 12px 40px rgba(15,23,42,0.14)', border: `1px solid ${colors.borderLight}`, p: 0.75 } } }}
+        slotProps={{ paper: { sx: locationFilterMenuPaperSx(280, colors.borderLight) } }}
       >
-        {[{ id: 'all', name: 'All projects', gradient: `linear-gradient(135deg, ${colors.textSubdued} 0%, ${colors.textMuted} 100%)`, count: mockCaptures.length },
-          ...PROJECTS_WITH_CAPTURES.map(p => ({ id: p.id, name: p.name, gradient: p.gradient, count: mockCaptures.filter(c => c.projectId === p.id).length }))]
+        {[{ id: 'all', name: 'All projects', gradient: `linear-gradient(135deg, ${colors.textSubdued} 0%, ${colors.textMuted} 100%)`, count: galleryCaptures.length },
+          ...PROJECTS_WITH_CAPTURES.map(p => ({ id: p.id, name: p.name, gradient: p.gradient, count: galleryCaptures.filter(c => c.projectId === p.id).length }))]
           .map(opt => {
             const isActive = projectId === opt.id;
             return (
@@ -385,7 +426,7 @@ export default function CapturesPage() {
         onClose={() => setTowerMenuAnchor(null)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-        slotProps={{ paper: { sx: { mt: 1, width: { xs: towerMenuAnchor ? towerMenuAnchor.offsetWidth : 'auto', sm: 200 }, minWidth: { sm: 200 }, maxWidth: 'calc(100vw - 32px)', borderRadius: '14px', boxShadow: '0 12px 40px rgba(15,23,42,0.14)', border: `1px solid ${colors.borderLight}`, p: 0.75 } } }}
+        slotProps={{ paper: { sx: locationFilterMenuPaperSx(200, colors.borderLight) } }}
       >
         {[{ id: 'all', name: 'All towers' }, ...availableTowers].map(opt => {
           const isActive = towerId === opt.id;
@@ -395,9 +436,13 @@ export default function CapturesPage() {
               onClick={() => handleTowerSelect(opt.id)}
               sx={{ borderRadius: '10px', py: 1, px: 1, gap: 1.25, '&:hover': { backgroundColor: colors.bg }, backgroundColor: isActive ? colors.primarySoft : 'transparent' }}
             >
+              <BusinessRounded sx={{ fontSize: 18, color: isActive ? colors.primary : colors.textMuted }} />
               <Typography sx={{ flex: 1, fontSize: '0.875rem', fontWeight: isActive ? 700 : 500, color: isActive ? colors.primary : colors.textStrong, letterSpacing: '-0.01em' }}>
                 {opt.name}
               </Typography>
+              <Box sx={{ px: 0.875, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: colors.bgDeep, color: colors.textMuted }}>
+                {towerCaptureCount(opt.id)}
+              </Box>
               {isActive && <CheckRounded sx={{ fontSize: 17, color: colors.primary }} />}
             </MenuItem>
           );
@@ -411,7 +456,7 @@ export default function CapturesPage() {
         onClose={() => setFloorMenuAnchor(null)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-        slotProps={{ paper: { sx: { mt: 1, width: { xs: floorMenuAnchor ? floorMenuAnchor.offsetWidth : 'auto', sm: 160 }, minWidth: { sm: 160 }, maxWidth: 'calc(100vw - 32px)', borderRadius: '14px', boxShadow: '0 12px 40px rgba(15,23,42,0.14)', border: `1px solid ${colors.borderLight}`, p: 0.75 } } }}
+        slotProps={{ paper: { sx: locationFilterMenuPaperSx(floorMenuWidth ?? 200, colors.borderLight) } }}
       >
         {[{ id: 'all', label: 'All floors' }, ...availableFloors].map(opt => {
           const isActive = floorId === opt.id;
@@ -421,9 +466,13 @@ export default function CapturesPage() {
               onClick={() => handleFloorSelect(opt.id)}
               sx={{ borderRadius: '10px', py: 1, px: 1, gap: 1.25, '&:hover': { backgroundColor: colors.bg }, backgroundColor: isActive ? colors.primarySoft : 'transparent' }}
             >
+              <LayersRounded sx={{ fontSize: 18, color: isActive ? colors.primary : colors.textMuted }} />
               <Typography sx={{ flex: 1, fontSize: '0.875rem', fontWeight: isActive ? 700 : 500, color: isActive ? colors.primary : colors.textStrong, letterSpacing: '-0.01em' }}>
                 {opt.label}
               </Typography>
+              <Box sx={{ px: 0.875, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: colors.bgDeep, color: colors.textMuted }}>
+                {floorCaptureCount(opt.id)}
+              </Box>
               {isActive && <CheckRounded sx={{ fontSize: 17, color: colors.primary }} />}
             </MenuItem>
           );
@@ -431,11 +480,11 @@ export default function CapturesPage() {
       </Menu>
 
       {/* ── Empty state ───────────────────────────────────────────────────── */}
-      {!floorId ? (
+      {!isSelectionComplete ? (
         <Box sx={{ py: 8, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>
           <LayersRounded sx={{ fontSize: 44, color: P.subtle, mb: 1.5 }} />
-          <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>Select a project, tower, and floor</Typography>
-          <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Use the dropdowns above to view captures for a specific floor.</Typography>
+          <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>Select a project to begin</Typography>
+          <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Choose a project, or pick All projects to browse every capture.</Typography>
         </Box>
       ) : filtered.length === 0 ? (
         <Box sx={{ py: 8, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>

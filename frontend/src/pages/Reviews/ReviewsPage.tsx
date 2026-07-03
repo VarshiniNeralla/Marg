@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Box, Typography, InputBase, Menu, MenuItem, Chip, Dialog, DialogTitle, DialogContent, DialogActions, Divider, Button as MuiButton } from '@mui/material';
+import React, { useState, useEffect } from 'react';
+import { Box, Typography, InputBase, Menu, MenuItem, Chip, Dialog, DialogTitle, DialogContent, DialogActions, Divider, Button as MuiButton, Pagination } from '@mui/material';
 import {
   CheckCircleRounded, RateReviewRounded, ViewInArRounded,
   ArrowForwardRounded, KeyboardArrowDownRounded, CheckRounded, SearchRounded, ArrowBackRounded,
@@ -29,6 +29,8 @@ const TAB_OPTIONS: { value: ReviewTab; label: string }[] = [
   { value: 'reviewing', label: 'Under Review' },
 ];
 
+const REVIEWS_PAGE_SIZE = 5;
+
 export default function ReviewsPage() {
   const user  = useAuthStore(s => s.user);
   const tours = useWorkflowStore(s => s.tours);
@@ -38,6 +40,7 @@ export default function ReviewsPage() {
   const [tab, setTab]               = useState<ReviewTab>('pending');
   const [tabAnchor, setTabAnchor]   = useState<null | HTMLElement>(null);
   const [query, setQuery]           = useState('');
+  const [page, setPage]             = useState(1);
   const [selectedTour, setSelectedTour] = useState<typeof tours[0] | null>(null);
   const [notes, setNotes]           = useState('');
 
@@ -51,6 +54,20 @@ export default function ReviewsPage() {
     const q = query.trim().toLowerCase();
     return !q || t.roomName.toLowerCase().includes(q) || t.projectName.toLowerCase().includes(q) || t.towerName.toLowerCase().includes(q);
   });
+
+  const totalPages = Math.max(1, Math.ceil(displayed.length / REVIEWS_PAGE_SIZE));
+  const paginatedDisplayed = displayed.slice(
+    (page - 1) * REVIEWS_PAGE_SIZE,
+    page * REVIEWS_PAGE_SIZE,
+  );
+
+  useEffect(() => {
+    setPage(1);
+  }, [tab, query]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
   function startReview(tour: typeof tours[0]) {
     setSelectedTour(tour);
@@ -164,7 +181,7 @@ export default function ReviewsPage() {
           const count    = opt.value === 'pending' ? pendingTours.length : reviewingTours.length;
           const dot      = opt.value === 'pending' ? '#d97706' : '#7c3aed';
           return (
-            <MenuItem key={opt.value} onClick={() => { setTab(opt.value); setTabAnchor(null); }}
+            <MenuItem key={opt.value} onClick={() => { setTab(opt.value); setTabAnchor(null); setPage(1); }}
               sx={{ borderRadius: '10px', py: 0.875, px: 1, gap: 1.25, '&:hover': { backgroundColor: colors.bg }, backgroundColor: isActive ? colors.primarySoft : 'transparent' }}
             >
               <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: dot, flexShrink: 0 }} />
@@ -192,9 +209,9 @@ export default function ReviewsPage() {
           </Typography>
         </Box>
       ) : (
-        /* Tour list */
+        <>
         <Box sx={{ display: 'flex', flexDirection: 'column', border: `1.5px solid ${P.border}`, borderRadius: '18px', backgroundColor: P.white, overflow: 'hidden' }}>
-          {displayed.map((t, i) => {
+          {paginatedDisplayed.map((t, i) => {
             const isReviewing = t.status === 'in_review';
             const sm = isReviewing
               ? { label: 'Under Review', color: '#d97706', bg: 'rgba(217,119,6,0.08)' }
@@ -205,7 +222,7 @@ export default function ReviewsPage() {
                 sx={{
                   display: 'flex', alignItems: 'center', gap: { xs: 1.5, sm: 2.5 },
                   px: { xs: 1.5, sm: 2.5 }, py: 2,
-                  borderBottom: i < displayed.length - 1 ? `1px solid ${P.border}` : 'none',
+                  borderBottom: i < paginatedDisplayed.length - 1 ? `1px solid ${P.border}` : 'none',
                   transition: `background ${motion.durationFast}`,
                   '&:hover': { backgroundColor: P.bg },
                 }}
@@ -252,6 +269,19 @@ export default function ReviewsPage() {
             );
           })}
         </Box>
+        {totalPages > 1 && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2.5 }}>
+            <Pagination
+              count={totalPages}
+              page={page}
+              onChange={(_, p) => setPage(p)}
+              color="primary"
+              size="small"
+              sx={{ '& .MuiPaginationItem-root': { fontWeight: 600 } }}
+            />
+          </Box>
+        )}
+        </>
       )}
 
       {/* Review Dialog */}
