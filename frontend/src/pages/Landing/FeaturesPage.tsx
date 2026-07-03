@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Box, Typography, Grid } from '@mui/material';
 import {
   ViewInArRounded, MapRounded, CameraAltRounded, CheckCircleRounded,
-  BugReportRounded, BarChartRounded, ArrowForwardRounded, GroupRounded,
+  PlaceRounded, BarChartRounded, ArrowForwardRounded, GroupRounded,
   NotificationsRounded, SecurityRounded, CloudUploadRounded, SpeedRounded,
 } from '@mui/icons-material';
 import { colors, shadows, motion } from '@theme/tokens';
@@ -104,15 +104,15 @@ const FEATURES_DETAIL = [
     ],
   },
   {
-    icon: <BugReportRounded sx={{ fontSize: 32 }} />, color: '#dc2626', bg: 'rgba(220,38,38,0.08)',
-    title: 'Defect Tracking', badge: 'Add-on',
-    tagline: 'Link issues directly to site captures.',
+    icon: <PlaceRounded sx={{ fontSize: 32 }} />, color: '#dc2626', bg: 'rgba(220,38,38,0.08)',
+    title: 'Pin-Based Walkthroughs', badge: 'Core',
+    tagline: 'Map site progress pin by pin.',
     bullets: [
-      'Create defects from any capture with room/floor context',
-      'Severity levels: Critical, High, Medium, Low, Informational',
-      'Assign defects to team members',
-      'Status tracking: Open → In Progress → Resolved → Closed',
-      'Filter by project, severity, assignee, status',
+      'Place numbered capture pins on PDF/PNG floor plans',
+      'Attach 360 captures to each pin location',
+      'Publish sequential walkthrough tours across pins',
+      'Compare historical captures on the progress timeline',
+      'Re-capture pins over time without losing prior visits',
     ],
   },
   {
@@ -120,7 +120,7 @@ const FEATURES_DETAIL = [
     title: 'Analytics', badge: 'Core',
     tagline: 'Portfolio-wide visibility at a glance.',
     bullets: [
-      'KPI tiles: captures, reviews, tours, defects',
+      'KPI tiles: captures, reviews, tours, pins',
       'Bar chart capture volume by month',
       'Project completion progress bars',
       'Team productivity metrics',
@@ -148,7 +148,7 @@ const FEATURES_DETAIL = [
       'Mark individual or all notifications as read',
       'Navigate directly to the relevant entity from any notification',
       'Delete notifications with undo snackbar',
-      'Notification types: review, assignment, defect, system',
+      'Notification types: review, assignment, tour, system',
     ],
   },
   {

@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import { Box, Typography, Grid } from '@mui/material';
 import {
   ViewInArRounded, MapRounded, CameraAltRounded, CheckCircleRounded,
-  BugReportRounded, BarChartRounded, ArrowForwardRounded,
+  PlaceRounded, BarChartRounded, ArrowForwardRounded,
+  LanguageRounded, Instagram, LinkedIn, PublishRounded,
 } from '@mui/icons-material';
 import { colors, shadows, motion as themeMotion } from '@theme/tokens';
 import { motion as m, useScroll, useTransform, type Variants } from 'framer-motion';
@@ -259,12 +260,54 @@ function Hero() {
 // ── Features ──────────────────────────────────────────────────────────────────
 
 const FEATURES = [
-  { icon: <ViewInArRounded />, title: '360° Virtual Tours', desc: 'Room-to-room hotspot navigation in immersive equirectangular panoramas.', colSpan: 2, rowSpan: 1 },
-  { icon: <MapRounded />, title: 'Floor Plan Mapping', desc: 'Overlay interactive SVG markers on PDF/PNG plans with live capture status.', colSpan: 1, rowSpan: 2 },
-  { icon: <CameraAltRounded />, title: 'Capture Management', desc: 'Drag-drop multi-file uploads with per-file progress tracking.', colSpan: 1, rowSpan: 1 },
-  { icon: <CheckCircleRounded />, title: 'Review Workflows', desc: '6-stage lifecycle from upload to publish — assign, review, approve.', colSpan: 1, rowSpan: 1 },
-  { icon: <BugReportRounded />, title: 'Defect Tracking', desc: 'Log, filter, and assign defects by severity, floor, and room.', colSpan: 1, rowSpan: 1 },
-  { icon: <BarChartRounded />, title: 'Analytics Dashboard', desc: 'KPIs, charts, and team productivity across your full portfolio.', colSpan: 2, rowSpan: 1 },
+  {
+    icon: ViewInArRounded,
+    title: '360° Virtual Tours',
+    desc: 'Room-to-room hotspot navigation in immersive equirectangular panoramas.',
+    accent: '#2563eb',
+    layout: 'wide' as const,
+    grid: { md: { column: '1 / span 2', row: '1' } },
+  },
+  {
+    icon: MapRounded,
+    title: 'Floor Plan Mapping',
+    desc: 'Overlay interactive SVG markers on PDF/PNG plans with live capture status.',
+    accent: '#7c3aed',
+    layout: 'tall' as const,
+    grid: { md: { column: '3', row: '1 / span 2' } },
+  },
+  {
+    icon: CameraAltRounded,
+    title: 'Capture Management',
+    desc: 'Drag-drop multi-file uploads with per-file progress tracking.',
+    accent: '#0891b2',
+    layout: 'default' as const,
+    grid: { md: { column: '1', row: '2' } },
+  },
+  {
+    icon: CheckCircleRounded,
+    title: 'Review Workflows',
+    desc: '6-stage lifecycle from upload to publish — assign, review, approve.',
+    accent: '#059669',
+    layout: 'default' as const,
+    grid: { md: { column: '2', row: '2' } },
+  },
+  {
+    icon: PlaceRounded,
+    title: 'Pin-Based Walkthroughs',
+    desc: 'Place capture pins on floor plans and publish sequential room-by-room tours.',
+    accent: '#dc2626',
+    layout: 'default' as const,
+    grid: { md: { column: '1', row: '3' } },
+  },
+  {
+    icon: BarChartRounded,
+    title: 'Analytics Dashboard',
+    desc: 'KPIs, charts, and team productivity across your full portfolio.',
+    accent: '#d97706',
+    layout: 'wide' as const,
+    grid: { md: { column: '2 / span 2', row: '3' } },
+  },
 ];
 
 const containerVariants: Variants = {
@@ -276,20 +319,182 @@ const containerVariants: Variants = {
 };
 
 const itemVariants: Variants = {
-  hidden: { opacity: 0, y: 30, scale: 0.95 },
-  show: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring', stiffness: 100, damping: 20 } },
+  hidden: { opacity: 0, y: 24, scale: 0.97 },
+  show: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring', stiffness: 120, damping: 22 } },
 };
+
+function FeatureCard({ feature, index }: { feature: typeof FEATURES[0]; index: number }) {
+  const Icon = feature.icon;
+  const isWide = feature.layout === 'wide';
+  const isTall = feature.layout === 'tall';
+
+  return (
+    <Box sx={{
+      position: 'relative',
+      height: '100%',
+      p: { xs: 2.25, md: isWide ? 2.75 : 2.5 },
+      borderRadius: '18px',
+      border: '1px solid rgba(0,0,0,0.07)',
+      backgroundColor: '#ffffff',
+      display: 'flex',
+      flexDirection: isWide ? { xs: 'column', sm: 'row' } : 'column',
+      alignItems: isWide ? { xs: 'flex-start', sm: 'center' } : 'flex-start',
+      gap: isWide ? { xs: 1.75, sm: 2.25 } : 1.5,
+      overflow: 'hidden',
+      transition: 'all 0.35s cubic-bezier(0.16, 1, 0.3, 1)',
+      '&::before': {
+        content: '""',
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        height: 3,
+        background: `linear-gradient(90deg, ${feature.accent}, ${feature.accent}88)`,
+        opacity: 0.85,
+      },
+      '&::after': {
+        content: '""',
+        position: 'absolute',
+        inset: 0,
+        background: `radial-gradient(ellipse 80% 60% at 100% 0%, ${feature.accent}10 0%, transparent 65%)`,
+        pointerEvents: 'none',
+        opacity: 0,
+        transition: 'opacity 0.35s',
+      },
+      '&:hover': {
+        borderColor: `${feature.accent}40`,
+        transform: 'translateY(-3px)',
+        boxShadow: `0 12px 32px ${feature.accent}18, 0 4px 12px rgba(0,0,0,0.06)`,
+        '&::after': { opacity: 1 },
+        '& .feature-icon': {
+          transform: 'scale(1.05)',
+          boxShadow: `0 8px 20px ${feature.accent}28`,
+        },
+      },
+    }}>
+      {/* Decorative background for tall card */}
+      {isTall && (
+        <Box sx={{
+          position: 'absolute',
+          bottom: -8,
+          right: -8,
+          width: 120,
+          height: 120,
+          opacity: 0.06,
+          backgroundImage: `
+            linear-gradient(${feature.accent} 1px, transparent 1px),
+            linear-gradient(90deg, ${feature.accent} 1px, transparent 1px)
+          `,
+          backgroundSize: '16px 16px',
+          pointerEvents: 'none',
+        }} />
+      )}
+
+      {/* Mini chart decoration for analytics wide card */}
+      {isWide && feature.title.includes('Analytics') && (
+        <Box sx={{
+          position: 'absolute',
+          bottom: 12,
+          right: 16,
+          display: { xs: 'none', sm: 'flex' },
+          alignItems: 'flex-end',
+          gap: 0.5,
+          height: 36,
+          opacity: 0.15,
+          pointerEvents: 'none',
+        }}>
+          {[35, 55, 42, 68, 50, 75, 60].map((h, i) => (
+            <Box key={i} sx={{ width: 6, height: `${h}%`, borderRadius: '3px 3px 0 0', backgroundColor: feature.accent }} />
+          ))}
+        </Box>
+      )}
+
+      <Typography sx={{
+        position: 'absolute',
+        top: 14,
+        right: 16,
+        fontSize: '0.6875rem',
+        fontWeight: 700,
+        letterSpacing: '0.08em',
+        color: 'rgba(0,0,0,0.18)',
+        fontVariantNumeric: 'tabular-nums',
+      }}>
+        {String(index + 1).padStart(2, '0')}
+      </Typography>
+
+      <Box
+        className="feature-icon"
+        sx={{
+          flexShrink: 0,
+          width: { xs: 40, md: 44 },
+          height: { xs: 40, md: 44 },
+          borderRadius: '12px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: feature.accent,
+          backgroundColor: `${feature.accent}12`,
+          border: `1px solid ${feature.accent}22`,
+          transition: 'transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.35s',
+        }}
+      >
+        <Icon sx={{ fontSize: { xs: 20, md: 22 } }} />
+      </Box>
+
+      <Box sx={{ flex: 1, minWidth: 0, position: 'relative', zIndex: 1 }}>
+        <Typography sx={{
+          fontSize: { xs: '0.9375rem', md: isWide ? '1.0625rem' : '0.9375rem' },
+          fontWeight: 700,
+          color: '#18181b',
+          mb: 0.75,
+          letterSpacing: '-0.02em',
+          lineHeight: 1.3,
+          pr: 3,
+        }}>
+          {feature.title}
+        </Typography>
+        <Typography sx={{
+          fontSize: { xs: '0.8125rem', md: '0.875rem' },
+          color: '#71717a',
+          lineHeight: 1.55,
+          display: '-webkit-box',
+          WebkitLineClamp: isTall ? 4 : 3,
+          WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
+        }}>
+          {feature.desc}
+        </Typography>
+      </Box>
+    </Box>
+  );
+}
 
 function FeaturesSection() {
   return (
-    <Box sx={{ py: { xs: 8, md: 16 }, px: { xs: 3, md: 6 }, maxWidth: 1200, mx: 'auto' }}>
+    <Box sx={{
+      py: { xs: 8, md: 14 },
+      px: { xs: 3, md: 6 },
+      maxWidth: 1200,
+      mx: 'auto',
+      position: 'relative',
+    }}>
+      <Box sx={{
+        position: 'absolute',
+        inset: 0,
+        mx: { md: 3 },
+        borderRadius: { md: '32px' },
+        background: 'linear-gradient(180deg, #fafafa 0%, #ffffff 100%)',
+        border: { md: '1px solid rgba(0,0,0,0.05)' },
+        pointerEvents: 'none',
+      }} />
+      <Box sx={{ position: 'relative', zIndex: 1 }}>
       <m.div
         initial={{ opacity: 0, y: 20 }}
         whileInView={{ opacity: 1, y: 0 }}
         viewport={{ once: true, margin: '-100px' }}
         transition={{ duration: 0.8 }}
       >
-        <Box sx={{ textAlign: 'center', mb: { xs: 5, md: 12 } }}>
+        <Box sx={{ textAlign: 'center', mb: { xs: 5, md: 8 } }}>
           <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.875rem', sm: '2.5rem', md: '3.5rem' }, fontWeight: 800, letterSpacing: '-0.04em', color: '#18181b', mb: 2 }}>
             Powerful features. <br /> Elegant experience.
           </Typography>
@@ -308,108 +513,209 @@ function FeaturesSection() {
         <Box sx={{
           display: 'grid',
           gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', md: 'repeat(3, 1fr)' },
-          gridAutoRows: { xs: 'auto', md: 'minmax(220px, auto)' },
-          gap: { xs: 2, md: 3 },
+          gridAutoRows: 'auto',
+          gap: { xs: 1.5, md: 2 },
         }}>
           {FEATURES.map((f, i) => (
-            <m.div key={f.title} variants={itemVariants} style={{ height: '100%' }}>
-              <Box sx={{
-                gridColumn: { xs: 'span 1', md: `span ${f.colSpan}` },
-                gridRow: { xs: 'span 1', md: `span ${f.rowSpan}` },
-                p: { xs: 2.5, sm: 3.5, md: 5 }, borderRadius: { xs: '20px', md: '32px' },
-                border: '1px solid rgba(0,0,0,0.08)', 
-                backgroundColor: 'rgba(255,255,255,0.02)',
-                backdropFilter: 'blur(20px)',
+            <Box
+              key={f.title}
+              component={m.div}
+              variants={itemVariants}
+              sx={{
                 height: '100%',
-                display: 'flex', flexDirection: 'column',
-                transition: 'all 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
-                position: 'relative', overflow: 'hidden',
-                '&:hover': {
-                  borderColor: 'rgba(0,0,0,0.08)',
-                  backgroundColor: 'rgba(255,255,255,0.04)',
-                  transform: 'translateY(-4px)',
-                  boxShadow: '0 20px 40px rgba(0,0,0,0.4)',
-                },
-                '&::after': { // subtle inner glow
-                  content: '""', position: 'absolute', inset: 0,
-                  background: 'radial-gradient(circle at 50% 0%, rgba(0,0,0,0.06) 0%, transparent 70%)',
-                  opacity: 0, transition: 'opacity 0.4s', pointerEvents: 'none',
-                },
-                '&:hover::after': { opacity: 1 },
-              }}>
-                <Box sx={{
-                  width: { xs: 44, md: 56 }, height: { xs: 44, md: 56 }, borderRadius: { xs: '12px', md: '16px' },
-                  backgroundColor: 'rgba(0,0,0,0.06)', color: '#18181b',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', mb: { xs: 2, md: 4 },
-                  border: '1px solid rgba(0,0,0,0.1)',
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.2) inset',
-                }}>
-                  {React.cloneElement(f.icon, { sx: { fontSize: { xs: 22, md: 28 } } })}
-                </Box>
-                <Typography sx={{
-                  fontSize: { xs: '1.0625rem', md: f.colSpan === 2 ? '1.5rem' : '1.25rem' },
-                  fontWeight: 700, color: '#18181b', mb: { xs: 1, md: 2 }, letterSpacing: '-0.03em'
-                }}>
-                  {f.title}
-                </Typography>
-                <Typography sx={{
-                  fontSize: { xs: '0.875rem', md: '1rem' }, color: '#52525b', lineHeight: 1.6,
-                  maxWidth: { xs: '100%', md: f.colSpan === 2 ? '80%' : '100%' }
-                }}>
-                  {f.desc}
-                </Typography>
-              </Box>
-            </m.div>
+                gridColumn: { xs: 'span 1', md: f.grid.md.column },
+                gridRow: { xs: 'span 1', md: f.grid.md.row },
+              }}
+            >
+              <FeatureCard feature={f} index={i} />
+            </Box>
           ))}
         </Box>
       </m.div>
+      </Box>
     </Box>
   );
 }
 
 // ── Workflow ──────────────────────────────────────────────────────────────────
 
-function WorkflowSection() {
-  const steps = ['Capture', 'Review', 'Publish', 'Explore'];
+const WORKFLOW_STEPS = [
+  { label: 'Locate', desc: 'Open the floor plan and mark capture points', icon: MapRounded, accent: '#7c3aed' },
+  { label: 'Capture', desc: 'Shoot 360° at each pin on site', icon: CameraAltRounded, accent: '#0891b2' },
+  { label: 'Publish', desc: 'Push the tour live for your team', icon: PublishRounded, accent: '#059669' },
+  { label: 'Explore', desc: 'Navigate room by room in 360°', icon: ViewInArRounded, accent: '#2563eb' },
+];
+
+function WorkflowStepCard({ step, index, compact = false }: {
+  step: typeof WORKFLOW_STEPS[0];
+  index: number;
+  compact?: boolean;
+}) {
+  const Icon = step.icon;
+
   return (
-    <Box sx={{ py: { xs: 10, md: 16 }, borderTop: '1px solid rgba(0,0,0,0.05)', backgroundColor: '#fafafa', position: 'relative', overflow: 'hidden' }}>
-      <Box sx={{ px: { xs: 3, md: 6 }, maxWidth: 1200, mx: 'auto', position: 'relative', zIndex: 1 }}>
+    <m.div
+      initial={{ opacity: 0, y: compact ? 10 : 16 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true }}
+      transition={{ duration: 0.4, delay: index * 0.07 }}
+      style={{ height: '100%', minWidth: 0, width: '100%' }}
+    >
+      <Box sx={{
+        position: 'relative',
+        p: compact ? 1.5 : { xs: 2, md: 3 },
+        borderRadius: compact ? '12px' : { xs: '16px', md: '18px' },
+        border: '1px solid rgba(0,0,0,0.07)',
+        backgroundColor: '#ffffff',
+        display: 'flex',
+        alignItems: compact ? 'center' : 'flex-start',
+        gap: compact ? 1.25 : { xs: 1.5, md: 2 },
+        height: '100%',
+        minHeight: compact ? undefined : { md: 130 },
+        overflow: 'hidden',
+        transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+        '&::before': {
+          content: '""',
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: 2,
+          background: `linear-gradient(90deg, ${step.accent}, ${step.accent}66)`,
+        },
+        '&:active': compact ? {
+          borderColor: `${step.accent}35`,
+          backgroundColor: `${step.accent}06`,
+        } : {},
+        '@media (hover: hover)': {
+          '&:hover': {
+            borderColor: `${step.accent}35`,
+            transform: 'translateY(-2px)',
+            boxShadow: `0 10px 28px ${step.accent}16, 0 2px 8px rgba(0,0,0,0.04)`,
+          },
+        },
+      }}>
+        <Box sx={{
+          flexShrink: 0,
+          width: compact ? 30 : { xs: 36, md: 44 },
+          height: compact ? 30 : { xs: 36, md: 44 },
+          borderRadius: compact ? '8px' : { xs: '10px', md: '12px' },
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: step.accent,
+          backgroundColor: `${step.accent}12`,
+          border: `1px solid ${step.accent}22`,
+        }}>
+          <Icon sx={{ fontSize: compact ? 15 : { xs: 18, md: 22 } }} />
+        </Box>
+
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          {!compact && (
+            <Typography sx={{
+              fontSize: { xs: '0.625rem', md: '0.6875rem' },
+              fontWeight: 700,
+              letterSpacing: '0.1em',
+              textTransform: 'uppercase',
+              color: step.accent,
+              mb: { xs: 0.35, md: 0.5 },
+              lineHeight: 1,
+            }}>
+              Step {String(index + 1).padStart(2, '0')}
+            </Typography>
+          )}
+          <Typography sx={{
+            fontSize: compact ? '0.8125rem' : { xs: '0.9375rem', md: '1.125rem' },
+            fontWeight: 700,
+            color: '#18181b',
+            letterSpacing: '-0.02em',
+            lineHeight: 1.2,
+            mb: compact ? 0 : { xs: 0.25, md: 0.5 },
+          }}>
+            {step.label}
+          </Typography>
+          {!compact && (
+            <Typography sx={{ fontSize: { xs: '0.75rem', md: '0.875rem' }, color: '#71717a', lineHeight: 1.45 }}>
+              {step.desc}
+            </Typography>
+          )}
+        </Box>
+
+        {compact && (
+          <Typography sx={{
+            flexShrink: 0,
+            fontSize: '0.625rem',
+            fontWeight: 700,
+            color: 'rgba(0,0,0,0.2)',
+            fontVariantNumeric: 'tabular-nums',
+          }}>
+            {String(index + 1).padStart(2, '0')}
+          </Typography>
+        )}
+      </Box>
+    </m.div>
+  );
+}
+
+function WorkflowSection() {
+  return (
+    <Box sx={{
+      py: { xs: 6, md: 12 },
+      borderTop: '1px solid rgba(0,0,0,0.05)',
+      backgroundColor: '#fafafa',
+      position: 'relative',
+      overflow: 'hidden',
+    }}>
+      <Box sx={{ px: { xs: 3, md: 6 }, maxWidth: { xs: '100%', md: 1200 }, mx: 'auto', position: 'relative', zIndex: 1 }}>
         <m.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, margin: '-100px' }}
           transition={{ duration: 0.8 }}
         >
-          <Box sx={{ textAlign: 'center', mb: { xs: 8, md: 12 } }}>
-            <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '2rem', md: '3rem' }, fontWeight: 800, letterSpacing: '-0.04em', color: '#18181b', mb: 2 }}>
+          <Box sx={{ textAlign: 'center', mb: { xs: 3.5, md: 7 } }}>
+            <Typography sx={{
+              fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
+              fontSize: { xs: '1.5rem', md: '2.5rem' },
+              fontWeight: 800,
+              letterSpacing: '-0.04em',
+              color: '#18181b',
+              mb: { xs: 0.75, md: 1 },
+            }}>
               A seamless flow.
+            </Typography>
+            <Typography sx={{ fontSize: { xs: '0.8125rem', md: '1rem' }, color: '#71717a' }}>
+              From floor plan to published tour in four steps.
             </Typography>
           </Box>
         </m.div>
 
-        <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 2, alignItems: 'center', justifyContent: 'center' }}>
-          {steps.map((step, i) => (
-            <React.Fragment key={step}>
-              <m.div
-                initial={{ opacity: 0, scale: 0.9 }}
-                whileInView={{ opacity: 1, scale: 1 }}
-                viewport={{ once: true }}
-                transition={{ duration: 0.5, delay: i * 0.15 }}
-                style={{ flex: 1, width: '100%' }}
-              >
-                <Box sx={{ 
-                  p: 3, borderRadius: '20px', 
-                  border: '1px solid rgba(0,0,0,0.05)', 
-                  backgroundColor: 'rgba(0,0,0,0.02)', 
-                  textAlign: 'center'
-                }}>
-                  <Typography sx={{ fontSize: '0.875rem', color: '#71717a', mb: 1 }}>Step 0{i + 1}</Typography>
-                  <Typography sx={{ fontSize: '1.25rem', fontWeight: 600, color: '#18181b' }}>{step}</Typography>
-                </Box>
-              </m.div>
-              {i < steps.length - 1 && (
-                <Box sx={{ display: { xs: 'none', md: 'block' }, color: '#3f3f46' }}>
-                  <ArrowForwardRounded />
+        {/* Mobile: compact 2×2 grid */}
+        <Box sx={{
+          display: { xs: 'grid', md: 'none' },
+          gridTemplateColumns: '1fr 1fr',
+          gap: 1.25,
+        }}>
+          {WORKFLOW_STEPS.map((step, i) => (
+            <WorkflowStepCard key={step.label} step={step} index={i} compact />
+          ))}
+        </Box>
+
+        {/* Desktop: horizontal pipeline */}
+        <Box sx={{
+          display: { xs: 'none', md: 'flex' },
+          alignItems: 'stretch',
+          gap: 2.5,
+          width: '100%',
+        }}>
+          {WORKFLOW_STEPS.map((step, i) => (
+            <React.Fragment key={step.label}>
+              <Box sx={{ flex: 1, minWidth: 0, display: 'flex' }}>
+                <WorkflowStepCard step={step} index={i} />
+              </Box>
+              {i < WORKFLOW_STEPS.length - 1 && (
+                <Box sx={{ display: 'flex', alignItems: 'center', flexShrink: 0, color: 'rgba(0,0,0,0.15)', px: 0.5 }}>
+                  <ArrowForwardRounded sx={{ fontSize: 20 }} />
                 </Box>
               )}
             </React.Fragment>
@@ -451,43 +757,150 @@ function CTABanner() {
 
 // ── Footer ────────────────────────────────────────────────────────────────────
 
+const SOCIAL_LINKS = [
+  { icon: <LanguageRounded />, href: 'https://www.myhomeconstructions.com/', label: 'Website' },
+  { icon: <Instagram />, href: 'https://www.instagram.com/myhomeconstructions_/?hl=en', label: 'Instagram' },
+  { icon: <LinkedIn />, href: 'https://in.linkedin.com/company/my-home-constructions', label: 'LinkedIn' },
+];
+
 function Footer() {
   return (
-    <Box component="footer" sx={{ backgroundColor: '#ffffff', borderTop: '1px solid rgba(0,0,0,0.05)', pt: 12, pb: 6, px: { xs: 3, md: 6 } }}>
+    <Box component="footer" sx={{
+      backgroundColor: '#ffffff',
+      borderTop: '1px solid rgba(0,0,0,0.05)',
+      pt: { xs: 4, md: 12 },
+      pb: { xs: 3, md: 6 },
+      px: { xs: 3, md: 6 },
+    }}>
       <Box sx={{ maxWidth: 1200, mx: 'auto' }}>
-        <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, justifyContent: 'space-between', gap: { xs: 6, md: 2 }, mb: 10 }}>
-          <Box sx={{ maxWidth: 320 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 3 }}>
-              <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 32, width: 'auto', objectFit: 'contain' }} />
-              <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-                <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.03em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
-                <Typography sx={{ fontSize: '0.65rem', fontWeight: 700, color: '#52525b', letterSpacing: '0.15em', mt: 0.5 }}>BY SITESURELABS</Typography>
+
+        {/* ── Mobile: minimal footer ── */}
+        <Box sx={{ display: { xs: 'block', md: 'none' } }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2.5 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 26, width: 'auto', objectFit: 'contain' }} />
+              <Box>
+                <Typography sx={{ fontSize: '1rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.03em', lineHeight: 1.1 }}>Prāṅgaṇ</Typography>
+                <Typography sx={{ fontSize: '0.55rem', fontWeight: 700, color: '#a1a1aa', letterSpacing: '0.12em', mt: 0.25 }}>BY SITESURELABS</Typography>
               </Box>
             </Box>
-            <Typography sx={{ fontSize: '0.9375rem', color: '#52525b', lineHeight: 1.7 }}>
-              The visual operating system for modern construction teams.
-            </Typography>
+            <Box
+              component={Link}
+              to="/login"
+              sx={{
+                fontSize: '0.8125rem',
+                fontWeight: 600,
+                color: '#18181b',
+                textDecoration: 'none',
+                px: 1.75,
+                py: 0.75,
+                borderRadius: '8px',
+                border: '1px solid rgba(0,0,0,0.1)',
+                backgroundColor: 'rgba(0,0,0,0.02)',
+              }}
+            >
+              Sign In
+            </Box>
           </Box>
-          <Box sx={{ display: 'flex', gap: { xs: 6, sm: 10, md: 14 }, flexWrap: 'wrap' }}>
-            {[
-              { title: 'Product', links: ['Features', 'Pricing', 'Changelog'] },
-              { title: 'Company', links: ['About', 'Contact', 'Blog'] },
-              { title: 'Legal', links: ['Privacy', 'Terms', 'Security'] },
-            ].map(col => (
-              <Box key={col.title}>
-                <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: '#18181b', mb: 3 }}>{col.title}</Typography>
-                {col.links.map(label => (
-                  <Box key={label} component={Link} to="#" sx={{ display: 'block', mb: 2, fontSize: '0.9375rem', color: '#52525b', textDecoration: 'none', transition: 'color 0.2s', '&:hover': { color: '#18181b' } }}>
-                    {label}
+
+          <Box sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            pt: 2.5,
+            borderTop: '1px solid rgba(0,0,0,0.06)',
+          }}>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              {SOCIAL_LINKS.map(({ icon, href, label }) => (
+                <Box
+                  key={label}
+                  component="a"
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={label}
+                  sx={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    width: 32, height: 32, borderRadius: '8px',
+                    color: '#71717a',
+                    '& svg': { fontSize: 17 },
+                    '&:active': { color: '#18181b' },
+                  }}
+                >
+                  {icon}
+                </Box>
+              ))}
+            </Box>
+            <Typography sx={{ fontSize: '0.6875rem', color: '#a1a1aa' }}>© 2026 SiteSureLabs</Typography>
+          </Box>
+        </Box>
+
+        {/* ── Desktop: full footer ── */}
+        <Box sx={{ display: { xs: 'none', md: 'block' } }}>
+          <Box sx={{
+            display: 'flex',
+            flexDirection: 'row',
+            justifyContent: 'space-between',
+            gap: 2,
+            mb: 10,
+          }}>
+            <Box sx={{ maxWidth: 320 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 3 }}>
+                <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 32, width: 'auto', objectFit: 'contain' }} />
+                <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+                  <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.03em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
+                  <Typography sx={{ fontSize: '0.65rem', fontWeight: 700, color: '#52525b', letterSpacing: '0.15em', mt: 0.5 }}>BY SITESURELABS</Typography>
+                </Box>
+              </Box>
+              <Typography sx={{ fontSize: '0.9375rem', color: '#52525b', lineHeight: 1.7, mb: 4 }}>
+                The visual operating system for modern construction teams.
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 2 }}>
+                {SOCIAL_LINKS.map(({ icon, href, label }) => (
+                  <Box
+                    key={label}
+                    component="a"
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={label}
+                    sx={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      width: 44, height: 44, borderRadius: '12px',
+                      border: '1px solid rgba(0,0,0,0.1)', backgroundColor: 'rgba(0,0,0,0.02)',
+                      color: '#52525b', transition: 'all 0.2s',
+                      '&:hover': { color: '#18181b', borderColor: 'rgba(0,0,0,0.2)', backgroundColor: 'rgba(0,0,0,0.06)' },
+                    }}
+                  >
+                    {icon}
                   </Box>
                 ))}
               </Box>
-            ))}
+            </Box>
+
+            <Box sx={{ display: 'flex', gap: 14 }}>
+              <Box>
+                <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: '#18181b', mb: 3 }}>Features</Typography>
+                {FEATURES.map(f => (
+                  <Typography key={f.title} sx={{ display: 'block', mb: 2, fontSize: '0.9375rem', color: '#52525b' }}>
+                    {f.title}
+                  </Typography>
+                ))}
+              </Box>
+              <Box>
+                <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: '#18181b', mb: 3 }}>Get Started</Typography>
+                <Box component={Link} to="/login" sx={{ display: 'block', fontSize: '0.9375rem', color: '#52525b', textDecoration: 'none', transition: 'color 0.2s', '&:hover': { color: '#18181b' } }}>
+                  Sign In
+                </Box>
+              </Box>
+            </Box>
+          </Box>
+
+          <Box sx={{ borderTop: '1px solid rgba(0,0,0,0.05)', pt: 4 }}>
+            <Typography sx={{ fontSize: '0.875rem', color: '#71717a' }}>© 2026 SiteSureLabs</Typography>
           </Box>
         </Box>
-        <Box sx={{ borderTop: '1px solid rgba(0,0,0,0.05)', pt: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Typography sx={{ fontSize: '0.875rem', color: '#71717a' }}>© 2026 SiteSureLabs</Typography>
-        </Box>
+
       </Box>
     </Box>
   );

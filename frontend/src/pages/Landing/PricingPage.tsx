@@ -53,7 +53,7 @@ const PLANS = [
       { label: 'Storage', value: '10 GB' },
       { label: 'Floor plan mapping', value: true },
       { label: 'Review workflows', value: true },
-      { label: 'Defect tracking', value: false },
+      { label: 'Pin-based walkthroughs', value: false },
       { label: 'Analytics dashboard', value: false },
       { label: 'API access', value: false },
       { label: 'Custom branding', value: false },
@@ -73,7 +73,7 @@ const PLANS = [
       { label: 'Storage', value: '100 GB' },
       { label: 'Floor plan mapping', value: true },
       { label: 'Review workflows', value: true },
-      { label: 'Defect tracking', value: true },
+      { label: 'Pin-based walkthroughs', value: true },
       { label: 'Analytics dashboard', value: true },
       { label: 'API access', value: true },
       { label: 'Custom branding', value: false },
@@ -92,7 +92,7 @@ const PLANS = [
       { label: 'Storage', value: 'Custom' },
       { label: 'Floor plan mapping', value: true },
       { label: 'Review workflows', value: true },
-      { label: 'Defect tracking', value: true },
+      { label: 'Pin-based walkthroughs', value: true },
       { label: 'Analytics dashboard', value: true },
       { label: 'API access', value: true },
       { label: 'Custom branding', value: true },
@@ -103,7 +103,7 @@ const PLANS = [
 
 const COMPARISON_ROWS = [
   'Projects', 'Captures / month', 'Virtual tours', 'Team members', 'Storage',
-  'Floor plan mapping', 'Review workflows', 'Defect tracking', 'Analytics dashboard',
+  'Floor plan mapping', 'Review workflows', 'Pin-based walkthroughs', 'Analytics dashboard',
   'API access', 'Custom branding', 'Priority support',
 ];
 

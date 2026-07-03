@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Box, Typography, FormHelperText } from '@mui/material';
-import { EngineeringRounded, ManageAccountsRounded, AdminPanelSettingsRounded, ErrorRounded } from '@mui/icons-material';
+import { Box, Typography, FormHelperText, Collapse, useMediaQuery, useTheme } from '@mui/material';
+import { EngineeringRounded, ManageAccountsRounded, AdminPanelSettingsRounded, ErrorRounded, ExpandMoreRounded } from '@mui/icons-material';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { loginSchema, type LoginFormValues } from '../schemas/authSchemas';
@@ -13,22 +13,21 @@ import { normaliseError } from '@services/apiClient';
 import AuthCard from '../components/AuthCard';
 import Input from '@shared/components/Input/Input';
 import Button from '@shared/components/Button/Button';
-import { colors } from '@theme/tokens';
 import { motion as m } from 'framer-motion';
 
 const labelSx = {
   display: 'block',
   fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
-  fontSize: '0.875rem',
+  fontSize: { xs: '0.8125rem', md: '0.875rem' },
   fontWeight: 500,
   color: '#3f3f46',
-  mb: '8px',
+  mb: { xs: '6px', md: '8px' },
 };
 
 const inputSx = {
   '& .MuiOutlinedInput-root': {
     borderRadius: '12px',
-    height: '52px',
+    height: { xs: '48px', md: '52px' },
     backgroundColor: 'rgba(0,0,0,0.02)',
     color: '#18181b',
     fontSize: '0.9375rem',
@@ -57,26 +56,29 @@ const ROLE_OPTIONS = [
   {
     value: 'admin',
     label: 'Admin',
+    shortLabel: 'Admin',
     desc: 'Platform administration',
-    icon: <AdminPanelSettingsRounded sx={{ fontSize: 20 }} />,
+    icon: AdminPanelSettingsRounded,
     color: '#3b82f6',
-    activeColor: '#60a5fa',
+    activeColor: '#2563eb',
   },
   {
     value: 'manager',
     label: 'Manager',
-    desc: 'Review captures',
-    icon: <ManageAccountsRounded sx={{ fontSize: 20 }} />,
+    shortLabel: 'Manager',
+    desc: 'Manage projects & tours',
+    icon: ManageAccountsRounded,
     color: '#8b5cf6',
-    activeColor: '#a78bfa',
+    activeColor: '#7c3aed',
   },
   {
     value: 'field_engineer',
     label: 'Field Engineer',
-    desc: 'Upload site photos',
-    icon: <EngineeringRounded sx={{ fontSize: 20 }} />,
+    shortLabel: 'Field',
+    desc: 'Capture on site',
+    icon: EngineeringRounded,
     color: '#10b981',
-    activeColor: '#34d399',
+    activeColor: '#059669',
   },
 ] as const;
 
@@ -88,11 +90,14 @@ const DEMO_CREDENTIALS = [
 export default function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const theme = useTheme();
+  const isDesktop = useMediaQuery(theme.breakpoints.up('md'));
   const setAuth = useAuthStore((s) => s.setAuth);
   const patchProfile = useSettingsStore((s) => s.patchProfile);
 
   const [serverError, setServerError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [demoOpen, setDemoOpen] = useState(false);
 
   const from = (location.state as { from?: { pathname: string } })?.from?.pathname;
 
@@ -109,7 +114,11 @@ export default function LoginPage() {
   });
 
   const selectedRole = watch('role');
-  const roleOption = ROLE_OPTIONS.find(r => r.value === selectedRole);
+
+  // Open demo panel by default on desktop only
+  React.useEffect(() => {
+    setDemoOpen(isDesktop);
+  }, [isDesktop]);
 
   async function onSubmit(values: LoginFormValues) {
     setServerError('');
@@ -180,6 +189,7 @@ export default function LoginPage() {
 
   return (
     <AuthCard
+      variant="split"
       title="Sign in"
       subtitle="Access your Prāṅgaṇ workspace"
     >
@@ -192,7 +202,7 @@ export default function LoginPage() {
               backgroundColor: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)',
             }}>
               <ErrorRounded sx={{ fontSize: 18, color: '#ef4444', flexShrink: 0, mt: '2px' }} />
-              <Typography sx={{ fontSize: '0.875rem', color: '#fca5a5', lineHeight: 1.5 }}>
+              <Typography sx={{ fontSize: '0.875rem', color: '#b91c1c', lineHeight: 1.5 }}>
                 {serverError}
               </Typography>
             </Box>
@@ -200,11 +210,12 @@ export default function LoginPage() {
         )}
 
         {/* Role selector */}
-        <Box sx={{ mb: { xs: '16px', sm: '24px' } }}>
+        <Box sx={{ mb: { xs: '14px', md: '20px' } }}>
           <Typography component="label" sx={labelSx}>Sign in as</Typography>
-          <Box sx={{ display: 'flex', gap: { xs: 1, sm: 1.5 } }}>
+          <Box sx={{ display: 'flex', gap: { xs: 0.75, md: 1.25 } }}>
             {ROLE_OPTIONS.map((opt) => {
               const isActive = selectedRole === opt.value;
+              const Icon = opt.icon;
               return (
                 <Controller
                   key={opt.value}
@@ -214,29 +225,48 @@ export default function LoginPage() {
                     <Box
                       onClick={() => field.onChange(opt.value)}
                       sx={{
-                        flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: { xs: 0.5, sm: 1 },
-                        py: { xs: 1, sm: 2 }, px: { xs: 0.5, sm: 1 }, borderRadius: '16px', cursor: 'pointer',
-                        border: `1px solid ${isActive ? opt.activeColor : 'rgba(0,0,0,0.1)'}`,
-                        backgroundColor: isActive ? 'rgba(0,0,0,0.04)' : '#ffffff',
-                        boxShadow: isActive ? `0 0 20px ${opt.color}22 inset` : 'none',
+                        flex: 1,
+                        minWidth: 0,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: { xs: 0.35, md: 0.75 },
+                        py: { xs: 1.25, md: 1.75 },
+                        px: { xs: 0.5, md: 1 },
+                        borderRadius: { xs: '12px', md: '14px' },
+                        cursor: 'pointer',
+                        border: `1.5px solid ${isActive ? opt.activeColor : 'rgba(0,0,0,0.08)'}`,
+                        backgroundColor: isActive ? `${opt.color}0c` : '#ffffff',
                         transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
-                        '&:hover': { 
-                          borderColor: isActive ? opt.activeColor : 'rgba(0,0,0,0.15)', 
-                          backgroundColor: 'rgba(0,0,0,0.02)',
-                          transform: 'translateY(-2px)'
+                        '&:hover': {
+                          borderColor: isActive ? opt.activeColor : 'rgba(0,0,0,0.14)',
+                          backgroundColor: isActive ? `${opt.color}10` : 'rgba(0,0,0,0.02)',
                         },
                       }}
                     >
-                      <Box sx={{ color: isActive ? opt.activeColor : '#71717a', transition: 'color 0.2s' }}>
-                        {opt.icon}
+                      <Box sx={{
+                        width: { xs: 32, md: 36 },
+                        height: { xs: 32, md: 36 },
+                        borderRadius: '10px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: isActive ? opt.activeColor : '#71717a',
+                        backgroundColor: isActive ? `${opt.color}14` : 'rgba(0,0,0,0.03)',
+                        transition: 'all 0.2s',
+                      }}>
+                        <Icon sx={{ fontSize: { xs: 17, md: 19 } }} />
                       </Box>
                       <Typography sx={{
-                        fontSize: '0.75rem', fontWeight: 600, lineHeight: 1.2, textAlign: 'center',
+                        fontSize: { xs: '0.6875rem', md: '0.75rem' },
+                        fontWeight: 600,
+                        lineHeight: 1.2,
+                        textAlign: 'center',
                         color: isActive ? opt.activeColor : '#52525b',
                         fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
-                        transition: 'color 0.2s',
                       }}>
-                        {opt.label}
+                        <Box component="span" sx={{ display: { xs: 'inline', sm: 'none' } }}>{opt.shortLabel}</Box>
+                        <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>{opt.label}</Box>
                       </Typography>
                     </Box>
                   )}
@@ -248,7 +278,7 @@ export default function LoginPage() {
         </Box>
 
         {/* Email */}
-        <Box sx={{ mb: { xs: '16px', sm: '24px' } }}>
+        <Box sx={{ mb: { xs: '14px', md: '20px' } }}>
           <Typography component="label" htmlFor="login-email" sx={labelSx}>Email</Typography>
           <Input
             id="login-email"
@@ -264,7 +294,7 @@ export default function LoginPage() {
         </Box>
 
         {/* Password */}
-        <Box sx={{ mb: { xs: '16px', sm: '32px' } }}>
+        <Box sx={{ mb: { xs: '18px', md: '28px' } }}>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: '8px' }}>
             <Typography component="label" htmlFor="login-password" sx={{ ...labelSx, mb: 0 }}>Password</Typography>
             <Box
@@ -293,7 +323,7 @@ export default function LoginPage() {
           loading={isLoading}
           fullWidth
           sx={{
-            height: '52px', borderRadius: '12px', fontSize: '1rem',
+            height: { xs: '48px', md: '52px' }, borderRadius: '12px', fontSize: { xs: '0.9375rem', md: '1rem' },
             fontFamily: '"Google Sans Flex", "Google Sans", Inter, sans-serif',
             fontWeight: 600, letterSpacing: '-0.01em',
             background: '#18181b',
@@ -307,44 +337,79 @@ export default function LoginPage() {
           Sign in
         </Button>
 
-        {/* Demo credentials panel */}
-        <Box sx={{ mt: { xs: 2.5, sm: 4 }, pt: { xs: 2, sm: 3 }, borderTop: '1px solid rgba(0,0,0,0.08)' }}>
-          <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: '#71717a', textTransform: 'uppercase', letterSpacing: '0.08em', textAlign: 'center', mb: 2 }}>
-            Demo Credentials
-          </Typography>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {DEMO_CREDENTIALS.map((cred) => (
-              <Box
-                key={cred.role}
-                onClick={() => {
-                  setValue('role', cred.role as LoginFormValues['role']);
-                  setValue('email', cred.email);
-                  setValue('password', cred.password);
-                }}
-                sx={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  px: 2, py: 1.5, borderRadius: '12px', cursor: 'pointer',
-                  border: '1px solid rgba(0,0,0,0.05)', backgroundColor: 'rgba(255,255,255,0.02)',
-                  transition: 'all 0.2s',
-                  '&:hover': { borderColor: 'rgba(255,255,255,0.15)', backgroundColor: 'rgba(0,0,0,0.05)', transform: 'translateX(2px)' },
-                }}
-              >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0, flex: 1 }}>
-                  <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: cred.color, flexShrink: 0, boxShadow: `0 0 10px ${cred.color}` }} />
-                  <Box sx={{ minWidth: 0 }}>
-                    <Typography noWrap sx={{ fontSize: { xs: '0.75rem', sm: '0.8125rem' }, fontWeight: 600, color: '#3f3f46', lineHeight: 1.2 }}>
+        {/* Demo credentials — collapsible on mobile */}
+        <Box sx={{ mt: { xs: 2, md: 3 }, pt: { xs: 1.5, md: 2.5 }, borderTop: '1px solid rgba(0,0,0,0.06)' }}>
+          <Box
+            onClick={() => setDemoOpen(v => !v)}
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 0.5,
+              cursor: { xs: 'pointer', md: 'default' },
+              py: { xs: 0.5, md: 0 },
+              userSelect: 'none',
+            }}
+          >
+            <Typography sx={{
+              fontSize: '0.6875rem',
+              fontWeight: 600,
+              color: '#71717a',
+              textTransform: 'uppercase',
+              letterSpacing: '0.08em',
+            }}>
+              Demo Credentials
+            </Typography>
+            <ExpandMoreRounded sx={{
+              fontSize: 18,
+              color: '#a1a1aa',
+              display: { xs: 'block', md: 'none' },
+              transform: demoOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+              transition: 'transform 0.2s',
+            }} />
+          </Box>
+
+          <Collapse in={demoOpen} timeout={250}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mt: 1.5 }}>
+              {DEMO_CREDENTIALS.map((cred) => (
+                <Box
+                  key={cred.role}
+                  onClick={() => {
+                    setValue('role', cred.role as LoginFormValues['role']);
+                    setValue('email', cred.email);
+                    setValue('password', cred.password);
+                  }}
+                  sx={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    px: { xs: 1.5, md: 2 }, py: { xs: 1.25, md: 1.5 },
+                    borderRadius: '12px', cursor: 'pointer',
+                    border: '1px solid rgba(0,0,0,0.06)', backgroundColor: 'rgba(0,0,0,0.02)',
+                    transition: 'all 0.2s',
+                    '&:hover': { borderColor: `${cred.color}44`, backgroundColor: `${cred.color}08` },
+                    '&:active': { transform: 'scale(0.99)' },
+                  }}
+                >
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, minWidth: 0, flex: 1 }}>
+                    <Box sx={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: cred.color, flexShrink: 0 }} />
+                    <Typography noWrap sx={{ fontSize: { xs: '0.75rem', md: '0.8125rem' }, fontWeight: 500, color: '#3f3f46' }}>
                       {cred.email}
                     </Typography>
                   </Box>
-                </Box>
-                <Box sx={{ textAlign: 'right', flexShrink: 0, pl: 1 }}>
-                  <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: cred.color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  <Typography sx={{
+                    fontSize: '0.625rem',
+                    fontWeight: 700,
+                    color: cred.color,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.06em',
+                    flexShrink: 0,
+                    pl: 1,
+                  }}>
                     {cred.roleLabel}
                   </Typography>
                 </Box>
-              </Box>
-            ))}
-          </Box>
+              ))}
+            </Box>
+          </Collapse>
         </Box>
       </Box>
     </AuthCard>
