@@ -66,9 +66,11 @@ def test_rc_180_gap_does_not_flip_boresight_with_real_calibration():
 
 
 def test_world_axis_directions_in_stitcher_frame():
+    # Clockwise display heading (GPano): scene-right (displayed lon +90) is -X,
+    # so world +X sits at lon -90. This is the mirror-fix convention.
     cases = [
-        ("+X", (1, 0, 0), 90.0, 0.0),
-        ("-X", (-1, 0, 0), -90.0, 0.0),
+        ("+X", (1, 0, 0), -90.0, 0.0),
+        ("-X", (-1, 0, 0), 90.0, 0.0),
         ("+Y", (0, 1, 0), 0.0, 90.0),
         ("-Y", (0, -1, 0), 0.0, -90.0),
         ("+Z", (0, 0, 1), 0.0, 0.0),
@@ -120,7 +122,8 @@ def test_lonlat_grid_center_pixel():
 def test_world_vector_to_lonlat_matches_stitcher_mapping():
     lon = np.radians(45.0)
     lat = np.radians(30.0)
-    x = float(np.cos(lat) * np.sin(lon))
+    # Forward mapping of _hemisphere_map (clockwise heading): X = -cos*sin.
+    x = float(-np.cos(lat) * np.sin(lon))
     y = float(np.sin(lat))
     z = float(np.cos(lat) * np.cos(lon))
     lon_out, lat_out = world_vector_to_lonlat(x, y, z)

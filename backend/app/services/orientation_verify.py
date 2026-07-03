@@ -151,9 +151,13 @@ class OrientationVerification:
 
 
 def world_vector_to_lonlat(x: float, y: float, z: float) -> tuple[float, float]:
-    """Inverse of the stitcher equirect mapping in ``_hemisphere_map``."""
+    """Inverse of the stitcher equirect mapping in ``_hemisphere_map``.
+
+    Display longitude increases clockwise from above (GPano heading), so the
+    forward mapping is X = -cos(lat)*sin(lon) and the inverse uses -x.
+    """
     lat = float(np.degrees(np.arcsin(np.clip(y, -1.0, 1.0))))
-    lon = float(np.degrees(np.arctan2(x, z)))
+    lon = float(np.degrees(np.arctan2(-x, z)))
     return lon, lat
 
 
@@ -327,7 +331,7 @@ def verify_orientation(calib: DualFisheyeCalibration) -> OrientationVerification
     fwd = STITCHER_FORWARD
     return OrientationVerification(
         conventions={
-            "equirect_world_frame": "X=cos(lat)*sin(lon), Y=sin(lat), Z=cos(lat)*cos(lon)",
+            "equirect_world_frame": "X=-cos(lat)*sin(lon) (clockwise heading), Y=sin(lat), Z=cos(lat)*cos(lon)",
             "forward_at_lon0_lat0": STITCHER_FORWARD,
             "zenith_at_lat90": STITCHER_ZENITH,
             "lens_optical_axis_lens_frame": LENS_OPTICAL_AXIS,
@@ -534,7 +538,7 @@ def build_world_frame_measurements(
     )
 
     return {
-        "world_frame": "X=cos(lat)*sin(lon), Y=sin(lat), Z=cos(lat)*cos(lon)",
+        "world_frame": "X=-cos(lat)*sin(lon) (clockwise heading), Y=sin(lat), Z=cos(lat)*cos(lon)",
         "world_axes": axes,
         "lens1_optical_axis": {
             "world_vector": l1.world_vector_before_yaw_offset,

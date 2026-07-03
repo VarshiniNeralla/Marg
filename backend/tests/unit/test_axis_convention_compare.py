@@ -42,7 +42,8 @@ def test_baseline_world_vectors_match_production():
     lat = np.linspace(np.pi / 2, -np.pi / 2, 4)
     lon_g, lat_g = np.meshgrid(lon, lat)
     X, Y, Z = world_vectors_from_lonlat(lon_g, lat_g, conv)
-    assert np.allclose(X, np.cos(lat_g) * np.sin(lon_g))
+    # Clockwise display heading (mirror fix): production X = -cos*sin.
+    assert np.allclose(X, -np.cos(lat_g) * np.sin(lon_g))
     assert np.allclose(Y, np.sin(lat_g))
     assert np.allclose(Z, np.cos(lat_g) * np.cos(lon_g))
 

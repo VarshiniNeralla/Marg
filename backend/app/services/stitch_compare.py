@@ -42,9 +42,10 @@ def _latlon_grid(h: int, w: int) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _vec_from_latlon(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
+    # Clockwise display heading (GPano), matching _hemisphere_map: X = -cos*sin.
     return np.stack(
         [
-            np.cos(lat) * np.sin(lon),
+            -np.cos(lat) * np.sin(lon),
             np.sin(lat),
             np.cos(lat) * np.cos(lon),
         ],

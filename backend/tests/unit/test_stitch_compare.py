@@ -22,6 +22,9 @@ def test_recovers_known_yaw():
     known_yaw = 20.0
     test = _rotate_equirect(ref, -known_yaw, 0.0, 0.0, lon, lat, vecs)
     delta = estimate_orientation_delta(ref, test, coarse_yaw_step=5.0, fine_step=1.0)
-    assert delta.yaw_deg == pytest.approx(known_yaw, abs=2.0)
+    # Clockwise display heading (mirror fix): Ry(+t) now shifts features by -t
+    # of display longitude, so the recovered Ry angle is sign-flipped relative
+    # to the pre-fix convention.
+    assert delta.yaw_deg == pytest.approx(-known_yaw, abs=2.0)
     assert delta.pitch_deg == pytest.approx(0.0, abs=2.0)
     assert delta.roll_deg == pytest.approx(0.0, abs=2.0)

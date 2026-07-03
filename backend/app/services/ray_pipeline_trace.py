@@ -50,10 +50,14 @@ def pixel_to_lonlat_continuous(px: float, py: float, width: int, height: int) ->
 
 
 def lonlat_to_world_vector(lon_deg: float, lat_deg: float) -> tuple[float, float, float]:
-    """Same as ``_hemisphere_map`` sphere_dirs (before yaw_offset)."""
+    """Same as ``_hemisphere_map`` sphere_dirs (before yaw_offset).
+
+    Display longitude increases clockwise from above (GPano heading):
+    X = -cos(lat)*sin(lon).
+    """
     lon = math.radians(lon_deg)
     lat = math.radians(lat_deg)
-    x = math.cos(lat) * math.sin(lon)
+    x = -math.cos(lat) * math.sin(lon)
     y = math.sin(lat)
     z = math.cos(lat) * math.cos(lon)
     return (x, y, z)
@@ -64,7 +68,7 @@ def stitcher_conventions() -> dict[str, Any]:
         "world_frame": {
             "description": "Right-handed unit sphere used by _hemisphere_map",
             "formulas": [
-                "X = cos(lat) * sin(lon)",
+                "X = -cos(lat) * sin(lon)   # clockwise heading (GPano)",
                 "Y = sin(lat)",
                 "Z = cos(lat) * cos(lon)",
             ],

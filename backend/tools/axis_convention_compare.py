@@ -28,9 +28,10 @@ if str(_BACKEND) not in sys.path:
 COMP_NAMES = ("sin_lon_cos_lat", "sin_lat", "cos_lon_cos_lat")
 AXIS_NAMES = ("X", "Y", "Z")
 
-# Production baseline: X=c0, Y=c1, Z=c2, all positive.
+# Production baseline: X=-c0 (clockwise display heading / GPano, mirror fix),
+# Y=+c1, Z=+c2.
 BASELINE_PERM = (0, 1, 2)
-BASELINE_SIGNS = (1, 1, 1)
+BASELINE_SIGNS = (-1, 1, 1)
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,12 @@ class AxisConvention:
 
 
 def _right_handed_at_origin(perm: tuple[int, int, int], signs: tuple[int, int, int]) -> bool:
-    """Check X×Y·Z > 0 using ∂w/∂lon, ∂w/∂lat, w at lon=0, lat=0."""
+    """Match production display handedness at lon=0, lat=0.
+
+    Production uses a CLOCKWISE display heading (GPano; mirror fix):
+    X = -cos(lat)*sin(lon), so (∂w/∂lon × ∂w/∂lat)·w < 0 at the origin.
+    Only conventions with the same display handedness are enumerated.
+    """
     import numpy as np
 
     # d(component)/dlon at origin: [1,0,0] for (c0,c1,c2)
@@ -66,7 +72,7 @@ def _right_handed_at_origin(perm: tuple[int, int, int], signs: tuple[int, int, i
     t_lon = np.array([signs[ax] * dlon[ax] for ax in range(3)], dtype=np.float64)
     t_lat = np.array([signs[ax] * dlat[ax] for ax in range(3)], dtype=np.float64)
     w = np.array([signs[ax] * w0[ax] for ax in range(3)], dtype=np.float64)
-    return float(np.dot(np.cross(t_lon, t_lat), w)) > 0.0
+    return float(np.dot(np.cross(t_lon, t_lat), w)) < 0.0
 
 
 def enumerate_right_handed_conventions() -> list[AxisConvention]:

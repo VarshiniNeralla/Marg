@@ -531,7 +531,17 @@ def _hemisphere_map(
     ys = np.linspace(np.pi / 2, -np.pi / 2, out_h)
     lon, lat = np.meshgrid(xs, ys)
     lon = lon + yaw_offset
-    X = np.cos(lat) * np.sin(lon)
+    # Heading convention (mirror fix): GPano/PSV display heading increasing
+    # CLOCKWISE viewed from above — turning right in the viewer moves toward
+    # image-right. With Y up and Z forward, the direction seen when turning
+    # right by +lon is (-sin(lon), 0, cos(lon)): scene-right is the NEGATIVE X
+    # axis of this right-handed frame. The previous X = +sin(lon) made
+    # displayed longitude increase counter-clockwise (toward the camera's
+    # left), which rendered every panorama as a left-right mirror of the real
+    # scene — verified by ray trace: pano lon=+2° sampled fisheye x < cx,
+    # i.e. scene-LEFT content for a rightward view (camera images are not
+    # mirrored: scene-right sits at image x > cx).
+    X = -np.cos(lat) * np.sin(lon)
     Y = np.sin(lat)
     Z = np.cos(lat) * np.cos(lon)
     R = _lens_rot_matrix(rot, body_flip=body_flip)
