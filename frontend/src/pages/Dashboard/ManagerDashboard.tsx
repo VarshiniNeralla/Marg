@@ -8,7 +8,7 @@ import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
-import PageHeader from '@shared/components/PageHeader/PageHeader';
+import DashboardHero from '@shared/components/DashboardHero/DashboardHero';
 
 const TOURS_PAGE_SIZE = 5;
 
@@ -71,27 +71,15 @@ export default function ManagerDashboard() {
 
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto' }}>
-      <PageHeader
-        title={`${greeting}, ${user?.name?.split(' ')[0] ?? 'Manager'}`}
+      <DashboardHero
+        eyebrow="My Overview"
+        greeting={`${greeting}, ${user?.name?.split(' ')[0] ?? 'Manager'}`}
         subtitle="Review queue and project progress"
-        breadcrumbs={[{ label: 'Overview' }]}
-        actions={
-          <Box
-            component={Link}
-            to="/reviews"
-            sx={{
-              display: 'flex', alignItems: 'center', gap: 0.75,
-              px: { xs: 1.5, sm: 2.5 }, py: { xs: 0.75, sm: 1 }, borderRadius: '10px',
-              background: 'linear-gradient(135deg,#7c3aed,#6d28d9)',
-              color: '#fff', fontSize: { xs: '0.75rem', sm: '0.875rem' }, fontWeight: 600,
-              textDecoration: 'none', boxShadow: '0 4px 14px rgba(124,58,237,0.28)',
-            }}
-          >
-            <RateReviewRounded sx={{ fontSize: 17 }} />
-            <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>Open Reviews</Box>
-            <Box component="span" sx={{ display: { xs: 'inline', sm: 'none' } }}>Reviews</Box>
-          </Box>
-        }
+        ctaLabel="Open Reviews"
+        ctaIcon={<RateReviewRounded sx={{ fontSize: 19 }} />}
+        ctaTo="/reviews"
+        accent="#7c3aed"
+        accentHover="#6d28d9"
       />
 
       {/* KPI row */}

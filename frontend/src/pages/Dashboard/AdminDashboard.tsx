@@ -9,7 +9,7 @@ import { colors, motion } from '@theme/tokens';
 import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
 import { computeDashboardStats } from '@store/workflowSelectors';
-import PageHeader from '@shared/components/PageHeader/PageHeader';
+import DashboardHero from '@shared/components/DashboardHero/DashboardHero';
 import { userService } from '@services/userService';
 
 function StatCard({ label, value, sub, color, icon, to }: { label: string; value: string; sub: string; color: string; icon: React.ReactNode; to?: string }) {
@@ -80,15 +80,15 @@ export default function AdminDashboard() {
 
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto' }}>
-      <PageHeader
-        title={`${greeting}, ${user?.name?.split(' ')[0] ?? 'Admin'}`}
+      <DashboardHero
+        eyebrow="My Overview"
+        greeting={`${greeting}, ${user?.name?.split(' ')[0] ?? 'Admin'}`}
         subtitle="Platform overview — all projects and teams"
-        breadcrumbs={[{ label: 'Overview' }]}
-        actions={
-          <Box component={Link} to="/projects/new" sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 2, py: 1, borderRadius: '10px', background: colors.primaryGradient, color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none' }}>
-            <AddRounded sx={{ fontSize: 18 }} /> New Project
-          </Box>
-        }
+        ctaLabel="New Project"
+        ctaIcon={<AddRounded sx={{ fontSize: 19 }} />}
+        ctaTo="/projects/new"
+        accent="#2563eb"
+        accentHover="#1d4ed8"
       />
 
       {/* KPI Stats */}

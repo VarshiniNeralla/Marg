@@ -8,6 +8,7 @@ import {
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
+import DashboardHero from '@shared/components/DashboardHero/DashboardHero';
 
 /* ─── palette ────────────────────────────────────────────────────────────── */
 const P = {
@@ -54,68 +55,16 @@ export default function EngineerDashboard() {
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
 
-      {/* ════════════════════════════════════════════════════════════════════
-          HERO — dark ink card, full width
-      ════════════════════════════════════════════════════════════════════ */}
-      <Box
-        sx={{
-          position: 'relative', overflow: 'hidden',
-          borderRadius: '20px', mb: 3,
-          background: `linear-gradient(140deg, ${P.black} 0%, ${P.ink} 60%, #0a0f1a 100%)`,
-          border: `1px solid ${P.borderDark}`,
-          boxShadow: '0 20px 60px rgba(0,0,0,0.28), 0 1px 0 rgba(255,255,255,0.04) inset',
-        }}
-      >
-        {/* Grid noise */}
-        <Box sx={{ position:'absolute', inset:0, opacity:0.03, pointerEvents:'none',
-          backgroundImage:`linear-gradient(rgba(255,255,255,1) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,1) 1px,transparent 1px)`,
-          backgroundSize:'28px 28px' }} />
-        {/* Blue radial */}
-        <Box sx={{ position:'absolute', top:-80, left:-80, width:320, height:320, borderRadius:'50%',
-          background:`radial-gradient(circle, rgba(37,99,235,0.15) 0%, transparent 65%)`, pointerEvents:'none' }} />
-        {/* Red radial */}
-        <Box sx={{ position:'absolute', bottom:-60, right:80, width:240, height:240, borderRadius:'50%',
-          background:`radial-gradient(circle, rgba(220,38,38,0.11) 0%, transparent 65%)`, pointerEvents:'none' }} />
-
-        <Box sx={{ position:'relative', px:{ xs:3, md:5 }, pt:{ xs:3.5, md:4.5 }, pb:{ xs:3, md:4 },
-          display:'flex', alignItems:'center', justifyContent:'space-between', gap:3, flexWrap:'wrap' }}>
-          <Box>
-            <Typography sx={{ fontSize:'0.6875rem', fontWeight:700, letterSpacing:'0.12em',
-              textTransform:'uppercase', color:'rgba(255,255,255,0.32)', mb:1.25 }}>
-              My Overview
-            </Typography>
-            <Typography sx={{
-              fontFamily:'"Google Sans Flex","Google Sans",Inter,sans-serif',
-              fontSize:{ xs:'2rem', md:'2.625rem' }, fontWeight:800,
-              color:P.white, letterSpacing:'-0.055em', lineHeight:1.05, mb:0.875,
-            }}>
-              {greeting}, {name}
-            </Typography>
-            <Typography sx={{ fontSize:'0.9375rem', color:'rgba(255,255,255,0.38)', letterSpacing:'-0.01em' }}>
-              Your capture assignments and upload status
-            </Typography>
-          </Box>
-
-          {/* CTA */}
-          <Box component={Link} to="/capture-workflow" sx={{
-            display:'flex', alignItems:'center', gap:1.5,
-            px:2.75, py:1.5, borderRadius:'12px', flexShrink:0,
-            background:`linear-gradient(135deg, ${P.blue} 0%, ${P.blueHover} 100%)`,
-            color:P.white, textDecoration:'none',
-            fontSize:'0.9375rem', fontWeight:700, letterSpacing:'-0.01em',
-            boxShadow:`0 4px 20px rgba(37,99,235,0.5)`,
-            transition: T,
-            '&:hover':{ background:`linear-gradient(135deg,${P.blueHover} 0%,#1e40af 100%)`,
-              boxShadow:`0 6px 28px rgba(37,99,235,0.6)`, transform:'translateY(-1px)' },
-          }}>
-            <PhotoCameraRounded sx={{ fontSize:19 }} />
-            Start Capture
-          </Box>
-        </Box>
-
-        {/* Bottom accent line */}
-        <Box sx={{ height:2, background:`linear-gradient(90deg, ${P.blue}80 0%, transparent 100%)` }} />
-      </Box>
+      <DashboardHero
+        eyebrow="My Overview"
+        greeting={`${greeting}, ${name}`}
+        subtitle="Your capture assignments and upload status"
+        ctaLabel="Start Capture"
+        ctaIcon={<PhotoCameraRounded sx={{ fontSize: 19 }} />}
+        ctaTo="/capture-workflow"
+        accent={P.blue}
+        accentHover={P.blueHover}
+      />
 
       {/* ════════════════════════════════════════════════════════════════════
           KPI STRIP
