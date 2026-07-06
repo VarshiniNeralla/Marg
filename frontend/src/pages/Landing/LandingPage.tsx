@@ -287,7 +287,7 @@ const FEATURES = [
   {
     icon: CheckCircleRounded,
     title: 'Review Workflows',
-    desc: '6-stage lifecycle from upload to publish — assign, review, approve.',
+    desc: 'Review published tours after they go live — pending, in-review, and completed queues.',
     accent: '#059669',
     layout: 'default' as const,
     grid: { md: { column: '2', row: '2' } },

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Typography, Grid } from '@mui/material';
 import {
-  FolderRounded, PeopleRounded, CameraAltRounded, PendingActionsRounded,
+  FolderRounded, PeopleRounded, CameraAltRounded,
   ViewInArRounded, AddRounded, MapRounded, BarChartRounded,
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
@@ -17,23 +17,37 @@ function StatCard({ label, value, sub, color, icon, to }: { label: string; value
     <Box
       {...(to ? { component: Link, to } : {})}
       sx={{
-        position: 'relative', overflow: 'hidden',
-        p: { xs: 2, sm: 2.25 }, borderRadius: '16px',
+        position: 'relative', overflow: 'hidden', minWidth: 0, height: '100%',
+        p: { xs: 1.5, sm: 1.75 }, borderRadius: '14px',
         border: `1px solid ${colors.borderLight}`,
         backgroundColor: colors.card,
-        textDecoration: 'none', display: 'block',
+        textDecoration: 'none', display: 'flex', flexDirection: 'column',
         transition: `box-shadow 150ms, transform 150ms`,
         ...(to && { cursor: 'pointer', '&:hover': { transform: 'translateY(-1px)', boxShadow: '0 4px 16px rgba(0,0,0,0.07)' } }),
       }}
     >
-      {/* top accent bar */}
-      <Box sx={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, borderRadius: '16px 16px 0 0', backgroundColor: color, opacity: 0.7 }} />
-      <Box sx={{ width: 36, height: 36, borderRadius: '10px', backgroundColor: color + '18', color, display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 1.5, '& svg': { fontSize: 18 } }}>
+      <Box sx={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, borderRadius: '14px 14px 0 0', backgroundColor: color, opacity: 0.7 }} />
+      <Box sx={{
+        width: { xs: 30, sm: 32 }, height: { xs: 30, sm: 32 }, borderRadius: '9px',
+        backgroundColor: color + '18', color,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        mb: { xs: 1, sm: 1.125 }, flexShrink: 0,
+        '& svg': { fontSize: { xs: 16, sm: 17 } },
+      }}>
         {icon}
       </Box>
-      <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textMuted, mb: 0.375 }}>{label}</Typography>
-      <Typography sx={{ fontSize: '1.5rem', fontWeight: 800, color: colors.textStrong, lineHeight: 1, letterSpacing: '-0.03em' }}>{value}</Typography>
-      <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.375 }}>{sub}</Typography>
+      <Typography noWrap sx={{ fontSize: { xs: '0.6875rem', sm: '0.75rem' }, fontWeight: 600, color: colors.textMuted, mb: 0.25 }}>
+        {label}
+      </Typography>
+      <Typography sx={{
+        fontSize: { xs: '1.125rem', sm: '1.375rem' }, fontWeight: 800,
+        color: colors.textStrong, lineHeight: 1, letterSpacing: '-0.03em',
+      }}>
+        {value}
+      </Typography>
+      <Typography noWrap sx={{ fontSize: '0.6875rem', color: colors.textMuted, mt: 0.375 }}>
+        {sub}
+      </Typography>
     </Box>
   );
 }
@@ -91,20 +105,31 @@ export default function AdminDashboard() {
         accentHover="#1d4ed8"
       />
 
-      {/* KPI Stats */}
-      <Grid container spacing={2} sx={{ mb: 4 }}>
+      {/* KPI Stats — single row */}
+      <Box sx={{
+        display: 'grid',
+        gridTemplateColumns: {
+          xs: 'repeat(4, minmax(120px, 1fr))',
+          sm: 'repeat(4, minmax(0, 1fr))',
+        },
+        gap: { xs: 1, sm: 1.25, md: 1.5 },
+        mb: 4,
+        width: '100%',
+        minWidth: 0,
+        overflowX: { xs: 'auto', sm: 'visible' },
+        pb: { xs: 0.5, sm: 0 },
+        scrollbarWidth: 'none',
+        '&::-webkit-scrollbar': { display: 'none' },
+      }}>
         {[
           { label: 'Projects',        value: String(stats.projectCount),                           sub: `${stats.activeProjectCount} active`,        color: colors.primary, icon: <FolderRounded />,     to: '/projects' },
-          { label: 'Team Members',    value: realUserCount !== null ? String(realUserCount) : '—', sub: 'across all roles',                          color: '#7c3aed',     icon: <PeopleRounded />,      to: '/users' },
-          { label: 'Captures',        value: String(stats.captureCount),                           sub: `${stats.pendingReviews} pending review`,    color: '#0891b2',     icon: <CameraAltRounded />,   to: '/captures' },
-          { label: 'Published Tours', value: String(stats.publishedTourCount),                     sub: `of ${stats.tourCount} total`,               color: '#059669',     icon: <ViewInArRounded />,    to: '/tours' },
-          { label: 'Tours Pending',   value: String(stats.toursPendingPublish),                    sub: 'awaiting review',                           color: '#d97706',     icon: <PendingActionsRounded />, to: '/tours' },
+          { label: 'Members',         value: realUserCount !== null ? String(realUserCount) : '—', sub: 'all roles',                                 color: '#7c3aed',     icon: <PeopleRounded />,      to: '/users' },
+          { label: 'Captures',        value: String(stats.captureCount),                           sub: `${stats.pendingReviews} pending`,           color: '#0891b2',     icon: <CameraAltRounded />,   to: '/captures' },
+          { label: 'Published',       value: String(stats.publishedTourCount),                     sub: `of ${stats.tourCount} tours`,               color: '#059669',     icon: <ViewInArRounded />,    to: '/tours' },
         ].map((s) => (
-          <Grid key={s.label} size={{ xs: 12, sm: 6, md: 4 }}>
-            <StatCard {...s} />
-          </Grid>
+          <StatCard key={s.label} {...s} />
         ))}
-      </Grid>
+      </Box>
 
       <Grid container spacing={3}>
         {/* Quick Actions */}

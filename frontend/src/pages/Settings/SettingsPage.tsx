@@ -258,8 +258,6 @@ function PwField({ label, value, onChange }: { label: string; value: string; onC
 }
 
 function SecurityTab({ onSaved }: { onSaved: () => void }) {
-  const security = useSettingsStore(s => s.security);
-  const patchSecurity = useSettingsStore(s => s.patchSecurity);
   const [isEditing, setIsEditing] = useState(false);
   const [form, setForm] = useState({ current: '', newPw: '', confirm: '' });
   const [error, setError] = useState('');
@@ -306,18 +304,6 @@ function SecurityTab({ onSaved }: { onSaved: () => void }) {
             <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted, py: 1 }}>••••••••</Typography>
           </FieldRow>
         )}
-      </SectionCard>
-      <SectionCard title="Two-Factor Authentication">
-        <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, alignItems: { xs: 'flex-start', sm: 'center' }, justifyContent: 'space-between', gap: { xs: 1.5, sm: 0 } }}>
-          <Box>
-            <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, color: colors.textStrong }}>Authenticator app</Typography>
-            <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>Use Google Authenticator or similar</Typography>
-          </Box>
-          <Box sx={{ px: 2, py: 0.75, borderRadius: '8px', border: `1px solid ${colors.borderLight}`, color: security.twoFactorEnabled ? colors.success : colors.textSecondary, fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', '&:hover': { borderColor: colors.primary, color: colors.primary }, transition: `all ${motion.durationFast}` }}
-            onClick={() => { patchSecurity({ twoFactorEnabled: !security.twoFactorEnabled }); onSaved(); }}>
-            {security.twoFactorEnabled ? '2FA Enabled' : 'Enable 2FA'}
-          </Box>
-        </Box>
       </SectionCard>
 
       <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1.5 }}>

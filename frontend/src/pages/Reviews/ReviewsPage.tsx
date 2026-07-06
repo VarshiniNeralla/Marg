@@ -56,7 +56,6 @@ export default function ReviewsPage() {
   const [query, setQuery]           = useState('');
   const [page, setPage]             = useState(1);
   const [selectedTour, setSelectedTour] = useState<typeof tours[0] | null>(null);
-  const [notes, setNotes]           = useState('');
 
   // Use global state instead of local underReviewIds so it persists across navigation
   const pendingTours   = tours.filter(t => t.status === 'published' && !t.managerReviewed);
@@ -94,7 +93,6 @@ export default function ReviewsPage() {
 
   function startReview(tour: typeof tours[0]) {
     setSelectedTour(tour);
-    setNotes('');
   }
 
   function confirmReview() {
@@ -103,7 +101,6 @@ export default function ReviewsPage() {
       navigate(`/tours/${selectedTour.id}`, { state: TOUR_FROM_REVIEWS });
     }
     setSelectedTour(null);
-    setNotes('');
   }
 
   const currentTab = TAB_OPTIONS.find(o => o.value === tab)!;
@@ -353,7 +350,7 @@ export default function ReviewsPage() {
             <DialogTitle sx={{ fontSize: '1.0625rem', fontWeight: 700, pb: 1 }}>Review Tour</DialogTitle>
             <Divider />
             <DialogContent sx={{ pt: 2.5 }}>
-              <Box sx={{ display: 'flex', gap: 2, mb: 2.5, p: 2, borderRadius: '12px', backgroundColor: P.bg }}>
+              <Box sx={{ display: 'flex', gap: 2, p: 2, borderRadius: '12px', backgroundColor: P.bg }}>
                 <Box sx={{ width: 52, height: 52, borderRadius: '10px', background: selectedTour.gradient, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <ViewInArRounded sx={{ color: 'rgba(255,255,255,0.7)', fontSize: 22 }} />
                 </Box>
@@ -362,17 +359,9 @@ export default function ReviewsPage() {
                   <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>{selectedTour.projectName} · {selectedTour.floorLabel}</Typography>
                 </Box>
               </Box>
-              <Typography sx={{ fontSize: '0.875rem', color: colors.textSecondary, mb: 1.5 }}>
-                This tour will be moved to "Under Review". Add any review notes below.
+              <Typography sx={{ fontSize: '0.875rem', color: colors.textSecondary, mt: 2 }}>
+                This walkthrough will move to Under Review and open in the tour viewer.
               </Typography>
-              <Box
-                component="textarea"
-                value={notes}
-                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setNotes(e.target.value)}
-                rows={3}
-                placeholder="Review notes (optional)…"
-                sx={{ width: '100%', px: 1.75, py: 1.25, borderRadius: '10px', border: `1px solid ${P.border}`, fontSize: '0.875rem', fontFamily: 'inherit', color: P.strong, outline: 'none', resize: 'vertical', boxSizing: 'border-box', '&:focus': { borderColor: P.blue, boxShadow: '0 0 0 3px rgba(37,99,235,0.08)' } }}
-              />
             </DialogContent>
             <Divider />
             <DialogActions sx={{ p: 2, gap: 1 }}>

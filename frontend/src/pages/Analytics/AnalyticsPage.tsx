@@ -2,8 +2,7 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Box, Typography, Grid } from '@mui/material';
 import {
-  CameraAltRounded, ViewInArRounded,
-  AccessTimeRounded, ArrowBackRounded
+  RateReviewRounded, CheckCircleRounded, MapRounded, ArrowBackRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
@@ -170,7 +169,7 @@ function Card({ title, subtitle, right, children }: { title?: string; subtitle?:
   );
 }
 
-function StatTile({ icon, label, value, color, bg }: { icon: React.ReactNode; label: string; value: React.ReactNode; sub: string; color: string; bg: string }) {
+function StatTile({ icon, label, value, sub, color, bg }: { icon: React.ReactNode; label: string; value: React.ReactNode; sub?: string; color: string; bg: string }) {
   return (
     <Box sx={{
       borderRadius: '16px', backgroundColor: colors.card, border: `1px solid ${colors.borderLight}`,
@@ -181,12 +180,14 @@ function StatTile({ icon, label, value, color, bg }: { icon: React.ReactNode; la
       transition: `box-shadow 150ms, transform 150ms`,
       '&:hover': { boxShadow: `0 4px 16px rgba(0,0,0,0.07)`, transform: 'translateY(-1px)' },
     }}>
-      {/* colored top accent bar on desktop */}
       <Box sx={{ display: { xs: 'none', md: 'block' }, position: 'absolute', top: 0, left: 0, right: 0, height: 3, borderRadius: '16px 16px 0 0', backgroundColor: color, opacity: 0.7 }} />
       <Box sx={{ width: 36, height: 36, borderRadius: '10px', backgroundColor: bg, display: 'flex', alignItems: 'center', justifyContent: 'center', color, flexShrink: 0, '& svg': { fontSize: 18 } }}>{icon}</Box>
       <Box sx={{ flex: 1, display: 'flex', flexDirection: { xs: 'row', md: 'column' }, alignItems: { xs: 'center', md: 'flex-start' }, justifyContent: { xs: 'space-between', md: 'flex-start' }, gap: { xs: 0, md: 0.375 }, width: { md: '100%' }, minWidth: 0 }}>
         <Typography noWrap sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textMuted }}>{label}</Typography>
-        <Typography sx={{ fontSize: { xs: '1.25rem', md: '1.5rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.03em', lineHeight: 1 }}>{value}</Typography>
+        <Box sx={{ textAlign: { xs: 'right', md: 'left' } }}>
+          <Typography sx={{ fontSize: { xs: '1.25rem', md: '1.5rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.03em', lineHeight: 1 }}>{value}</Typography>
+          {sub && <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, mt: 0.375 }}>{sub}</Typography>}
+        </Box>
       </Box>
     </Box>
   );
@@ -317,19 +318,51 @@ function ReviewRateChart() {
 }
 
 export default function AnalyticsPage() {
-  const captures = useWorkflowStore(s => s.captures);
-  const tours = useWorkflowStore(s => s.tours);
+  const floors     = useWorkflowStore(s => s.floors);
+  const tours      = useWorkflowStore(s => s.tours);
+  const floorPlans = useWorkflowStore(s => s.floorPlans);
   const user = useAuthStore(s => s.user);
   const overviewPath = getRoleLandingPath(user?.role);
 
-  const totalCaptures = captures.length;
-  const pending  = tours.filter(t => t.status !== 'published').length;
-  const publishedTours = tours.filter(t => t.status === 'published').length;
+  const publishedTours = tours.filter(t => t.status === 'published');
+  const reviewedCount  = publishedTours.filter(t => t.managerReviewed).length;
+  const reviewBacklog  = publishedTours.filter(t => !t.managerReviewed).length;
+  const underReview    = tours.filter(t => t.status === 'in_review').length;
+  const completionRate = publishedTours.length > 0
+    ? Math.round((reviewedCount / publishedTours.length) * 100)
+    : 0;
+  const floorCoverage  = floors.length > 0
+    ? Math.round((floorPlans.length / floors.length) * 100)
+    : 0;
 
   const KPIs = [
-    { key: 'captures', icon: <CameraAltRounded />,  label: 'Total Captures',  value: totalCaptures, sub: '', color: '#2563eb', bg: 'rgba(37,99,235,0.08)' },
-    { key: 'pending',  icon: <AccessTimeRounded />,  label: 'Tours Pending',   value: pending,        sub: '', color: '#d97706', bg: 'rgba(217,119,6,0.08)' },
-    { key: 'tours',    icon: <ViewInArRounded />,    label: 'Published Tours', value: publishedTours, sub: '', color: '#7c3aed', bg: 'rgba(124,58,237,0.08)' },
+    {
+      key: 'backlog',
+      icon: <RateReviewRounded />,
+      label: 'Review Backlog',
+      value: reviewBacklog,
+      sub: underReview > 0 ? `${underReview} in progress` : 'awaiting sign-off',
+      color: '#d97706',
+      bg: 'rgba(217,119,6,0.08)',
+    },
+    {
+      key: 'completion',
+      icon: <CheckCircleRounded />,
+      label: 'Review Completion',
+      value: `${completionRate}%`,
+      sub: `${reviewedCount} of ${publishedTours.length} done`,
+      color: '#059669',
+      bg: 'rgba(5,150,105,0.08)',
+    },
+    {
+      key: 'coverage',
+      icon: <MapRounded />,
+      label: 'Floor Coverage',
+      value: `${floorCoverage}%`,
+      sub: `${floorPlans.length} of ${floors.length} floors mapped`,
+      color: '#7c3aed',
+      bg: 'rgba(124,58,237,0.08)',
+    },
   ];
 
   return (
@@ -347,11 +380,11 @@ export default function AnalyticsPage() {
           <ArrowBackRounded sx={{ fontSize: 15 }} /> Overview
         </Box>
         <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.75rem', md: '2.25rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.05em', lineHeight: 1.05, mb: 0.5 }}>Dashboard Analytics</Typography>
-        <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>Your construction intelligence and operational performance at a glance.</Typography>
+        <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>Operational trends — review progress, capture volume, and site coverage.</Typography>
       </Box>
 
-      {/* KPI strip */}
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3, 1fr)' }, gap: { xs: 1.25, md: 2 }, mb: 4 }}>
+      {/* Management KPIs */}
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: { xs: 1.25, md: 1.5 }, mb: 4 }}>
         {KPIs.map(({ key, ...k }) => <StatTile key={key} {...k} />)}
       </Box>
 

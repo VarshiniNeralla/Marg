@@ -158,14 +158,22 @@ export default function DashboardLayout() {
         sx={{
           display: 'flex', alignItems: 'center',
           gap: collapsed ? 0 : 1.5,
-          px: collapsed ? 0 : 1.5, py: 0.875,
+          px: collapsed ? 0 : 1.5,
+          py: collapsed ? 0 : 0.875,
           justifyContent: collapsed ? 'center' : 'flex-start',
+          ...(collapsed && {
+            width: 40,
+            height: 40,
+            flexShrink: 0,
+          }),
           borderRadius: '10px', textDecoration: 'none',
           color: on ? colors.textStrong : colors.textMuted,
-          backgroundColor: on ? colors.bg : 'transparent',
+          backgroundColor: on ? (collapsed ? colors.primarySoft : colors.bg) : 'transparent',
           transition: `all ${motion.durationFast} ${motion.easeOut}`,
-          '&:hover': { color: colors.textStrong, backgroundColor: colors.bg },
-          position: 'relative',
+          '&:hover': {
+            color: colors.textStrong,
+            backgroundColor: collapsed ? colors.primarySoft : colors.bg,
+          },
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: on ? colors.primary : 'inherit', '& svg': { fontSize: 18 }, flexShrink: 0 }}>
@@ -177,11 +185,14 @@ export default function DashboardLayout() {
           </Typography>
         )}
         {on && !collapsed && <Box sx={{ ml: 'auto', width: 4, height: 4, borderRadius: '50%', backgroundColor: colors.primary, flexShrink: 0 }} />}
-        {on && collapsed && <Box sx={{ position: 'absolute', left: 0, top: '50%', transform: 'translateY(-50%)', width: 3, height: 20, borderRadius: '0 3px 3px 0', backgroundColor: colors.primary }} />}
       </Box>
     );
     return collapsed
-      ? <Tooltip title={item.label} placement="right" arrow>{content}</Tooltip>
+      ? (
+        <Tooltip title={item.label} placement="right" arrow>
+          <Box sx={{ display: 'flex', justifyContent: 'center', width: '100%' }}>{content}</Box>
+        </Tooltip>
+      )
       : content;
   }
 

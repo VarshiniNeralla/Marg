@@ -8,6 +8,15 @@ import { uploadFloorPlanFiles } from '@/services/uploadService';
 
 const ACCEPTED = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
 
+const P = {
+  border: '#e4e7ec',
+  muted:  '#6b7280',
+  strong: '#111827',
+  blue:   '#2563eb',
+  blueSoft: 'rgba(37,99,235,0.08)',
+};
+const T = `all 160ms cubic-bezier(0.4,0,0.2,1)`;
+
 export default function FloorPlanUploadPage() {
   const { projectId, towerId, floorId } = useParams<{ projectId: string; towerId: string; floorId: string }>();
   const navigate = useNavigate();
@@ -28,9 +37,16 @@ export default function FloorPlanUploadPage() {
 
   if (!project || !tower || !floor) {
     return (
-      <Box sx={{ p: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <Box component={Link} to={backUrl} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, color: colors.primary, textDecoration: 'none', fontSize: '0.875rem', fontWeight: 500 }}>
-          <ArrowBackRounded sx={{ fontSize: 16 }} /> Go back
+      <Box sx={{ maxWidth: 800, mx: 'auto', p: 1 }}>
+        <Box component={Link} to={backUrl} sx={{
+          display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+          px: 1.25, py: 0.625, borderRadius: '8px',
+          border: `1.5px solid ${colors.borderLight}`, color: colors.textMuted,
+          fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+          transition: T,
+          '&:hover': { borderColor: colors.primary, color: colors.primary, backgroundColor: colors.primarySoft },
+        }}>
+          <ArrowBackRounded sx={{ fontSize: 15 }} /> Floor Plans
         </Box>
         <Typography sx={{ color: colors.textMuted }}>Floor not found.</Typography>
       </Box>
@@ -80,15 +96,29 @@ export default function FloorPlanUploadPage() {
   }
 
   return (
-    <Box sx={{ maxWidth: 800, mx: 'auto' }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 4 }}>
-        <Box component={Link} to={backUrl} sx={{ color: colors.textMuted, textDecoration: 'none', display: 'flex', '&:hover': { color: colors.textStrong } }}>
-          <ArrowBackRounded sx={{ fontSize: 20 }} />
-        </Box>
-        <Box>
-          <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mb: 0.25 }}>{project.name} · {tower.name} · {floor.label}</Typography>
-          <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: '1.5rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.04em' }}>Upload Floor Plan</Typography>
-        </Box>
+    <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6, width: '100%', minWidth: 0 }}>
+      <Box component={Link} to={backUrl} sx={{
+        display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+        px: 1.25, py: 0.625, borderRadius: '8px',
+        border: `1.5px solid ${P.border}`, color: P.muted,
+        fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
+        transition: T,
+        '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft },
+      }}>
+        <ArrowBackRounded sx={{ fontSize: 15 }} /> Floor Plans
+      </Box>
+
+      <Box sx={{ mb: 4 }}>
+        <Typography sx={{
+          fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
+          fontSize: { xs: '1.75rem', md: '2.25rem' }, fontWeight: 800,
+          color: P.strong, letterSpacing: '-0.05em', lineHeight: 1.05, mb: 0.5,
+        }}>
+          Upload Floor Plan
+        </Typography>
+        <Typography sx={{ fontSize: '0.9375rem', color: P.muted }}>
+          {project.name} · {tower.name} · {floor.label}
+        </Typography>
       </Box>
 
       <Box sx={{ maxWidth: 600, mx: 'auto' }}>

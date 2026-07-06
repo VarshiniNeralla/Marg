@@ -94,13 +94,13 @@ const FEATURES_DETAIL = [
   {
     icon: <CheckCircleRounded sx={{ fontSize: 32 }} />, color: '#16a34a', bg: 'rgba(22,163,74,0.08)',
     title: 'Review Workflows', badge: 'Core',
-    tagline: '6-state lifecycle from upload to publication.',
+    tagline: 'Post-publish review for managers to verify live tours.',
     bullets: [
-      'Uploaded → Assigned → Reviewing → Changes Requested → Approved → Published',
-      'Assign reviewers from team members',
-      'Add detailed reviewer notes per capture',
-      'Request re-uploads with feedback attached',
-      'Audit trail for every status change',
+      'Published → Pending Review → Under Review → Reviewed',
+      'Review queue for newly published tours',
+      'Manager mark-as-done workflow with reviewer notes',
+      'Track pending, under review, and completed tours',
+      'Audit trail for every review status change',
     ],
   },
   {

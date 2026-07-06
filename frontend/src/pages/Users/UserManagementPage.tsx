@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Box, Typography, Grid, Chip, Dialog, DialogTitle, DialogContent, DialogActions,
+  Box, Typography, Chip, Dialog, DialogTitle, DialogContent, DialogActions,
   Select, MenuItem, IconButton, Divider, Button as MuiButton, CircularProgress,
-  Tooltip, OutlinedInput, ListItemText, Checkbox,
+  Tooltip, OutlinedInput, ListItemText, Checkbox, Pagination,
 } from '@mui/material';
 import {
   AddRounded, EditRounded, DeleteRounded, SearchRounded,
-  PeopleRounded, EmailRounded, WorkOutlineRounded, CheckCircleRounded,
-  PersonOffRounded, RefreshRounded, ErrorRounded, ArrowBackRounded,
+  PeopleRounded, EmailRounded, WorkOutlineRounded,
+  RefreshRounded, ErrorRounded, ArrowBackRounded,
   AdminPanelSettingsRounded, ManageAccountsRounded, EngineeringRounded, VerifiedUserRounded,
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
@@ -31,8 +31,9 @@ const ROLE_OPTIONS: { value: AppRole; label: string; color: string; bg: string }
 const DESIGNATION_OPTIONS = ['Site Manager', 'Site Engineer', 'Platform Admin'];
 
 function roleMeta(role: string) {
+  if (role === 'super_admin') return ROLE_OPTIONS[0];
   return ROLE_OPTIONS.find(r => r.value === role || r.value === role.replace(' ', '_'))
-    ?? { label: role, color: '#64748b', bg: 'rgba(100,116,139,0.08)' };
+    ?? { label: role.replace(/_/g, ' '), color: '#64748b', bg: 'rgba(100,116,139,0.08)' };
 }
 
 interface ApiUser {
@@ -65,6 +66,20 @@ interface EditForm {
 
 const EMPTY_CREATE: CreateForm = { name: '', email: '', role: 'field_engineer', designation: '', password: 'Prangan@123', assignedProjectIds: [] };
 const EMPTY_EDIT: EditForm = { name: '', designation: '', role: 'field_engineer', newPassword: '', assignedProjectIds: [] };
+const USERS_PAGE_SIZE = 6;
+
+const USERS_GRID_SX = {
+  display: 'grid',
+  width: '100%',
+  minWidth: 0,
+  gridTemplateColumns: {
+    xs: 'repeat(2, minmax(0, 1fr))',
+    sm: 'repeat(3, minmax(0, 1fr))',
+  },
+  gap: { xs: 1, sm: 1.25, md: 1.5 },
+} as const;
+
+const T = `all 160ms cubic-bezier(0.4,0,0.2,1)`;
 
 const inputSx = {
   width: '100%', px: 1.75, py: 1.25, borderRadius: '10px',
@@ -88,6 +103,135 @@ function ErrorBanner({ msg }: { msg: string }) {
   );
 }
 
+function UserCard({
+  user,
+  isSelf,
+  onEdit,
+  onDelete,
+}: {
+  user: ApiUser;
+  isSelf: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const rm = roleMeta(user.role);
+  const isActive = user.is_active !== false;
+  const initials = user.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
+
+  return (
+    <Box sx={{
+      position: 'relative', overflow: 'hidden', minWidth: 0, height: '100%',
+      display: 'flex', flexDirection: 'column',
+      borderRadius: '14px',
+      border: `1px solid ${colors.borderLight}`,
+      backgroundColor: colors.card,
+      opacity: isActive ? 1 : 0.6,
+      transition: `box-shadow ${motion.durationFast}, transform ${motion.durationFast}, border-color ${motion.durationFast}`,
+      '&:hover': {
+        transform: 'translateY(-2px)',
+        boxShadow: '0 10px 28px rgba(15,23,42,0.08)',
+        borderColor: rm.color + '44',
+      },
+    }}>
+      <Box sx={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, backgroundColor: rm.color, opacity: 0.75 }} />
+
+      <Box sx={{ p: { xs: 1.25, sm: 1.5 }, pb: { xs: 1, sm: 1.25 }, flex: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.125, mb: 1.25 }}>
+          <Box sx={{
+            width: { xs: 38, sm: 42 }, height: { xs: 38, sm: 42 }, borderRadius: '11px',
+            backgroundColor: rm.bg, color: rm.color,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontWeight: 800, fontSize: { xs: '0.75rem', sm: '0.8125rem' },
+            flexShrink: 0, letterSpacing: '-0.02em',
+          }}>
+            {initials}
+          </Box>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Typography noWrap sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' }, fontWeight: 700, color: colors.textStrong, lineHeight: 1.25 }}>
+              {user.name}
+              {isSelf && (
+                <Typography component="span" sx={{ fontSize: '0.625rem', color: colors.primary, fontWeight: 600, ml: 0.5 }}>
+                  (you)
+                </Typography>
+              )}
+            </Typography>
+            <Chip
+              label={rm.label}
+              size="small"
+              sx={{
+                height: 18, mt: 0.375, fontSize: '0.625rem', fontWeight: 700,
+                color: rm.color, backgroundColor: rm.bg, borderRadius: '5px',
+              }}
+            />
+          </Box>
+          <Box sx={{
+            width: 8, height: 8, borderRadius: '50%', flexShrink: 0, mt: 0.375,
+            backgroundColor: isActive ? colors.success : colors.danger,
+            boxShadow: isActive ? '0 0 0 3px rgba(22,163,74,0.15)' : '0 0 0 3px rgba(220,38,38,0.12)',
+          }} />
+        </Box>
+
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+          {user.designation && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+              <WorkOutlineRounded sx={{ fontSize: 13, color: colors.textSubdued, flexShrink: 0 }} />
+              <Typography noWrap sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{user.designation}</Typography>
+            </Box>
+          )}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+            <EmailRounded sx={{ fontSize: 13, color: colors.textSubdued, flexShrink: 0 }} />
+            <Typography noWrap sx={{ fontSize: '0.75rem', color: colors.textMuted }} title={user.email}>
+              {user.email}
+            </Typography>
+          </Box>
+          {user.created_at && (
+            <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, mt: 0.125 }}>
+              Joined {new Date(user.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+            </Typography>
+          )}
+        </Box>
+      </Box>
+
+      <Box sx={{
+        display: 'flex', gap: 0.75, px: { xs: 1.25, sm: 1.5 }, py: 1,
+        borderTop: `1px solid ${colors.borderLight}`,
+        backgroundColor: colors.bg,
+        borderRadius: '0 0 14px 14px',
+      }}>
+        <Box
+          onClick={onEdit}
+          sx={{
+            flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5,
+            py: 0.625, borderRadius: '8px', cursor: 'pointer',
+            fontSize: '0.75rem', fontWeight: 600, color: colors.textSecondary,
+            transition: T,
+            '&:hover': { backgroundColor: colors.card, color: colors.primary },
+          }}
+        >
+          <EditRounded sx={{ fontSize: 14 }} /> Edit
+        </Box>
+        <Tooltip title={isSelf ? "Can't delete your own account" : ''}>
+          <Box
+            onClick={isSelf ? undefined : onDelete}
+            sx={{
+              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5,
+              py: 0.625, borderRadius: '8px',
+              fontSize: '0.75rem', fontWeight: 600,
+              color: isSelf ? colors.textSubdued : colors.danger,
+              cursor: isSelf ? 'not-allowed' : 'pointer',
+              opacity: isSelf ? 0.45 : 1,
+              transition: T,
+              ...(!isSelf && { '&:hover': { backgroundColor: colors.dangerBg } }),
+            }}
+          >
+            <DeleteRounded sx={{ fontSize: 14 }} /> Delete
+          </Box>
+        </Tooltip>
+      </Box>
+    </Box>
+  );
+}
+
 export default function UserManagementPage() {
   const currentUser = useAuthStore(s => s.user);
 
@@ -96,6 +240,7 @@ export default function UserManagementPage() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
+  const [page, setPage] = useState(1);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm, setCreateForm] = useState<CreateForm>(EMPTY_CREATE);
@@ -148,6 +293,14 @@ export default function UserManagementPage() {
     const matchRole = roleFilter === 'all' || u.role === roleFilter;
     return matchSearch && matchRole;
   });
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / USERS_PAGE_SIZE));
+  const paginatedUsers = filtered.slice((page - 1) * USERS_PAGE_SIZE, page * USERS_PAGE_SIZE);
+
+  useEffect(() => { setPage(1); }, [search, roleFilter]);
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
   // ── Create ────────────────────────────────────────────────────────────────────
   async function handleCreate() {
@@ -347,75 +500,39 @@ export default function UserManagementPage() {
       {/* User cards */}
       {loading ? (
         <Box sx={{ py: 8, textAlign: 'center' }}><CircularProgress size={32} /></Box>
-      ) : (
-        <Grid container spacing={2}>
-          {filtered.map(u => {
-            const rm = roleMeta(u.role);
-            const isActive = u.is_active !== false;
-            const initials = u.name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase();
-            const isSelf = u.id === currentUser?.id;
-            return (
-              <Grid key={u.id} size={{ xs: 12, sm: 6, md: 4 }}>
-                <Box sx={{ borderRadius: '16px', backgroundColor: colors.card, border: `1px solid ${colors.border}`, p: 2.5, opacity: isActive ? 1 : 0.55, transition: `all ${motion.durationFast}`, '&:hover': { boxShadow: '0 8px 24px rgba(15,23,42,0.07)' } }}>
-                  <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, mb: 2 }}>
-                    <Box sx={{ width: 44, height: 44, borderRadius: '12px', background: colors.primaryGradient, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: '0.875rem', flexShrink: 0 }}>
-                      {initials}
-                    </Box>
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography noWrap sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong }}>
-                        {u.name} {isSelf && <Typography component="span" sx={{ fontSize: '0.6875rem', color: colors.primary, fontWeight: 500 }}>(you)</Typography>}
-                      </Typography>
-                      <Chip label={rm.label} size="small" sx={{ height: 20, fontSize: '0.625rem', fontWeight: 600, color: rm.color, backgroundColor: rm.bg, borderRadius: '5px', mt: 0.25 }} />
-                    </Box>
-                    {isActive
-                      ? <CheckCircleRounded sx={{ fontSize: 16, color: colors.success }} />
-                      : <PersonOffRounded sx={{ fontSize: 16, color: colors.danger }} />
-                    }
-                  </Box>
-
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.625, mb: 2 }}>
-                    {u.designation && (
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: colors.textMuted }}>
-                        <WorkOutlineRounded sx={{ fontSize: 13 }} />
-                        <Typography sx={{ fontSize: '0.8125rem' }}>{u.designation}</Typography>
-                      </Box>
-                    )}
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: colors.textMuted }}>
-                      <EmailRounded sx={{ fontSize: 13 }} />
-                      <Typography noWrap sx={{ fontSize: '0.8125rem' }}>{u.email}</Typography>
-                    </Box>
-                    {u.created_at && (
-                      <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, mt: 0.25 }}>
-                        Joined {new Date(u.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
-                      </Typography>
-                    )}
-                  </Box>
-
-                  <Divider sx={{ borderColor: colors.borderLight, mb: 1.5 }} />
-                  <Box sx={{ display: 'flex', gap: 1 }}>
-                    <MuiButton size="small" startIcon={<EditRounded sx={{ fontSize: 14 }} />} onClick={() => openEdit(u)} sx={{ flex: 1, fontSize: '0.75rem', fontWeight: 600, color: colors.textSecondary, borderRadius: '8px', textTransform: 'none', '&:hover': { backgroundColor: colors.bg } }}>
-                      Edit
-                    </MuiButton>
-                    <Tooltip title={isSelf ? "Can't delete your own account" : ''}>
-                      <span style={{ flex: 1 }}>
-                        <MuiButton size="small" startIcon={<DeleteRounded sx={{ fontSize: 14 }} />} disabled={isSelf} onClick={() => setDeleteTarget(u)} sx={{ width: '100%', fontSize: '0.75rem', fontWeight: 600, color: colors.danger, borderRadius: '8px', textTransform: 'none', '&:hover': { backgroundColor: colors.dangerBg }, '&:disabled': { opacity: 0.4 } }}>
-                          Delete
-                        </MuiButton>
-                      </span>
-                    </Tooltip>
-                  </Box>
-                </Box>
-              </Grid>
-            );
-          })}
-        </Grid>
-      )}
-
-      {!loading && filtered.length === 0 && (
+      ) : filtered.length === 0 ? (
         <Box sx={{ py: 8, textAlign: 'center' }}>
           <PeopleRounded sx={{ fontSize: 48, color: colors.textSubdued, mb: 1 }} />
           <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>No users found.</Typography>
         </Box>
+      ) : (
+        <>
+          <Box sx={USERS_GRID_SX}>
+            {paginatedUsers.map(u => (
+              <UserCard
+                key={u.id}
+                user={u}
+                isSelf={u.id === currentUser?.id}
+                onEdit={() => openEdit(u)}
+                onDelete={() => setDeleteTarget(u)}
+              />
+            ))}
+          </Box>
+          {totalPages > 1 && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2.5 }}>
+              <Pagination
+                count={totalPages}
+                page={page}
+                onChange={(_, p) => setPage(p)}
+                color="primary"
+                size="small"
+                siblingCount={0}
+                boundaryCount={1}
+                sx={{ maxWidth: '100%', '& .MuiPaginationItem-root': { fontWeight: 600 } }}
+              />
+            </Box>
+          )}
+        </>
       )}
 
       {/* ── Create User Dialog ─────────────────────────────────────────────── */}

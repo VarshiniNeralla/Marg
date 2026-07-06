@@ -233,12 +233,16 @@ function FloorCard({ label, number, onClick }: { label: string; number: number; 
 }
 
 /* ── Persisted pin shape for rendering ──────────────────────────────────── */
+type PinUploadStatus = 'uploading' | 'failed';
+
 interface RenderPin {
   id: string;
   sequenceNumber: number;
   x: number;
   y: number;
   hasCapture: boolean;
+  /** Optimistic-upload state: set while this pin's capture is uploading or after it failed. */
+  status?: PinUploadStatus;
 }
 
 /* ── Floor plan viewer with pin, fullscreen, pinch-to-zoom ──────────────── */
@@ -543,25 +547,57 @@ function FloorPlanWithPin({
 
               {/* Persisted, numbered pins */}
               {pins.map(p => {
-                const color = p.hasCapture ? '#16a34a' : '#d97706';
+                const color = p.status === 'failed' ? '#dc2626' : p.hasCapture ? '#16a34a' : '#d97706';
                 return (
                   <Box
                     key={p.id}
-                    data-pin-id={p.id}
-                    onPointerUp={(e) => {
-                      e.stopPropagation();
-                      onPinClick(p.id);
-                    }}
-                    sx={{ position: 'absolute', left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%,-100%)', cursor: 'pointer', zIndex: 5, touchAction: 'none' }}
+                    // Purely positional — NOT the click target. This box inherits the
+                    // ancestor's zoom `scale()`, so its own layout box (and therefore
+                    // its hit-test region) grows with zoom even though the marker drawn
+                    // inside it is counter-scaled back to a constant visual size. Putting
+                    // the click handler / data-pin-id here made the clickable area grow
+                    // with zoom while the visible pin stayed small — clicks far from a
+                    // zoomed-in pin were still landing on it. The listener now lives on
+                    // the counter-scaled child below, whose hit box tracks its paint size.
+                    sx={{ position: 'absolute', left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%,-100%)', zIndex: 5, pointerEvents: 'none' }}
                   >
-                    {/* Counter-scale so the marker keeps a constant on-screen size
-                        regardless of the container's zoom (anchored at the tip). */}
-                    <Box sx={{ transform: `scale(${1 / scale})`, transformOrigin: 'bottom center' }}>
-                      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.5))', transition: T, '&:hover': { transform: 'scale(1.08)' } }}>
+                    {/* Counter-scale so the marker AND its clickable hit-box both stay a
+                        constant on-screen size regardless of zoom (anchored at the tip). */}
+                    <Box
+                      data-pin-id={p.id}
+                      onPointerUp={(e) => {
+                        e.stopPropagation();
+                        onPinClick(p.id);
+                      }}
+                      sx={{ transform: `scale(${1 / scale})`, transformOrigin: 'bottom center', cursor: 'pointer', pointerEvents: 'auto', touchAction: 'none' }}
+                    >
+                      <Box sx={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.5))', transition: T, opacity: p.status === 'uploading' ? 0.85 : 1, '&:hover': { transform: 'scale(1.08)' } }}>
                         <Box sx={{ width: { xs: 20, sm: 30 }, height: { xs: 20, sm: 30 }, borderRadius: '50% 50% 50% 0', backgroundColor: color, border: { xs: '2px solid #fff', sm: '3px solid #fff' }, transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                           <Typography sx={{ fontSize: { xs: '0.625rem', sm: '0.8125rem' }, fontWeight: 800, color: '#fff', transform: 'rotate(45deg)', lineHeight: 1 }}>{p.sequenceNumber}</Typography>
                         </Box>
                         <Box sx={{ width: 2, height: { xs: 4, sm: 6 }, backgroundColor: color, mt: '-1px' }} />
+                        {/* Upload-in-progress spinner badge */}
+                        {p.status === 'uploading' && (
+                          <Box sx={{
+                            position: 'absolute', top: -5, right: -7,
+                            width: 13, height: 13, borderRadius: '50%',
+                            border: '2px solid #fff', borderTopColor: 'transparent',
+                            backgroundColor: P.blue,
+                            animation: 'pinspin 0.8s linear infinite',
+                            '@keyframes pinspin': { to: { transform: 'rotate(360deg)' } },
+                          }} />
+                        )}
+                        {/* Upload-failed badge */}
+                        {p.status === 'failed' && (
+                          <Box sx={{
+                            position: 'absolute', top: -6, right: -8,
+                            width: 14, height: 14, borderRadius: '50%',
+                            backgroundColor: '#dc2626', border: '2px solid #fff',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}>
+                            <Typography sx={{ fontSize: '0.5625rem', fontWeight: 900, color: '#fff', lineHeight: 1 }}>!</Typography>
+                          </Box>
+                        )}
                       </Box>
                     </Box>
                   </Box>
@@ -667,7 +703,36 @@ export default function CaptureWorkflowPage() {
   // second call (double-tap "Use Photo", double file-input fire) could read a
   // stale isUploading===false and create a duplicate capture. The ref flips
   // immediately, before any await, so the second call is rejected at once.
+  // (Now only guards the legacy no-floor-plan fallback branch; pin uploads use
+  // the per-pin guards below.)
   const uploadingRef = useRef(false);
+
+  /* ── Optimistic pin upload tracking ─────────────────────────────────────
+     The numbered pin is created in the store BEFORE the upload starts (it's
+     already optimistic + writeQueue-persisted), so it renders immediately.
+     These track the background upload per pin:
+     - pinStatus:        drives the marker/panel UI ('uploading' | 'failed').
+     - uploadingPinsRef: synchronous in-flight set — rejects a double-fire on
+                         the same pin before React re-renders.
+     - failedFilesRef:   original Files kept for "Retry Upload" after failure.
+     - pinPosRef:        synchronous mirror of pinPos — consuming it atomically
+                         guarantees one placement can never create two pins.   */
+  const [pinStatus, setPinStatus] = useState<Record<string, PinUploadStatus>>({});
+  const uploadingPinsRef = useRef<Set<string>>(new Set());
+  const failedFilesRef   = useRef<Map<string, File[]>>(new Map());
+  const pinPosRef        = useRef<{ x: number; y: number } | null>(null);
+  const [errorToast, setErrorToast] = useState('');
+
+  /** Keep pinPos state and its synchronous ref mirror in lockstep. */
+  const setPendingPin = useCallback((pos: { x: number; y: number } | null) => {
+    pinPosRef.current = pos;
+    setPinPos(pos);
+  }, []);
+
+  /** True while this pin has an in-flight or failed upload — such pins must
+      never be pruned as "empty", or the upload/retry would be orphaned. */
+  const isPinBusy = (id: string) =>
+    uploadingPinsRef.current.has(id) || failedFilesRef.current.has(id);
 
   // Mobile camera state
   const [cameraOpen, setCameraOpen]   = useState(false);
@@ -711,20 +776,20 @@ export default function CaptureWorkflowPage() {
         const source = byPlan.length > 0 ? byPlan : allPins.filter(p => p.floorId === selectedFloor);
         return [...source]
           .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
-          .map(p => ({ id: p.id, sequenceNumber: p.sequenceNumber, x: p.x, y: p.y, hasCapture: p.captureIds.length > 0 }));
+          .map(p => ({ id: p.id, sequenceNumber: p.sequenceNumber, x: p.x, y: p.y, hasCapture: p.captureIds.length > 0, status: pinStatus[p.id] }));
       })()
     : [];
 
   function handlePinClick(pinId: string) {
     setSelectedPinId(prev => (prev === pinId ? null : pinId));
-    setPinPos(null);
+    setPendingPin(null);
   }
 
   // Double-tap on an existing selected pin → immediate capture
   function handlePinActivate(pinId: string) {
     setActiveCapturePinId(pinId);
     setSelectedPinId(null);
-    setPinPos(null);
+    setPendingPin(null);
     if (isMobile) {
       setCameraOpen(true);
     }
@@ -747,16 +812,17 @@ export default function CaptureWorkflowPage() {
   function pruneEmptyPinsOnCurrentFloor() {
     if (!floorPlan) return;
     allPins
-      .filter(p => p.floorPlanId === floorPlan.id && p.captureIds.length === 0)
+      .filter(p => p.floorPlanId === floorPlan.id && p.captureIds.length === 0 && !isPinBusy(p.id))
       .forEach(p => deleteCapturePin(p.id));
   }
 
   // When the capture step loads for a floor, prune any pins placed in a previous
   // session that were never captured (orphans from abandoned sessions).
+  // Pins with an in-flight or failed (retryable) upload are NOT orphans — skip them.
   useEffect(() => {
     if (step !== 'capture' || !floorPlan) return;
     allPins
-      .filter(p => p.floorPlanId === floorPlan.id && p.captureIds.length === 0)
+      .filter(p => p.floorPlanId === floorPlan.id && p.captureIds.length === 0 && !isPinBusy(p.id))
       .forEach(p => deleteCapturePin(p.id));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, floorPlan?.id]);
@@ -767,9 +833,9 @@ export default function CaptureWorkflowPage() {
     // Clean up any pins placed on this floor that were never captured.
     if (step === 'capture') pruneEmptyPinsOnCurrentFloor();
     setStep(target);
-    if (targetIdx <= 0) { setProject(''); setTower(''); setFloor(''); setPinPos(null); setActiveCapturePinId(null); }
-    else if (targetIdx <= 1) { setTower(''); setFloor(''); setPinPos(null); setActiveCapturePinId(null); }
-    else if (targetIdx <= 2) { setFloor(''); setPinPos(null); setActiveCapturePinId(null); }
+    if (targetIdx <= 0) { setProject(''); setTower(''); setFloor(''); setPendingPin(null); setActiveCapturePinId(null); }
+    else if (targetIdx <= 1) { setTower(''); setFloor(''); setPendingPin(null); setActiveCapturePinId(null); }
+    else if (targetIdx <= 2) { setFloor(''); setPendingPin(null); setActiveCapturePinId(null); }
   }
 
   function goBack() {
@@ -777,45 +843,27 @@ export default function CaptureWorkflowPage() {
     if (prev) jumpToStep(prev.key);
   }
 
-  /* ── Core upload pipeline ───────────────────────────────────────────── */
-  async function handleCaptureFiles(fileList: FileList | File[] | null) {
-    const files = fileList ? Array.from(fileList as FileList) : [];
-    if (!files.length || (!activeCapturePinId && !pinPos) || !selectedFloor || isUploading || uploadingRef.current) return;
-    uploadingRef.current = true;
-    setUploadError('');
-    setIsUploading(true);
+  /* ── Background upload for one pin ─────────────────────────────────────
+     The pin already exists in the store (numbered, rendered, persisted via the
+     writeQueue). This uploads its files and attaches the resulting capture —
+     the upload API, validation, and server processing are untouched. */
+  async function runPinUpload(pinId: string, files: File[]) {
+    uploadingPinsRef.current.add(pinId);            // synchronous — blocks double-fire
+    setPinStatus(s => ({ ...s, [pinId]: 'uploading' }));
     try {
       const result = await uploadCaptureFiles(files);
       const fileCount = result.count || files.length;
-
-      if (activeCapturePinId) {
-        const existingPin = allPins.find(p => p.id === activeCapturePinId);
-        attachCaptureToPin(activeCapturePinId, fileCount, result.files);
-        setToast(`New capture attached to Pin ${existingPin?.sequenceNumber ?? ''} · sent for review`);
-        setActiveCapturePinId(null);
-        setPinPos(null);
-      } else if (floorPlan && pinPos) {
-        const pinId = createCapturePin({
-          floorPlanId: floorPlan.id,
-          floorId: selectedFloor,
-          towerId: selectedTower,
-          projectId: selectedProject,
-          x: pinPos.x,
-          y: pinPos.y,
-        });
-        attachCaptureToPin(pinId, fileCount, result.files);
-        const seq = allPins.filter(p => p.floorPlanId === floorPlan.id).length + 1;
-        setToast(`Image attached to Pin ${seq} · sent for review`);
-        setPinPos(null);
-      } else if (pinPos) {
-        const flat = flats.find(f => f.floorId === selectedFloor);
-        const flatId = flat?.id ?? `${selectedFloor}-flat-a`;
-        const seq = rooms.filter(r => r.floorId === selectedFloor).length + 1;
-        const roomId = createRoom(flatId, `Capture Point ${seq}`, 'custom');
-        uploadCapture(roomId, fileCount, result.files);
-        setToast('Capture uploaded · sent for review');
-        setPinPos(null);
+      // Attach to the SAME pin — no-op if the user deleted the pin mid-upload.
+      const captureId = attachCaptureToPin(pinId, fileCount, result.files);
+      failedFilesRef.current.delete(pinId);
+      if (captureId) {
+        const seq = useWorkflowStore.getState().capturePins.find(p => p.id === pinId)?.sequenceNumber;
+        setToast(`Capture uploaded for Pin ${seq ?? ''} · sent for review`);
       }
+      setPinStatus(s => {
+        const { [pinId]: _done, ...rest } = s;
+        return rest;
+      });
     } catch (err) {
       // Surface the SERVER's real message (size limit, unsupported type, auth,
       // etc.) instead of a generic string so the user knows how to fix it.
@@ -826,10 +874,87 @@ export default function CaptureWorkflowPage() {
         e?.response?.data?.message ||
         e?.message ||
         'Upload failed. Please check your connection and try again.';
-      setUploadError(msg);
+      const pinStillExists = useWorkflowStore.getState().capturePins.some(p => p.id === pinId);
+      if (pinStillExists) {
+        // Keep the pin, mark it failed, and stash the files so Retry can re-send them.
+        failedFilesRef.current.set(pinId, files);
+        setPinStatus(s => ({ ...s, [pinId]: 'failed' }));
+        setErrorToast(msg);
+      }
     } finally {
-      setIsUploading(false);
-      uploadingRef.current = false;
+      uploadingPinsRef.current.delete(pinId);
+    }
+  }
+
+  /** Re-send the stashed files of a failed pin upload. */
+  function retryPinUpload(pinId: string) {
+    const files = failedFilesRef.current.get(pinId);
+    if (!files?.length || uploadingPinsRef.current.has(pinId)) return;
+    void runPinUpload(pinId, files);
+  }
+
+  /* ── Core upload pipeline — optimistic pin, background upload ─────────── */
+  async function handleCaptureFiles(fileList: FileList | File[] | null) {
+    const files = fileList ? Array.from(fileList as FileList) : [];
+    if (!files.length || !selectedFloor) return;
+    setUploadError('');
+
+    /* Re-capture on an existing pin: attach in the background. */
+    if (activeCapturePinId) {
+      const pinId = activeCapturePinId;
+      if (uploadingPinsRef.current.has(pinId)) return;   // one in-flight upload per pin
+      setActiveCapturePinId(null);
+      setPendingPin(null);
+      void runPinUpload(pinId, files);
+      return;
+    }
+
+    /* New pin: create it FIRST (numbered instantly, store-optimistic), then
+       upload in the background. pinPosRef is consumed synchronously so a
+       double-fire of the same placement can never create two pins. */
+    const pos = pinPosRef.current;
+    if (floorPlan && pos) {
+      pinPosRef.current = null;
+      setPendingPin(null);
+      const pinId = createCapturePin({
+        floorPlanId: floorPlan.id,
+        floorId: selectedFloor,
+        towerId: selectedTower,
+        projectId: selectedProject,
+        x: pos.x,
+        y: pos.y,
+      });
+      void runPinUpload(pinId, files);
+      return;
+    }
+
+    /* Legacy fallback (no floor plan → room-backed capture): unchanged awaited
+       flow, still guarded by the original synchronous re-entry ref. */
+    if (pos) {
+      if (isUploading || uploadingRef.current) return;
+      uploadingRef.current = true;
+      setIsUploading(true);
+      try {
+        const result = await uploadCaptureFiles(files);
+        const fileCount = result.count || files.length;
+        const flat = flats.find(f => f.floorId === selectedFloor);
+        const flatId = flat?.id ?? `${selectedFloor}-flat-a`;
+        const seq = rooms.filter(r => r.floorId === selectedFloor).length + 1;
+        const roomId = createRoom(flatId, `Capture Point ${seq}`, 'custom');
+        uploadCapture(roomId, fileCount, result.files);
+        setToast('Capture uploaded · sent for review');
+        setPendingPin(null);
+      } catch (err) {
+        const e = err as { message?: string; response?: { data?: { message?: string } } };
+        const msg =
+          e?.response?.data?.message ||
+          e?.message ||
+          'Upload failed. Please check your connection and try again.';
+        setUploadError(msg);
+      } finally {
+        setIsUploading(false);
+        uploadingRef.current = false;
+      }
     }
   }
 
@@ -857,7 +982,7 @@ export default function CaptureWorkflowPage() {
       setActiveCapturePinId(pinObj.id);
       setSelectedPinId(null);
     }
-    setPinPos(pinPos); // keep pending pin if set
+    setPendingPin(pinPos); // keep pending pin if set
     openMobileCapture();
   }
 
@@ -997,30 +1122,51 @@ export default function CaptureWorkflowPage() {
               floorPlan={(floorPlan as unknown) as Record<string, unknown> | null}
               pin={pinPos}
               pins={floorPins}
-              onPinPlace={(x, y) => { setPinPos({ x, y }); setSelectedPinId(null); setActiveCapturePinId(null); }}
+              onPinPlace={(x, y) => { setPendingPin({ x, y }); setSelectedPinId(null); setActiveCapturePinId(null); }}
               onPinClick={handlePinClick}
               onPinActivate={handlePinActivate}
             />
           </Box>
 
           {/* Pin action panel */}
-          {selectedPinObj && (
-            <Box sx={{ mb: 2.5, p: 2, borderRadius: '14px', border: `1.5px solid ${P.border}`, backgroundColor: P.white, display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+          {selectedPinObj && (() => {
+            const selStatus = pinStatus[selectedPinObj.id];
+            const badgeColor = selStatus === 'failed' ? '#dc2626' : selectedPinObj.captureIds.length > 0 ? '#16a34a' : '#d97706';
+            return (
+            <Box sx={{ mb: 2.5, p: 2, borderRadius: '14px', border: `1.5px solid ${selStatus === 'failed' ? '#fca5a5' : P.border}`, backgroundColor: P.white, display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
               {/* Pin badge */}
-              <Box sx={{ width: 32, height: 32, borderRadius: '50%', backgroundColor: selectedPinObj.captureIds.length > 0 ? '#16a34a' : 'transparent', border: `2px ${selectedPinObj.captureIds.length > 0 ? 'solid #15803d' : 'dashed #d97706'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: selectedPinObj.captureIds.length > 0 ? '#fff' : '#d97706' }}>{selectedPinObj.sequenceNumber}</Typography>
+              <Box sx={{ width: 32, height: 32, borderRadius: '50%', backgroundColor: selStatus === 'failed' ? '#dc2626' : selectedPinObj.captureIds.length > 0 ? '#16a34a' : 'transparent', border: `2px ${selStatus === 'failed' ? 'solid #b91c1c' : selectedPinObj.captureIds.length > 0 ? 'solid #15803d' : 'dashed #d97706'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: selStatus === 'failed' || selectedPinObj.captureIds.length > 0 ? '#fff' : '#d97706' }}>{selectedPinObj.sequenceNumber}</Typography>
               </Box>
               <Box sx={{ flex: 1, minWidth: 0 }}>
                 <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong }}>Pin {selectedPinObj.sequenceNumber}</Typography>
-                <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
-                  {selectedPinObj.captureIds.length > 0
-                    ? `${selectedPinObj.captureIds.length} capture${selectedPinObj.captureIds.length !== 1 ? 's' : ''} attached`
-                    : 'No capture yet'}
+                <Typography sx={{ fontSize: '0.75rem', color: selStatus === 'failed' ? '#dc2626' : P.muted, fontWeight: selStatus ? 600 : 400 }}>
+                  {selStatus === 'uploading'
+                    ? 'Uploading capture…'
+                    : selStatus === 'failed'
+                      ? 'Upload failed — retry or delete this pin'
+                      : selectedPinObj.captureIds.length > 0
+                        ? `${selectedPinObj.captureIds.length} capture${selectedPinObj.captureIds.length !== 1 ? 's' : ''} attached`
+                        : 'No capture yet'}
                 </Typography>
               </Box>
               {/* Actions */}
               <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', flexShrink: 0 }}>
-                {isMobile ? (
+                {selStatus === 'failed' && (
+                  <Box
+                    onClick={() => { retryPinUpload(selectedPinObj.id); }}
+                    sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
+                  >
+                    <CloudUploadRounded sx={{ fontSize: 15 }} /> Retry Upload
+                  </Box>
+                )}
+                {selStatus === 'uploading' && (
+                  <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600 }}>
+                    <Box sx={{ width: 12, height: 12, borderRadius: '50%', border: `2px solid ${P.blue}`, borderTopColor: 'transparent', animation: 'pinspin 0.8s linear infinite', '@keyframes pinspin': { to: { transform: 'rotate(360deg)' } } }} />
+                    Uploading…
+                  </Box>
+                )}
+                {!selStatus && (isMobile ? (
                   /* Mobile/Tablet: Take Picture button */
                   <Box
                     onClick={() => handleTakePicture(selectedPinObj)}
@@ -1031,12 +1177,12 @@ export default function CaptureWorkflowPage() {
                 ) : (
                   /* Desktop: Capture Again → activates upload zone */
                   <Box
-                    onClick={() => { setActiveCapturePinId(selectedPinObj.id); setPinPos(null); setSelectedPinId(null); }}
+                    onClick={() => { setActiveCapturePinId(selectedPinObj.id); setPendingPin(null); setSelectedPinId(null); }}
                     sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
                   >
                     <AddAPhotoRounded sx={{ fontSize: 15 }} /> Capture Again
                   </Box>
-                )}
+                ))}
                 {(() => {
                   const latestCaptureId = selectedPinObj.captureIds[selectedPinObj.captureIds.length - 1];
                   const captureExists = latestCaptureId && allCaptures.some(c => c.id === latestCaptureId);
@@ -1050,7 +1196,16 @@ export default function CaptureWorkflowPage() {
                   ) : null;
                 })()}
                 <Box
-                  onClick={() => { deleteCapturePin(selectedPinObj.id); setSelectedPinId(null); }}
+                  onClick={() => {
+                    // Drop any upload tracking for the pin along with the pin itself.
+                    failedFilesRef.current.delete(selectedPinObj.id);
+                    setPinStatus(s => {
+                      const { [selectedPinObj.id]: _gone, ...rest } = s;
+                      return rest;
+                    });
+                    deleteCapturePin(selectedPinObj.id);
+                    setSelectedPinId(null);
+                  }}
                   sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.125, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', cursor: 'pointer', '&:hover': { borderColor: '#ef4444', color: '#ef4444', backgroundColor: 'rgba(239,68,68,0.05)' } }}
                 >
                   <DeleteOutlineRounded sx={{ fontSize: 15 }} />
@@ -1060,7 +1215,8 @@ export default function CaptureWorkflowPage() {
                 </Box>
               </Box>
             </Box>
-          )}
+            );
+          })()}
 
           {/* Mobile: "Take Picture" CTA when a pin is placed and no pin is selected */}
           {isMobile && pinPos && !selectedPinObj && (
@@ -1186,6 +1342,13 @@ export default function CaptureWorkflowPage() {
       <Snackbar open={!!toast} autoHideDuration={3500} onClose={() => setToast('')} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
         <Alert severity="success" icon={<CheckCircleRounded sx={{ fontSize: 20 }} />} onClose={() => setToast('')} sx={{ borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.16)', fontWeight: 600 }}>
           {toast}
+        </Alert>
+      </Snackbar>
+
+      {/* Background upload failure — the pin stays on the plan with a failed badge */}
+      <Snackbar open={!!errorToast} autoHideDuration={6000} onClose={() => setErrorToast('')} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
+        <Alert severity="error" onClose={() => setErrorToast('')} sx={{ borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.16)', fontWeight: 600 }}>
+          {errorToast} — tap the pin to retry.
         </Alert>
       </Snackbar>
     </Box>
