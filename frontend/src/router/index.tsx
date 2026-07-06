@@ -69,6 +69,7 @@ const MediaPage          = lazy(() => import('@/pages/Admin/MediaPage'));
 
 // ── Manager-only ──────────────────────────────────────────────────────────────
 const ReviewsPage = lazy(() => import('@/pages/Reviews/ReviewsPage'));
+const ProgressReportsPage = lazy(() => import('@/pages/ProgressReports/ProgressReportsPage'));
 
 // ── Field Engineer-only ───────────────────────────────────────────────────────
 const CaptureWorkflowPage = lazy(() => import('@/pages/CaptureWorkflow/CaptureWorkflowPage'));
@@ -158,6 +159,7 @@ const router = createBrowserRouter([
           { path: '/analytics', element: <PageSuspense><AnalyticsPage /></PageSuspense> },
           { path: '/defects',   element: <PageSuspense><DefectsPage /></PageSuspense> },
           { path: '/captures',                element: <PageSuspense><CapturesPage /></PageSuspense> },
+          { path: '/progress-reports',        element: <PageSuspense><ProgressReportsPage /></PageSuspense> },
         ],
       },
 

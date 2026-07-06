@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     # Seconds before a Cloudinary upload call is abandoned (frees the worker).
     CLOUDINARY_UPLOAD_TIMEOUT: int = 120
 
+    # ── AI / Groq Vision ──────────────────────────────────────────────────────
+    GROQ_API_KEY: str = ""
+    GROQ_VISION_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+    GROQ_REQUEST_TIMEOUT_SECONDS: int = 60
+    GROQ_MAX_RETRIES: int = 2
+    # groq | openai | gemini — swap provider with minimal code changes
+    VISION_PROVIDER: str = "groq"
+
     # ── Redis ─────────────────────────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379/0"
 

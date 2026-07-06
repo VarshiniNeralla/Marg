@@ -8,7 +8,7 @@ import {
   CameraAltRounded, ThreeSixtyRounded, PlayArrowRounded, PauseRounded,
   CheckCircleRounded, PublishRounded, HomeRounded, MeetingRoomRounded,
   EventRounded, MapRounded, CompareRounded, CloseRounded,
-  HistoryRounded,
+  HistoryRounded, AutoAwesomeRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import {
@@ -17,9 +17,14 @@ import {
 } from '@/data/mockData';
 import CaptureTimeline from '@shared/components/CaptureTimeline/CaptureTimeline';
 import TourFloorPlanPanel from '@/pages/Tours/TourFloorPlanPanel';
+import ProgressAnalysisDrawer from '@/pages/Tours/ProgressAnalysisDrawer';
+import PreviousReportsPanel from '@/pages/Tours/PreviousReportsPanel';
+import { progressAnalysisService, type ProgressAnalysisReport, type ProgressReportSummary, type ProgressReportVisualMeta } from '@/services/progressAnalysisService';
+import { formatReportDate, formatReportDateRange, formatCapturePreviewDate, orderCapturesChronologically, parseCaptureTimestamp } from '@/utils/reportFormat';
+import { toast } from 'react-toastify';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getFloorPlanByFloor, getCapturePinsByFloorPlan } from '@store/workflowSelectors';
-import { useAuthStore } from '@store/authStore';
+import { useAuthStore, isManagerOrAdmin } from '@store/authStore';
 import type { MockCapture } from '@/data/mockData';
 
 // Placeholder equirectangular panoramas — one per tour, keyed by tourId.
@@ -44,6 +49,137 @@ const DEMO_PANORAMAS = [
 ];
 
 const tourStatusFlow = ['draft', 'processing', 'in_review', 'published'] as const;
+
+function CompareAnalyzeButton({
+  loading,
+  disabled,
+  onClick,
+}: {
+  loading: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Box
+      onClick={loading || disabled ? undefined : onClick}
+      sx={{
+        mx: 1.25,
+        mb: 1.25,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 0.75,
+        py: 0.875,
+        borderRadius: '8px',
+        cursor: loading || disabled ? 'default' : 'pointer',
+        backgroundColor: loading ? 'rgba(124,58,237,0.08)' : '#7c3aed',
+        color: loading ? '#7c3aed' : '#fff',
+        fontSize: '0.75rem',
+        fontWeight: 700,
+        opacity: disabled && !loading ? 0.5 : 1,
+        transition: 'opacity 0.2s',
+        '&:hover': loading || disabled ? {} : { backgroundColor: '#6d28d9' },
+      }}
+    >
+      {loading ? (
+        <>
+          <CircularProgress size={14} sx={{ color: '#7c3aed' }} />
+          Analyzing construction progress...
+        </>
+      ) : (
+        <>
+          <AutoAwesomeRounded sx={{ fontSize: 15 }} />
+          Analyze Construction Progress
+        </>
+      )}
+    </Box>
+  );
+}
+
+function CompareWillAnalyzePreview({
+  before,
+  after,
+}: {
+  before: { label: string; date: string; imageUrl?: string | null; captureId?: string };
+  after: { label: string; date: string; imageUrl?: string | null; captureId?: string };
+}) {
+  const rows = [
+    { tag: 'Before', color: '#2563eb', bg: '#dbeafe', ...before },
+    { tag: 'After', color: '#16a34a', bg: '#dcfce7', ...after },
+  ] as const;
+
+  return (
+    <Box
+      sx={{
+        mx: 1.25,
+        mb: 1.25,
+        p: 1,
+        borderRadius: '8px',
+        backgroundColor: 'rgba(255,255,255,0.75)',
+        border: '1px solid rgba(124,58,237,0.12)',
+      }}
+    >
+      <Typography
+        sx={{
+          fontSize: '0.5625rem',
+          fontWeight: 700,
+          color: colors.textMuted,
+          textTransform: 'uppercase',
+          letterSpacing: '0.06em',
+          mb: 0.75,
+        }}
+      >
+        Will analyze
+      </Typography>
+      {rows.map((row, i) => (
+        <Box
+          key={row.tag}
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: row.imageUrl ? 'auto 1fr 108px' : 'auto 1fr auto',
+            alignItems: 'center',
+            gap: 0.75,
+            mb: i === 0 ? 0.75 : 0,
+          }}
+        >
+          <Box sx={{ px: 0.75, py: 0.25, borderRadius: '4px', backgroundColor: row.bg }}>
+            <Typography sx={{ fontSize: '0.5625rem', fontWeight: 800, color: row.color, lineHeight: 1.2 }}>
+              {row.tag}
+            </Typography>
+          </Box>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textStrong }} noWrap>
+              {row.label}
+            </Typography>
+            <Typography sx={{ fontSize: '0.625rem', color: colors.textMuted }} noWrap>
+              {row.date}
+            </Typography>
+          </Box>
+          {row.imageUrl ? (
+            <Box
+              sx={{
+                width: 108,
+                aspectRatio: '2 / 1',
+                borderRadius: '6px',
+                overflow: 'hidden',
+                backgroundColor: '#0f1929',
+                border: `1px solid ${colors.borderLight}`,
+              }}
+            >
+              <Box
+                component="img"
+                key={`${row.captureId ?? row.tag}-${row.imageUrl}`}
+                src={row.imageUrl}
+                alt={row.tag}
+                sx={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+              />
+            </Box>
+          ) : null}
+        </Box>
+      ))}
+    </Box>
+  );
+}
 
 // ── SidePanel shell ─────────────────────────────────────────────────────────
 
@@ -103,6 +239,123 @@ function RoomNavigationPanel({ tour }: { tour: ReturnType<typeof getTourById> })
         })}
       </Box>
     </SidePanel>
+  );
+}
+
+// ── Header actions: floor plan link, review approve, status chip ───────────────
+
+function TourViewerHeaderActions({
+  floorPlanTo,
+  statusChip,
+  tour,
+  canReview,
+  isMarkedDone,
+  onApproveReview,
+}: {
+  floorPlanTo: string | null;
+  statusChip: { label: string; color: string; bg: string };
+  tour: NonNullable<ReturnType<typeof getTourById>>;
+  canReview: boolean;
+  isMarkedDone: boolean;
+  onApproveReview: () => void;
+}) {
+  const needsReview = tour.status === 'in_review' || (tour.status === 'published' && !tour.managerReviewed);
+  const showApprove = canReview && needsReview && !isMarkedDone && !tour.managerReviewed;
+  const showReviewedBadge = canReview && (isMarkedDone || tour.managerReviewed);
+
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0 }}>
+      {floorPlanTo && (
+        <Tooltip title="View this room on the floor plan">
+          <Box
+            component={Link}
+            to={floorPlanTo}
+            sx={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 0.5,
+              px: { xs: 0.75, sm: 1 },
+              py: 0.5,
+              borderRadius: '8px',
+              textDecoration: 'none',
+              color: colors.textMuted,
+              border: `1px solid ${colors.borderLight}`,
+              backgroundColor: colors.card,
+              transition: `all ${motion.durationFast}`,
+              '&:hover': {
+                color: colors.primary,
+                borderColor: colors.primary,
+                backgroundColor: colors.primarySoft,
+              },
+            }}
+          >
+            <MapRounded sx={{ fontSize: 15 }} />
+            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, display: { xs: 'none', sm: 'block' }, lineHeight: 1 }}>
+              Floor plan
+            </Typography>
+          </Box>
+        </Tooltip>
+      )}
+
+      {showApprove && (
+        <Tooltip title="Confirm captures look correct and complete your manager review">
+          <Box
+            component="button"
+            onClick={onApproveReview}
+            sx={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 0.5,
+              px: { xs: 0.75, sm: 1.25 },
+              py: 0.5,
+              borderRadius: '8px',
+              cursor: 'pointer',
+              border: 'none',
+              background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+              color: '#fff',
+              boxShadow: '0 2px 8px rgba(16,185,129,0.28)',
+              transition: `all ${motion.durationFast}`,
+              '&:hover': { opacity: 0.92, boxShadow: '0 4px 14px rgba(16,185,129,0.35)' },
+            }}
+          >
+            <CheckCircleRounded sx={{ fontSize: 15 }} />
+            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, display: { xs: 'none', sm: 'block' }, lineHeight: 1, whiteSpace: 'nowrap' }}>
+              {tour.status === 'in_review' ? 'Approve tour' : 'Complete review'}
+            </Typography>
+          </Box>
+        </Tooltip>
+      )}
+
+      {showReviewedBadge && (
+        <Chip
+          icon={<CheckCircleRounded sx={{ fontSize: '14px !important' }} />}
+          label="Reviewed"
+          size="small"
+          sx={{
+            height: 24,
+            fontSize: '0.625rem',
+            fontWeight: 700,
+            color: '#16a34a',
+            backgroundColor: 'rgba(22,163,74,0.1)',
+            borderRadius: '6px',
+            '& .MuiChip-icon': { color: '#16a34a' },
+          }}
+        />
+      )}
+
+      <Chip
+        label={statusChip.label}
+        size="small"
+        sx={{
+          height: 22,
+          fontSize: '0.625rem',
+          fontWeight: 600,
+          color: statusChip.color,
+          backgroundColor: statusChip.bg,
+          borderRadius: '6px',
+        }}
+      />
+    </Box>
   );
 }
 
@@ -559,6 +812,7 @@ export default function TourViewerPage() {
   const updateTour = useWorkflowStore(s => s.updateTour);
   const floors = useWorkflowStore(s => s.floors);
   const user = useAuthStore(s => s.user);
+  const canViewPreviousReports = isManagerOrAdmin(user);
   const tour = tours.find(t => t.id === tourId) ?? getTourById(tourId ?? '');
 
   const navState = location.state as { from?: string; fromLabel?: string } | null;
@@ -582,12 +836,23 @@ export default function TourViewerPage() {
   const [panoramaOverride, setPanoramaOverride] = useState<string | null>(null);
   // Compare mode: two snapshot IDs to compare.
   const [compareIds, setCompareIds] = useState<[string | null, string | null]>([null, null]);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisReport, setAnalysisReport] = useState<ProgressAnalysisReport | null>(null);
+  const [analysisDrawerOpen, setAnalysisDrawerOpen] = useState(false);
+  const [analysisMeta, setAnalysisMeta] = useState<ProgressReportVisualMeta | null>(null);
+  const [analysisReportId, setAnalysisReportId] = useState<string | null>(null);
+  const [analysisSaved, setAnalysisSaved] = useState(false);
+  const [analysisSaveLoading, setAnalysisSaveLoading] = useState(false);
 
   // Reset timeline state when the user moves to a different step.
   useEffect(() => {
     setActiveSnapId(null);
     setPanoramaOverride(null);
     setCompareIds([null, null]);
+    setAnalysisLoading(false);
+    setAnalysisDrawerOpen(false);
+    setAnalysisReportId(null);
+    setAnalysisSaved(false);
   }, [stepIdx, tourId]);
 
   useEffect(() => {
@@ -671,37 +936,50 @@ export default function TourViewerPage() {
         ? capturePins.find(p => p.floorPlanId === tourFloorPlanId && p.sequenceNumber === currentStep.sequenceNumber)
         : undefined);
 
-    const toSnapshot = (id: string, i: number, total: number): CaptureSnapshot => {
+    const toSnapshot = (id: string): CaptureSnapshot => {
       const cap = captures.find(c => c.id === id) as (MockCapture & Record<string, unknown>) | undefined;
-      const isLatest = i === total - 1;
+      const capIndex = pin?.captureIds.indexOf(id) ?? 0;
       const uploadedAt = (cap?.uploadedAt as string | undefined) ?? '';
-      const dateLabel = uploadedAt ? uploadedAt.split(',')[0] : `Visit ${i + 1}`;
+      const capturedAt = (cap?.capturedAt as string | undefined) ?? '';
+      const dateLabel = uploadedAt ? uploadedAt.split(',')[0] : `Visit ${capIndex + 1}`;
       return {
         id,
         baseCaptureId: id,
         roomId: cap?.roomId ?? pin?.roomId ?? '',
-        date: (cap?.capturedAt as string | undefined) ?? '',
+        date: capturedAt || uploadedAt,
         dateLabel,
         monthLabel: '',
         reviewStatus: (cap?.reviewStatus as CaptureSnapshot['reviewStatus'] | undefined) ?? 'uploaded',
-        progress: isLatest ? 100 : Math.round(((i + 1) / total) * 100),
+        progress: 0,
         fileCount: cap?.fileCount ?? 0,
         capturedBy: (cap?.uploadedBy as string | undefined) ?? '',
         note: null,
         gradient: (cap?.gradient as string | undefined) ?? 'linear-gradient(135deg,#1e3a5f,#0f2340)',
-        isLatest,
+        isLatest: false,
       } satisfies CaptureSnapshot;
     };
 
-    // Preferred: full multi-visit history from the live pin.
+    // Preferred: full multi-visit history from the live pin — sorted oldest → newest.
     if (pin && pin.captureIds.length > 0) {
-      return pin.captureIds.map((id, i) => toSnapshot(id, i, pin.captureIds.length));
+      const snapshots = pin.captureIds.map(id => toSnapshot(id));
+      snapshots.sort((a, b) => {
+        const tA = parseCaptureTimestamp(a.date, a.dateLabel);
+        const tB = parseCaptureTimestamp(b.date, b.dateLabel);
+        if (Number.isNaN(tA) || Number.isNaN(tB)) return 0;
+        return tA - tB;
+      });
+      return snapshots.map((s, i, arr) => ({
+        ...s,
+        isLatest: i === arr.length - 1,
+        progress: i === arr.length - 1 ? 100 : Math.round(((i + 1) / arr.length) * 100),
+      }));
     }
 
     // Fallback: surface at least this step's own capture so every published
     // walkthrough stop shows a timeline.
     if (currentStep.captureId) {
-      return [toSnapshot(currentStep.captureId, 0, 1)];
+      const only = toSnapshot(currentStep.captureId);
+      return [{ ...only, isLatest: true, progress: 100 }];
     }
 
     return [];
@@ -717,6 +995,7 @@ export default function TourViewerPage() {
     compareIds[0] && timelineIds.has(compareIds[0]) ? compareIds[0] : null,
     compareIds[1] && timelineIds.has(compareIds[1]) ? compareIds[1] : null,
   ];
+
   const effectiveSnapId = validActiveSnapId ?? (pinTimeline.length > 0 ? pinTimeline[pinTimeline.length - 1].id : '');
 
   const resolvePanorama = useCallback((captureId: string): string | null => {
@@ -725,6 +1004,32 @@ export default function TourViewerPage() {
     const mediaAssets = (cap.mediaAssets as CaptureMediaAsset[] | undefined) ?? [];
     return resolveCapturePanoramaUrl(mediaAssets, cap);
   }, [captures]);
+
+  const orderedComparePreview = useMemo(() => {
+    const idA = compareIds[0] && timelineIds.has(compareIds[0]) ? compareIds[0] : null;
+    const idB = compareIds[1] && timelineIds.has(compareIds[1]) ? compareIds[1] : null;
+    if (!idA || !idB) return null;
+    const snapA = pinTimeline.find(s => s.id === idA);
+    const snapB = pinTimeline.find(s => s.id === idB);
+    if (!snapA || !snapB) return null;
+    const idxA = pinTimeline.findIndex(s => s.id === idA);
+    const idxB = pinTimeline.findIndex(s => s.id === idB);
+    const { before, after } = orderCapturesChronologically(snapA, snapB, idxA, idxB);
+    const labelFor = (snap: CaptureSnapshot) => {
+      const i = pinTimeline.findIndex(s => s.id === snap.id);
+      return snap.isLatest ? 'Latest' : `Visit ${i + 1}`;
+    };
+    return {
+      beforeCaptureId: before.id,
+      afterCaptureId: after.id,
+      beforeLabel: labelFor(before),
+      afterLabel: labelFor(after),
+      beforeDate: formatCapturePreviewDate(before.date || before.dateLabel),
+      afterDate: formatCapturePreviewDate(after.date || after.dateLabel),
+      beforeImageUrl: resolvePanorama(before.id),
+      afterImageUrl: resolvePanorama(after.id),
+    };
+  }, [compareIds[0], compareIds[1], pinTimeline, timelineIds, resolvePanorama, captures]);
 
   const resolveGpanoOrientation = useCallback((captureId: string): GpanoOrientation => {
     const cap = captures.find(c => c.id === captureId) as (MockCapture & Record<string, unknown>) | undefined;
@@ -752,6 +1057,166 @@ export default function TourViewerPage() {
     setActiveSnapId(snap.id);
     setPanoramaOverride(resolvePanorama(snap.id));
   }, [resolvePanorama]);
+
+  const handleAnalyzeProgress = useCallback(async () => {
+    const idA = validCompareIds[0];
+    const idB = validCompareIds[1];
+    if (!idA || !idB || !tour) return;
+
+    const snapA = pinTimeline.find(s => s.id === idA);
+    const snapB = pinTimeline.find(s => s.id === idB);
+    if (!snapA || !snapB) return;
+
+    const idxA = pinTimeline.findIndex(s => s.id === idA);
+    const idxB = pinTimeline.findIndex(s => s.id === idB);
+    let { before: beforeSnap, after: afterSnap } = orderCapturesChronologically(
+      snapA,
+      snapB,
+      idxA,
+      idxB,
+    );
+
+    const tBefore = parseCaptureTimestamp(beforeSnap.date, beforeSnap.dateLabel);
+    const tAfter = parseCaptureTimestamp(afterSnap.date, afterSnap.dateLabel);
+    if (!Number.isNaN(tBefore) && !Number.isNaN(tAfter) && tBefore > tAfter) {
+      [beforeSnap, afterSnap] = [afterSnap, beforeSnap];
+    }
+
+    const beforeId = beforeSnap.id;
+    const afterId = afterSnap.id;
+    const beforeImage = resolvePanorama(beforeId);
+    const afterImage = resolvePanorama(afterId);
+    if (!beforeImage || !afterImage) {
+      toast.error('Panorama images are not available for analysis');
+      return;
+    }
+    if (beforeImage === afterImage) {
+      toast.error('Before and After resolved to the same image — check capture uploads');
+      return;
+    }
+
+    const pinLabel = currentStep
+      ? `Pin ${currentStep.sequenceNumber}`
+      : tour.roomName;
+
+    const activePin = currentStep?.pinId
+      ? capturePins.find(p => p.id === currentStep.pinId)
+      : undefined;
+
+    const tourFpId = (tourMedia as unknown as Record<string, unknown>)?.floorPlanId as string | undefined;
+    const floorId = floors.find(f => f.towerId === tour.towerId && f.label === tour.floorLabel)?.id;
+    const resolvedFpId = tourFpId
+      ?? (floorId ? floorPlans.find(fp => fp.floorId === floorId && fp.towerId === tour.towerId)?.id : undefined);
+    const fpRecord = resolvedFpId
+      ? floorPlans.find(fp => fp.id === resolvedFpId)
+      : (activePin ? floorPlans.find(fp => fp.id === activePin.floorPlanId) : undefined);
+    const fpRec = fpRecord as (typeof fpRecord & Record<string, unknown>) | undefined;
+    const fpMedia = (fpRec?.mediaAssets as { original_url?: string }[] | undefined) ?? [];
+    const floorPlanUrl = (fpRec?.fileUrl as string | undefined)
+      ?? (fpRec?.file_url as string | undefined)
+      ?? fpMedia[0]?.original_url
+      ?? undefined;
+
+    const beforeDateLabel = formatReportDate(beforeSnap.date || beforeSnap.dateLabel);
+    const afterDateLabel = formatReportDate(afterSnap.date || afterSnap.dateLabel);
+
+    const meta: ProgressReportVisualMeta = {
+      projectName: tour.projectName,
+      tower: tour.towerName,
+      floor: tour.floorLabel,
+      pinName: pinLabel,
+      beforeDate: beforeDateLabel,
+      afterDate: afterDateLabel,
+      beforeImageUrl: beforeImage,
+      afterImageUrl: afterImage,
+      floorPlanImageUrl: floorPlanUrl,
+      pinX: activePin?.x ?? null,
+      pinY: activePin?.y ?? null,
+    };
+
+    setAnalysisLoading(true);
+    setAnalysisMeta(meta);
+
+    try {
+      const result = await progressAnalysisService.runUntilComplete({
+        beforeImage,
+        afterImage,
+        beforeDate: beforeDateLabel,
+        afterDate: afterDateLabel,
+        beforeTimelineId: beforeId,
+        afterTimelineId: afterId,
+        projectName: tour.projectName,
+        projectId: tour.projectId,
+        tower: tour.towerName,
+        floor: tour.floorLabel,
+        pinName: pinLabel,
+        captureType: '360',
+        floorPlanImage: floorPlanUrl,
+        pinX: activePin?.x,
+        pinY: activePin?.y,
+        forceRefresh: true,
+      });
+      setAnalysisReport(result.report);
+      setAnalysisReportId(result.reportId);
+      setAnalysisSaved(result.saved);
+      setAnalysisMeta(prev => ({
+        ...(prev ?? meta),
+        generatedAt: result.saved ? (prev?.generatedAt ?? new Date().toISOString()) : new Date().toISOString(),
+      }));
+      setAnalysisDrawerOpen(true);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Analysis failed';
+      toast.error(message);
+    } finally {
+      setAnalysisLoading(false);
+    }
+  }, [validCompareIds, tour, pinTimeline, resolvePanorama, currentStep, capturePins, floorPlans, floors, tourMedia]);
+
+  const handleOpenPreviousReport = useCallback(async (summary: ProgressReportSummary) => {
+    try {
+      const detail = await progressAnalysisService.getReport(summary.reportId);
+      setAnalysisReport(detail.analysis);
+      setAnalysisMeta({
+        projectName: detail.projectName,
+        tower: detail.tower,
+        floor: detail.floor,
+        pinName: detail.pinName,
+        beforeDate: formatReportDate(detail.beforeDate),
+        afterDate: formatReportDate(detail.afterDate),
+        beforeImageUrl: detail.beforeImageUrl,
+        afterImageUrl: detail.afterImageUrl,
+        floorPlanImageUrl: detail.floorPlanImageUrl,
+        pinX: detail.pinX,
+        pinY: detail.pinY,
+        generatedAt: detail.savedAt ?? detail.createdAt,
+      });
+      setAnalysisReportId(summary.reportId);
+      setAnalysisSaved(true);
+      setAnalysisDrawerOpen(true);
+    } catch {
+      toast.error('Failed to open report');
+    }
+  }, []);
+
+  const handleSaveAnalysisReport = useCallback(async () => {
+    if (!analysisReportId || analysisSaved) return;
+    setAnalysisSaveLoading(true);
+    try {
+      const summary = await progressAnalysisService.saveReport(analysisReportId);
+      setAnalysisSaved(true);
+      setAnalysisMeta(prev => (prev ? {
+        ...prev,
+        generatedAt: summary.savedAt ?? summary.createdAt,
+      } : prev));
+      setAnalysisDrawerOpen(false);
+      toast.success('Saved to Progress Reports');
+      navigate('/progress-reports');
+    } catch {
+      toast.error('Failed to save report');
+    } finally {
+      setAnalysisSaveLoading(false);
+    }
+  }, [analysisReportId, analysisSaved, navigate]);
 
   const handleHotspotClick = useCallback((targetTourId: string) => {
     navigate(`/tours/${targetTourId}`);
@@ -811,6 +1276,13 @@ export default function TourViewerPage() {
     }
   }, [publishTour, tour]);
 
+  const handleApproveReview = useCallback(() => {
+    if (!tour || isMarkedDone || tour.managerReviewed) return;
+    updateTour(tour.id, { status: 'published', managerReviewed: true });
+    setIsMarkedDone(true);
+    toast.success('Tour approved and marked as reviewed');
+  }, [tour, isMarkedDone, updateTour]);
+
   if (!tour) return (
     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '50vh', gap: 2 }}>
       <Typography sx={{ fontSize: '2rem', fontWeight: 700, color: colors.borderLight }}>404</Typography>
@@ -824,6 +1296,10 @@ export default function TourViewerPage() {
   const nextTour = currentIdx < tours.length - 1 ? tours[currentIdx + 1] : null;
   const capture = captures.find(c => c.id === tour.captureId) ?? mockCaptures.find(c => c.id === tour.captureId);
   const floorId = resolvedFloorId;
+  const floorPlanLink = floorId
+    ? `/floor-plans/${tour.projectId}/${tour.towerId}/${floorId}?pinsOnly=1&returnTo=/tours/${tour.id}`
+    : null;
+  const canReviewTour = isManagerOrAdmin(user);
 
   const breadcrumb: { label: string; to?: string }[] = [
     { label: listBackLabel, to: listBackTo },
@@ -836,11 +1312,14 @@ export default function TourViewerPage() {
   const viewer = (
     <Box sx={{
       borderRadius: fullscreen ? 0 : { xs: '16px', md: '20px' },
-      height: fullscreen ? '100vh' : '100%',
-      // Mobile: fill most of the viewport height so no scrolling is needed to see the panorama.
-      // Desktop: keep the 560px floor so the rail panels beside it have room.
-      minHeight: fullscreen ? '100vh' : { xs: 'min(56vw, 340px)', sm: 400, md: 560 },
-      maxHeight: fullscreen ? 'none' : { xs: 'min(56vw, 380px)', sm: 'none' },
+      width: '100%',
+      height: fullscreen ? '100vh' : {
+        xs: 'clamp(320px, 58vw, 420px)',
+        sm: 'clamp(400px, 52vw, 500px)',
+        md: 'clamp(480px, 48vw, 560px)',
+        lg: 'clamp(520px, 44vw, 680px)',
+      },
+      minHeight: fullscreen ? '100vh' : { xs: 320, md: 480 },
       position: 'relative',
       overflow: 'hidden',
       backgroundColor: '#0f1929',
@@ -855,6 +1334,28 @@ export default function TourViewerPage() {
         onHotspotClick={handleHotspotClick}
         panoOrientation={panoOrientation}
       />
+
+      {analysisLoading && (
+        <Box
+          sx={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 20,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 1.5,
+            backgroundColor: 'rgba(15,25,41,0.72)',
+            backdropFilter: 'blur(4px)',
+          }}
+        >
+          <CircularProgress size={36} sx={{ color: '#a78bfa' }} />
+          <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: '#fff' }}>
+            Analyzing construction progress...
+          </Typography>
+        </Box>
+      )}
 
       {/* Top-right controls */}
       <Box sx={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 0.75, zIndex: 10 }}>
@@ -1011,8 +1512,39 @@ export default function TourViewerPage() {
           </Typography>
         </Box>
 
-        <Chip label={ts.label} size="small" sx={{ height: 22, fontSize: '0.625rem', fontWeight: 600, color: ts.color, backgroundColor: ts.bg, borderRadius: '6px', flexShrink: 0 }} />
+        <TourViewerHeaderActions
+          floorPlanTo={floorPlanLink}
+          statusChip={ts}
+          tour={tour}
+          canReview={canReviewTour}
+          isMarkedDone={isMarkedDone}
+          onApproveReview={handleApproveReview}
+        />
       </Box>
+
+      {tour.status === 'in_review' && canReviewTour && !isMarkedDone && !tour.managerReviewed && (
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: { xs: 'flex-start', sm: 'center' },
+            gap: 1,
+            mb: { xs: 1.5, md: 2 },
+            px: 1.5,
+            py: 1,
+            borderRadius: '10px',
+            backgroundColor: 'rgba(124,58,237,0.06)',
+            border: '1px solid rgba(124,58,237,0.18)',
+          }}
+        >
+          <CheckCircleRounded sx={{ fontSize: 16, color: '#7c3aed', flexShrink: 0, mt: { xs: 0.125, sm: 0 } }} />
+          <Typography sx={{ fontSize: '0.75rem', color: colors.textSecondary, lineHeight: 1.45 }}>
+            <Box component="span" sx={{ fontWeight: 700, color: '#7c3aed' }}>Manager review</Box>
+            {' — '}walk through the captures below. When everything looks correct, use{' '}
+            <Box component="span" sx={{ fontWeight: 700, color: colors.textStrong }}>Approve tour</Box>
+            {' '}in the header to finish.
+          </Typography>
+        </Box>
+      )}
 
       {/* ── Viewer + right rail ───────────────────────────────────────────── */}
       <Box sx={{ display: 'flex', gap: 2.5, alignItems: 'stretch', flexDirection: { xs: 'column', lg: 'row' } }}>
@@ -1033,6 +1565,7 @@ export default function TourViewerPage() {
             const latestSnap = pinTimeline[pinTimeline.length - 1];
             const isViewingHistory = !!(activeSnapId && activeSnapId !== latestSnap?.id);
             const viewingSnap = isViewingHistory ? pinTimeline.find(s => s.id === activeSnapId) : null;
+            const pinLabel = currentStep ? `Pin ${currentStep.sequenceNumber}` : tour.roomName;
 
             return (
               <SidePanel
@@ -1084,17 +1617,17 @@ export default function TourViewerPage() {
                 {/* Compare UI — shown only when compare mode is active */}
                 {isComparing && (
                   <Box sx={{ mt: 1.5, borderRadius: '10px', overflow: 'hidden', border: `1px solid rgba(124,58,237,0.18)`, backgroundColor: 'rgba(124,58,237,0.04)' }}>
-                    {/* Instruction banner */}
-                    <Box sx={{ px: 1.5, py: 1, borderBottom: `1px solid rgba(124,58,237,0.12)`, display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                      <CompareRounded sx={{ fontSize: 13, color: '#7c3aed', flexShrink: 0 }} />
-                      <Typography sx={{ fontSize: '0.6875rem', color: '#7c3aed', fontWeight: 600, lineHeight: 1.4 }}>
-                        {!compareIds[0]
-                          ? 'Tap a node above to set A'
-                          : !compareIds[1]
-                          ? 'Now tap another node to set B'
-                          : 'Both selected — view each below'}
-                      </Typography>
-                    </Box>
+                    {/* Instruction banner — hidden once both visits are selected */}
+                    {!(compareIds[0] && compareIds[1]) && (
+                      <Box sx={{ px: 1.5, py: 1, borderBottom: `1px solid rgba(124,58,237,0.12)`, display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                        <CompareRounded sx={{ fontSize: 13, color: '#7c3aed', flexShrink: 0 }} />
+                        <Typography sx={{ fontSize: '0.6875rem', color: '#7c3aed', fontWeight: 600, lineHeight: 1.4 }}>
+                          {!compareIds[0]
+                            ? 'Tap any two visits on the timeline above'
+                            : 'Tap a second visit to compare'}
+                        </Typography>
+                      </Box>
+                    )}
 
                     {/* A / B slot cards */}
                     <Box sx={{ display: 'flex', gap: 1, p: 1.25 }}>
@@ -1149,14 +1682,45 @@ export default function TourViewerPage() {
                       })}
                     </Box>
 
+                    {bothSelected && orderedComparePreview && (
+                      <CompareWillAnalyzePreview
+                        key={`${orderedComparePreview.beforeCaptureId}-${orderedComparePreview.afterCaptureId}`}
+                        before={{
+                          label: orderedComparePreview.beforeLabel,
+                          date: orderedComparePreview.beforeDate,
+                          imageUrl: orderedComparePreview.beforeImageUrl,
+                          captureId: orderedComparePreview.beforeCaptureId,
+                        }}
+                        after={{
+                          label: orderedComparePreview.afterLabel,
+                          date: orderedComparePreview.afterDate,
+                          imageUrl: orderedComparePreview.afterImageUrl,
+                          captureId: orderedComparePreview.afterCaptureId,
+                        }}
+                      />
+                    )}
+
                     {/* Clear button when both selected */}
                     {bothSelected && (
-                      <Box
-                        onClick={() => setCompareIds([null, null])}
-                        sx={{ mx: 1.25, mb: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, py: 0.625, borderRadius: '7px', border: `1px solid ${colors.borderLight}`, color: colors.textMuted, fontSize: '0.6875rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: colors.danger, color: colors.danger } }}
-                      >
-                        <CloseRounded sx={{ fontSize: 12 }} /> Clear selection
-                      </Box>
+                      <>
+                        <CompareAnalyzeButton
+                          loading={analysisLoading}
+                          onClick={handleAnalyzeProgress}
+                        />
+                        <Box
+                          onClick={() => setCompareIds([null, null])}
+                          sx={{ mx: 1.25, mb: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, py: 0.625, borderRadius: '7px', border: `1px solid ${colors.borderLight}`, color: colors.textMuted, fontSize: '0.6875rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: colors.danger, color: colors.danger } }}
+                        >
+                          <CloseRounded sx={{ fontSize: 12 }} /> Clear selection
+                        </Box>
+                      </>
+                    )}
+                    {canViewPreviousReports && isComparing && (
+                      <PreviousReportsPanel
+                        projectId={tour.projectId}
+                        pinName={pinLabel}
+                        onSelect={handleOpenPreviousReport}
+                      />
                     )}
                   </Box>
                 )}
@@ -1197,50 +1761,6 @@ export default function TourViewerPage() {
             </Box>
           </SidePanel>
 
-
-          {/* Digital-twin link back to the floor plan (7D) */}
-          {floorId && (
-            <Box component={Link} to={`/floor-plans/${tour.projectId}/${tour.towerId}/${floorId}?pinsOnly=1&returnTo=/tours/${tour.id}`} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1.25, borderRadius: '12px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', textDecoration: 'none', '&:hover': { boxShadow: '0 6px 20px rgba(15,23,42,0.10)' }, transition: `box-shadow ${motion.durationFast}` }}>
-              <Box sx={{ width: 32, height: 32, borderRadius: '9px', backgroundColor: colors.primarySoft, color: colors.primary, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <MapRounded sx={{ fontSize: 17 }} />
-              </Box>
-              <Box sx={{ flex: 1 }}>
-                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: colors.textStrong }}>View on floor plan</Typography>
-                <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>See this room in context</Typography>
-              </Box>
-              <NavigateNextRounded sx={{ fontSize: 18, color: colors.textSubdued }} />
-            </Box>
-          )}
-
-          {/* Mark as Done Action */}
-          {(tour.status === 'in_review' || (user?.role === 'manager' && (!tour.managerReviewed || isMarkedDone))) && (
-            <Box
-              component="button"
-              onClick={() => {
-                if (!isMarkedDone) {
-                  updateTour(tour.id, { status: 'published', managerReviewed: true });
-                  setIsMarkedDone(true);
-                }
-              }}
-              sx={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1,
-                width: '100%', py: 1.5, borderRadius: '12px', cursor: isMarkedDone ? 'default' : 'pointer',
-                border: isMarkedDone ? 'none' : `1.5px solid ${colors.border}`,
-                backgroundColor: isMarkedDone ? '#10b981' : 'transparent',
-                color: isMarkedDone ? '#fff' : colors.textStrong,
-                fontSize: '0.9375rem', fontWeight: 600, transition: 'all 0.2s',
-                '&:hover': isMarkedDone ? {} : {
-                  borderColor: colors.primary,
-                  backgroundColor: colors.primarySoft,
-                  color: colors.primary
-                },
-                mt: 1
-              }}
-            >
-              {isMarkedDone ? <CheckCircleRounded sx={{ fontSize: 18 }} /> : <CheckCircleRounded sx={{ fontSize: 18, color: 'inherit' }} />}
-              {isMarkedDone ? 'Done' : 'Mark as done'}
-            </Box>
-          )}
         </Box>
       </Box>
 
@@ -1257,6 +1777,7 @@ export default function TourViewerPage() {
           const latestSnap = pinTimeline[pinTimeline.length - 1];
           const isViewingHistory = !!(activeSnapId && activeSnapId !== latestSnap?.id);
           const viewingSnap = isViewingHistory ? pinTimeline.find(s => s.id === activeSnapId) : null;
+          const pinLabel = currentStep ? `Pin ${currentStep.sequenceNumber}` : tour.roomName;
           return (
             <Box sx={{ borderRadius: '14px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', overflow: 'hidden' }}>
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1.25, borderBottom: `1px solid ${colors.borderLight}` }}>
@@ -1291,12 +1812,14 @@ export default function TourViewerPage() {
                 {/* Compare slots */}
                 {isComparing && (
                   <Box sx={{ mt: 1.25, borderRadius: '10px', overflow: 'hidden', border: '1px solid rgba(124,58,237,0.18)', backgroundColor: 'rgba(124,58,237,0.04)' }}>
-                    <Box sx={{ px: 1.25, py: 0.875, borderBottom: '1px solid rgba(124,58,237,0.12)', display: 'flex', alignItems: 'center', gap: 0.625 }}>
-                      <CompareRounded sx={{ fontSize: 12, color: '#7c3aed', flexShrink: 0 }} />
-                      <Typography sx={{ fontSize: '0.6875rem', color: '#7c3aed', fontWeight: 600 }}>
-                        {!compareIds[0] ? 'Tap a node above to set A' : !compareIds[1] ? 'Now tap another node to set B' : 'Both selected'}
-                      </Typography>
-                    </Box>
+                    {!(compareIds[0] && compareIds[1]) && (
+                      <Box sx={{ px: 1.25, py: 0.875, borderBottom: '1px solid rgba(124,58,237,0.12)', display: 'flex', alignItems: 'center', gap: 0.625 }}>
+                        <CompareRounded sx={{ fontSize: 12, color: '#7c3aed', flexShrink: 0 }} />
+                        <Typography sx={{ fontSize: '0.6875rem', color: '#7c3aed', fontWeight: 600 }}>
+                          {!compareIds[0] ? 'Tap any two visits on the timeline' : 'Tap a second visit'}
+                        </Typography>
+                      </Box>
+                    )}
                     <Box sx={{ display: 'flex', gap: 1, p: 1 }}>
                       {(['A', 'B'] as const).map((slot, idx) => {
                         const slotId = compareIds[idx];
@@ -1324,10 +1847,40 @@ export default function TourViewerPage() {
                         );
                       })}
                     </Box>
+                    {bothSelected && orderedComparePreview && (
+                      <CompareWillAnalyzePreview
+                        key={`${orderedComparePreview.beforeCaptureId}-${orderedComparePreview.afterCaptureId}`}
+                        before={{
+                          label: orderedComparePreview.beforeLabel,
+                          date: orderedComparePreview.beforeDate,
+                          imageUrl: orderedComparePreview.beforeImageUrl,
+                          captureId: orderedComparePreview.beforeCaptureId,
+                        }}
+                        after={{
+                          label: orderedComparePreview.afterLabel,
+                          date: orderedComparePreview.afterDate,
+                          imageUrl: orderedComparePreview.afterImageUrl,
+                          captureId: orderedComparePreview.afterCaptureId,
+                        }}
+                      />
+                    )}
                     {bothSelected && (
-                      <Box onClick={() => setCompareIds([null, null])} sx={{ mx: 1, mb: 0.875, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, py: 0.5, borderRadius: '6px', border: `1px solid ${colors.borderLight}`, color: colors.textMuted, fontSize: '0.625rem', fontWeight: 600, cursor: 'pointer' }}>
-                        <CloseRounded sx={{ fontSize: 11 }} /> Clear
-                      </Box>
+                      <>
+                        <CompareAnalyzeButton
+                          loading={analysisLoading}
+                          onClick={handleAnalyzeProgress}
+                        />
+                        <Box onClick={() => setCompareIds([null, null])} sx={{ mx: 1, mb: 0.875, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, py: 0.5, borderRadius: '6px', border: `1px solid ${colors.borderLight}`, color: colors.textMuted, fontSize: '0.625rem', fontWeight: 600, cursor: 'pointer' }}>
+                          <CloseRounded sx={{ fontSize: 11 }} /> Clear
+                        </Box>
+                      </>
+                    )}
+                    {canViewPreviousReports && isComparing && (
+                      <PreviousReportsPanel
+                        projectId={tour.projectId}
+                        pinName={pinLabel}
+                        onSelect={handleOpenPreviousReport}
+                      />
                     )}
                   </Box>
                 )}
@@ -1360,46 +1913,18 @@ export default function TourViewerPage() {
             <Typography noWrap sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>{capture?.uploadedAt ?? tour.lastCapture}</Typography>
           </Box>
         </Box>
-
-        {/* Floor plan link */}
-        {floorId && (
-          <Box component={Link} to={`/floor-plans/${tour.projectId}/${tour.towerId}/${floorId}?pinsOnly=1&returnTo=/tours/${tour.id}`} sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1.25, borderRadius: '12px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', textDecoration: 'none' }}>
-            <Box sx={{ width: 30, height: 30, borderRadius: '8px', backgroundColor: colors.primarySoft, color: colors.primary, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-              <MapRounded sx={{ fontSize: 16 }} />
-            </Box>
-            <Box sx={{ flex: 1 }}>
-              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: colors.textStrong }}>View on floor plan</Typography>
-              <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>See this room in context</Typography>
-            </Box>
-            <NavigateNextRounded sx={{ fontSize: 18, color: colors.textSubdued }} />
-          </Box>
-        )}
-
-        {/* Mark as done */}
-        {(tour.status === 'in_review' || (user?.role === 'manager' && (!tour.managerReviewed || isMarkedDone))) && (
-          <Box
-            component="button"
-            onClick={() => {
-              if (!isMarkedDone) {
-                updateTour(tour.id, { status: 'published', managerReviewed: true });
-                setIsMarkedDone(true);
-              }
-            }}
-            sx={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1,
-              width: '100%', py: 1.375, borderRadius: '12px', cursor: isMarkedDone ? 'default' : 'pointer',
-              border: isMarkedDone ? 'none' : `1.5px solid ${colors.border}`,
-              backgroundColor: isMarkedDone ? '#10b981' : 'transparent',
-              color: isMarkedDone ? '#fff' : colors.textStrong,
-              fontSize: '0.9375rem', fontWeight: 600, transition: 'all 0.2s',
-              '&:hover': isMarkedDone ? {} : { borderColor: colors.primary, backgroundColor: colors.primarySoft, color: colors.primary },
-            }}
-          >
-            <CheckCircleRounded sx={{ fontSize: 18 }} />
-            {isMarkedDone ? 'Done' : 'Mark as done'}
-          </Box>
-        )}
       </Box>
+
+      <ProgressAnalysisDrawer
+        open={analysisDrawerOpen}
+        onClose={() => setAnalysisDrawerOpen(false)}
+        report={analysisReport}
+        meta={analysisMeta ?? undefined}
+        reportId={analysisReportId}
+        saved={analysisSaved}
+        onSave={handleSaveAnalysisReport}
+        saveLoading={analysisSaveLoading}
+      />
     </Box>
   );
 }

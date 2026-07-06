@@ -111,6 +111,10 @@ export function isManager(user: AuthUser | null): boolean {
   return user?.role === 'manager';
 }
 
+export function isManagerOrAdmin(user: AuthUser | null): boolean {
+  return isAdmin(user) || isManager(user);
+}
+
 export function isFieldEngineer(user: AuthUser | null): boolean {
   return user?.role === 'field_engineer';
 }

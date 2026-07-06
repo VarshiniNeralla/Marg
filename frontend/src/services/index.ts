@@ -12,3 +12,10 @@ export { notificationService } from './notificationService';
 export { floorPlanService } from './floorPlanService';
 export { uploadToCloudinary, uploadMultipleToCloudinary } from './cloudinaryService';
 export type { UploadProgressEvent, CloudinaryUploadOptions } from './cloudinaryService';
+export { progressAnalysisService, formatReportAsText, exportReportToPdf } from './progressAnalysisService';
+export type {
+  ProgressAnalysisReport,
+  StartProgressAnalysisPayload,
+  ProgressReportSummary,
+  ProgressReportDetail,
+} from './progressAnalysisService';

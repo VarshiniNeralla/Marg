@@ -232,13 +232,12 @@ export default function CapturesPage() {
 
   // Group captures by Tower → Floor so the history reads structurally:
   // each floor is a section holding its own captures, with a link to its plan.
-  const groupedByFloor = useMemo(() => {
+  const buildFloorGroups = (captures: MockCapture[]) => {
     interface FloorGroup { projectId: string; towerId: string; floorId: string; towerName: string; floorLabel: string; projectName: string; captures: MockCapture[]; }
     const map = new Map<string, FloorGroup>();
-    for (const c of filtered) {
+    for (const c of captures) {
       const key = `${c.projectId}::${c.towerId}::${c.floorLabel}`;
       if (!map.has(key)) {
-        // Resolve floorId from the floors store (captures store label, not id).
         const floor = allFloors.find(f => f.towerId === c.towerId && f.label === c.floorLabel);
         map.set(key, { projectId: c.projectId, towerId: c.towerId, floorId: floor?.id ?? '', towerName: c.towerName, floorLabel: c.floorLabel, projectName: c.projectName, captures: [] });
       }
@@ -248,7 +247,21 @@ export default function CapturesPage() {
       a.towerName.localeCompare(b.towerName, undefined, { numeric: true }) ||
       a.floorLabel.localeCompare(b.floorLabel, undefined, { numeric: true })
     );
-  }, [filtered, allFloors]);
+  };
+
+  const groupedByFloor = useMemo(() => buildFloorGroups(filtered), [filtered, allFloors]);
+  const paginatedGroupedByFloor = useMemo(() => buildFloorGroups(paginatedFiltered), [paginatedFiltered, allFloors]);
+
+  const floorTotalCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const g of groupedByFloor) {
+      map.set(`${g.projectId}::${g.towerId}::${g.floorLabel}`, g.captures.length);
+    }
+    return map;
+  }, [groupedByFloor]);
+
+  const pageStart = filtered.length === 0 ? 0 : (page - 1) * itemsPerPage + 1;
+  const pageEnd = Math.min(page * itemsPerPage, filtered.length);
 
   const showProjectName = !projectId || projectId === 'all';
 
@@ -533,40 +546,70 @@ export default function CapturesPage() {
           <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Try a different project, tower, or floor.</Typography>
         </Box>
       ) : isEngineerView ? (
-        /* Engineer history — grouped by floor for a structured walkthrough view */
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3.5 }}>
-          {groupedByFloor.map(group => (
-            <Box key={`${group.projectName}-${group.towerName}-${group.floorLabel}`}>
-              {/* Floor section header */}
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 1.75 }}>
-                <Box sx={{ width: 30, height: 30, borderRadius: '8px', backgroundColor: P.blueSoft, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <LayersRounded sx={{ fontSize: 17, color: P.blue }} />
-                </Box>
-                <Box sx={{ minWidth: 0, mr: { xs: 'auto', sm: 0 } }}>
-                  <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, letterSpacing: '-0.02em', lineHeight: 1.2 }} noWrap>
-                    {showProjectName ? `${group.projectName} · ` : ''}{group.towerName} · {group.floorLabel}
-                  </Typography>
-                  <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
-                    {group.captures.length} capture{group.captures.length !== 1 ? 's' : ''}
-                  </Typography>
-                </Box>
-                <Box sx={{ flex: 1, height: 1, backgroundColor: P.border, mx: 1, display: { xs: 'none', sm: 'block' } }} />
-                {group.floorId && (
-                  <Box
-                    component={Link}
-                    to={`/floor-plans/${group.projectId}/${group.towerId}/${group.floorId}?pinsOnly=1`}
-                    sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.25, py: 0.625, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none', whiteSpace: 'nowrap', flexShrink: 0, transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}
-                  >
-                    <MapRounded sx={{ fontSize: 14 }} /> View Floor Plan
+        /* Engineer history — grouped by floor, paginated to limit vertical scroll */
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: { xs: 2, sm: 3 }, width: '100%', minWidth: 0 }}>
+          <Box sx={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 3.5 }}>
+            {paginatedGroupedByFloor.map(group => {
+              const floorKey = `${group.projectId}::${group.towerId}::${group.floorLabel}`;
+              const floorTotal = floorTotalCounts.get(floorKey) ?? group.captures.length;
+              const captureLabel = group.captures.length === floorTotal
+                ? `${floorTotal} capture${floorTotal !== 1 ? 's' : ''}`
+                : `${group.captures.length} of ${floorTotal} captures`;
+
+              return (
+              <Box key={`${group.projectName}-${group.towerName}-${group.floorLabel}`}>
+                {/* Floor section header */}
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 1.75 }}>
+                  <Box sx={{ width: 30, height: 30, borderRadius: '8px', backgroundColor: P.blueSoft, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <LayersRounded sx={{ fontSize: 17, color: P.blue }} />
                   </Box>
-                )}
+                  <Box sx={{ minWidth: 0, mr: { xs: 'auto', sm: 0 } }}>
+                    <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, letterSpacing: '-0.02em', lineHeight: 1.2 }} noWrap>
+                      {showProjectName ? `${group.projectName} · ` : ''}{group.towerName} · {group.floorLabel}
+                    </Typography>
+                    <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
+                      {captureLabel}
+                    </Typography>
+                  </Box>
+                  <Box sx={{ flex: 1, height: 1, backgroundColor: P.border, mx: 1, display: { xs: 'none', sm: 'block' } }} />
+                  {group.floorId && (
+                    <Box
+                      component={Link}
+                      to={`/floor-plans/${group.projectId}/${group.towerId}/${group.floorId}?pinsOnly=1`}
+                      sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.25, py: 0.625, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none', whiteSpace: 'nowrap', flexShrink: 0, transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}
+                    >
+                      <MapRounded sx={{ fontSize: 14 }} /> View Floor Plan
+                    </Box>
+                  )}
+                </Box>
+                <Box sx={GALLERY_GRID_SX}>
+                  {group.captures.map(c => <CaptureCard key={c.id} capture={c} hasTour={tourCaptureIds.has(c.id)} onDelete={setDeleteTarget} showProjectName={showProjectName} compact={isMobile} />)}
+                </Box>
               </Box>
-              {/* Captures within this floor */}
-              <Box sx={GALLERY_GRID_SX}>
-                {group.captures.map(c => <CaptureCard key={c.id} capture={c} hasTour={tourCaptureIds.has(c.id)} onDelete={setDeleteTarget} showProjectName={showProjectName} compact={isMobile} />)}
-              </Box>
+            );
+            })}
+          </Box>
+
+          {totalPages > 1 && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, width: '100%' }}>
+              <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
+                Showing {pageStart}–{pageEnd} of {filtered.length} captures · {groupedByFloor.length} floor{groupedByFloor.length !== 1 ? 's' : ''}
+              </Typography>
+              <Pagination
+                count={totalPages}
+                page={page}
+                onChange={(_, p) => {
+                  setPage(p);
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                color="primary"
+                size={isMobile ? 'small' : 'medium'}
+                siblingCount={isMobile ? 0 : 1}
+                boundaryCount={1}
+                sx={{ maxWidth: '100%', '& .MuiPaginationItem-root': { fontWeight: 600 } }}
+              />
             </Box>
-          ))}
+          )}
         </Box>
       ) : (
         <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: { xs: 2, sm: 4 }, width: '100%', minWidth: 0 }}>
@@ -574,16 +617,24 @@ export default function CapturesPage() {
             {paginatedFiltered.map(c => <CaptureCard key={c.id} capture={c} hasTour={tourCaptureIds.has(c.id)} showProjectName={showProjectName} compact={isMobile} />)}
           </Box>
           {totalPages > 1 && (
-            <Pagination
-              count={totalPages}
-              page={page}
-              onChange={(_, p) => setPage(p)}
-              color="primary"
-              size={isMobile ? 'small' : 'medium'}
-              siblingCount={isMobile ? 0 : 1}
-              boundaryCount={1}
-              sx={{ maxWidth: '100%', '& .MuiPaginationItem-root': { fontWeight: 600 } }}
-            />
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, width: '100%' }}>
+              <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
+                Showing {pageStart}–{pageEnd} of {filtered.length} captures
+              </Typography>
+              <Pagination
+                count={totalPages}
+                page={page}
+                onChange={(_, p) => {
+                  setPage(p);
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                color="primary"
+                size={isMobile ? 'small' : 'medium'}
+                siblingCount={isMobile ? 0 : 1}
+                boundaryCount={1}
+                sx={{ maxWidth: '100%', '& .MuiPaginationItem-root': { fontWeight: 600 } }}
+              />
+            </Box>
           )}
         </Box>
       )}

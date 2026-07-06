@@ -9,6 +9,7 @@ import {
   LogoutRounded, PersonRounded, MenuRounded,
   CloudUploadRounded, StorageRounded, RateReviewRounded,
   PhotoCameraRounded, ChevronLeftRounded, ChevronRightRounded, HistoryRounded,
+  AutoAwesomeRounded,
 } from '@mui/icons-material';
 import { useTheme } from '@mui/material/styles';
 import { colors, motion, zIndex } from '@theme/tokens';
@@ -39,6 +40,7 @@ const ADMIN_NAV: NavSection[] = [
       { label: 'Floor Plans', path: '/floor-plans', icon: <MapRounded /> },
       { label: 'Captures',   path: '/captures',    icon: <CameraAltRounded /> },
       { label: 'Tours',       path: '/tours',       icon: <ViewInArRounded /> },
+      { label: 'Progress Reports', path: '/progress-reports', icon: <AutoAwesomeRounded /> },
       { label: 'Analytics',   path: '/analytics',   icon: <BarChartRounded /> },
     ],
   },
@@ -65,6 +67,7 @@ const MANAGER_NAV: NavSection[] = [
       { label: 'Reviews',     path: '/reviews',   icon: <RateReviewRounded /> },
       { label: 'Captures',   path: '/captures',  icon: <CameraAltRounded /> },
       { label: 'Virtual Tours', path: '/tours',  icon: <ViewInArRounded /> },
+      { label: 'Progress Reports', path: '/progress-reports', icon: <AutoAwesomeRounded /> },
     ],
   },
   {

@@ -106,6 +106,15 @@ async def require_super_admin(
     return current_user
 
 
+async def require_manager_or_admin(
+    current_user: Annotated[UserDocument, Depends(get_current_user)],
+) -> UserDocument:
+    """Requires system role manager, admin, or super_admin."""
+    if current_user.role not in ("manager", "admin", "super_admin"):
+        raise ForbiddenException("Manager or administrator access required")
+    return current_user
+
+
 # ── Refresh token extraction ──────────────────────────────────────────────────
 
 def get_refresh_token_from_cookie(
@@ -217,6 +226,7 @@ def require_project_role(minimum_role: str):
 CurrentUser = Annotated[UserDocument, Depends(get_current_user)]
 OptionalCurrentUser = Annotated[Optional[UserDocument], Depends(get_optional_current_user)]
 AdminUser = Annotated[UserDocument, Depends(require_admin)]
+ManagerOrAdminUser = Annotated[UserDocument, Depends(require_manager_or_admin)]
 SuperAdminUser = Annotated[UserDocument, Depends(require_super_admin)]
 RefreshTokenCookie = Annotated[str, Depends(get_refresh_token_from_cookie)]
 DB = Annotated[AsyncIOMotorDatabase, Depends(get_db)]

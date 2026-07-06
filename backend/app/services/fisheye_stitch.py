@@ -644,13 +644,26 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h):
     geometry and the mismatch collapses. Flow is Farneback multi-scale on
     luminance, computed only in the two corridor strips, tapered to zero at
     strip borders, and clamped; far/aligned content measures ~zero flow and is
-    unchanged. Returns (front', back', stats).
+    unchanged.
+
+    Reliability refinement (measured on real captures): Farneback's smooth
+    expansion cannot represent the discontinuous disparity at high-contrast
+    depth edges / occlusions — fb-consistency error is 3-4.5x higher on edge
+    pixels, and the warp there leaves the offset nearly unchanged (a residual
+    few-px double edge once the multiband mixes both hemispheres near the
+    seam). The flow is therefore attenuated by a forward/backward-consistency
+    confidence, and the (1-confidence) field is returned so the seam optimizer
+    can keep its cut away from unreliable correspondence.
+
+    Returns (front', back', stats, flow_unreliability) — the last is a float32
+    (out_h, out_w) field, 0 where flow is reliable/absent, →1 where measured
+    correspondence is untrustworthy.
     """
     import cv2
     import numpy as np
 
     if out_w < 1024:  # degenerate sizes (unit tests): nothing meaningful to align
-        return front, back, None
+        return front, back, None, None
 
     lf = cv2.cvtColor(front, cv2.COLOR_BGR2GRAY)
     lb = cv2.cvtColor(back, cv2.COLOR_BGR2GRAY)
@@ -658,29 +671,71 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h):
     map_y = np.repeat(np.arange(out_h, dtype=np.float32)[:, None], out_w, axis=1)
     fx_full = np.zeros((out_h, out_w), np.float32)
     fy_full = np.zeros((out_h, out_w), np.float32)
+    unrel_full = np.zeros((out_h, out_w), np.float32)
 
     half_strip = 560
     taper = 64
     max_flow = 100.0
+    # Forward/backward consistency scale (px). Measured on real captures: the
+    # fb-error p90 is ~1.0-1.5 px on flat/distant content (reliable flow) but
+    # 3.6-32+ px exactly on high-contrast depth edges and occlusions, where
+    # Farneback's smooth quadratic expansion cannot represent the discontinuous
+    # true disparity — warping there half-aligns the edge and leaves the
+    # residual double image. tau=2 keeps confidence ~1 on flat content and
+    # collapses it precisely on those unreliable pixels.
+    fb_tau = 2.0
     stats = {}
     for name, xc in (("left", out_w // 4), ("right", 3 * out_w // 4)):
         x0, x1 = xc - half_strip, xc + half_strip
+        a, b = lf[:, x0:x1], lb[:, x0:x1]
         flow = cv2.calcOpticalFlowFarneback(
-            lf[:, x0:x1], lb[:, x0:x1], None,
+            a, b, None,
             pyr_scale=0.5, levels=5, winsize=41,
             iterations=3, poly_n=7, poly_sigma=1.5, flags=0,
         )
         fx = np.clip(flow[..., 0], -max_flow, max_flow)
         fy = np.clip(flow[..., 1], -max_flow, max_flow)
+
+        # Forward/backward consistency: where F and B disagree the measured
+        # correspondence is unreliable (occlusion boundary / discontinuity) —
+        # a warp from it drags pixels with wrong vectors. Attenuate the flow
+        # by confidence so unreliable pixels KEEP TRUE GEOMETRY: their real
+        # (large) mismatch then stays visible to the seam optimizer, which
+        # routes the cut — and its multiband mixing band — around them, so a
+        # single complete edge is rendered instead of two offset copies.
+        bflow = cv2.calcOpticalFlowFarneback(
+            b, a, None,
+            pyr_scale=0.5, levels=5, winsize=41,
+            iterations=3, poly_n=7, poly_sigma=1.5, flags=0,
+        )
+        gx, gy = np.meshgrid(
+            np.arange(x1 - x0, dtype=np.float32),
+            np.arange(out_h, dtype=np.float32),
+        )
+        bx = cv2.remap(bflow[..., 0], gx + fx, gy + fy,
+                       cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        by = cv2.remap(bflow[..., 1], gx + fx, gy + fy,
+                       cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        fb_err = np.hypot(fx + bx, fy + by)
+        conf = np.exp(-((fb_err / fb_tau) ** 2)).astype(np.float32)
+        # Smooth so attenuation cannot introduce warp discontinuities of its own.
+        conf = cv2.GaussianBlur(conf, (0, 0), 8.0)
+        fx *= conf
+        fy *= conf
+
         ramp = np.ones(x1 - x0, np.float32)
         ramp[:taper] = np.linspace(0, 1, taper, dtype=np.float32)
         ramp[-taper:] = np.linspace(1, 0, taper, dtype=np.float32)
         fx_full[:, x0:x1] = fx * ramp[None, :]
         fy_full[:, x0:x1] = fy * ramp[None, :]
+        unrel_full[:, x0:x1] = (1.0 - conf) * ramp[None, :]
         mag = np.hypot(fx, fy)
         stats[name] = {
             "median_px": float(np.median(mag)),
             "p95_px": float(np.percentile(mag, 95)),
+            "fb_err_median_px": float(np.median(fb_err)),
+            "fb_err_p95_px": float(np.percentile(fb_err, 95)),
+            "low_confidence_pct": float(100.0 * (conf < 0.5).mean()),
         }
 
     wf = w1.astype(np.float32)
@@ -692,10 +747,10 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h):
         back, map_x + wf * fx_full, map_y + wf * fy_full,
         cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT,
     )
-    return front_a, back_a, stats
+    return front_a, back_a, stats, unrel_full
 
 
-def _optimize_seam_mask(front, back, w1, out_w, out_h):
+def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None):
     """Route each seam through the lowest-mismatch path (parallax avoidance).
 
     Measured on real captures: hemisphere alignment is sub-pixel where scene
@@ -709,6 +764,14 @@ def _optimize_seam_mask(front, back, w1, out_w, out_h):
     prior scaled by the median corridor mismatch keeps the path on the
     nominal w1=0.5 locus wherever the scene is already aligned, so
     well-aligned captures are effectively unchanged.
+
+    ``flow_unreliability`` (optional, from _parallax_align_hemispheres) is an
+    occlusion penalty: where forward/backward flow disagreed, the measured
+    correspondence — and therefore the post-warp mismatch the DP sees — is not
+    trustworthy (a textureless occlusion can look aligned while the two
+    hemispheres show different content). Penalising those pixels makes the
+    seam prefer one complete, confidently-matched edge over blending two
+    unreliable observations. Zero everywhere on reliable captures → no change.
 
     Returns (mask, left_path, right_path): mask is 1.0 on the front-lens
     region between the two seam paths.
@@ -732,6 +795,12 @@ def _optimize_seam_mask(front, back, w1, out_w, out_h):
     corridor = (w1 >= 0.15) & (w1 <= 0.85)
     scale = float(np.median(diff[corridor])) if corridor.any() else 1.0
     cost = diff + ((w1 - 0.5) ** 2).astype(np.float32) * max(scale, 1.0)
+    if flow_unreliability is not None:
+        # Spread with the same sigma as the mismatch term so the penalty also
+        # buys clearance from the multiband mixing band, and scale it like the
+        # centering prior so it stays subordinate to real content mismatch.
+        occ = cv2.GaussianBlur(flow_unreliability.astype(np.float32), (0, 0), 16.0)
+        cost = cost + occ * (2.0 * max(scale, 8.0))
     BIG = np.float32(1e9)
 
     paths = []
@@ -835,6 +904,17 @@ class StitchArtifacts:
     valid_lens2: object
     blend_weight_lens1: object = None
     metadata: dict = field(default_factory=dict)
+    # ── Seam/flow diagnostics (held references only; no pipeline behavior change) ──
+    front_pre_align: object = None   # post-gain front hemisphere BEFORE flow warp
+    back_pre_align: object = None    # post-gain back hemisphere BEFORE flow warp
+    front_aligned: object = None     # front after _parallax_align_hemispheres
+    back_aligned: object = None      # back after _parallax_align_hemispheres
+    seam_mask: object = None         # binary front-region mask from _optimize_seam_mask
+    seam_left: object = None         # per-row x of left seam path
+    seam_right: object = None        # per-row x of right seam path
+    clean_lens1: object = None       # v1 ∧ (theta1 <= theta_clean)
+    clean_lens2: object = None       # v2 ∧ (theta2 <= theta_clean)
+    flow_unreliability: object = None  # (1-confidence) fwd/bwd flow field, 0=reliable
 
 
 def _overlay_equirect_horizon_equator(img):
@@ -1250,12 +1330,19 @@ def _stitch_arrays(
         d1 = cv2.distanceTransform(v1.astype(np.uint8), cv2.DIST_L2, 5)
         d2 = cv2.distanceTransform(v2.astype(np.uint8), cv2.DIST_L2, 5)
     w1 = d1 / (d1 + d2 + 1e-6)
-    front, back, flow_stats = _parallax_align_hemispheres(front, back, w1, out_w, out_h)
+    # Keep pre-warp references for seam/flow diagnostics (remap returns new
+    # arrays, so these stay untouched by the alignment below).
+    front_pre_align, back_pre_align = front, back
+    front, back, flow_stats, flow_unreliability = _parallax_align_hemispheres(
+        front, back, w1, out_w, out_h
+    )
     if flow_stats is not None:
         meta["parallax_align"] = flow_stats
         logger.info(f"Parallax alignment: {flow_stats}")
 
-    seam_mask, seam_left, seam_right = _optimize_seam_mask(front, back, w1, out_w, out_h)
+    seam_mask, seam_left, seam_right = _optimize_seam_mask(
+        front, back, w1, out_w, out_h, flow_unreliability
+    )
     meta["seam_optimized"] = True
     meta["seam_offset_px"] = {
         "left_median_abs": float(np.median(np.abs(seam_left - out_w // 4))),
@@ -1304,6 +1391,16 @@ def _stitch_arrays(
         valid_lens2=v2,
         blend_weight_lens1=w1,
         metadata=meta,
+        front_pre_align=front_pre_align,
+        back_pre_align=back_pre_align,
+        front_aligned=front,
+        back_aligned=back,
+        seam_mask=seam_mask,
+        seam_left=seam_left,
+        seam_right=seam_right,
+        clean_lens1=clean1,
+        clean_lens2=clean2,
+        flow_unreliability=flow_unreliability,
     )
     return blended, artifacts
 

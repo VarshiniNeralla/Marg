@@ -208,4 +208,42 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         [("capture_id", ASCENDING), ("job_type", ASCENDING)], name="ai_job_capture"
     )
 
+    # ── progress_analyses (AI timeline comparison cache) ─────────────────────
+    await db.progress_analyses.create_index(
+        [
+            ("org_id", ASCENDING),
+            ("before_timeline_id", ASCENDING),
+            ("after_timeline_id", ASCENDING),
+        ],
+        name="progress_analysis_cache",
+        unique=True,
+    )
+    await db.progress_analyses.create_index(
+        [("org_id", ASCENDING), ("created_at", DESCENDING)],
+        name="progress_analysis_org_created",
+    )
+    await db.progress_analyses.create_index(
+        [("org_id", ASCENDING), ("project_id", ASCENDING), ("pin_name", ASCENDING), ("created_at", DESCENDING)],
+        name="progress_analysis_org_project_pin",
+    )
+    await db.progress_analyses.create_index(
+        [("org_id", ASCENDING), ("saved", ASCENDING), ("created_at", DESCENDING)],
+        name="progress_analysis_org_saved",
+    )
+
+    # ── progress_analysis_jobs ────────────────────────────────────────────────
+    await db.progress_analysis_jobs.create_index(
+        [("org_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
+        name="progress_job_org_status",
+    )
+    await db.progress_analysis_jobs.create_index(
+        [
+            ("org_id", ASCENDING),
+            ("before_timeline_id", ASCENDING),
+            ("after_timeline_id", ASCENDING),
+            ("status", ASCENDING),
+        ],
+        name="progress_job_timeline_pair",
+    )
+
     logger.info("All MongoDB indexes created successfully.")
