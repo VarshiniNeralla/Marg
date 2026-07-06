@@ -16,7 +16,9 @@ import {
   type CaptureSnapshot,
 } from '@/data/mockData';
 import CaptureTimeline from '@shared/components/CaptureTimeline/CaptureTimeline';
+import TourFloorPlanPanel from '@/pages/Tours/TourFloorPlanPanel';
 import { useWorkflowStore } from '@store/workflowStore';
+import { getFloorPlanByFloor, getCapturePinsByFloorPlan } from '@store/workflowSelectors';
 import { useAuthStore } from '@store/authStore';
 import type { MockCapture } from '@/data/mockData';
 
@@ -568,8 +570,10 @@ export default function TourViewerPage() {
   }, [tour?.id, tour?.managerReviewed]);
 
   const capturePins = useWorkflowStore(s => s.capturePins);
+  const floorPlans = useWorkflowStore(s => s.floorPlans);
 
   const [fullscreen, setFullscreen] = useState(false);
+  const [showFloorPlan, setShowFloorPlan] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
   const [stepIdx, setStepIdx] = useState(0);
   const [isMarkedDone, setIsMarkedDone] = useState(false);
@@ -585,6 +589,10 @@ export default function TourViewerPage() {
     setPanoramaOverride(null);
     setCompareIds([null, null]);
   }, [stepIdx, tourId]);
+
+  useEffect(() => {
+    if (!fullscreen) setShowFloorPlan(false);
+  }, [fullscreen]);
 
   const currentIdx = tourId ? tours.findIndex(t => t.id === tourId) : 0;
   const tourMedia = tour as typeof tour & {
@@ -725,7 +733,7 @@ export default function TourViewerPage() {
     return gpanoFromStitch(mediaAssets[0]?.stitch);
   }, [captures]);
 
-  const activeCaptureId = validActiveSnapId ?? currentStep?.captureId ?? tour.captureId ?? '';
+  const activeCaptureId = validActiveSnapId ?? currentStep?.captureId ?? tour?.captureId ?? '';
   const panoOrientation = useMemo(
     () => (activeCaptureId ? resolveGpanoOrientation(activeCaptureId) : DEFAULT_GPANO_ORIENTATION),
     [activeCaptureId, resolveGpanoOrientation],
@@ -749,6 +757,54 @@ export default function TourViewerPage() {
     navigate(`/tours/${targetTourId}`);
   }, [navigate]);
 
+  const tourFloorPlanId = (tourMedia as unknown as Record<string, unknown>)?.floorPlanId as string | undefined;
+  const resolvedFloorId = floors.find(f => f.towerId === tour?.towerId && f.label === tour?.floorLabel)?.id;
+
+  const floorPlan = useMemo(() => {
+    if (!tour) return undefined;
+    if (tourFloorPlanId) return floorPlans.find(fp => fp.id === tourFloorPlanId);
+    if (resolvedFloorId) return getFloorPlanByFloor(floorPlans, tour.towerId, resolvedFloorId);
+    return undefined;
+  }, [tour, tourFloorPlanId, floorPlans, resolvedFloorId]);
+
+  const floorPlanImageUrl = useMemo(() => {
+    if (!floorPlan) return null;
+    const rec = floorPlan as typeof floorPlan & Record<string, unknown>;
+    const mediaAssets = (rec.mediaAssets as { original_url?: string }[] | undefined) ?? [];
+    return (rec.fileUrl as string | undefined)
+      ?? (rec.file_url as string | undefined)
+      ?? mediaAssets[0]?.original_url
+      ?? null;
+  }, [floorPlan]);
+
+  const tourPins = useMemo(() => {
+    if (!floorPlan) return [];
+    const byPlan = getCapturePinsByFloorPlan(capturePins, floorPlan.id);
+    if (byPlan.length > 0) return byPlan;
+    if (resolvedFloorId) {
+      return [...capturePins.filter(p => p.floorId === resolvedFloorId)].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+    }
+    return [];
+  }, [floorPlan, capturePins, resolvedFloorId]);
+
+  const handleFloorPlanPinClick = useCallback((pinId: string) => {
+    const stepIndex = steps.findIndex(s => s.pinId === pinId);
+    if (stepIndex >= 0) {
+      setStepIdx(stepIndex);
+      setActiveSnapId(null);
+      setPanoramaOverride(null);
+      setCompareIds([null, null]);
+      return;
+    }
+    const pin = tourPins.find(p => p.id === pinId);
+    const latestCaptureId = pin?.captureIds[pin.captureIds.length - 1];
+    if (latestCaptureId) {
+      setActiveSnapId(latestCaptureId);
+      setPanoramaOverride(resolvePanorama(latestCaptureId));
+      setCompareIds([null, null]);
+    }
+  }, [steps, tourPins, resolvePanorama]);
+
   const handlePublish = useCallback(() => {
     if (tour) {
       publishTour(tour.id);
@@ -767,7 +823,7 @@ export default function TourViewerPage() {
   const prevTour = currentIdx > 0 ? tours[currentIdx - 1] : null;
   const nextTour = currentIdx < tours.length - 1 ? tours[currentIdx + 1] : null;
   const capture = captures.find(c => c.id === tour.captureId) ?? mockCaptures.find(c => c.id === tour.captureId);
-  const floorId = floors.find(f => f.towerId === tour.towerId && f.label === tour.floorLabel)?.id;
+  const floorId = resolvedFloorId;
 
   const breadcrumb: { label: string; to?: string }[] = [
     { label: listBackLabel, to: listBackTo },
@@ -802,6 +858,22 @@ export default function TourViewerPage() {
 
       {/* Top-right controls */}
       <Box sx={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 0.75, zIndex: 10 }}>
+        {fullscreen && floorPlanImageUrl && tourPins.length > 0 && (
+          <Tooltip title={showFloorPlan ? 'Hide floor plan' : 'Open floor plan'}>
+            <IconButton
+              onClick={() => setShowFloorPlan(v => !v)}
+              size="small"
+              sx={{
+                backgroundColor: showFloorPlan ? 'rgba(37,99,235,0.85)' : 'rgba(0,0,0,0.45)',
+                color: '#fff',
+                backdropFilter: 'blur(8px)',
+                '&:hover': { backgroundColor: showFloorPlan ? 'rgba(37,99,235,0.95)' : 'rgba(0,0,0,0.6)' },
+              }}
+            >
+              <MapRounded sx={{ fontSize: 16 }} />
+            </IconButton>
+          </Tooltip>
+        )}
         <Tooltip title={autoRotate ? 'Stop rotation' : 'Auto rotate'}>
           <IconButton onClick={() => setAutoRotate(v => !v)} size="small" sx={{ backgroundColor: 'rgba(0,0,0,0.45)', color: autoRotate ? '#fbbf24' : '#fff', backdropFilter: 'blur(8px)', '&:hover': { backgroundColor: 'rgba(0,0,0,0.6)' } }}>
             {autoRotate ? <PauseRounded sx={{ fontSize: 16 }} /> : <PlayArrowRounded sx={{ fontSize: 16 }} />}
@@ -885,6 +957,17 @@ export default function TourViewerPage() {
             </Box>
           )}
         </Box>
+      )}
+
+      {fullscreen && showFloorPlan && floorPlanImageUrl && (
+        <TourFloorPlanPanel
+          imageUrl={floorPlanImageUrl}
+          floorLabel={tour.floorLabel}
+          pins={tourPins}
+          activePinId={currentStep?.pinId}
+          onPinClick={handleFloorPlanPinClick}
+          onClose={() => setShowFloorPlan(false)}
+        />
       )}
     </Box>
   );

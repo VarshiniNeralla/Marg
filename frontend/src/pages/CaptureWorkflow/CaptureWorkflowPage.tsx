@@ -11,7 +11,7 @@ import {
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
-import { getFloorPlanByFloor, getFloorsByTower } from '@store/workflowSelectors';
+import { getFloorPlanByFloor, getFloorsWithPlanByTower, countFloorsWithPlanByTower } from '@store/workflowSelectors';
 import { uploadCaptureFiles } from '@/services/uploadService';
 import { useDeviceType, usesCameraCapture } from '@/hooks/useDeviceType';
 import CameraCaptureDialog from '@/features/capturePins/CameraCaptureDialog';
@@ -749,7 +749,7 @@ export default function CaptureWorkflowPage() {
   const myTowers = [...towers.filter(t => t.projectId === selectedProject)]
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
-  const myFloors = [...getFloorsByTower(floors, selectedTower)]
+  const myFloors = [...getFloorsWithPlanByTower(floors, floorPlans, selectedTower)]
     .sort((a, b) => a.number - b.number);
 
   // A floor can accumulate more than one floor-plan record: re-uploading a plan
@@ -1063,7 +1063,7 @@ export default function CaptureWorkflowPage() {
           ) : (
             <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2,1fr)', sm: 'repeat(3,1fr)', md: 'repeat(4,1fr)' }, gap: 1.25 }}>
               {myTowers.map((t, i) => (
-                <TowerCard key={t.id} name={t.name} floors={t.floors} index={i}
+                <TowerCard key={t.id} name={t.name} floors={countFloorsWithPlanByTower(floors, floorPlans, t.id)} index={i}
                   onClick={() => { setTower(t.id); setStep('floor'); }} />
               ))}
             </Box>
@@ -1081,7 +1081,7 @@ export default function CaptureWorkflowPage() {
           <SectionHead title="Select Floor" sub="Which floor are you capturing?" />
           {myFloors.length === 0 ? (
             <Box sx={{ py: 6, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '16px' }}>
-              <Typography sx={{ color: P.muted }}>No floors found for this tower.</Typography>
+              <Typography sx={{ color: P.muted }}>No floors with uploaded plans for this tower.</Typography>
             </Box>
           ) : (
             <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(3,1fr)', sm: 'repeat(4,1fr)', md: 'repeat(5,1fr)' }, gap: 1 }}>

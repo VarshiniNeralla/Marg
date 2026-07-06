@@ -62,6 +62,36 @@ export function getFloorPlanByFloor(floorPlans: MockFloorPlan[], towerId: string
   return floorPlans.find(fp => fp.towerId === towerId && fp.floorId === floorId);
 }
 
+/** Floors on a tower that have an uploaded floor plan (capture workflow, floor plans page). */
+export function getFloorsWithPlanByTower(
+  floors: WfFloor[],
+  floorPlans: MockFloorPlan[],
+  towerId: string,
+) {
+  const towerFloorMap = new Map(
+    getFloorsByTower(floors, towerId).map(f => [f.id, f]),
+  );
+  const seen = new Set<string>();
+  const result: WfFloor[] = [];
+
+  for (const fp of floorPlans) {
+    if (fp.towerId !== towerId || seen.has(fp.floorId)) continue;
+    seen.add(fp.floorId);
+    const floor = towerFloorMap.get(fp.floorId);
+    result.push(floor ?? { id: fp.floorId, towerId, number: 0, label: fp.floorLabel });
+  }
+
+  return result.sort((a, b) => a.number - b.number);
+}
+
+export function countFloorsWithPlanByTower(
+  floors: WfFloor[],
+  floorPlans: MockFloorPlan[],
+  towerId: string,
+) {
+  return getFloorsWithPlanByTower(floors, floorPlans, towerId).length;
+}
+
 export function getCapturePinsByFloorPlan(pins: WfCapturePin[], floorPlanId: string) {
   return [...pins.filter(p => p.floorPlanId === floorPlanId)].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
 }
