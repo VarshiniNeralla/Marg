@@ -13,6 +13,72 @@ import {
 import { confidenceNarrative } from '@/utils/reportBranding';
 import { formatReportDate, formatReportDateRange, formatReportGeneratedAt } from '@/utils/reportFormat';
 
+function floorPlanPageHtml(meta: ProgressReportVisualMeta): string {
+  const url = escapeHtml(meta.floorPlanImageUrl!);
+  const hasPin = meta.pinX != null && meta.pinY != null;
+
+  const locationParts = [
+    meta.projectName,
+    meta.tower,
+    meta.floor,
+  ].filter(Boolean);
+
+  return `
+    <div class="floorplan-page-content">
+      <h2 class="section-title floorplan-page-title">Floor Plan — Inspected Location</h2>
+      <div class="floorplan-context">
+        ${locationParts.length ? `<p class="floorplan-location">${escapeHtml(locationParts.join(' · '))}</p>` : ''}
+        ${meta.pinName ? `<p class="floorplan-caption">Inspected pin: <strong>${escapeHtml(meta.pinName)}</strong></p>` : ''}
+      </div>
+      <div class="floorplan-stage">
+        <div class="floorplan-wrap floorplan-wrap-full">
+          <img src="${url}" alt="Floor plan" class="floorplan-img-full" />
+          ${hasPin ? `<div class="floorplan-pin" data-pin-x="${meta.pinX}" data-pin-y="${meta.pinY}"><span class="floorplan-pin-core"></span></div>` : ''}
+        </div>
+      </div>
+      <p class="floorplan-legend">Blue marker indicates the capture location referenced in this report.</p>
+    </div>
+  `;
+}
+
+const FLOOR_PLAN_INIT_SCRIPT = `
+function initReportFloorPlans() {
+  document.querySelectorAll('.floorplan-wrap-full').forEach(function(wrap) {
+    var img = wrap.querySelector('.floorplan-img-full');
+    var pin = wrap.querySelector('.floorplan-pin');
+    if (!img) return;
+    function layout() {
+      var iw = img.naturalWidth;
+      var ih = img.naturalHeight;
+      if (!iw || !ih) return;
+      wrap.style.aspectRatio = iw + ' / ' + ih;
+      wrap.style.width = '100%';
+      wrap.style.height = 'auto';
+      wrap.style.maxHeight = '200mm';
+      wrap.style.flex = '0 0 auto';
+      if (pin) {
+        var pinX = parseFloat(pin.getAttribute('data-pin-x'));
+        var pinY = parseFloat(pin.getAttribute('data-pin-y'));
+        if (!isNaN(pinX) && !isNaN(pinY)) {
+          pin.style.left = pinX + '%';
+          pin.style.top = pinY + '%';
+          pin.style.display = 'block';
+        }
+      }
+      wrap.setAttribute('data-floorplan-ready', '1');
+    }
+    if (img.complete && img.naturalWidth) layout();
+    else img.addEventListener('load', layout);
+  });
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initReportFloorPlans);
+} else {
+  initReportFloorPlans();
+}
+window.initReportFloorPlans = initReportFloorPlans;
+`;
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -71,9 +137,16 @@ function pageHeader(): string {
   `;
 }
 
-function pageShell(inner: string, pageNum: number, totalPages: number, generatedAt: string, isCover = false): string {
+function pageShell(
+  inner: string,
+  pageNum: number,
+  totalPages: number,
+  generatedAt: string,
+  variant?: 'cover' | 'floorplan',
+): string {
+  const extraClass = variant === 'cover' ? ' cover-page' : variant === 'floorplan' ? ' floorplan-page' : '';
   return `
-    <section class="print-page${isCover ? ' cover-page' : ''}">
+    <section class="print-page${extraClass}">
       ${pageHeader()}
       <div class="page-body">${inner}</div>
       ${pageFooter(pageNum, totalPages, generatedAt)}
@@ -101,10 +174,6 @@ export function buildReportPdfHtml(
 
   const hasFloorPlan = Boolean(meta?.floorPlanImageUrl);
   const hasPanoramas = Boolean(meta?.beforeImageUrl || meta?.afterImageUrl);
-
-  const pinMarker = meta?.pinX != null && meta?.pinY != null
-    ? `<div class="pin-marker" style="left:${meta.pinX}%;top:${meta.pinY}%"><span class="pin-dot"></span><span class="pin-ring"></span></div>`
-    : '';
 
   const metaRows = [
     meta?.projectName ? { label: 'Project', value: meta.projectName } : null,
@@ -185,17 +254,6 @@ export function buildReportPdfHtml(
         </div>
       </div>
     ` : ''}
-
-    ${hasFloorPlan ? `
-      <div class="section floorplan-section avoid-break">
-        <h2 class="section-title">Floor Plan — Inspected Location</h2>
-        ${meta?.pinName ? `<p class="floorplan-caption">Selected pin: <strong>${escapeHtml(meta.pinName)}</strong></p>` : ''}
-        <div class="floorplan-wrap">
-          <img src="${escapeHtml(meta!.floorPlanImageUrl!)}" alt="Floor plan with inspected pin" class="floorplan-img" />
-          ${pinMarker}
-        </div>
-      </div>
-    ` : ''}
   `;
 
   const findingsPage = `
@@ -227,12 +285,19 @@ export function buildReportPdfHtml(
     </div>
   `;
 
-  const totalPages = 3;
-  const body = [
-    pageShell(coverPage, 1, totalPages, generatedAt, true),
-    pageShell(visualsPage, 2, totalPages, generatedAt),
-    pageShell(findingsPage, 3, totalPages, generatedAt),
-  ].join('');
+  const pageContents: { html: string; variant?: 'cover' | 'floorplan' }[] = [
+    { html: coverPage, variant: 'cover' },
+    { html: visualsPage },
+  ];
+  if (hasFloorPlan && meta) {
+    pageContents.push({ html: floorPlanPageHtml(meta), variant: 'floorplan' });
+  }
+  pageContents.push({ html: findingsPage });
+
+  const totalPages = pageContents.length;
+  const body = pageContents
+    .map((page, index) => pageShell(page.html, index + 1, totalPages, generatedAt, page.variant))
+    .join('');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -399,26 +464,77 @@ export function buildReportPdfHtml(
       text-align: center; font-size: 18px; color: #8b95a5; line-height: 1; padding: 2px 0;
     }
 
-    /* Floor plan */
-    .floorplan-caption { font-size: 10px; color: #5c6778; margin: 0 0 10px; }
+    /* Floor plan — dedicated page */
+    .floorplan-page .page-body {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .floorplan-page-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .floorplan-page-title { margin-bottom: 10px; }
+    .floorplan-context { margin-bottom: 12px; }
+    .floorplan-location {
+      font-size: 11px; font-weight: 600; color: #1a2332; margin: 0 0 4px;
+    }
+    .floorplan-caption { font-size: 10px; color: #5c6778; margin: 0; }
+    .floorplan-stage {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 0;
+      width: 100%;
+    }
     .floorplan-wrap {
       position: relative; border: 1px solid #dce3eb; border-radius: 4px;
       overflow: hidden; background: #f7f9fb;
     }
-    .floorplan-img { width: 100%; max-height: 200px; object-fit: contain; display: block; }
-    .pin-marker {
-      position: absolute; transform: translate(-50%, -50%);
-      width: 28px; height: 28px;
+    .floorplan-wrap-full {
+      width: 100%;
+      max-height: 200mm;
+      margin: 0 auto;
     }
-    .pin-dot {
-      position: absolute; inset: 6px; border-radius: 50%;
-      background: #1a4d8f; border: 2px solid #fff;
-      box-shadow: 0 2px 8px rgba(26,77,143,0.45);
+    .floorplan-img-full {
+      width: 100%;
+      height: 100%;
+      display: block;
+      vertical-align: top;
     }
-    .pin-ring {
-      position: absolute; inset: 0; border-radius: 50%;
+    .floorplan-pin {
+      position: absolute;
+      display: none;
+      width: 22px;
+      height: 22px;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+    }
+    .floorplan-pin::before {
+      content: '';
+      position: absolute;
+      inset: -6px;
+      border-radius: 50%;
       border: 2px solid rgba(26,77,143,0.35);
-      animation: none;
+      background: rgba(26,77,143,0.12);
+    }
+    .floorplan-pin-core {
+      position: absolute;
+      inset: 3px;
+      border-radius: 50%;
+      background: #1a4d8f;
+      border: 2.5px solid #ffffff;
+      box-shadow: 0 2px 10px rgba(26,77,143,0.45);
+    }
+    .floorplan-legend {
+      margin: 10px 0 0;
+      font-size: 9px;
+      color: #8b95a5;
+      text-align: center;
+      font-style: italic;
     }
 
     /* Findings */
@@ -485,7 +601,7 @@ export function buildReportPdfHtml(
     }
   </style>
 </head>
-<body>${body}</body>
+<body>${body}<script>${FLOOR_PLAN_INIT_SCRIPT}</script></body>
 </html>`;
 }
 
@@ -499,7 +615,46 @@ export function exportReportToPdf(
   win.document.write(html);
   win.document.close();
   win.focus();
-  setTimeout(() => win.print(), 400);
+
+  const waitForImages = (): Promise<void> => {
+    const imgs = Array.from(win.document.images);
+    if (!imgs.length) return Promise.resolve();
+    return Promise.all(
+      imgs.map(img => {
+        if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+        return new Promise<void>(resolve => {
+          img.onload = () => resolve();
+          img.onerror = () => resolve();
+        });
+      }),
+    ).then(() => undefined);
+  };
+
+  const waitForFloorPlanLayout = (): Promise<void> => new Promise(resolve => {
+    let attempts = 0;
+    const tick = () => {
+      const init = (win as Window & { initReportFloorPlans?: () => void }).initReportFloorPlans;
+      if (typeof init === 'function') init();
+      const floorImgs = Array.from(win.document.querySelectorAll('.floorplan-img-full')) as HTMLImageElement[];
+      const wraps = Array.from(win.document.querySelectorAll('.floorplan-wrap-full'));
+      const imgsReady = !floorImgs.length || floorImgs.every(img => img.complete && img.naturalWidth > 0);
+      const layoutReady = wraps.length === 0 || wraps.every(w => w.getAttribute('data-floorplan-ready') === '1');
+      if ((imgsReady && layoutReady) || attempts >= 60) resolve();
+      else {
+        attempts += 1;
+        setTimeout(tick, 100);
+      }
+    };
+    tick();
+  });
+
+  waitForImages()
+    .then(() => waitForFloorPlanLayout())
+    .then(() => {
+      const init = (win as Window & { initReportFloorPlans?: () => void }).initReportFloorPlans;
+      if (typeof init === 'function') init();
+      setTimeout(() => win.print(), 400);
+    });
 }
 
 export function formatReportAsText(

@@ -39,6 +39,7 @@ import {
 import { confidenceNarrative } from '@/utils/reportBranding';
 import type { ProgressAnalysisReport } from '@/services/progressAnalysisService';
 import { formatReportDate, formatReportDateRange, formatReportGeneratedAt } from '@/utils/reportFormat';
+import FloorPlanWithPin from '@/components/ProgressReport/FloorPlanWithPin';
 
 const SECTION_THEME = {
   completed: { accent: '#1a6b3c', bg: '#f4f8f5', border: '#d4e8db' },
@@ -361,49 +362,11 @@ function FloorPlanSection({ meta }: { meta: ProgressReportVisualMeta }) {
           Selected pin: <strong>{meta.pinName}</strong>
         </Typography>
       )}
-      <Box
-        sx={{
-          position: 'relative',
-          borderRadius: '4px',
-          overflow: 'hidden',
-          border: '1px solid #dce3eb',
-          backgroundColor: '#f7f9fb',
-        }}
-      >
-        <Box component="img" src={meta.floorPlanImageUrl} alt="Floor plan" sx={{ width: '100%', display: 'block' }} />
-        {meta.pinX != null && meta.pinY != null && (
-          <Box
-            sx={{
-              position: 'absolute',
-              left: `${meta.pinX}%`,
-              top: `${meta.pinY}%`,
-              transform: 'translate(-50%, -50%)',
-              width: 24,
-              height: 24,
-              pointerEvents: 'none',
-            }}
-          >
-            <Box
-              sx={{
-                position: 'absolute',
-                inset: 4,
-                borderRadius: '50%',
-                backgroundColor: '#1a4d8f',
-                border: '2px solid #fff',
-                boxShadow: '0 2px 8px rgba(26,77,143,0.45)',
-              }}
-            />
-            <Box
-              sx={{
-                position: 'absolute',
-                inset: 0,
-                borderRadius: '50%',
-                border: '2px solid rgba(26,77,143,0.3)',
-              }}
-            />
-          </Box>
-        )}
-      </Box>
+      <FloorPlanWithPin
+        imageUrl={meta.floorPlanImageUrl}
+        pinX={meta.pinX}
+        pinY={meta.pinY}
+      />
     </Box>
   );
 }
