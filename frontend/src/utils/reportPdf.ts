@@ -10,8 +10,7 @@ import {
   REPORT_VERSION,
   type NormalizedProgressReport,
 } from '@/utils/reportNormalization';
-import { confidenceNarrative } from '@/utils/reportBranding';
-import { formatReportDate, formatReportDateRange, formatReportGeneratedAt } from '@/utils/reportFormat';
+import { formatReportDate, formatReportGeneratedAt } from '@/utils/reportFormat';
 
 function floorPlanPageHtml(meta: ProgressReportVisualMeta): string {
   const url = escapeHtml(meta.floorPlanImageUrl!);
@@ -22,13 +21,12 @@ function floorPlanPageHtml(meta: ProgressReportVisualMeta): string {
     meta.tower,
     meta.floor,
   ].filter(Boolean);
-
   return `
     <div class="floorplan-page-content">
-      <h2 class="section-title floorplan-page-title">Floor Plan — Inspected Location</h2>
+      <h2 class="section-title floorplan-page-title">Floor Plan — Capture Point</h2>
       <div class="floorplan-context">
         ${locationParts.length ? `<p class="floorplan-location">${escapeHtml(locationParts.join(' · '))}</p>` : ''}
-        ${meta.pinName ? `<p class="floorplan-caption">Inspected pin: <strong>${escapeHtml(meta.pinName)}</strong></p>` : ''}
+        ${meta.pinName ? `<p class="floorplan-caption"><strong>${escapeHtml(meta.pinName)}</strong></p>` : ''}
       </div>
       <div class="floorplan-stage">
         <div class="floorplan-wrap floorplan-wrap-full">
@@ -36,7 +34,7 @@ function floorPlanPageHtml(meta: ProgressReportVisualMeta): string {
           ${hasPin ? `<div class="floorplan-pin" data-pin-x="${meta.pinX}" data-pin-y="${meta.pinY}"><span class="floorplan-pin-core"></span></div>` : ''}
         </div>
       </div>
-      <p class="floorplan-legend">Blue marker indicates the capture location referenced in this report.</p>
+      <p class="floorplan-legend">Blue marker indicates the capture point referenced in this report.</p>
     </div>
   `;
 }
@@ -168,10 +166,7 @@ export function buildReportPdfHtml(
         hour: 'numeric',
         minute: '2-digit',
       });
-  const inspectionPeriod = formatReportDateRange(meta?.beforeDate, meta?.afterDate);
   const pct = normalized.overallProgress.percentage;
-  const confidence = normalized.confidence;
-
   const hasFloorPlan = Boolean(meta?.floorPlanImageUrl);
   const hasPanoramas = Boolean(meta?.beforeImageUrl || meta?.afterImageUrl);
 
@@ -179,8 +174,9 @@ export function buildReportPdfHtml(
     meta?.projectName ? { label: 'Project', value: meta.projectName } : null,
     meta?.tower ? { label: 'Tower', value: meta.tower } : null,
     meta?.floor ? { label: 'Floor', value: meta.floor } : null,
-    meta?.pinName ? { label: 'Pin / Location', value: meta.pinName } : null,
-    inspectionPeriod ? { label: 'Inspection Period', value: inspectionPeriod } : null,
+    meta?.pinName ? { label: 'Capture Point', value: meta.pinName } : null,
+    meta?.beforeDate ? { label: 'Before Date', value: formatReportDate(meta.beforeDate) } : null,
+    meta?.afterDate ? { label: 'After Date', value: formatReportDate(meta.afterDate) } : null,
     { label: 'Report Generated On', value: generatedAt },
   ].filter(Boolean) as { label: string; value: string }[];
 
@@ -207,11 +203,6 @@ export function buildReportPdfHtml(
       </div>
       <div class="hero-body">
         <p class="hero-summary">${escapeHtml(normalized.overallProgress.description)}</p>
-        <div class="hero-confidence">
-          <span class="hero-conf-label">Analysis Confidence</span>
-          <span class="hero-conf-value">${confidence}%</span>
-          <span class="hero-conf-note">${escapeHtml(confidenceNarrative(confidence))}</span>
-        </div>
       </div>
     </div>
   `;
@@ -268,15 +259,6 @@ export function buildReportPdfHtml(
       ${findingCard('Quality Observations', normalized.qualityObservations, SECTION_EMPTY_MESSAGES.qualityObservations)}
       ${findingCard('Safety Risks', normalized.risks, SECTION_EMPTY_MESSAGES.risks)}
       ${findingCard('Recommendations', normalized.recommendedNextSteps, SECTION_EMPTY_MESSAGES.recommendedNextSteps)}
-    </div>
-
-    <div class="confidence-card avoid-break">
-      <div class="confidence-header">
-        <span class="confidence-title">Analysis Confidence</span>
-        <span class="confidence-pct">${confidence}%</span>
-      </div>
-      <div class="confidence-bar"><div class="confidence-fill" style="width:${confidence}%"></div></div>
-      <p class="confidence-note">${escapeHtml(confidenceNarrative(confidence))}</p>
     </div>
 
     <div class="disclaimer avoid-break">
@@ -418,17 +400,6 @@ export function buildReportPdfHtml(
     .hero-summary {
       font-size: 12px; line-height: 1.8; color: #2d3748; margin: 0 0 16px;
     }
-    .hero-confidence {
-      display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px;
-      padding-top: 14px; border-top: 1px solid #dce3eb;
-    }
-    .hero-conf-label {
-      font-size: 8px; font-weight: 700; color: #8b95a5;
-      text-transform: uppercase; letter-spacing: 0.08em;
-    }
-    .hero-conf-value { font-size: 18px; font-weight: 700; color: #1a2332; }
-    .hero-conf-note { flex: 1 1 100%; font-size: 10px; color: #5c6778; line-height: 1.6; margin-top: 2px; }
-
     /* Sections */
     .section { margin-bottom: 22px; }
     .section-title {
@@ -568,21 +539,6 @@ export function buildReportPdfHtml(
     .badge-low { background: #eef2f6; color: #5c6778; }
     .badge-cat { background: #e8edf3; color: #4a5568; font-weight: 600; }
 
-    /* Confidence */
-    .confidence-card {
-      padding: 16px 18px; margin-bottom: 16px;
-      background: #f7f9fb; border: 1px solid #e4e8ee; border-radius: 4px;
-    }
-    .confidence-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
-    .confidence-title {
-      font-size: 8.5px; font-weight: 800; color: #1a2332;
-      text-transform: uppercase; letter-spacing: 0.08em;
-    }
-    .confidence-pct { font-size: 22px; font-weight: 700; color: #1a2332; }
-    .confidence-bar { height: 4px; background: #dce3eb; border-radius: 2px; overflow: hidden; margin-bottom: 8px; }
-    .confidence-fill { height: 100%; background: #1a4d8f; border-radius: 2px; }
-    .confidence-note { font-size: 10px; line-height: 1.65; color: #5c6778; margin: 0; }
-
     .disclaimer {
       padding: 12px 14px; background: #f7f9fb; border-left: 3px solid #c4cdd8;
     }
@@ -672,10 +628,9 @@ export function formatReportAsText(
   if (meta?.projectName) lines.push(`Project: ${meta.projectName}`);
   if (meta?.tower) lines.push(`Tower: ${meta.tower}`);
   if (meta?.floor) lines.push(`Floor: ${meta.floor}`);
-  if (meta?.pinName) lines.push(`Pin / Location: ${meta.pinName}`);
-  if (meta?.beforeDate || meta?.afterDate) {
-    lines.push(`Inspection period: ${formatReportDateRange(meta.beforeDate, meta.afterDate)}`);
-  }
+  if (meta?.pinName) lines.push(`Capture Point: ${meta.pinName}`);
+  if (meta?.beforeDate) lines.push(`Before Date: ${formatReportDate(meta.beforeDate)}`);
+  if (meta?.afterDate) lines.push(`After Date: ${formatReportDate(meta.afterDate)}`);
   lines.push('');
 
   lines.push('EXECUTIVE SUMMARY');
@@ -684,9 +639,6 @@ export function formatReportAsText(
 
   lines.push(`OVERALL PROGRESS: ${n.overallProgress.percentage}%`);
   lines.push(n.overallProgress.description);
-  lines.push('');
-  lines.push(`ANALYSIS CONFIDENCE: ${n.confidence}%`);
-  lines.push(confidenceNarrative(n.confidence));
   lines.push('');
 
   const section = (title: string, items: string[], empty: string) => {

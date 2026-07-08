@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.core.dependencies import CallerContext, DB, ManagerOrAdminUser
+from app.core.dependencies import CallerContext, DB, AdminUser, ManagerOrAdminUser
 from app.schemas.auth import ApiResponse
 from app.schemas.progress_analysis import (
+    ProgressAnalysisAuditEntry,
+    ProgressAnalysisAuditSummary,
     ProgressAnalysisJobResponse,
     ProgressAnalysisReport,
     ProgressAnalysisRequest,
@@ -60,6 +62,37 @@ async def list_progress_reports(
         page=page,
         limit=limit,
     )
+
+
+@router.get(
+    "/audit",
+    summary="List LLM token usage for progress analyses (admin)",
+)
+async def list_progress_analysis_audit(
+    ctx: CallerContext,
+    db: DB,
+    _admin: AdminUser,
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    """Return per-analysis input/output/total token counts for the admin Audit view."""
+    service = AIProgressService(db)
+    skip = (page - 1) * limit
+    items, total, summary_raw = await service.list_token_audit(
+        ctx.org_id,
+        skip=skip,
+        limit=limit,
+    )
+    entries = [ProgressAnalysisAuditEntry.model_validate(item) for item in items]
+    summary = ProgressAnalysisAuditSummary.model_validate(summary_raw)
+    response = paginated_response(
+        data=[e.model_dump(by_alias=True) for e in entries],
+        total=total,
+        page=page,
+        limit=limit,
+    )
+    response["summary"] = summary.model_dump(by_alias=True)
+    return response
 
 
 @router.get(
@@ -125,7 +158,7 @@ async def start_progress_analysis(
 ) -> ApiResponse[ProgressAnalysisStartResponse]:
     """
     Compare two timeline captures at the same location and generate a
-    construction progress report using Groq Vision.
+    construction progress report using the configured vision provider (vLLM or Groq).
 
     Returns immediately with a job ID for polling, or the cached analysis
     if the same timeline pair was analyzed before.
@@ -149,6 +182,7 @@ async def start_progress_analysis(
             capture_type=payload.capture_type,
             project_id=payload.project_id,
             floor_plan_image=payload.floor_plan_image,
+            floor_plan_id=payload.floor_plan_id,
             pin_x=payload.pin_x,
             pin_y=payload.pin_y,
             force_refresh=payload.force_refresh,

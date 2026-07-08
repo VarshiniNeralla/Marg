@@ -10,7 +10,6 @@ import {
 import {
   ExpandMoreRounded,
   SummarizeRounded,
-  TrendingUpRounded,
   ConstructionRounded,
   CheckCircleOutlineRounded,
   AddCircleOutlineRounded,
@@ -18,7 +17,6 @@ import {
   VerifiedRounded,
   WarningAmberRounded,
   PlaylistAddCheckRounded,
-  PsychologyRounded,
   MapRounded,
   CameraAltRounded,
   AccessTimeRounded,
@@ -36,9 +34,8 @@ import {
   type NormalizedProgressReport,
   type ImportanceLevel,
 } from '@/utils/reportNormalization';
-import { confidenceNarrative } from '@/utils/reportBranding';
 import type { ProgressAnalysisReport } from '@/services/progressAnalysisService';
-import { formatReportDate, formatReportDateRange, formatReportGeneratedAt } from '@/utils/reportFormat';
+import { formatReportDate, formatReportGeneratedAt } from '@/utils/reportFormat';
 import FloorPlanWithPin from '@/components/ProgressReport/FloorPlanWithPin';
 
 const SECTION_THEME = {
@@ -108,10 +105,9 @@ function TimelineBar({ meta }: { meta: ProgressReportVisualMeta }) {
     meta.projectName ? { label: 'Project', value: meta.projectName } : null,
     meta.tower ? { label: 'Tower', value: meta.tower } : null,
     meta.floor ? { label: 'Floor', value: meta.floor } : null,
-    meta.pinName ? { label: 'Location', value: meta.pinName } : null,
-    meta.beforeDate || meta.afterDate
-      ? { label: 'Inspection', value: formatReportDateRange(meta.beforeDate, meta.afterDate) }
-      : null,
+    meta.pinName ? { label: 'Capture Point', value: meta.pinName } : null,
+    meta.beforeDate ? { label: 'Before Date', value: formatReportDate(meta.beforeDate) } : null,
+    meta.afterDate ? { label: 'After Date', value: formatReportDate(meta.afterDate) } : null,
     meta.generatedAt
       ? { label: 'Generated', value: formatReportGeneratedAt(meta.generatedAt) }
       : null,
@@ -160,11 +156,9 @@ function TimelineBar({ meta }: { meta: ProgressReportVisualMeta }) {
 function HeroProgressCard({
   pct,
   description,
-  confidence,
 }: {
   pct: number;
   description: string;
-  confidence: number;
 }) {
   return (
     <Box
@@ -209,31 +203,9 @@ function HeroProgressCard({
         </Typography>
       </Box>
       <Box sx={{ flex: 1, minWidth: 0 }}>
-        <Typography sx={{ fontSize: '0.875rem', color: colors.text, lineHeight: 1.75, mb: 1.5 }}>
+        <Typography sx={{ fontSize: '0.875rem', color: colors.text, lineHeight: 1.75 }}>
           {description}
         </Typography>
-        <Box sx={{ pt: 1.5, borderTop: '1px solid #dce3eb' }}>
-          <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 0.5 }}>
-            <PsychologyRounded sx={{ fontSize: 14, color: '#8b95a5' }} />
-            <Typography
-              sx={{
-                fontSize: '0.5625rem',
-                fontWeight: 700,
-                color: '#8b95a5',
-                textTransform: 'uppercase',
-                letterSpacing: '0.08em',
-              }}
-            >
-              Analysis Confidence
-            </Typography>
-            <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: '#1a2332', ml: 'auto' }}>
-              {confidence}%
-            </Typography>
-          </Box>
-          <Typography sx={{ fontSize: '0.75rem', color: '#5c6778', lineHeight: 1.6 }}>
-            {confidenceNarrative(confidence)}
-          </Typography>
-        </Box>
       </Box>
     </Box>
   );
@@ -354,12 +326,12 @@ function FloorPlanSection({ meta }: { meta: ProgressReportVisualMeta }) {
             letterSpacing: '0.1em',
           }}
         >
-          Floor Plan — Inspected Location
+          Floor Plan — Capture Point
         </Typography>
       </Box>
       {meta.pinName && (
         <Typography sx={{ fontSize: '0.75rem', color: '#5c6778', mb: 1 }}>
-          Selected pin: <strong>{meta.pinName}</strong>
+          <strong>{meta.pinName}</strong>
         </Typography>
       )}
       <FloorPlanWithPin
@@ -472,7 +444,6 @@ export interface ProgressReportViewProps {
 export default function ProgressReportView({ report, meta, normalized: normalizedProp }: ProgressReportViewProps) {
   const normalized = normalizedProp ?? normalizeProgressReport(report);
   const pct = normalized.overallProgress.percentage;
-  const confidence = normalized.confidence;
 
   const showPanoramas = Boolean(meta?.beforeImageUrl || meta?.afterImageUrl);
 
@@ -481,7 +452,7 @@ export default function ProgressReportView({ report, meta, normalized: normalize
       <BrandHeader />
       {meta && <TimelineBar meta={meta} />}
 
-      <HeroProgressCard pct={pct} description={normalized.overallProgress.description} confidence={confidence} />
+      <HeroProgressCard pct={pct} description={normalized.overallProgress.description} />
 
       <Box sx={{ mb: 2 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 1.25 }}>

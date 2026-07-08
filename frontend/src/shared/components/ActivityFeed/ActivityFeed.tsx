@@ -4,7 +4,7 @@ import {
   CameraAltRounded, CheckCircleRounded, ViewInArRounded,
   BugReportRounded, UploadFileRounded, CloseRounded,
   PersonAddRounded, ManageAccountsRounded, AssignmentRounded,
-  FolderRounded, EditRounded,
+  FolderRounded, EditRounded, AutoAwesomeRounded,
 } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
 import type { MockAuditLog, AuditEventType } from '@/data/mockData';
@@ -24,6 +24,7 @@ const EVENT_ICON: Record<AuditEventType, React.ReactNode> = {
   review_assigned:     <AssignmentRounded   sx={{ fontSize: 14 }} />,
   project_created:     <FolderRounded       sx={{ fontSize: 14 }} />,
   project_updated:     <EditRounded         sx={{ fontSize: 14 }} />,
+  progress_analysis_completed: <AutoAwesomeRounded sx={{ fontSize: 14 }} />,
 };
 
 const EVENT_COLOR: Record<AuditEventType, string> = {
@@ -41,12 +42,25 @@ const EVENT_COLOR: Record<AuditEventType, string> = {
   review_assigned:     '#2563eb',
   project_created:     '#059669',
   project_updated:     '#d97706',
+  progress_analysis_completed: '#7c3aed',
 };
 
 interface ActivityFeedProps {
   logs: MockAuditLog[];
   maxItems?: number;
   compact?: boolean;
+}
+
+function formatActivityDate(value?: string): string {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 export default function ActivityFeed({ logs, maxItems, compact = false }: ActivityFeedProps) {
@@ -90,10 +104,34 @@ export default function ActivityFeed({ logs, maxItems, compact = false }: Activi
               </Box>
 
               {/* Content */}
-              <Box sx={{ flex: 1, minWidth: 0, pb: i < visible.length - 1 ? (compact ? 0 : 0.5) : 0 }}>
-                <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1 }}>
+              <Box
+                sx={{
+                  flex: 1,
+                  minWidth: 0,
+                  pb: i < visible.length - 1 ? (compact ? 0.75 : 0.5) : 0,
+                  borderBottom: compact && i < visible.length - 1 ? `1px solid ${colors.borderLight}` : 'none',
+                }}
+              >
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexDirection: compact ? 'column' : 'row',
+                    alignItems: compact ? 'stretch' : 'flex-start',
+                    justifyContent: 'space-between',
+                    gap: compact ? 0.375 : 1,
+                  }}
+                >
                   <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography sx={{ fontSize: compact ? '0.8125rem' : '0.875rem', fontWeight: 500, color: colors.textStrong, lineHeight: 1.4 }}>
+                    <Typography
+                      sx={{
+                        fontSize: compact ? '0.8125rem' : '0.875rem',
+                        fontWeight: 500,
+                        color: colors.textStrong,
+                        lineHeight: compact ? 1.45 : 1.4,
+                        pr: compact ? 0 : 1,
+                        wordBreak: 'break-word',
+                      }}
+                    >
                       <Box component="span" sx={{ fontWeight: 700 }}>{log.actorName}</Box>
                       {' — '}
                       {log.description}
@@ -104,7 +142,18 @@ export default function ActivityFeed({ logs, maxItems, compact = false }: Activi
                       </Box>
                     )}
                   </Box>
-                  <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, flexShrink: 0, mt: 0.125 }}>{log.createdAt}</Typography>
+                  <Typography
+                    sx={{
+                      fontSize: '0.6875rem',
+                      color: colors.textSubdued,
+                      flexShrink: 0,
+                      mt: compact ? 0 : 0.125,
+                      whiteSpace: compact ? 'normal' : 'nowrap',
+                      alignSelf: compact ? 'flex-start' : 'auto',
+                    }}
+                  >
+                    {formatActivityDate(log.createdAt)}
+                  </Typography>
                 </Box>
               </Box>
             </Box>

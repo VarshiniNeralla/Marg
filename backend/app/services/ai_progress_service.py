@@ -2,30 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import io
 import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlparse
 
-import httpx
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from PIL import Image
 
 from app.core.config import Settings, get_settings
 from app.repositories.user_project import UserProjectRepository
+from app.services.image_fetch import download_image, resize_if_needed, validate_image_url
 from app.services.vision_providers.base import VisionProvider
 from app.services.vision_providers.groq_provider import GroqVisionProvider
+from app.services.vision_providers.vllm_provider import VllmVisionProvider
 
-# Groq base64 image limit is ~4 MB per image; keep headroom for two images in one request.
-_MAX_IMAGE_BYTES = 1_800_000
-_MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
-_ALLOWED_IMAGE_HOSTS = (
-    "res.cloudinary.com",
-    "cloudinary.com",
-)
 _SAFE_TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _MAX_FIELD_LEN = 200
 
@@ -47,34 +38,14 @@ def _sanitize_text(value: str, *, max_len: int = _MAX_FIELD_LEN) -> str:
     return cleaned[:max_len]
 
 
-def validate_image_url(url: str, *, settings: Settings | None = None) -> str:
-    """Validate and return a safe HTTPS image URL."""
-    settings = settings or get_settings()
-    parsed = urlparse((url or "").strip())
-
-    if parsed.scheme != "https":
-        raise ValueError("Image URL must use HTTPS")
-
-    host = (parsed.hostname or "").lower()
-    allowed_hosts = set(_ALLOWED_IMAGE_HOSTS)
-    cloud_name = (settings.CLOUDINARY_CLOUD_NAME or "").strip().lower()
-    if cloud_name:
-        allowed_hosts.add(f"{cloud_name}.cloudinary.com")
-
-    if not any(host == h or host.endswith(f".{h}") for h in allowed_hosts):
-        raise ValueError("Image URL must be from an allowed Cloudinary host")
-
-    if not parsed.path or parsed.path == "/":
-        raise ValueError("Image URL path is invalid")
-
-    return url.strip()
-
-
 def get_vision_provider(provider_name: str | None = None) -> VisionProvider:
     """Factory for vision providers — swap implementation with minimal changes."""
-    name = (provider_name or "groq").lower()
+    settings = get_settings()
+    name = (provider_name or settings.VISION_PROVIDER or "vllm").lower()
+    if name == "vllm":
+        return VllmVisionProvider(settings)
     if name == "groq":
-        return GroqVisionProvider()
+        return GroqVisionProvider(settings)
     if name == "openai":
         from app.services.vision_providers.openai_provider import OpenAIVisionProvider
         return OpenAIVisionProvider()
@@ -97,8 +68,11 @@ class AIProgressService:
         self._db = db
         self._settings = settings or get_settings()
         self._provider = provider or get_vision_provider(self._settings.VISION_PROVIDER)
-        self._timeout = float(self._settings.GROQ_REQUEST_TIMEOUT_SECONDS)
-
+        self._timeout = (
+            float(self._settings.VLLM_HTTP_TIMEOUT_S)
+            if self._settings.VISION_PROVIDER.lower() == "vllm"
+            else float(self._settings.GROQ_REQUEST_TIMEOUT_SECONDS)
+        )
     async def get_cached_analysis(
         self,
         org_id: str,
@@ -195,6 +169,7 @@ class AIProgressService:
         capture_type: str = "360",
         project_id: str = "",
         floor_plan_image: str = "",
+        floor_plan_id: str = "",
         pin_x: float | None = None,
         pin_y: float | None = None,
         force_refresh: bool = False,
@@ -322,6 +297,8 @@ class AIProgressService:
             "error": None,
             "model": None,
             "latency_ms": None,
+            "prompt_tokens": None,
+            "completion_tokens": None,
             "total_tokens": None,
             "created_at": now,
             "completed_at": None,
@@ -474,6 +451,139 @@ class AIProgressService:
             raise ValueError("Failed to save report")
         return _serialize_report_summary(updated)
 
+    async def list_token_audit(
+        self,
+        org_id: str,
+        *,
+        skip: int = 0,
+        limit: int = 20,
+    ) -> tuple[list[dict[str, Any]], int, dict[str, Any]]:
+        """List completed progress analyses with LLM token usage (admin audit)."""
+        query: dict[str, Any] = {
+            "org_id": org_id,
+            "analysis": {"$exists": True, "$ne": None},
+        }
+        total = await self._db[_COLLECTION_CACHE].count_documents(query)
+        cursor = (
+            self._db[_COLLECTION_CACHE]
+            .find(query)
+            .sort([("created_at", -1)])
+            .skip(skip)
+            .limit(limit)
+        )
+        docs = await cursor.to_list(length=limit)
+        user_ids = {
+            str(doc.get("requested_by") or "")
+            for doc in docs
+            if doc.get("requested_by")
+        }
+        user_names = await self._resolve_user_names(user_ids)
+        items = [
+            _serialize_token_audit_entry(doc, user_names)
+            for doc in docs
+        ]
+        summary = await self._aggregate_token_usage(org_id, query)
+        return items, total, summary
+
+    async def _aggregate_token_usage(
+        self,
+        org_id: str,
+        query: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        match = query or {
+            "org_id": org_id,
+            "analysis": {"$exists": True, "$ne": None},
+        }
+        pipeline = [
+            {"$match": match},
+            {
+                "$group": {
+                    "_id": None,
+                    "analysisCount": {"$sum": 1},
+                    "promptTokens": {"$sum": {"$ifNull": ["$prompt_tokens", 0]}},
+                    "completionTokens": {"$sum": {"$ifNull": ["$completion_tokens", 0]}},
+                    "totalTokens": {"$sum": {"$ifNull": ["$total_tokens", 0]}},
+                }
+            },
+        ]
+        rows = await self._db[_COLLECTION_CACHE].aggregate(pipeline).to_list(length=1)
+        if not rows:
+            return {
+                "analysisCount": 0,
+                "promptTokens": 0,
+                "completionTokens": 0,
+                "totalTokens": 0,
+            }
+        row = rows[0]
+        return {
+            "analysisCount": int(row.get("analysisCount") or 0),
+            "promptTokens": int(row.get("promptTokens") or 0),
+            "completionTokens": int(row.get("completionTokens") or 0),
+            "totalTokens": int(row.get("totalTokens") or 0),
+        }
+
+    async def _resolve_user_names(self, user_ids: set[str]) -> dict[str, str]:
+        from bson import ObjectId
+
+        names: dict[str, str] = {}
+        for uid in user_ids:
+            if not uid:
+                continue
+            filt: dict[str, Any]
+            if ObjectId.is_valid(uid):
+                filt = {"$or": [{"_id": uid}, {"_id": ObjectId(uid)}]}
+            else:
+                filt = {"_id": uid}
+            doc = await self._db.users.find_one(filt, {"name": 1})
+            if doc:
+                names[uid] = str(doc.get("name") or "Unknown")
+        return names
+
+    async def _write_progress_analysis_audit_log(
+        self,
+        *,
+        job: dict[str, Any],
+        result: Any,
+        report_id: str | None,
+    ) -> None:
+        user_id = str(job.get("requested_by") or "")
+        user_names = await self._resolve_user_names({user_id} if user_id else set())
+        actor_name = user_names.get(user_id, "System")
+        log_id = str(uuid.uuid4())
+        now = _utcnow().isoformat()
+        prompt = int(result.prompt_tokens or 0)
+        completion = int(result.completion_tokens or 0)
+        total = int(result.total_tokens or prompt + completion)
+        project_name = str(job.get("project_name") or "")
+        pin = str(job.get("pin_name") or "")
+
+        doc = {
+            "_id": log_id,
+            "id": log_id,
+            "orgId": job["org_id"],
+            "org_id": job["org_id"],
+            "actorId": user_id,
+            "actorName": actor_name,
+            "eventType": "progress_analysis_completed",
+            "entityType": "report",
+            "entityId": report_id or str(job.get("_id") or ""),
+            "entityName": pin,
+            "projectId": str(job.get("project_id") or ""),
+            "description": (
+                f"Progress analysis for {project_name or 'project'} — "
+                f"{prompt:,} input / {completion:,} output / {total:,} total tokens"
+            ),
+            "promptTokens": prompt,
+            "completionTokens": completion,
+            "totalTokens": total,
+            "model": result.model,
+            "createdAt": now,
+            "created_at": now,
+            "updatedAt": now,
+            "updated_at": now,
+        }
+        await self._db["audit_logs"].insert_one(doc)
+
     async def get_job_enriched(self, org_id: str, job_id: str) -> dict[str, Any] | None:
         job = await self.get_job(org_id, job_id)
         if not job:
@@ -503,17 +613,17 @@ class AIProgressService:
         )
 
         try:
-            before_bytes, before_mime = await _download_image(
+            before_bytes, before_mime = await download_image(
                 job["before_image"],
                 timeout=self._timeout,
             )
-            after_bytes, after_mime = await _download_image(
+            after_bytes, after_mime = await download_image(
                 job["after_image"],
                 timeout=self._timeout,
             )
 
-            before_bytes = _resize_if_needed(before_bytes)
-            after_bytes = _resize_if_needed(after_bytes)
+            before_bytes = resize_if_needed(before_bytes)
+            after_bytes = resize_if_needed(after_bytes)
 
             before_b64 = base64.b64encode(before_bytes).decode("ascii")
             after_b64 = base64.b64encode(after_bytes).decode("ascii")
@@ -562,6 +672,8 @@ class AIProgressService:
                 "analysis": analysis,
                 "model": result.model,
                 "latency_ms": result.latency_ms,
+                "prompt_tokens": result.prompt_tokens,
+                "completion_tokens": result.completion_tokens,
                 "total_tokens": result.total_tokens,
                 "created_at": completed_at,
             }
@@ -590,12 +702,19 @@ class AIProgressService:
                         "analysis": analysis,
                         "model": result.model,
                         "latency_ms": result.latency_ms,
+                        "prompt_tokens": result.prompt_tokens,
+                        "completion_tokens": result.completion_tokens,
                         "total_tokens": result.total_tokens,
                         "completed_at": completed_at,
                         "error": None,
                         "report_id": report_id,
                     }
                 },
+            )
+            await self._write_progress_analysis_audit_log(
+                job=job,
+                result=result,
+                report_id=report_id,
             )
         except Exception as exc:
             logger.exception("Progress analysis job {} failed: {}", job_id, exc)
@@ -609,62 +728,6 @@ class AIProgressService:
                     }
                 },
             )
-
-
-async def _download_image(url: str, *, timeout: float) -> tuple[bytes, str]:
-    async with httpx.AsyncClient(
-        timeout=timeout,
-        follow_redirects=True,
-        limits=httpx.Limits(max_connections=4),
-    ) as client:
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
-            content_type = (response.headers.get("content-type") or "image/jpeg").split(";")[0].strip()
-            if not content_type.startswith("image/"):
-                raise ValueError(f"URL did not return an image (content-type={content_type})")
-
-            chunks: list[bytes] = []
-            total = 0
-            async for chunk in response.aiter_bytes():
-                total += len(chunk)
-                if total > _MAX_DOWNLOAD_BYTES:
-                    raise ValueError("Image download exceeds maximum allowed size")
-                chunks.append(chunk)
-
-    return b"".join(chunks), content_type
-
-
-def _resize_if_needed(image_bytes: bytes) -> bytes:
-    if len(image_bytes) <= _MAX_IMAGE_BYTES:
-        return image_bytes
-
-    img = Image.open(io.BytesIO(image_bytes))
-    if img.mode not in ("RGB", "L"):
-        img = img.convert("RGB")
-
-    quality = 85
-    scale = 1.0
-    current = img
-
-    for _ in range(12):
-        if scale < 1.0:
-            w, h = current.size
-            current = current.resize(
-                (max(1, int(w * scale)), max(1, int(h * scale))),
-                Image.Resampling.LANCZOS,
-            )
-
-        buf = io.BytesIO()
-        current.save(buf, format="JPEG", quality=quality, optimize=True)
-        result = buf.getvalue()
-
-        if len(result) <= _MAX_IMAGE_BYTES:
-            return result
-
-        quality = max(50, quality - 8)
-        scale = max(0.35, scale - 0.1)
-
-    return result
 
 
 def _flatten_list_entry(item: Any) -> str | None:
@@ -844,6 +907,31 @@ def _serialize_report_detail(doc: dict[str, Any]) -> dict[str, Any]:
     summary["analysis"] = doc.get("analysis") or {}
     summary["model"] = doc.get("model")
     summary["latencyMs"] = doc.get("latency_ms")
+    summary["promptTokens"] = doc.get("prompt_tokens")
+    summary["completionTokens"] = doc.get("completion_tokens")
     summary["totalTokens"] = doc.get("total_tokens")
     summary["requestedBy"] = doc.get("requested_by")
     return summary
+
+
+def _serialize_token_audit_entry(
+    doc: dict[str, Any],
+    user_names: dict[str, str],
+) -> dict[str, Any]:
+    requested_by = str(doc.get("requested_by") or "") or None
+    return {
+        "reportId": str(doc["_id"]),
+        "projectId": doc.get("project_id", "") or "",
+        "projectName": doc.get("project_name", ""),
+        "tower": doc.get("tower", ""),
+        "floor": doc.get("floor", ""),
+        "pinName": doc.get("pin_name", ""),
+        "model": doc.get("model"),
+        "promptTokens": int(doc.get("prompt_tokens") or 0),
+        "completionTokens": int(doc.get("completion_tokens") or 0),
+        "totalTokens": int(doc.get("total_tokens") or 0),
+        "requestedBy": requested_by,
+        "requestedByName": user_names.get(requested_by or "", None) if requested_by else None,
+        "createdAt": doc.get("created_at"),
+        "latencyMs": doc.get("latency_ms"),
+    }

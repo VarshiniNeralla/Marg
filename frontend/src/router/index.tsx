@@ -66,6 +66,7 @@ const DefectsPage     = lazy(() => import('@/pages/Defects/DefectsPage'));
 const UserManagementPage = lazy(() => import('@/pages/Users/UserManagementPage'));
 const OrganizationsPage  = lazy(() => import('@/pages/Organizations/OrganizationsPage'));
 const MediaPage          = lazy(() => import('@/pages/Admin/MediaPage'));
+const AuditPage          = lazy(() => import('@/pages/Admin/AuditPage'));
 
 // ── Manager-only ──────────────────────────────────────────────────────────────
 const ReviewsPage = lazy(() => import('@/pages/Reviews/ReviewsPage'));
@@ -177,6 +178,7 @@ const router = createBrowserRouter([
           { path: '/users',                             element: <PageSuspense><UserManagementPage /></PageSuspense> },
           { path: '/organizations',                     element: <PageSuspense><OrganizationsPage /></PageSuspense> },
           { path: '/admin/media',                       element: <PageSuspense><MediaPage /></PageSuspense> },
+          { path: '/admin/audit',                       element: <PageSuspense><AuditPage /></PageSuspense> },
           { path: '/settings',                          element: <PageSuspense><SettingsPage /></PageSuspense> },
           { path: '/captures/upload',                   element: <PageSuspense><CaptureUploadPage /></PageSuspense> },
         ],

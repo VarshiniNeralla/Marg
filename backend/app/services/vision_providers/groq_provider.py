@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -361,6 +362,135 @@ Example qualityObservations entry: "No visible defects observed."
 Do NOT use {"observation": "...", "importance": "..."} outside changesDetected.
 """
 
+def _last_col_label(cols: int) -> str:
+    # A, B, C, ... for the given number of columns (cols <= 26 in practice).
+    return chr(ord("A") + cols - 1)
+
+
+_FLAT_LABELS_PROMPT = """You are an architectural CAD label reader, NOT a general assistant.
+Your only job is OCR: read printed unit labels off this cropped region of a floor plan.
+
+A unit label is a two-digit number next to the word "FLAT" (often inside a small hexagon/box),
+e.g. "01 FLAT", "02 FLAT".
+
+STRICT RULES:
+- Read only the printed digits you can actually SEE. Never guess a flat number from position.
+- If a label is blurry, cut off at the crop edge, or you are not sure, DO NOT include it.
+- Do NOT assume how many flats exist. Zero is a valid answer.
+- Missing a flat is acceptable. Inventing a flat is NOT.
+
+Return ONLY valid JSON, no markdown: {"flats": ["01", "03"]}  (empty list if none clearly readable)."""
+
+
+# Common-area / building-core labels that must NEVER be returned as apartment rooms.
+_COMMON_AREA_TERMS = (
+    "lift lobby", "service lobby", "lobby", "fire lift", "service lift", "lift", "staircase",
+    "stair", "fire stair", "refuge", "electrical room", "elec", "pump room", "dg shaft",
+    "toilet shaft", "fire shaft", "service shaft", "lift shaft", "shaft", "duct", "ac ledge",
+    "ledge", "corridor", "common passage", "passage", "pot wash",
+)
+
+
+def _rooms_in_crop_prompt(cols: int, rows: int) -> str:
+    return f"""You are an architectural CAD reader. Treat this image as a CAD DRAWING, never a
+photograph. Do NOT summarize, do NOT describe, do NOT assume a "typical apartment". Extract ONLY
+what is physically drawn. A WRONG room is worse than a MISSING room — when in doubt, omit.
+
+A RED GRID is overlaid: {cols} columns A-{_last_col_label(cols)} (left→right), {rows} rows
+1-{rows} (top→bottom). Each cell is labelled like "C4" in its TOP-LEFT corner.
+
+=========================
+FOLLOW THIS EXACT ORDER (reason silently, output only JSON at the end)
+=========================
+STEP 1 — Locate the FLAT number label ("01 FLAT" etc.) inside this crop. That identifies the ONE
+  apartment you are extracting.
+STEP 2 — Determine that apartment's BOUNDARY: trace the outer walls enclosing the flat whose label
+  you found. This crop may also show PARTS of neighbouring flats and the building core — you must
+  IGNORE everything outside the one flat's boundary.
+STEP 3 — Inside that boundary, locate every enclosed ROOM.
+STEP 4 — Identify common areas (see list) so you can recognise and EXCLUDE them.
+STEP 5 — Discard everything outside the apartment boundary. THEN produce JSON.
+
+=========================
+ROOM RULES
+=========================
+- Return a room ONLY if BOTH: (A) it is enclosed by walls, AND (B) it has a printed label OR
+  unmistakable fixtures. Otherwise omit it.
+- Preserve printed labels EXACTLY — punctuation, hyphens, spacing: "Living / Dining", "Drawing
+  Room", "Master Bedroom", "Bedroom-2", "Bedroom-3", "Kitchen", "Utility", "Store", "Dress",
+  "Puja", "Sit-Out", "Balcony", "PDR", "M. Toilet", "Toilet-2", "Toilet-3", "Maid-01". Never
+  rename, normalise, or expand.
+- Fixture inference ONLY when no label AND walls are obvious: bed→"Bedroom", kitchen platform+sink
+  →"Kitchen", WC+basin→"Toilet", dining table→"Dining", sofa→"Living Room".
+- NEVER invent rooms. If only Bedroom-2 and Bedroom-3 are drawn, do NOT add Bedroom-4. Do not
+  invent toilets, stores, utilities, dress, puja, maid rooms, or balconies.
+- NEVER merge rooms: "Living" and "Drawing Room" are separate unless the label literally says
+  "Living / Dining". Never merge Living and Drawing.
+- NO duplicates: never two Kitchens / two Drawing Rooms unless the drawing literally shows two.
+- If a room is cut off by the crop edge and you cannot confirm it belongs to THIS flat, omit it.
+
+=========================
+NEIGHBOUR FILTERING (critical)
+=========================
+For every candidate room ask: "Is this room inside THIS flat's boundary?" If there is ANY doubt,
+DISCARD it. Never borrow a room (e.g. a Bedroom-3) from a neighbouring apartment.
+
+=========================
+NEVER RETURN THESE (building core / common areas)
+=========================
+Lift Lobby, Lobby, Service Lobby, Fire Lift, Lift, Service Lift, Staircase, Fire Stair, Refuge
+Area, Electrical Room, Pump Room, DG Shaft, Toilet Shaft, Fire Shaft, Service Shaft, Lift Shaft,
+Duct, AC Ledge, Corridor, Common Passage. These belong to the building, not any flat — omit them.
+
+=========================
+SIT-OUT (frequently missed — look carefully)
+=========================
+A Sit-Out is semi-open, shares a wall with Living/Bedroom, opens to the exterior, and is often
+bounded by a balcony railing rather than full walls. If a printed "Sit-Out" label is present or the
+geometry clearly matches, include it.
+
+=========================
+CONFIDENCE (do NOT default to 100)
+=========================
+100 = printed label fully visible; 90 = printed label mostly visible; 75 = fixture recognition.
+If your confidence for a room is below 70, OMIT that room entirely. reason ∈ {{"printed label",
+"fixture recognition"}}.
+
+Before returning, verify: any room outside this flat? any shaft/lift-lobby/staircase/corridor? any
+duplicate? invented Bedroom-4 or Maid room? merged Living+Drawing? missed Sit-Out? Fix before output.
+
+For each kept room list ALL grid cells its floor AREA overlaps.
+
+Return ONLY valid JSON, no markdown, no explanation:
+{{"rooms": [
+  {{"name": "Living / Dining", "cells": ["C4", "D4", "C5", "D5"], "confidence": 100, "reason": "printed label"}},
+  {{"name": "Sit-Out", "cells": ["B6"], "confidence": 75, "reason": "fixture recognition"}}
+]}}"""
+
+
+def _common_areas_prompt(cols: int, rows: int) -> str:
+    return f"""You are an architectural CAD reader. This crop shows the BUILDING CORE of a floor
+plan — the shared circulation between apartments. Treat it as a CAD drawing, not a photograph.
+
+A RED GRID is overlaid: {cols} columns A-{_last_col_label(cols)} (left→right), {rows} rows
+1-{rows} (top→bottom); each cell labelled like "C4" in its TOP-LEFT corner.
+
+Identify ONLY common / core areas that are clearly labelled or unmistakable, using EXACT printed
+labels where present: "Lift Lobby", "Lobby", "Service Lobby", "Fire Lift", "Lift", "Service Lift",
+"Staircase", "Fire Stair", "Refuge Area", "Electrical Room", "Pump Room", "DG Shaft",
+"Toilet Shaft", "Fire Shaft", "Service Shaft", "Lift Shaft", "Duct", "Corridor", "Common Passage".
+Individual numbered lifts (e.g. "Lift - P1", "Fire Lift") may be grouped as "Lift Lobby" if they
+sit together in a lift bank. Do NOT return apartment rooms (bedrooms, kitchens, toilets, etc.).
+Do NOT invent. Below 70 confidence, omit.
+
+For each area list ALL grid cells it overlaps.
+
+Return ONLY valid JSON, no markdown:
+{{"rooms": [
+  {{"name": "Lift Lobby", "cells": ["D4", "D5"], "confidence": 100, "reason": "printed label"}},
+  {{"name": "Staircase", "cells": ["C4"], "confidence": 90, "reason": "printed label"}}
+]}}"""
+
 
 class GroqVisionProvider(VisionProvider):
     """Groq Vision implementation using the OpenAI-compatible chat completions API."""
@@ -389,7 +519,7 @@ class GroqVisionProvider(VisionProvider):
             f"- Project: {context.get('project_name', 'N/A')}\n"
             f"- Tower: {context.get('tower', 'N/A')}\n"
             f"- Floor: {context.get('floor', 'N/A')}\n"
-            f"- Pin/Location: {context.get('pin_name', 'N/A')}\n"
+            f"- Capture point: {context.get('pin_name', 'N/A')}\n"
             f"- Capture type: {context.get('capture_type', '360')}\n"
             f"- BEFORE date (earlier): {context.get('before_date', 'N/A')}\n"
             f"- AFTER date (later): {context.get('after_date', 'N/A')}\n\n"
@@ -426,6 +556,102 @@ class GroqVisionProvider(VisionProvider):
             "response_format": {"type": "json_object"},
         }
 
+        return await self._chat_completion(payload, log_label="Groq vision analysis")
+
+    async def read_flat_labels(
+        self,
+        *,
+        image_b64: str,
+        mime: str,
+    ) -> VisionAnalysisResult:
+        if not self._api_key:
+            raise RuntimeError("GROQ_API_KEY is not configured")
+
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": _FLAT_LABELS_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "List the flat numbers visible in this crop."},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+                    ],
+                },
+            ],
+            "temperature": 0.0,
+            "max_tokens": 256,
+            "response_format": {"type": "json_object"},
+        }
+
+        return await self._chat_completion(payload, log_label="Groq flat-label read")
+
+    async def extract_rooms_in_crop(
+        self,
+        *,
+        image_b64: str,
+        mime: str,
+        cols: int,
+        rows: int,
+    ) -> VisionAnalysisResult:
+        if not self._api_key:
+            raise RuntimeError("GROQ_API_KEY is not configured")
+
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": _rooms_in_crop_prompt(cols, rows)},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "List this unit's rooms with their grid cells."},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+                    ],
+                },
+            ],
+            "temperature": 0.1,
+            "max_tokens": 4096,
+            "response_format": {"type": "json_object"},
+        }
+
+        return await self._chat_completion(payload, log_label="Groq room extraction")
+
+    async def extract_common_areas_in_crop(
+        self,
+        *,
+        image_b64: str,
+        mime: str,
+        cols: int,
+        rows: int,
+    ) -> VisionAnalysisResult:
+        if not self._api_key:
+            raise RuntimeError("GROQ_API_KEY is not configured")
+
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": _common_areas_prompt(cols, rows)},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "List the common/core areas with their grid cells."},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+                    ],
+                },
+            ],
+            "temperature": 0.1,
+            "max_tokens": 4096,
+            "response_format": {"type": "json_object"},
+        }
+
+        return await self._chat_completion(payload, log_label="Groq common-area extraction")
+
+    async def _chat_completion(
+        self,
+        payload: dict[str, Any],
+        *,
+        log_label: str,
+    ) -> VisionAnalysisResult:
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -453,6 +679,21 @@ class GroqVisionProvider(VisionProvider):
                     last_error = RuntimeError(f"Groq API error: {response.status_code}")
                     continue
 
+                # 429 = rate limit (per-minute token/request cap). The room-map pipeline fires
+                # several vision calls per floor plan, so this is expected under load — wait out
+                # the window (honouring Retry-After) and retry rather than failing extraction.
+                if response.status_code == 429 and attempt < self._max_retries:
+                    retry_after = _parse_retry_after(response) or (2.0 * (attempt + 1))
+                    logger.warning(
+                        "Groq API rate limited (attempt {}/{}): retrying in {:.1f}s",
+                        attempt + 1,
+                        self._max_retries + 1,
+                        retry_after,
+                    )
+                    last_error = RuntimeError("Groq API rate limited: 429")
+                    await asyncio.sleep(min(retry_after, 30.0))
+                    continue
+
                 response.raise_for_status()
                 body = response.json()
                 latency_ms = (time.perf_counter() - started) * 1000
@@ -470,8 +711,9 @@ class GroqVisionProvider(VisionProvider):
                 parsed = _parse_json_content(raw_content)
 
                 logger.info(
-                    "Groq vision analysis completed model={} latency_ms={:.0f} "
+                    "{} completed model={} latency_ms={:.0f} "
                     "prompt_tokens={} completion_tokens={} total_tokens={}",
+                    log_label,
                     self._model,
                     latency_ms,
                     prompt_tokens,
@@ -515,7 +757,18 @@ class GroqVisionProvider(VisionProvider):
                     exc,
                 )
 
-        raise RuntimeError(f"Groq vision analysis failed after retries: {last_error}") from last_error
+        raise RuntimeError(f"{log_label} failed after retries: {last_error}") from last_error
+
+
+def _parse_retry_after(response: httpx.Response) -> float | None:
+    """Seconds to wait from a 429 response's Retry-After header, if present and numeric."""
+    raw = response.headers.get("retry-after")
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return None
 
 
 def _parse_json_content(raw: str) -> dict[str, Any]:

@@ -20,6 +20,7 @@ class ProgressAnalysisRequest(BaseModel):
     capture_type: str = Field(default="360", alias="captureType", max_length=32)
     project_id: str = Field(default="", alias="projectId", max_length=64)
     floor_plan_image: str = Field(default="", alias="floorPlanImage", max_length=2048)
+    floor_plan_id: str = Field(default="", alias="floorPlanId", max_length=64)
     pin_x: Optional[float] = Field(default=None, alias="pinX", ge=0, le=100)
     pin_y: Optional[float] = Field(default=None, alias="pinY", ge=0, le=100)
     force_refresh: bool = Field(default=False, alias="forceRefresh")
@@ -122,8 +123,38 @@ class ProgressReportDetail(ProgressReportSummary):
     analysis: ProgressAnalysisReport
     model: Optional[str] = None
     latency_ms: Optional[float] = Field(default=None, alias="latencyMs")
+    prompt_tokens: Optional[int] = Field(default=None, alias="promptTokens")
+    completion_tokens: Optional[int] = Field(default=None, alias="completionTokens")
     total_tokens: Optional[int] = Field(default=None, alias="totalTokens")
     requested_by: Optional[str] = Field(default=None, alias="requestedBy")
+
+    model_config = {"populate_by_name": True}
+
+
+class ProgressAnalysisAuditEntry(BaseModel):
+    report_id: str = Field(..., alias="reportId")
+    project_id: str = Field(default="", alias="projectId")
+    project_name: str = Field(default="", alias="projectName")
+    tower: str = ""
+    floor: str = ""
+    pin_name: str = Field(default="", alias="pinName")
+    model: Optional[str] = None
+    prompt_tokens: int = Field(default=0, alias="promptTokens")
+    completion_tokens: int = Field(default=0, alias="completionTokens")
+    total_tokens: int = Field(default=0, alias="totalTokens")
+    requested_by: Optional[str] = Field(default=None, alias="requestedBy")
+    requested_by_name: Optional[str] = Field(default=None, alias="requestedByName")
+    created_at: Optional[datetime] = Field(default=None, alias="createdAt")
+    latency_ms: Optional[float] = Field(default=None, alias="latencyMs")
+
+    model_config = {"populate_by_name": True}
+
+
+class ProgressAnalysisAuditSummary(BaseModel):
+    analysis_count: int = Field(default=0, alias="analysisCount")
+    prompt_tokens: int = Field(default=0, alias="promptTokens")
+    completion_tokens: int = Field(default=0, alias="completionTokens")
+    total_tokens: int = Field(default=0, alias="totalTokens")
 
     model_config = {"populate_by_name": True}
 

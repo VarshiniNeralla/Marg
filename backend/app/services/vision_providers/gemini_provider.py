@@ -16,3 +16,31 @@ class GeminiVisionProvider(VisionProvider):
         context: dict[str, str],
     ) -> VisionAnalysisResult:
         raise NotImplementedError("Gemini vision provider is not yet implemented")
+
+    async def read_flat_labels(
+        self,
+        *,
+        image_b64: str,
+        mime: str,
+    ) -> VisionAnalysisResult:
+        raise NotImplementedError("Gemini vision provider is not yet implemented")
+
+    async def extract_rooms_in_crop(
+        self,
+        *,
+        image_b64: str,
+        mime: str,
+        cols: int,
+        rows: int,
+    ) -> VisionAnalysisResult:
+        raise NotImplementedError("Gemini vision provider is not yet implemented")
+
+    async def extract_common_areas_in_crop(
+        self,
+        *,
+        image_b64: str,
+        mime: str,
+        cols: int,
+        rows: int,
+    ) -> VisionAnalysisResult:
+        raise NotImplementedError("Gemini vision provider is not yet implemented")

@@ -26,9 +26,14 @@ import { formatReportDate, formatReportGeneratedAt } from '@/utils/reportFormat'
 
 const PAGE_SIZE = 8;
 
-function formatLocation(item: ProgressReportSummary): string {
+function formatReportCardTitle(item: ProgressReportSummary): string {
   const parts = [item.tower, item.floor].filter(Boolean);
-  return parts.length > 0 ? parts.join(' · ') : item.projectName || 'Site';
+  return parts.length > 0 ? parts.join(' · ') : item.projectName || item.pinName || 'Saved report';
+}
+
+function formatLocation(item: ProgressReportSummary): string {
+  const parts = [item.projectName, item.pinName].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : 'Site';
 }
 
 function progressColor(pct: number): string {
@@ -99,7 +104,7 @@ function ReportListCard({
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 0.25 }}>
           <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: colors.textStrong }} noWrap>
-            {item.pinName || 'Capture location'}
+            {formatReportCardTitle(item)}
           </Typography>
           <Box
             sx={{
@@ -271,7 +276,7 @@ export default function ProgressReportsPage() {
         <InputBase
           value={query}
           onChange={e => setQuery(e.target.value)}
-          placeholder="Search by project, tower, floor, pin, or summary…"
+          placeholder="Search by project, tower, floor, capture point, or summary…"
           sx={{ flex: 1, fontSize: '0.875rem' }}
         />
       </Box>

@@ -67,6 +67,7 @@ export interface StartProgressAnalysisPayload {
   pinName: string;
   captureType?: string;
   floorPlanImage?: string;
+  floorPlanId?: string;
   pinX?: number;
   pinY?: number;
   forceRefresh?: boolean;
@@ -117,8 +118,42 @@ export interface ProgressReportDetail extends ProgressReportSummary {
   analysis: ProgressAnalysisReport;
   model?: string | null;
   latencyMs?: number | null;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
   totalTokens?: number | null;
   requestedBy?: string | null;
+}
+
+export interface ProgressAnalysisAuditEntry {
+  reportId: string;
+  projectId: string;
+  projectName: string;
+  tower: string;
+  floor: string;
+  pinName: string;
+  model?: string | null;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  requestedBy?: string | null;
+  requestedByName?: string | null;
+  createdAt?: string | null;
+  latencyMs?: number | null;
+}
+
+export interface ProgressAnalysisAuditSummary {
+  analysisCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface ListProgressAnalysisAuditResult {
+  items: ProgressAnalysisAuditEntry[];
+  total: number;
+  page: number;
+  limit: number;
+  summary: ProgressAnalysisAuditSummary;
 }
 
 export interface ListProgressReportsParams {
@@ -185,6 +220,29 @@ export const progressAnalysisService = {
       apiClient.post(`/progress-analysis/reports/${reportId}/save`),
     );
     return result.summary;
+  },
+
+  async listTokenAudit(page = 1, limit = 20): Promise<ListProgressAnalysisAuditResult> {
+    const { data } = await apiClient.get<{
+      success: boolean;
+      data: ProgressAnalysisAuditEntry[];
+      total: number;
+      page: number;
+      limit: number;
+      summary: ProgressAnalysisAuditSummary;
+    }>('/progress-analysis/audit', { params: { page, limit } });
+    return {
+      items: data.data ?? [],
+      total: data.total ?? 0,
+      page: data.page ?? page,
+      limit: data.limit ?? limit,
+      summary: data.summary ?? {
+        analysisCount: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+      },
+    };
   },
 
   async runUntilComplete(

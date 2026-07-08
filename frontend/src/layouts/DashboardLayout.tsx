@@ -48,7 +48,8 @@ const ADMIN_NAV: NavSection[] = [
     heading: 'Administration',
     items: [
       { label: 'Users',    path: '/users',    icon: <PeopleRounded /> },
-{ label: 'Media',         path: '/admin/media',   icon: <StorageRounded /> },
+      { label: 'Media',         path: '/admin/media',   icon: <StorageRounded /> },
+      { label: 'Audit',         path: '/admin/audit',   icon: <HistoryRounded /> },
       { label: 'Settings',      path: '/settings',      icon: <TuneRounded /> },
     ],
   },

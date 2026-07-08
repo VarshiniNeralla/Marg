@@ -559,7 +559,8 @@ export type AuditEventType =
   | 'user_role_changed'
   | 'review_assigned'
   | 'project_created'
-  | 'project_updated';
+  | 'project_updated'
+  | 'progress_analysis_completed';
 
 export interface AuditLogResponse {
   id: string;

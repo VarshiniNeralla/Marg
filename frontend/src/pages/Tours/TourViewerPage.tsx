@@ -1116,6 +1116,7 @@ export default function TourViewerPage() {
       ?? (fpRec?.file_url as string | undefined)
       ?? fpMedia[0]?.original_url
       ?? undefined;
+    const floorPlanId = fpRec?.id as string | undefined;
 
     const beforeDateLabel = formatReportDate(beforeSnap.date || beforeSnap.dateLabel);
     const afterDateLabel = formatReportDate(afterSnap.date || afterSnap.dateLabel);
@@ -1152,6 +1153,7 @@ export default function TourViewerPage() {
         pinName: pinLabel,
         captureType: '360',
         floorPlanImage: floorPlanUrl,
+        floorPlanId,
         pinX: activePin?.x,
         pinY: activePin?.y,
         forceRefresh: true,

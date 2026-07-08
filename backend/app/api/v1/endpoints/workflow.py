@@ -16,6 +16,7 @@ from app.core.permissions import require_permission
 
 settings = get_settings()
 from app.services.cloudinary_service import cloudinary_folder, signed_upload_params, upload_media
+from app.services.room_map_service import RoomMapService
 from app.utils.pagination import success_response
 
 router = APIRouter(tags=["Workflow"])
@@ -578,7 +579,42 @@ async def create_floor_plan(payload: dict[str, Any], ctx: CallerContext, db: DB,
         width = asset.get("width")
         height = asset.get("height")
         payload["dimensions"] = {"width": width, "height": height} if width and height else None
-    return success_response(data=await _upsert(db, "floor_plans", payload, ctx), message="Floor plan uploaded")
+    result = await _upsert(db, "floor_plans", payload, ctx)
+
+    # Room map extraction runs once per upload/replace, synchronously, so the
+    # floor plan is guaranteed to have a room map by the time any report is
+    # requested — never re-run during report generation (see RoomMapService).
+    image_url = result.get("file_url") or result.get("fileUrl")
+    if image_url:
+        await RoomMapService(db).ensure_room_map(
+            floor_plan_id=result["id"],
+            org_id=ctx.org_id,
+            image_url=image_url,
+        )
+
+    return success_response(data=result, message="Floor plan uploaded")
+
+
+@router.post("/floor-plans/{floor_plan_id}/analyze-rooms", summary="Re-run room map extraction for a floor plan")
+async def reanalyze_floor_plan_rooms(
+    floor_plan_id: str,
+    ctx: CallerContext,
+    db: DB,
+    _=Depends(require_permission("floorPlans", "create")),
+):
+    """Force re-extraction of the room map, e.g. if the AI got it wrong the first time."""
+    plan = await _get(db, "floor_plans", floor_plan_id, ctx)
+    image_url = plan.get("file_url") or plan.get("fileUrl")
+    if not image_url:
+        raise ValidationException("Floor plan has no image to analyze")
+
+    room_map = await RoomMapService(db).ensure_room_map(
+        floor_plan_id=floor_plan_id,
+        org_id=ctx.org_id,
+        image_url=image_url,
+        force=True,
+    )
+    return success_response(data=room_map, message="Room map re-analyzed")
 
 
 @router.delete("/floor-plans/{floor_plan_id}", summary="Delete floor plan")

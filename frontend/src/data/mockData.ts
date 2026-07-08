@@ -501,19 +501,24 @@ export type AuditEventType =
   | 'user_role_changed'
   | 'review_assigned'
   | 'project_created'
-  | 'project_updated';
+  | 'project_updated'
+  | 'progress_analysis_completed';
 
 export interface MockAuditLog {
   id: string;
   actorId: string;
   actorName: string;
   eventType: AuditEventType;
-  entityType: 'capture' | 'tour' | 'defect' | 'floor_plan' | 'user' | 'project';
+  entityType: 'capture' | 'tour' | 'defect' | 'floor_plan' | 'user' | 'project' | 'report';
   entityId: string;
   entityName: string;
   projectId: string | null;
   description: string;
   createdAt: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  model?: string;
 }
 
 export const mockAuditLogs: MockAuditLog[] = [];
