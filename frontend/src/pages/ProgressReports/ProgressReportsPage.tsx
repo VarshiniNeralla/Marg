@@ -22,7 +22,7 @@ import {
   type ProgressAnalysisReport,
 } from '@/services/progressAnalysisService';
 import { toast } from 'react-toastify';
-import { formatReportDate, formatReportGeneratedAt } from '@/utils/reportFormat';
+import { formatReportGeneratedAt } from '@/utils/reportFormat';
 
 const PAGE_SIZE = 8;
 
@@ -216,8 +216,8 @@ export default function ProgressReportsPage() {
         tower: detail.tower,
         floor: detail.floor,
         pinName: detail.pinName,
-        beforeDate: formatReportDate(detail.beforeDate),
-        afterDate: formatReportDate(detail.afterDate),
+        beforeDate: detail.beforeDate,
+        afterDate: detail.afterDate,
         beforeImageUrl: detail.beforeImageUrl,
         afterImageUrl: detail.afterImageUrl,
         floorPlanImageUrl: detail.floorPlanImageUrl,

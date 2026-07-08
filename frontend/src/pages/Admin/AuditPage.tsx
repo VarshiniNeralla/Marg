@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Box, Typography, Pagination } from '@mui/material';
 import {
@@ -6,8 +6,6 @@ import {
   InputRounded, OutputRounded, TokenRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { useWorkflowStore } from '@store/workflowStore';
-import type { MockAuditLog } from '@/data/mockData';
 import {
   progressAnalysisService,
   type ProgressAnalysisAuditEntry,
@@ -20,7 +18,7 @@ const TAB_PANEL_MIN_HEIGHT = 360;
 
 function Metric({
   icon, label, value, color,
-}: { icon: React.ReactNode; label: string; value: string; color: string }) {
+}: { icon: ReactNode; label: string; value: string; color: string }) {
   return (
     <Box sx={{
       position: 'relative',
@@ -82,12 +80,12 @@ function formatLatency(ms?: number | null): string {
 const COLS = 'minmax(130px,1.1fr) minmax(120px,1.2fr) minmax(80px,0.8fr) minmax(90px,0.9fr) minmax(72px,0.7fr) minmax(72px,0.7fr) minmax(72px,0.7fr) minmax(64px,0.6fr)';
 const ACTIVITY_COLS = 'minmax(120px,0.95fr) minmax(110px,0.9fr) minmax(140px,1.2fr) minmax(220px,1.95fr)';
 
-function activitySubject(log: MockAuditLog): string {
-  const detail = log.entityName?.trim();
-  return detail || 'Progress analysis';
+function activitySubject(log: ProgressAnalysisAuditEntry): string {
+  const parts = [log.projectName, log.tower, log.floor, log.pinName].filter(Boolean);
+  return parts.join(' · ') || 'Progress analysis';
 }
 
-function activityTokenSummary(log: MockAuditLog): string {
+function activityTokenSummary(log: ProgressAnalysisAuditEntry): string {
   const prompt = log.promptTokens ?? 0;
   const completion = log.completionTokens ?? 0;
   const total = log.totalTokens ?? (prompt + completion);
@@ -95,7 +93,6 @@ function activityTokenSummary(log: MockAuditLog): string {
 }
 
 export default function AuditPage() {
-  const auditLogs = useWorkflowStore(s => s.auditLogs);
   const [usagePage, setUsagePage] = useState(1);
   const [activityPage, setActivityPage] = useState(1);
   const [activeTab, setActiveTab] = useState<AuditTab>('usage');
@@ -126,13 +123,17 @@ export default function AuditPage() {
   }, []);
 
   useEffect(() => {
-    load(usagePage);
-  }, [usagePage, load]);
+    load(activeTab === 'usage' ? usagePage : activityPage);
+  }, [activeTab, usagePage, activityPage, load]);
 
   const usagePageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const llmActivity = auditLogs.filter(l => l.eventType === 'progress_analysis_completed');
-  const activityPageCount = Math.max(1, Math.ceil(llmActivity.length / PAGE_SIZE));
-  const visibleActivity = llmActivity.slice((activityPage - 1) * PAGE_SIZE, activityPage * PAGE_SIZE);
+  const activityPageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  useEffect(() => {
+    if (activityPage > activityPageCount) {
+      setActivityPage(activityPageCount);
+    }
+  }, [activityPage, activityPageCount]);
 
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6, width: '100%', minWidth: 0, overflow: 'hidden' }}>
@@ -348,7 +349,7 @@ export default function AuditPage() {
               ))}
             </Box>
 
-            {llmActivity.length === 0 ? (
+            {items.length === 0 ? (
               <Box sx={{ py: 6, textAlign: 'center', flex: 1 }}>
                 <HistoryRounded sx={{ fontSize: 36, color: colors.textSubdued, mb: 1 }} />
                 <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600, color: colors.textSecondary }}>
@@ -359,9 +360,9 @@ export default function AuditPage() {
                 </Typography>
               </Box>
             ) : (
-              visibleActivity.map((log, i) => (
+              items.map((log, i) => (
                 <Box
-                  key={log.id}
+                  key={`${log.reportId}-${log.createdAt ?? i}`}
                   sx={{
                     display: 'grid',
                     gridTemplateColumns: ACTIVITY_COLS,
@@ -378,7 +379,7 @@ export default function AuditPage() {
                     {formatDate(log.createdAt)}
                   </Typography>
                   <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong }}>
-                    {log.actorName}
+                    {log.requestedByName || log.requestedBy || 'Unknown user'}
                   </Typography>
                   <Box sx={{ minWidth: 0 }}>
                     <Typography noWrap sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong }}>
@@ -395,7 +396,7 @@ export default function AuditPage() {
               ))
             )}
 
-            {llmActivity.length > PAGE_SIZE && (
+            {total > PAGE_SIZE && (
               <Box sx={{ display: 'flex', justifyContent: 'center', py: 2, borderTop: `1px solid ${colors.borderLight}` }}>
                 <Pagination
                   count={activityPageCount}

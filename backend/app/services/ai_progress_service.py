@@ -41,18 +41,12 @@ def _sanitize_text(value: str, *, max_len: int = _MAX_FIELD_LEN) -> str:
 def get_vision_provider(provider_name: str | None = None) -> VisionProvider:
     """Factory for vision providers — swap implementation with minimal changes."""
     settings = get_settings()
-    name = (provider_name or settings.VISION_PROVIDER or "vllm").lower()
+    name = (provider_name or settings.VISION_PROVIDER or "groq").lower()
     if name == "vllm":
         return VllmVisionProvider(settings)
     if name == "groq":
         return GroqVisionProvider(settings)
-    if name == "openai":
-        from app.services.vision_providers.openai_provider import OpenAIVisionProvider
-        return OpenAIVisionProvider()
-    if name == "gemini":
-        from app.services.vision_providers.gemini_provider import GeminiVisionProvider
-        return GeminiVisionProvider()
-    raise ValueError(f"Unknown vision provider: {provider_name}")
+    raise ValueError(f"Unsupported vision provider: {name}")
 
 
 class AIProgressService:
@@ -331,20 +325,25 @@ class AIProgressService:
         limit: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
         query: dict[str, Any] = {"org_id": org_id, "saved": True}
+        accessible: list[str] | None = None
+
+        if role == "manager":
+            repo = UserProjectRepository(self._db)
+            accessible = await repo.get_accessible_project_ids(user_id, org_id)
+            if not accessible:
+                return [], 0
+            query["project_id"] = {"$in": accessible}
 
         if project_id:
-            query["project_id"] = _sanitize_text(project_id, max_len=64)
+            normalized_project_id = _sanitize_text(project_id, max_len=64)
+            if accessible is not None and normalized_project_id not in accessible:
+                return [], 0
+            query["project_id"] = normalized_project_id
         if pin_name:
             query["pin_name"] = _sanitize_text(pin_name)
         if before_timeline_id and after_timeline_id:
             query["before_timeline_id"] = _sanitize_text(before_timeline_id, max_len=64)
             query["after_timeline_id"] = _sanitize_text(after_timeline_id, max_len=64)
-
-        if role == "manager" and project_id:
-            repo = UserProjectRepository(self._db)
-            accessible = await repo.get_accessible_project_ids(user_id, org_id)
-            if project_id not in accessible:
-                return [], 0
 
         total = await self._db[_COLLECTION_CACHE].count_documents(query)
         cursor = (
@@ -429,10 +428,23 @@ class AIProgressService:
         )
         if not doc:
             return None
+        if role == "manager":
+            project_id = _sanitize_text(str(doc.get("project_id") or ""), max_len=64)
+            repo = UserProjectRepository(self._db)
+            accessible = await repo.get_accessible_project_ids(user_id, org_id)
+            if project_id not in accessible:
+                return None
 
         return _serialize_report_detail(doc)
 
-    async def save_report(self, org_id: str, report_id: str, *, user_id: str) -> dict[str, Any]:
+    async def save_report(
+        self,
+        org_id: str,
+        report_id: str,
+        *,
+        user_id: str,
+        role: str,
+    ) -> dict[str, Any]:
         """Mark an analysis as saved so it appears in Progress Reports."""
         from bson import ObjectId
 
@@ -440,6 +452,12 @@ class AIProgressService:
         doc = await self._db[_COLLECTION_CACHE].find_one({"_id": oid, "org_id": org_id})
         if not doc or not doc.get("analysis"):
             raise ValueError("Report not found")
+        if role == "manager":
+            project_id = _sanitize_text(str(doc.get("project_id") or ""), max_len=64)
+            repo = UserProjectRepository(self._db)
+            accessible = await repo.get_accessible_project_ids(user_id, org_id)
+            if project_id not in accessible:
+                raise ValueError("Report not found")
 
         now = _utcnow()
         await self._db[_COLLECTION_CACHE].update_one(

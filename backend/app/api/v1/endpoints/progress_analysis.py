@@ -129,11 +129,17 @@ async def save_progress_report(
     report_id: str,
     ctx: CallerContext,
     db: DB,
+    _manager_or_admin: ManagerOrAdminUser,
 ) -> ApiResponse[SaveProgressReportResponse]:
     """Persist an analysis so it appears in Progress Reports."""
     service = AIProgressService(db)
     try:
-        summary = await service.save_report(ctx.org_id, report_id, user_id=ctx.user_id)
+        summary = await service.save_report(
+            ctx.org_id,
+            report_id,
+            user_id=ctx.user_id,
+            role=ctx.role,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 

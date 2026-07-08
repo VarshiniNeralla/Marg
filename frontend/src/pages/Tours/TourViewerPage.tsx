@@ -1118,16 +1118,18 @@ export default function TourViewerPage() {
       ?? undefined;
     const floorPlanId = fpRec?.id as string | undefined;
 
-    const beforeDateLabel = formatReportDate(beforeSnap.date || beforeSnap.dateLabel);
-    const afterDateLabel = formatReportDate(afterSnap.date || afterSnap.dateLabel);
+    const beforeDateValue = beforeSnap.date || beforeSnap.dateLabel;
+    const afterDateValue = afterSnap.date || afterSnap.dateLabel;
+    const beforeDateLabel = formatReportDate(beforeDateValue);
+    const afterDateLabel = formatReportDate(afterDateValue);
 
     const meta: ProgressReportVisualMeta = {
       projectName: tour.projectName,
       tower: tour.towerName,
       floor: tour.floorLabel,
       pinName: pinLabel,
-      beforeDate: beforeDateLabel,
-      afterDate: afterDateLabel,
+      beforeDate: beforeDateValue,
+      afterDate: afterDateValue,
       beforeImageUrl: beforeImage,
       afterImageUrl: afterImage,
       floorPlanImageUrl: floorPlanUrl,
@@ -1156,7 +1158,6 @@ export default function TourViewerPage() {
         floorPlanId,
         pinX: activePin?.x,
         pinY: activePin?.y,
-        forceRefresh: true,
       });
       setAnalysisReport(result.report);
       setAnalysisReportId(result.reportId);
@@ -1183,8 +1184,8 @@ export default function TourViewerPage() {
         tower: detail.tower,
         floor: detail.floor,
         pinName: detail.pinName,
-        beforeDate: formatReportDate(detail.beforeDate),
-        afterDate: formatReportDate(detail.afterDate),
+        beforeDate: detail.beforeDate,
+        afterDate: detail.afterDate,
         beforeImageUrl: detail.beforeImageUrl,
         afterImageUrl: detail.afterImageUrl,
         floorPlanImageUrl: detail.floorPlanImageUrl,

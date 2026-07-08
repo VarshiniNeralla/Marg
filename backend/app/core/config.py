@@ -58,8 +58,8 @@ class Settings(BaseSettings):
     GROQ_VISION_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"
     GROQ_REQUEST_TIMEOUT_SECONDS: int = 60
     GROQ_MAX_RETRIES: int = 2
-    # groq | vllm | openai | gemini
-    VISION_PROVIDER: str = "vllm"
+    # Supported providers: groq | vllm
+    VISION_PROVIDER: str = "groq"
     VLLM_BASE_URL: str = "http://127.0.0.1:8000"
     VLLM_MODEL: str = "gemma4-31b"
     VLLM_API_KEY: str = ""
