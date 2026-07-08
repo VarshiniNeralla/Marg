@@ -11,7 +11,6 @@ from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.config import Settings, get_settings
-from app.repositories.user_project import UserProjectRepository
 from app.services.image_fetch import download_image, resize_if_needed, validate_image_url
 from app.services.vision_providers.base import VisionProvider
 from app.services.vision_providers.groq_provider import GroqVisionProvider
@@ -41,7 +40,7 @@ def _sanitize_text(value: str, *, max_len: int = _MAX_FIELD_LEN) -> str:
 def get_vision_provider(provider_name: str | None = None) -> VisionProvider:
     """Factory for vision providers — swap implementation with minimal changes."""
     settings = get_settings()
-    name = (provider_name or settings.VISION_PROVIDER or "groq").lower()
+    name = (provider_name or settings.vision_provider).lower()
     if name == "vllm":
         return VllmVisionProvider(settings)
     if name == "groq":
@@ -61,10 +60,10 @@ class AIProgressService:
     ) -> None:
         self._db = db
         self._settings = settings or get_settings()
-        self._provider = provider or get_vision_provider(self._settings.VISION_PROVIDER)
+        self._provider = provider or get_vision_provider(self._settings.vision_provider)
         self._timeout = (
             float(self._settings.VLLM_HTTP_TIMEOUT_S)
-            if self._settings.VISION_PROVIDER.lower() == "vllm"
+            if self._settings.vision_provider == "vllm"
             else float(self._settings.GROQ_REQUEST_TIMEOUT_SECONDS)
         )
     async def get_cached_analysis(
@@ -325,20 +324,9 @@ class AIProgressService:
         limit: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
         query: dict[str, Any] = {"org_id": org_id, "saved": True}
-        accessible: list[str] | None = None
-
-        if role == "manager":
-            repo = UserProjectRepository(self._db)
-            accessible = await repo.get_accessible_project_ids(user_id, org_id)
-            if not accessible:
-                return [], 0
-            query["project_id"] = {"$in": accessible}
 
         if project_id:
-            normalized_project_id = _sanitize_text(project_id, max_len=64)
-            if accessible is not None and normalized_project_id not in accessible:
-                return [], 0
-            query["project_id"] = normalized_project_id
+            query["project_id"] = _sanitize_text(project_id, max_len=64)
         if pin_name:
             query["pin_name"] = _sanitize_text(pin_name)
         if before_timeline_id and after_timeline_id:
@@ -428,12 +416,6 @@ class AIProgressService:
         )
         if not doc:
             return None
-        if role == "manager":
-            project_id = _sanitize_text(str(doc.get("project_id") or ""), max_len=64)
-            repo = UserProjectRepository(self._db)
-            accessible = await repo.get_accessible_project_ids(user_id, org_id)
-            if project_id not in accessible:
-                return None
 
         return _serialize_report_detail(doc)
 
@@ -452,12 +434,6 @@ class AIProgressService:
         doc = await self._db[_COLLECTION_CACHE].find_one({"_id": oid, "org_id": org_id})
         if not doc or not doc.get("analysis"):
             raise ValueError("Report not found")
-        if role == "manager":
-            project_id = _sanitize_text(str(doc.get("project_id") or ""), max_len=64)
-            repo = UserProjectRepository(self._db)
-            accessible = await repo.get_accessible_project_ids(user_id, org_id)
-            if project_id not in accessible:
-                raise ValueError("Report not found")
 
         now = _utcnow()
         await self._db[_COLLECTION_CACHE].update_one(

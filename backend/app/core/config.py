@@ -58,8 +58,9 @@ class Settings(BaseSettings):
     GROQ_VISION_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"
     GROQ_REQUEST_TIMEOUT_SECONDS: int = 60
     GROQ_MAX_RETRIES: int = 2
-    # Supported providers: groq | vllm
-    VISION_PROVIDER: str = "groq"
+    # Supported providers: groq | vllm. Leave blank to auto-select:
+    # groq in production, vllm in local development.
+    VISION_PROVIDER: str = ""
     VLLM_BASE_URL: str = "http://127.0.0.1:8000"
     VLLM_MODEL: str = "gemma4-31b"
     VLLM_API_KEY: str = ""
@@ -163,6 +164,13 @@ class Settings(BaseSettings):
             object.__setattr__(self, "RATE_LIMIT_ENABLED", False)
         return self
 
+    @model_validator(mode="after")
+    def _validate_vision_provider(self) -> "Settings":
+        provider = self.VISION_PROVIDER.strip().lower()
+        if provider and provider not in {"groq", "vllm"}:
+            raise ValueError("VISION_PROVIDER must be one of: groq, vllm")
+        return self
+
     # ── Derived helpers ───────────────────────────────────────────────────────
     @property
     def is_production(self) -> bool:
@@ -171,6 +179,13 @@ class Settings(BaseSettings):
     @property
     def is_development(self) -> bool:
         return self.APP_ENV == "development"
+
+    @property
+    def vision_provider(self) -> str:
+        explicit = self.VISION_PROVIDER.strip().lower()
+        if explicit:
+            return explicit
+        return "groq" if self.is_production else "vllm"
 
     @property
     def cookie_samesite(self) -> str:
