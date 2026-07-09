@@ -1,9 +1,9 @@
 /** Enterprise report branding — presentation layer only. */
-export const BRAND_NAME = 'Prangan';
+export const BRAND_NAME = 'SiteVision';
 export const BRAND_TAGLINE = 'AI Powered Construction Progress Report';
 export const BRAND_REPORT_TITLE = 'Construction Progress Report';
 export const BRAND_REPORT_SUBTITLE = 'AI Assisted Construction Site Progress Analysis';
-export const BRAND_FOOTER = 'Prangan • AI Powered Construction Intelligence';
+export const BRAND_FOOTER = 'SiteVision • AI Powered Construction Intelligence';
 export const REPORT_VERSION = '1.0';
 
 export function confidenceLabel(confidence: number): 'High' | 'Moderate' | 'Limited' {

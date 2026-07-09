@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     )
 
     # ── Application ───────────────────────────────────────────────────────────
-    APP_NAME: str = "Horizon"
+    APP_NAME: str = "SiteVision"
     APP_ENV: str = "development"
     DEBUG: bool = True
     FRONTEND_URL: str = "http://localhost:5173"
@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     EMAIL_FROM: str = "noreply@yourdomain.com"
-    EMAIL_FROM_NAME: str = "Horizon"
+    EMAIL_FROM_NAME: str = "SiteVision"
 
     # ── Cookies ───────────────────────────────────────────────────────────────
     # SameSite policy for the refresh-token cookie. When the frontend and backend

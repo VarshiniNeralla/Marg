@@ -58,7 +58,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.APP_NAME,
         description=(
-            "Production-grade Horizon API. "
+            "Production-grade SiteVision API. "
             "Used for construction monitoring and immersive room tours."
         ),
         version="1.0.0",

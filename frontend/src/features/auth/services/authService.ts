@@ -14,7 +14,7 @@ interface LoginResponse {
 
 // ── Mock credential table ─────────────────────────────────────────────────────
 // Used when the backend is unreachable (network error / dev without server).
-// Password for all mock accounts: Prangan@123
+// Password for all mock accounts: SiteVision@123
 
 const MOCK_USERS: AuthUser[] = [
   {
@@ -52,7 +52,7 @@ const MOCK_USERS: AuthUser[] = [
   },
 ];
 
-const MOCK_PASSWORD = 'Prangan@123';
+const MOCK_PASSWORD = 'SiteVision@123';
 
 function mockLogin(email: string, password: string): LoginResponse | null {
   if (password !== MOCK_PASSWORD) return null;

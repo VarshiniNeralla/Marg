@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: prangan-frontend
+    name: sitevision-frontend
     runtime: static
     rootDir: frontend
     buildCommand: npm install && npm run build
@@ -10,7 +10,7 @@ services:
     # API/auth/upload calls fail in production.
     envVars:
       - key: VITE_API_BASE_URL
-        sync: false   # e.g. https://prangan-api.onrender.com
+        sync: false   # e.g. https://sitevision-api.onrender.com
       - key: VITE_CLOUDINARY_CLOUD_NAME
         sync: false
       - key: VITE_CLOUDINARY_UPLOAD_PRESET
@@ -22,7 +22,7 @@ services:
         status: 200
 
   - type: web
-    name: prangan-api
+    name: sitevision-api
     runtime: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
@@ -44,11 +44,11 @@ services:
       # REQUIRED in prod: the deployed frontend origin(s), comma-separated.
       # Without this CORS falls back to localhost and the browser blocks every
       # cross-origin API call from the real frontend. Set to your Vercel/Render
-      # frontend URL, e.g. https://prangan.vercel.app
+      # frontend URL, e.g. https://sitevision.vercel.app
       - key: CORS_ORIGINS
         sync: false
       # REQUIRED in prod: base URL of the frontend, used to build password-reset
-      # links. Falls back to localhost otherwise. e.g. https://prangan.vercel.app
+      # links. Falls back to localhost otherwise. e.g. https://sitevision.vercel.app
       - key: FRONTEND_URL
         sync: false
       - key: DB_NAME

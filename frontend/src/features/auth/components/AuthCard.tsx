@@ -65,7 +65,7 @@ function BrandMark({ centered = false }: { centered?: boolean }) {
             letterSpacing: '-0.03em',
             lineHeight: 1.1,
           }}>
-            Prāṅgaṇ
+            SiteVision
           </Typography>
           <Typography sx={{
             fontSize: '0.55rem',

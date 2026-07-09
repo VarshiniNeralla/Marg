@@ -92,7 +92,7 @@ function Navbar() {
       <Box component={Link} to="/" sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mr: 'auto', textDecoration: 'none' }}>
         <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 36, width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
         <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-          <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.04em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
+          <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.04em', lineHeight: 1 }}>SiteVision</Typography>
           <Typography sx={{ fontSize: '0.55rem', fontWeight: 600, color: '#71717a', letterSpacing: '0.12em', mt: 0.3 }}>BY SITESURELABS</Typography>
         </Box>
       </Box>
@@ -161,7 +161,7 @@ function Hero() {
               WebkitBackgroundClip: 'text',
               WebkitTextFillColor: 'transparent',
               backgroundClip: 'text',
-            }}>Prāṅgaṇ</Box>
+            }}>SiteVision</Box>
           </Typography>
         </m.div>
 
@@ -780,7 +780,7 @@ function Footer() {
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 26, width: 'auto', objectFit: 'contain' }} />
               <Box>
-                <Typography sx={{ fontSize: '1rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.03em', lineHeight: 1.1 }}>Prāṅgaṇ</Typography>
+                <Typography sx={{ fontSize: '1rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.03em', lineHeight: 1.1 }}>SiteVision</Typography>
                 <Typography sx={{ fontSize: '0.55rem', fontWeight: 700, color: '#a1a1aa', letterSpacing: '0.12em', mt: 0.25 }}>BY SITESURELABS</Typography>
               </Box>
             </Box>
@@ -848,7 +848,7 @@ function Footer() {
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 3 }}>
                 <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 32, width: 'auto', objectFit: 'contain' }} />
                 <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-                  <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.03em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
+                  <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.03em', lineHeight: 1 }}>SiteVision</Typography>
                   <Typography sx={{ fontSize: '0.65rem', fontWeight: 700, color: '#52525b', letterSpacing: '0.15em', mt: 0.5 }}>BY SITESURELABS</Typography>
                 </Box>
               </Box>

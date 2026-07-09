@@ -61,7 +61,7 @@ async def upload_image(
             # NOT block the event loop for the full network upload duration.
             return cloudinary.uploader.upload(
                 io.BytesIO(data),
-                folder=f"horizon/{folder}",
+                folder=f"sitevision/{folder}",
                 resource_type="image",
                 transformation=[{"width": 1200, "crop": "limit", "quality": "auto"}],
                 timeout=s.CLOUDINARY_UPLOAD_TIMEOUT,

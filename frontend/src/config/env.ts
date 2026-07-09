@@ -34,8 +34,8 @@ function resolveBaseUrl(): string {
   return 'http://localhost:8000';
 }
 
-/** Base origin of the backend, e.g. "https://prangan-api.onrender.com" (no trailing slash). */
+/** Base origin of the backend, e.g. "https://sitevision-api.onrender.com" (no trailing slash). */
 export const API_BASE_URL = resolveBaseUrl();
 
-/** Full API v1 prefix, e.g. "https://prangan-api.onrender.com/api/v1". */
+/** Full API v1 prefix, e.g. "https://sitevision-api.onrender.com/api/v1". */
 export const API_V1_URL = `${API_BASE_URL}/api/v1`;

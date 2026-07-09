@@ -291,7 +291,7 @@ export default function DashboardLayout() {
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0, flex: 1 }}>
             <Box component="img" src="/assets/new_logo.png" alt="My Home Constructions" sx={{ width: 44, height: 44, objectFit: 'contain', flexShrink: 0 }} />
             <Box sx={{ minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-              <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontWeight: 800, fontSize: '1.05rem', color: colors.textStrong, letterSpacing: '-0.03em', lineHeight: 1 }}>Prāṅgaṇ</Typography>
+              <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontWeight: 800, fontSize: '1.05rem', color: colors.textStrong, letterSpacing: '-0.03em', lineHeight: 1 }}>SiteVision</Typography>
               <Typography sx={{ fontSize: '0.55rem', color: colors.textMuted, letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600, mt: 0.3 }}>BY SITESURELABS</Typography>
             </Box>
           </Box>
