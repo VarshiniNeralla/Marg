@@ -227,6 +227,7 @@ export function computeDashboardStats(data: WorkflowData) {
     roomCount: data.rooms.length,
     mappedRoomCount: mappedRooms,
     captureCount: data.captures.length,
+    // Store already keeps only live uploaded walkthroughs; keep both KPIs aligned.
     tourCount: data.tours.length,
     publishedTourCount: data.tours.filter(t => t.status === 'published').length,
     toursPendingPublish: data.tours.filter(t => t.status !== 'published').length,

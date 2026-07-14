@@ -6,9 +6,10 @@ import type { WorkflowDataState } from './workflowStore';
 import { flushWriteQueue } from './writeQueue';
 
 /**
- * Loads the authenticated organization's workflow data from the backend once.
- * For field engineers with assigned projects, the snapshot is scoped to only
- * those projects and their child entities before hydrating the store.
+ * Scopes captures / pins / floor plans to an engineer's assigned projects for
+ * day-to-day capture work. Tours are intentionally left alone — Virtual Tours
+ * must be identical for admin, manager, and engineer (engineer-uploaded
+ * walkthroughs only; filtering happens in hydrate).
  */
 function scopeSnapshotToProjects(
   data: Partial<WorkflowDataState>,
@@ -36,7 +37,8 @@ function scopeSnapshotToProjects(
     flats,
     rooms,
     captures: (data.captures ?? []).filter(c => projectSet.has(c.projectId) || roomSet.has(c.roomId)),
-    tours: (data.tours ?? []).filter(t => projectSet.has(t.projectId)),
+    // Keep the org-wide tour list so every role sees the same Virtual Tours catalog.
+    tours: data.tours ?? [],
     floorPlans: (data.floorPlans ?? []).filter(fp => projectSet.has(fp.projectId) && towerSet.has(fp.towerId) && floorSet.has(fp.floorId)),
     capturePins: (data.capturePins ?? []).filter(pin => projectSet.has(pin.projectId) && floorSet.has(pin.floorId)),
     defects: (data.defects ?? []).filter(d => projectSet.has(d.projectId)),
@@ -70,15 +72,12 @@ export default function WorkflowApiBootstrap() {
     workflowApiService
       .snapshot()
       .then(data => {
-        if (assignedIds.length) {
-          // Field engineer with assigned projects — scope the snapshot and treat
-          // it as authoritative so stale data from a previous user is dropped.
-          hydrateFromApi(scopeSnapshotToProjects(data, assignedIds), { replace: true });
-        } else {
-          hydrateFromApi(data);
-        }
-        // Now that we're authenticated and hydrated, drain any pending writes so
-        // a second device sees this device's changes promptly.
+        const payload = assignedIds.length
+          ? scopeSnapshotToProjects(data, assignedIds)
+          : data;
+        // Always replace so a previous role/session can't leave stale tours or
+        // captures in the shared localStorage-backed store.
+        hydrateFromApi(payload, { replace: true });
         flushWriteQueue();
       })
       .catch(error => {

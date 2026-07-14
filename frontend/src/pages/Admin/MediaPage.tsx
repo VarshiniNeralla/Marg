@@ -11,6 +11,20 @@ import {
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, getRoleLandingPath } from '@store/authStore';
+import { isTombstoned } from '@store/tombstones';
+import { isLiveUploadedTour } from '@store/tourFilters';
+
+/** True only for real uploaded media (Cloudinary / CDN / absolute http URLs). */
+function isUploadedUrl(value: unknown): value is string {
+  return typeof value === 'string' && /^https?:\/\//i.test(value.trim());
+}
+
+function firstUploadedUrl(...candidates: unknown[]): string | null {
+  for (const c of candidates) {
+    if (isUploadedUrl(c)) return c.trim();
+  }
+  return null;
+}
 
 type MediaAsset = {
   original_filename?: string;
@@ -67,6 +81,7 @@ function FormatGlyph({ format, color }: { format: string; color: string }) {
 
 export default function MediaPage() {
   const captures = useWorkflowStore(s => s.captures);
+  const capturePins = useWorkflowStore(s => s.capturePins);
   const tours = useWorkflowStore(s => s.tours);
   const floorPlans = useWorkflowStore(s => s.floorPlans);
   const user = useAuthStore(s => s.user);
@@ -80,20 +95,43 @@ export default function MediaPage() {
 
   const items = useMemo<MediaItem[]>(() => {
     const out: MediaItem[] = [];
+    // Captures still attached to a floor-plan pin (including older visits on that pin).
+    const linkedCaptureIds = new Set(capturePins.flatMap(p => p.captureIds));
 
-    // ── Captures ──────────────────────────────────────────────────────────────
+    // ── Captures (only real uploads that have not been deleted) ───────────────
     for (const c of captures) {
+      if (isTombstoned(c.id)) continue;
+      // Same rule as My Captures gallery: pin-named rows with no live pin link are
+      // orphans from earlier deletes and must not show in Media Library.
+      if (/^Pin\s+\d+$/i.test(c.roomName ?? '') && !linkedCaptureIds.has(c.id)) continue;
       const rec = c as typeof c & Record<string, unknown>;
-      const assets = (rec.mediaAssets as MediaAsset[] | undefined) ?? [];
+      const assets = (rec.mediaAssets as MediaAsset[] | undefined)
+        ?? (rec.media_assets as MediaAsset[] | undefined)
+        ?? [];
       const first = assets[0] ?? {};
-      const thumb = (first.thumbnail_url ?? first.preview_url ?? rec.thumbnailUrl ?? rec.thumbnail_url ?? rec.previewUrl) as string | undefined;
+      const thumb = firstUploadedUrl(
+        first.thumbnail_url,
+        first.preview_url,
+        first.processed_panorama_url,
+        first.original_file_url,
+        first.original_url,
+        rec.thumbnailUrl,
+        rec.thumbnail_url,
+        rec.previewUrl,
+        rec.processedPanoramaUrl,
+        rec.processed_panorama_url,
+        rec.originalFileUrl,
+        rec.original_url,
+      );
+      // Seed / placeholder records with no uploaded file stay out of the library.
+      if (!thumb) continue;
       const fmt = (first.format ?? rec.format ?? 'jpg') as string;
       const size = (first.size ?? (typeof rec.size === 'number' ? rec.size : 0) ?? 0) as number;
       out.push({
         id: c.id,
         kind: 'capture',
         name: (first.original_filename as string) ?? `${c.roomName} capture`,
-        thumbnail: thumb ?? null,
+        thumbnail: thumb,
         format: fmt,
         sizeBytes: size || (c.sizeMb ? c.sizeMb * 1024 * 1024 : 0),
         status: (first.processing_status ?? rec.processingStatus ?? rec.processing_status ?? 'uploaded') as string,
@@ -105,17 +143,30 @@ export default function MediaPage() {
 
     // ── Floor plans ─────────────────────────────────────────────────────────
     for (const fp of floorPlans) {
+      if (isTombstoned(fp.id)) continue;
       const rec = fp as typeof fp & Record<string, unknown>;
-      const assets = (rec.mediaAssets as MediaAsset[] | undefined) ?? [];
+      const assets = (rec.mediaAssets as MediaAsset[] | undefined)
+        ?? (rec.media_assets as MediaAsset[] | undefined)
+        ?? [];
       const first = assets[0] ?? {};
-      const thumb = (first.thumbnail_url ?? first.preview_url ?? rec.thumbnailUrl ?? rec.thumbnail_url) as string | undefined;
+      const thumb = firstUploadedUrl(
+        first.thumbnail_url,
+        first.preview_url,
+        first.original_file_url,
+        first.original_url,
+        rec.thumbnailUrl,
+        rec.thumbnail_url,
+        rec.fileUrl,
+        rec.file_url,
+      );
+      if (!thumb) continue;
       const tower = useWorkflowStore.getState().towers.find(t => t.id === fp.towerId);
       const project = useWorkflowStore.getState().projects.find(p => p.id === fp.projectId);
       out.push({
         id: fp.id,
         kind: 'floor_plan',
         name: fp.fileName ?? `${fp.floorLabel} plan`,
-        thumbnail: thumb ?? null,
+        thumbnail: thumb,
         format: (first.format ?? fp.fileType ?? 'pdf') as string,
         sizeBytes: (first.size as number) || (fp.fileSizeMb ? fp.fileSizeMb * 1024 * 1024 : 0),
         status: (first.processing_status ?? 'ready') as string,
@@ -125,16 +176,26 @@ export default function MediaPage() {
       });
     }
 
-    // ── Tour panoramas ────────────────────────────────────────────────────────
+    // ── Tours (same set as Virtual Tours: published engineer walkthroughs) ────
     for (const t of tours) {
+      if (isTombstoned(t.id) || !isLiveUploadedTour(t)) continue;
       const steps = t.steps ?? [];
-      const thumb = steps[0]?.thumbnailUrl ?? steps[0]?.panoramaUrl ?? null;
+      const thumb = firstUploadedUrl(
+        steps[0]?.thumbnailUrl,
+        steps[0]?.panoramaUrl,
+        (t as typeof t & Record<string, unknown>).thumbnailUrl,
+        (t as typeof t & Record<string, unknown>).thumbnail_url,
+        (t as typeof t & Record<string, unknown>).processedPanoramaUrl,
+        (t as typeof t & Record<string, unknown>).processed_panorama_url,
+      );
+      if (!thumb) continue;
+
       const panoCount = steps.length || t.captures || 1;
       out.push({
         id: t.id,
         kind: 'tour',
         name: `${t.roomName} walkthrough`,
-        thumbnail: thumb ?? null,
+        thumbnail: thumb,
         format: 'pano',
         sizeBytes: 0,
         status: t.status,
@@ -145,7 +206,7 @@ export default function MediaPage() {
     }
 
     return out.sort((a, b) => b.sortKey.localeCompare(a.sortKey));
-  }, [captures, floorPlans, tours]);
+  }, [captures, capturePins, floorPlans, tours]);
 
   const filtered = useMemo(() => {
     const base = filter === 'all' ? items : items.filter(i => i.kind === filter);

@@ -125,7 +125,7 @@ export default function AdminDashboard() {
           { label: 'Projects',        value: String(stats.projectCount),                           sub: `${stats.activeProjectCount} active`,        color: colors.primary, icon: <FolderRounded />,     to: '/projects' },
           { label: 'Members',         value: realUserCount !== null ? String(realUserCount) : '—', sub: 'all roles',                                 color: '#7c3aed',     icon: <PeopleRounded />,      to: '/users' },
           { label: 'Captures',        value: String(stats.captureCount),                           sub: `${stats.pendingReviews} pending`,           color: '#0891b2',     icon: <CameraAltRounded />,   to: '/captures' },
-          { label: 'Published',       value: String(stats.publishedTourCount),                     sub: `of ${stats.tourCount} tours`,               color: '#059669',     icon: <ViewInArRounded />,    to: '/tours' },
+          { label: 'Published',       value: String(stats.publishedTourCount),                     sub: 'engineer walkthroughs',                     color: '#059669',     icon: <ViewInArRounded />,    to: '/tours' },
         ].map((s) => (
           <StatCard key={s.label} {...s} />
         ))}

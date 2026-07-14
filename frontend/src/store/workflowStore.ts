@@ -12,6 +12,7 @@ import { STORE_VERSION, WORKFLOW_STORE_KEY } from './persistence';
 import { createSafeStorage } from './safeStorage';
 import { addTombstones, tombstoneSet, clearTombstones } from './tombstones';
 import { enqueueWrite, SYNC_ERROR_EVENT as WRITE_QUEUE_SYNC_ERROR_EVENT } from './writeQueue';
+import { isLiveUploadedTour } from './tourFilters';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction Workflow Store
@@ -235,7 +236,7 @@ interface WorkflowState {
   createCapturePin: (args: { floorPlanId: string; floorId: string; towerId: string; projectId: string; x: number; y: number; createdBy?: string }) => string;
   attachCaptureToPin: (pinId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => string;
   deleteCapturePin: (id: string) => void;
-  publishFloorPlanTour: (floorPlanId: string) => string[];
+  publishFloorPlanTour: (floorPlanId: string, pinIds?: string[]) => string[];
 
   // ── Captures ──
   uploadCapture: (roomId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => string;
@@ -509,28 +510,66 @@ export const useWorkflowStore = create<WorkflowState>()(
             return !hadCaptures || p.captureIds.length > 0;
           });
 
-        set(s => ({
-          ...s,
-          ...migrated,
-          uidCounter: s.uidCounter,
-          projects:      migrated.projects      ?? s.projects,
-          towers:        migrated.towers        ?? s.towers,
-          floors:        migrated.floors        ?? s.floors,
-          flats:         migrated.flats         ?? s.flats,
-          rooms:         migrated.rooms         ?? s.rooms,
-          tours:         (migrated.tours ?? s.tours).filter(t => !tombstones.has(t.id)),
-          // Drop floor-plan records the client superseded on re-upload so a stale
-          // duplicate snapshot can't resurrect an empty plan for the floor.
-          floorPlans:    (migrated.floorPlans ?? s.floorPlans).filter(fp => !tombstones.has(fp.id)),
-          defects:       migrated.defects       ?? s.defects,
-          notifications: migrated.notifications ?? s.notifications,
-          auditLogs:     migrated.auditLogs     ?? s.auditLogs,
-          users:         migrated.users         ?? s.users,
-          // Captures: in replace mode, take only the (scoped) API set; otherwise
-          // merge so locally-created captures that failed to sync are not lost.
-          captures: replace ? (migrated.captures ?? []) : mergeById(migrated.captures, s.captures),
-          capturePins: cleanPins,
-        }));
+        set(s => {
+          const mergedCaptures = (
+            replace
+              ? (migrated.captures ?? [])
+              : mergeById(migrated.captures, s.captures)
+          ).filter(c => !tombstones.has(c.id));
+
+          // Captures that still live under a pin timeline.
+          const linkedCaptureIds = new Set(cleanPins.flatMap(p => p.captureIds));
+          // Orphans: named like "Pin N" but no longer referenced by any pin.
+          // These accumulate when older pin deletes cascaded locally but left Mongo
+          // rows behind — they then reappear forever in Media Library.
+          const orphanIds = new Set(
+            mergedCaptures
+              .filter(c => /^Pin\s+\d+$/i.test(c.roomName ?? '') && !linkedCaptureIds.has(c.id))
+              .map(c => c.id),
+          );
+
+          const apiToursRaw = replace
+            ? (migrated.tours ?? [])
+            : (migrated.tours ?? s.tours);
+          // Only keep published floor walkthroughs with uploaded media so every
+          // role shares the same engineer-uploaded Virtual Tours catalog.
+          const liveTours = apiToursRaw.filter(
+            t => !tombstones.has(t.id) && isLiveUploadedTour(t),
+          );
+
+          return {
+            ...s,
+            ...migrated,
+            uidCounter: s.uidCounter,
+            projects:      migrated.projects      ?? s.projects,
+            towers:        migrated.towers        ?? s.towers,
+            floors:        migrated.floors        ?? s.floors,
+            flats:         migrated.flats         ?? s.flats,
+            rooms:         migrated.rooms         ?? s.rooms,
+            tours:         liveTours,
+            // Drop floor-plan records the client superseded on re-upload so a stale
+            // duplicate snapshot can't resurrect an empty plan for the floor.
+            floorPlans:    (migrated.floorPlans ?? s.floorPlans).filter(fp => !tombstones.has(fp.id)),
+            defects:       migrated.defects       ?? s.defects,
+            notifications: migrated.notifications ?? s.notifications,
+            auditLogs:     migrated.auditLogs     ?? s.auditLogs,
+            users:         migrated.users         ?? s.users,
+            captures: mergedCaptures.filter(c => !orphanIds.has(c.id)),
+            capturePins: cleanPins,
+          };
+        });
+
+        // Drop non-walkthrough / unpublished junk still sitting in Mongo (e.g.
+        // Workflow-page generateTour stubs) so the next snapshot matches the UI.
+        const junkTours = (migrated.tours ?? []).filter(
+          t => !tombstones.has(t.id) && !isLiveUploadedTour(t),
+        );
+        if (junkTours.length) {
+          addTombstones(...junkTours.map(t => t.id));
+          for (const junk of junkTours) {
+            mirrorApi('deleteTour', [junk.id], 'reconcile-junk-tour');
+          }
+        }
 
         // Back-fill re-syncs local-only records to the backend. Skip it entirely
         // in replace mode — those records belong to projects outside this user's
@@ -576,10 +615,45 @@ export const useWorkflowStore = create<WorkflowState>()(
             else if (apiFloorPlanIds.has(id)) mirrorApi('deleteFloorPlan', [id], 'reconcile-delete-floor-plan');
             else mirrorApi('deleteTour', [id], 'reconcile-delete-tour');
           }
+
+          // Also purge pin-named orphans that remain on the server (deleted from the
+          // product but still in Mongo). Tombstone + delete so the next snapshot is clean.
+          const linkedAfter = new Set(get().capturePins.flatMap(p => p.captureIds));
+          const apiOrphans = (migrated.captures ?? []).filter(
+            c => /^Pin\s+\d+$/i.test(c.roomName ?? '') && !linkedAfter.has(c.id),
+          );
+          if (apiOrphans.length) {
+            addTombstones(...apiOrphans.map(c => c.id));
+            for (const orphan of apiOrphans) {
+              mirrorApi('deleteCapture', [orphan.id], 'reconcile-orphan-capture');
+            }
+          }
           // Stale tombstones are pruned by TTL in the tombstone module, not eagerly
           // here — clearing on first absence risks dropping one before the delete
           // round-trips, which would let the record resurrect.
           void clearTombstones; // (kept exported for explicit admin/reset use)
+        } else {
+          // Replace mode still needs orphan + tombstone deletes to converge the
+          // scoped snapshot without re-backfilling other projects.
+          const linkedAfter = new Set(get().capturePins.flatMap(p => p.captureIds));
+          const apiCaptureIds = new Set((migrated.captures ?? []).map(c => c.id));
+          const apiTourIds = new Set((migrated.tours ?? []).map(t => t.id));
+          const toDeleteCaptures = [
+            ...[...tombstones].filter(id => apiCaptureIds.has(id)),
+            ...(migrated.captures ?? [])
+              .filter(c => /^Pin\s+\d+$/i.test(c.roomName ?? '') && !linkedAfter.has(c.id))
+              .map(c => c.id),
+          ];
+          if (toDeleteCaptures.length) {
+            addTombstones(...toDeleteCaptures);
+            for (const id of toDeleteCaptures) {
+              mirrorApi('deleteCapture', [id], 'reconcile-orphan-capture');
+            }
+          }
+          // Re-issue deletes for tombstoned tours that still appear in the snapshot.
+          for (const id of [...tombstones].filter(tid => apiTourIds.has(tid))) {
+            mirrorApi('deleteTour', [id], 'reconcile-delete-tour');
+          }
         }
       },
 
@@ -773,11 +847,21 @@ export const useWorkflowStore = create<WorkflowState>()(
   },
   deleteRoom(id) {
     const room = get().rooms.find(r => r.id === id);
+    // Captures still on this room (e.g. pin delete before each capture was removed)
+    // must be tombstoned + API-deleted. Otherwise hydrate merge resurrects them and
+    // Media Library / galleries show "deleted" images again.
+    const leftoverIds = get().captures.filter(c => c.roomId === id).map(c => c.id);
+    const leftoverSet = new Set(leftoverIds);
     set(s => ({
       rooms: s.rooms.filter(r => r.id !== id),
       captures: s.captures.filter(c => c.roomId !== id),
+      tours: s.tours.filter(t => !leftoverSet.has(t.captureId)),
       towers: room ? s.towers.map(t => t.id === room.towerId ? { ...t, rooms: Math.max(0, t.rooms - 1) } : t) : s.towers,
     }));
+    if (leftoverIds.length) {
+      addTombstones(...leftoverIds);
+      leftoverIds.forEach(cid => mirrorApi('deleteCapture', [cid]));
+    }
     mirrorApi('deleteRoom', [id]);
   },
   assignFloorPlan(roomId, floorPlanId) {
@@ -947,7 +1031,8 @@ export const useWorkflowStore = create<WorkflowState>()(
       thumbnail_url: (mediaAssets[0]?.thumbnail_url ?? capRecord.thumbnailUrl) as string | undefined,
     } as MockTour & Record<string, unknown>;
     set(s => ({ tours: [tour, ...s.tours] }));
-    mirrorApi('createTour', [tour]);
+    // Do not persist generateTour stubs — only publishFloorPlanTour (engineer
+    // pin walkthroughs) becomes a Virtual Tour for every role.
     return id;
   },
   publishTour(id) {
@@ -1077,13 +1162,16 @@ export const useWorkflowStore = create<WorkflowState>()(
     if (updated) mirrorApi('updateCapturePin', [pinId, { captureIds: updated.captureIds }]);
     return captureId;
   },
-  publishFloorPlanTour(floorPlanId) {
+  publishFloorPlanTour(floorPlanId, pinIds) {
     // Build ONE sequential walkthrough tour for the whole floor: each pin's latest
     // capture becomes a step, ordered by pin sequence (1 → 2 → 3 …). The viewer
     // steps through these with prev/next arrows. Re-publishing replaces the
     // existing walkthrough for this floor plan rather than duplicating it.
+    // When `pinIds` is provided, only those pins are included (still in sequence order).
+    const selected = pinIds ? new Set(pinIds) : null;
     const pins = get().capturePins
       .filter(p => p.floorPlanId === floorPlanId)
+      .filter(p => !selected || selected.has(p.id))
       .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
 
     const steps: TourStep[] = [];
@@ -1105,9 +1193,13 @@ export const useWorkflowStore = create<WorkflowState>()(
     }
     if (!steps.length) return [];
 
-    const floor = get().floors.find(f => f.id === pins[0].floorId);
-    const tower = get().towers.find(t => t.id === pins[0].towerId);
-    const project = get().projects.find(p => p.id === pins[0].projectId);
+    const allFloorPins = get().capturePins.filter(p => p.floorPlanId === floorPlanId);
+    const metaPin = pins[0] ?? allFloorPins[0];
+    if (!metaPin) return [];
+
+    const floor = get().floors.find(f => f.id === metaPin.floorId);
+    const tower = get().towers.find(t => t.id === metaPin.towerId);
+    const project = get().projects.find(p => p.id === metaPin.projectId);
     const first = steps[0];
     const panoramaUrls = steps.map(s => s.panoramaUrl).filter((u): u is string => !!u);
 
@@ -1119,10 +1211,10 @@ export const useWorkflowStore = create<WorkflowState>()(
       id,
       floorPlanId,
       captureId: first.captureId,
-      roomId: pins[0].roomId,
+      roomId: metaPin.roomId,
       roomName: `${floor?.label ?? 'Floor'} Walkthrough`,
-      projectId: pins[0].projectId, projectName: project?.name ?? '',
-      towerId: pins[0].towerId, towerName: tower?.name ?? '',
+      projectId: metaPin.projectId, projectName: project?.name ?? '',
+      towerId: metaPin.towerId, towerName: tower?.name ?? '',
       floorLabel: floor?.label ?? '',
       status: 'published',
       captures: steps.length,
