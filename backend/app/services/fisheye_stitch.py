@@ -54,15 +54,17 @@ class CameraProfile:
 
 
 # FOV values are the practical stitching angles (empirically better than the
-# marketing "200°") — 204° for the X2 is the documented sweet spot; X3/X4/X5
-# use progressively wider lenses. Overridable via env/profile per model.
+# marketing "200°"). ONE X2: measured by per-capture rim auto-calibration on
+# 11 real captures from two units — estimates cluster at 205.1–207.1°, so the
+# old "documented sweet spot" of 204° left a systematic 20–200 px seam offset
+# on every capture. _autocal_fov fine-tunes ±1.5° around these per capture.
 _PROFILES: dict[str, CameraProfile] = {
-    "ONE X2": CameraProfile("ONE X2", 204.0),
+    "ONE X2": CameraProfile("ONE X2", 206.3),
     "X3": CameraProfile("X3", 204.0),
     "X4": CameraProfile("X4", 205.0),
     "X5": CameraProfile("X5", 205.0),
 }
-_DEFAULT_PROFILE = CameraProfile("generic", 204.0)
+_DEFAULT_PROFILE = CameraProfile("generic", 205.5)
 
 
 def profile_for(model: Optional[str]) -> CameraProfile:
@@ -625,7 +627,491 @@ def _estimate_clean_theta(front, back, overlap, theta1_deg, theta2_deg, fov_deg)
     return float(max(92.0, min(theta_clean, half)))
 
 
-def _parallax_align_hemispheres(front, back, w1, out_w, out_h):
+def _correct_rim_illumination(front, back, overlap, theta1_deg, theta2_deg, fov_deg):
+    """Measure and correct each lens's rim vignetting from the overlap.
+
+    The outer degrees of the fisheye collapse to ~35% illumination; cutting
+    them off (theta_clean) protected the blend but AMPUTATED the front lens
+    exactly where it matters most: a doorway at a seam longitude is seen wide
+    open by the near lens and mostly occluded by the far one — Insta360
+    Studio renders the near lens's view (door open); we rendered the far
+    lens's (door half-hidden) because the near lens's rim was declared
+    unusable. Same principle as _estimate_clean_theta: at theta_k > 91° the
+    mirror lens sits below 89° (flat plateau), so the overlap luminance
+    ratio, exposure-normalized on the symmetric 90° ring, IS lens k's
+    relative illumination. Fit a per-degree gain curve, clamp to 3.5x, and
+    multiply it back — after this the clean-theta estimator naturally
+    extends the usable zone and the seam corridor widens to the true mutual
+    field of view.
+
+    Returns (front, back) — corrected copies, or the originals when the
+    signal is unmeasurable.
+    """
+    import cv2
+    import numpy as np
+
+    half = fov_deg / 2.0
+    lf = cv2.cvtColor(front, cv2.COLOR_BGR2GRAY).astype(np.float32) + 1e-3
+    lb = cv2.cvtColor(back, cv2.COLOR_BGR2GRAY).astype(np.float32) + 1e-3
+    ok = overlap & (lf > 8) & (lb > 8) & (lf < 250) & (lb < 250)
+    ring = ok & (np.abs(theta1_deg - 90.0) <= 2.0) & (np.abs(theta2_deg - 90.0) <= 2.0)
+    if ring.sum() < 500:
+        return front, back
+    k = float(np.median(lf[ring] / lb[ring]))
+    if not np.isfinite(k) or k <= 0:
+        return front, back
+
+    step = 0.5
+    bins = np.arange(91.0, half + step, step)
+
+    def _gain_curve(theta_deg, lum_self, lum_other, norm):
+        gains, centers = [], []
+        for lo in bins:
+            b = ok & (theta_deg >= lo) & (theta_deg < lo + step)
+            if b.sum() >= 200:
+                rel = float(np.median(lum_self[b] / lum_other[b])) / norm
+                if np.isfinite(rel) and rel > 0.05:
+                    gains.append(np.clip(1.0 / rel, 1.0, 3.5))
+                    centers.append(lo + step / 2.0)
+        if len(gains) < 3:
+            return None
+        g = np.array(gains, np.float32)
+        # enforce monotone non-decreasing with angle (vignetting only grows)
+        g = np.maximum.accumulate(g)
+        # light smoothing
+        if len(g) >= 3:
+            g = np.convolve(np.pad(g, 1, mode='edge'), [0.25, 0.5, 0.25], 'valid')
+        return np.array(centers, np.float32), g.astype(np.float32)
+
+    c1 = _gain_curve(theta1_deg, lf, lb, k)
+    c2 = _gain_curve(theta2_deg, lb, lf, 1.0 / k)
+    if c1 is None and c2 is None:
+        return front, back
+
+    def _apply(img, theta_deg, curve):
+        if curve is None:
+            return img
+        centers, g = curve
+        gain = np.interp(theta_deg.ravel(), centers, g,
+                         left=1.0, right=float(g[-1])).reshape(theta_deg.shape)
+        out = img.astype(np.float32) * gain[..., None]
+        return np.clip(out, 0, 255).astype(np.uint8)
+
+    return _apply(front, theta1_deg, c1), _apply(back, theta2_deg, c2)
+
+
+def _make_dis_flow():
+    """DIS optical flow tuned for the seam strips.
+
+    Farneback's smooth quadratic expansion cannot represent the discontinuous
+    disparity at depth edges (measured: post-align edge mismatch p90 was within
+    1-3% of pre-align on real captures — the warp did nothing exactly where the
+    ghosts are). DIS is patch-based with variational refinement: it follows
+    thin structures (window/door frames, railings, stair nosings) and preserves
+    the disparity discontinuity at depth boundaries instead of smearing it.
+    """
+    import cv2
+
+    dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
+    dis.setUseSpatialPropagation(True)
+    dis.setFinestScale(1)              # track structure down to 1/2 resolution
+    dis.setPatchSize(8)
+    dis.setPatchStride(3)
+    dis.setGradientDescentIterations(16)
+    dis.setVariationalRefinementIterations(5)
+    return dis
+
+
+def _strip_flow_with_confidence(a, b, max_flow: float, fb_tau: float):
+    """Dense flow a→b plus forward/backward-consistency confidence in [0,1]."""
+    import cv2
+    import numpy as np
+
+    # DIS asserts contiguity; corridor column slices are strided views.
+    a = np.ascontiguousarray(a)
+    b = np.ascontiguousarray(b)
+    dis = _make_dis_flow()
+    fwd = dis.calc(a, b, None)
+    bwd = dis.calc(b, a, None)
+    fx = np.clip(fwd[..., 0], -max_flow, max_flow)
+    fy = np.clip(fwd[..., 1], -max_flow, max_flow)
+    h, w = a.shape[:2]
+    gx, gy = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+    bx = cv2.remap(bwd[..., 0], gx + fx, gy + fy,
+                   cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    by = cv2.remap(bwd[..., 1], gx + fx, gy + fy,
+                   cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    fb_err = np.hypot(fx + bx, fy + by)
+    conf = np.exp(-((fb_err / fb_tau) ** 2)).astype(np.float32)
+    return fx, fy, conf, fb_err
+
+
+def _directional_measurability(a, tau: float = 2500.0, sigma: float = 8.0):
+    """Per-axis flow measurability from the local structure tensor.
+
+    Forward/backward consistency CANNOT detect the aperture problem: a thin
+    horizontal scaffold pipe against blown-out sky matches itself under ANY
+    shift along its own axis, so DIS confidently reports zero horizontal flow
+    while the true seam parallax (which at seam longitudes is exactly
+    horizontal) is 20-40px — the pipe visibly snaps at every seam crossing.
+    The structure tensor exposes this: flow along x is only measurable where
+    the image varies along x (Jxx), and likewise for y. Returns (apx, apy) in
+    [0,1]; isotropic texture and corners → 1 for both, a 1-D horizontal edge →
+    apx≈0 (its ends/joints recover, becoming the anchors that the completion
+    diffusion propagates from). tau keeps FLAT regions neutral (≈1) — their
+    zero flow is fb-consistent and harmless, and penalising them would
+    needlessly re-route walls through diffusion.
+    """
+    import cv2
+    import numpy as np
+
+    g = a.astype(np.float32)
+    ix = cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3)
+    iy = cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)
+    jxx = cv2.GaussianBlur(ix * ix, (0, 0), sigma)
+    jyy = cv2.GaussianBlur(iy * iy, (0, 0), sigma)
+    den = jxx + jyy + 2.0 * tau
+    apx = np.clip(2.0 * (jxx + tau) / den, 0.0, 1.0).astype(np.float32)
+    apy = np.clip(2.0 * (jyy + tau) / den, 0.0, 1.0).astype(np.float32)
+    return apx, apy
+
+
+def _complete_unreliable_flow(fx, fy, conf, conf_x=None, conf_y=None):
+    """Replace low-confidence flow with flow diffused from reliable neighbours.
+
+    The previous strategy ATTENUATED unreliable flow toward zero, betting the
+    seam optimizer could route around the untouched (still misaligned) pixels.
+    Measured on real captures that bet loses: 45-68% of rows carried a visible
+    residual through the whole mixing band because misaligned structure spanned
+    the entire corridor (stair flights, window frames) and no clean path
+    existed. Occluded/ambiguous pixels belong to SOME surface whose motion the
+    reliable neighbourhood does measure, so normalized-convolution diffusion
+    (finest support first, widening until every pixel has support) is the
+    principled fill — the warp then moves whole structures coherently instead
+    of leaving half-aligned double edges. Confidence only chooses between the
+    measured and diffused vectors; it no longer silently disables alignment.
+    """
+    import cv2
+    import numpy as np
+
+    cx = conf if conf_x is None else conf_x
+    cy = conf if conf_y is None else conf_y
+    out = []
+    for f, c in ((fx, cx), (fy, cy)):
+        w = c * c  # emphasise trustworthy support
+        dif = np.zeros_like(f)
+        filled = np.zeros(f.shape, bool)
+        for sigma in (12.0, 32.0, 80.0):
+            nf = cv2.GaussianBlur(f * w, (0, 0), sigma)
+            d = cv2.GaussianBlur(w, (0, 0), sigma)
+            ok = (~filled) & (d > 0.05)
+            dif[ok] = nf[ok] / d[ok]
+            filled |= ok
+        if not filled.all():
+            tot = max(float(w.sum()), 1e-6)
+            dif[~filled] = float((f * w).sum()) / tot
+        # Smooth the mixing weight so the raw↔diffused transition cannot
+        # itself introduce a warp discontinuity — but never let the blur
+        # REDUCE trust in a thin confident structure: a beam edge measured
+        # fb-consistently at conf≈1 in a ~30px-tall band was diluted to ~40%
+        # of its true displacement because the blurred weight straddled the
+        # zero-confidence surroundings (half the −18px vertical offset
+        # vanished before regularization ever saw it).
+        cs = np.maximum(c, cv2.GaussianBlur(c, (0, 0), 8.0))
+        out.append(cs * f + (1.0 - cs) * dif)
+    return out[0], out[1]
+
+
+def _lowpass_field(field, sigma: float):
+    """Large-sigma Gaussian low-pass via pyramid (direct kernels are huge)."""
+    import cv2
+
+    h, w = field.shape[:2]
+    scale = max(1, int(sigma / 8.0))
+    small = cv2.resize(field, (max(1, w // scale), max(1, h // scale)),
+                       interpolation=cv2.INTER_AREA)
+    small = cv2.GaussianBlur(small, (0, 0), sigma / scale)
+    return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+
+
+def _weighted_guided_filter(p, guide, w, radius: int = 41, eps: float = 100.0):
+    """Confidence-weighted guided filter (He et al. with sample weights).
+
+    Filters `p` into a piecewise-smooth field whose discontinuities follow the
+    GUIDE image's edges — the local linear model q = a·I + b means a straight
+    beam (uniform intensity along its length) receives one coherent value
+    while a genuine depth edge (intensity edge between lintel and room behind)
+    stays sharp. `w` down-weights unreliable samples (occlusion boundaries,
+    aperture-ambiguous flow) so their oscillation cannot bend the result;
+    they inherit the model fitted to trustworthy neighbours instead.
+    """
+    import cv2
+    import numpy as np
+
+    k = 2 * radius + 1
+
+    def box(x):
+        return cv2.boxFilter(x, -1, (k, k), normalize=True)
+
+    wb = box(w) + 1e-6
+    m_i = box(guide * w) / wb
+    m_p = box(p * w) / wb
+    m_ii = box(guide * guide * w) / wb
+    m_ip = box(guide * p * w) / wb
+    var_i = np.maximum(m_ii - m_i * m_i, 0.0)
+    cov_ip = m_ip - m_i * m_p
+    a = cov_ip / (var_i + eps)
+    b = m_p - a * m_i
+    return box(a) * guide + box(b)
+
+
+def _regularize_strip_flow(fx, fy, guide_gray, x0, out_w, out_h, conf=None,
+                           conf_par=None):
+    """Suppress physically implausible / image-unsupported flow components.
+
+    The dual-fisheye baseline is (anti)parallel to the lens-1 forward axis, so
+    in equirect coordinates the epipolar direction at pixel (lon, lat) is
+    ∝ (−sin(lon)/cos(lat), sin(lat)·cos(lon)) — at the seam longitudes
+    (lon = ±90°) it is exactly HORIZONTAL at every latitude. True parallax can
+    therefore only displace content along that direction; the perpendicular
+    flow component is measurement error plus (smooth) residual rotation
+    calibration. Keeping only its low-frequency part straightens architecture
+    that spurious flow would otherwise bend (measured: a doorway header dipped
+    ~40 px where DIS chased flare from a bright opening).
+
+    The parallax-parallel component keeps its high-frequency detail only where
+    the image has gradient to support it: on textureless walls DIS flow is
+    aperture-ambiguous, and its high-frequency component rubber-sheets faint
+    edges (wall corners) without any alignment benefit.
+    """
+    import cv2
+    import numpy as np
+
+    h, w = fx.shape
+    lon = (-np.pi + 2.0 * np.pi * (np.arange(x0, x0 + w, dtype=np.float32) + 0.5) / out_w)
+    lat = (np.pi / 2 - np.pi * (np.arange(out_h, dtype=np.float32) + 0.5) / out_h)
+    lon = np.tile(lon[None, :], (h, 1))
+    lat = np.tile(lat[:, None], (1, w))
+    ux = -np.sin(lon) / np.maximum(np.cos(lat), 0.05)
+    uy = np.sin(lat) * np.cos(lon)
+    norm = np.hypot(ux, uy) + 1e-6
+    ux /= norm
+    uy /= norm
+
+    par = fx * ux + fy * uy
+    perp_x = fx - par * ux
+    perp_y = fy - par * uy
+
+    grad = cv2.Sobel(guide_gray, cv2.CV_32F, 1, 0, ksize=3) ** 2
+    grad += cv2.Sobel(guide_gray, cv2.CV_32F, 0, 1, ksize=3) ** 2
+    grad = np.sqrt(grad)
+    gate = np.clip((grad - 6.0) / 12.0, 0.0, 1.0).astype(np.float32)
+    # Regional support, not per-stroke islands: sparse features (a wall
+    # scribble, a faint corner) must warp coherently with their whole
+    # neighbourhood — a gate that flips inside/outside each stroke shreds
+    # them. Wide dilation + heavy smoothing makes the gate vary slower than
+    # the flow's low-pass scale, so it selects REGIONS with alignable
+    # structure rather than individual edges.
+    gate = cv2.dilate(gate, np.ones((25, 25), np.uint8))
+    gate = cv2.GaussianBlur(gate, (0, 0), 16.0)
+
+    # Perpendicular flow: the epipolar model says only smooth residual
+    # rotation-calibration error lives here, but real captures violate it —
+    # a stair flight measured a CONFIDENT (fb-consistent, strongly textured)
+    # −17px vertical disparity while the wall beside it measured 0
+    # (rolling-shutter / inter-lens timing under camera motion behaves like
+    # depth-dependent vertical parallax). Crushing that to a σ400 low-pass
+    # left ~13px of vertical misregistration = staggered stair nosings.
+    # Keep the smooth field as the backbone, but let locally-supported
+    # (regional texture × squared confidence) deviations through, clamped to
+    # ±20px so a flare-chase (low confidence, was a ~40px doorway-header dip)
+    # can never bend architecture again.
+    pw = gate if conf is None else gate * conf * conf
+    pw_lp = _lowpass_field(pw, 400.0)
+    eps = 0.02
+    dc_x = (_lowpass_field(perp_x * pw, 400.0) + eps * _lowpass_field(perp_x, 400.0)) / (pw_lp + eps)
+    dc_y = (_lowpass_field(perp_y * pw, 400.0) + eps * _lowpass_field(perp_y, 400.0)) / (pw_lp + eps)
+    if conf is not None:
+        # max() with the blur: a thin confident band (a beam edge a few tens
+        # of px tall surrounded by blown-out zero-confidence sky) must keep
+        # its own full confidence — the plain blur averaged it toward zero
+        # and gated off a correctly-measured −18px vertical deviation.
+        conf_s = np.maximum(conf, cv2.GaussianBlur(conf, (0, 0), 16.0))
+        gate_perp = gate * conf_s * conf_s
+    else:
+        gate_perp = gate * 0.0
+    perp_x = dc_x + np.clip(perp_x - dc_x, -20.0, 20.0) * gate_perp
+    perp_y = dc_y + np.clip(perp_y - dc_y, -20.0, 20.0) * gate_perp
+
+    # Parallel flow IS disparity (inverse depth along the epipolar direction).
+    # Regularize it as depth: a confidence-weighted GUIDED filter makes it
+    # piecewise-smooth with discontinuities aligned to image edges. This
+    # replaces the low-pass+texture-gate blend, whose passed-through
+    # high-frequency flow oscillated along aperture-ambiguous depth edges
+    # (a doorway lintel's bottom edge waved by ~10-15px; the guided model
+    # assigns the whole beam one coherent disparity because its intensity is
+    # uniform along its length, while the lintel/room intensity edge keeps
+    # the true depth discontinuity sharp).
+    wpar = gate if conf_par is None else np.maximum(conf_par, 0.01)
+    par = _weighted_guided_filter(
+        par, guide_gray.astype(np.float32), wpar.astype(np.float32)
+    )
+
+    # No-evidence shrink: in regions with neither measured confidence nor any
+    # image structure (blown-out doorway interiors, flare-washed walls) the
+    # completed/filtered disparity is pure extrapolation. Warping featureless
+    # content is invisible EXCEPT at its boundaries — a wall corner visible
+    # only to one lens (the other lens's view flare-washed to uniform white)
+    # was displaced ~35px by disparity diffused from unrelated content. With
+    # no evidence the safest disparity is zero: the boundary then renders at
+    # the owning lens's true position. Structures keep their flow: any texture
+    # or confidence within ~2·σ keeps par intact (gate is already regionally
+    # dilated; conf enters through its thin-band-preserving smooth).
+    if conf is not None:
+        # Texture is NOT evidence — only measured confidence is. A window
+        # full of distant towers is richly textured yet an evidence desert
+        # (DIS fails wholesale, conf≈0 for hundreds of px); its "completed"
+        # disparity is diffused from unrelated near-field anchors (frame,
+        # poles) whose values disagree, and letting texture vouch for that
+        # invention liquified the facade. Even a density-of-measurements
+        # gate failed: a few fb-lucky garbage speckles inside the desert
+        # vouched for the whole window. Structures that need par to bridge
+        # measurement gaps (pipe spans between confident joints) survive on
+        # conf_s's thin-band smooth plus the σ24 reach below.
+        ev = cv2.GaussianBlur(conf_s, (0, 0), 24.0)
+        ev = np.clip(ev * 1.5, 0.0, 1.0)
+        par = par * ev
+
+    return par * ux + perp_x, par * uy + perp_y
+
+
+def _autocal_fov(top, bot, l1, l2, fov, *, cal_w=1920, cal_h=960):
+    """Per-capture fisheye-FOV self-calibration from seam-rim disparity.
+
+    The embedded calibration provides (cx, cy, radius, rotation) but NOT the
+    lens FOV — that comes from a per-model profile GUESS. A wrong FOV shifts
+    every feature radially by ~θ·ΔFOV/FOV, which at the seams is a constant
+    horizontal offset between the hemispheres affecting ALL depths (measured
+    ~50 px at 5760 wide on real captures — even distant walls, which true
+    parallax cannot displace). That systematic offset sat at the edge of what
+    optical flow could absorb and polluted every downstream stage.
+
+    Measure the dominant horizontal shift between the two rim renders with
+    phase correlation (several windows per seam, median), at two FOV
+    candidates; the shift is locally linear in FOV, so solve for the zero
+    crossing and verify. Near-content parallax biases each measurement but
+    not the root: parallax is depth-signed one way only, while the FOV term
+    crosses zero.
+    """
+    import cv2
+    import numpy as np
+
+    def band_cost(F):
+        """Robust overlap mismatch (median |Δgray| over the rim band) at FOV F."""
+        m1x, m1y, v1 = _hemisphere_map(
+            cal_w, cal_h, l1.cx, l1.cy, l1.radius, F, 0.0, l1.rot
+        )
+        m2x, m2y, v2 = _hemisphere_map(
+            cal_w, cal_h, l2.cx, l2.cy, l2.radius, F, 0.0, l2.rot, body_flip=True
+        )
+        gf = cv2.cvtColor(
+            cv2.remap(top, m1x, m1y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT),
+            cv2.COLOR_BGR2GRAY,
+        ).astype(np.float32)
+        gb = cv2.cvtColor(
+            cv2.remap(bot, m2x, m2y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT),
+            cv2.COLOR_BGR2GRAY,
+        ).astype(np.float32)
+        band = v1 & v2 & (gf > 25) & (gb > 25)
+        band[: int(0.15 * cal_h)] = False
+        band[int(0.85 * cal_h):] = False
+        if band.sum() < 5000:
+            return None
+        # Alignment error is only measurable at structure: flat wall pixels
+        # differ by noise/exposure regardless of FOV (a plain median is
+        # integer-flat across candidates). Score the gradient-weighted
+        # mismatch after cancelling the global exposure offset.
+        gb = gb * (float(gf[band].mean()) / max(float(gb[band].mean()), 1e-3))
+        grad = np.abs(cv2.Sobel(gf, cv2.CV_32F, 1, 0, ksize=3)) \
+            + np.abs(cv2.Sobel(gf, cv2.CV_32F, 0, 1, ksize=3))
+        w = np.where(band, np.minimum(grad, 200.0), 0.0)
+        ws = float(w.sum())
+        if ws < 1e3:
+            return None
+        return float((np.abs(gf - gb) * w).sum() / ws)
+
+    # FOV is a property of the CAMERA; the per-model profile carries the
+    # measured value (X2: 206.3°, from 11 captures across two units). This
+    # scan only FINE-TUNES ±1.5° around it per capture — wide solves from
+    # per-capture measurements are unreliable because near content at the
+    # seams (a railing at arm's length) dominates any shift/mismatch metric
+    # (observed: an unconstrained solve hit its +6° clamp and staggered every
+    # stair edge). If the cost curve is too flat to trust, the profile value
+    # itself is already correct.
+    deltas = [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5]
+    costs = [band_cost(fov + d) for d in deltas]
+    if any(c is None for c in costs):
+        logger.warning("[autocal] band too small; keeping profile fov")
+        return fov, {"fov_delta_deg": 0.0, "rejected": "band_too_small"}
+    i = int(np.argmin(costs))
+    c_ref = costs[deltas.index(0.0)]
+    if c_ref <= 0 or (c_ref - costs[i]) / c_ref < 0.02:
+        logger.info(
+            f"[autocal] no significant gain over profile ({c_ref:.2f} -> {costs[i]:.2f}); keeping fov={fov}"
+        )
+        return fov, {"fov_delta_deg": 0.0, "band_cost_at_profile": c_ref}
+    # Parabolic refinement between grid neighbours (interior minima only).
+    f_star = fov + deltas[i]
+    if 0 < i < len(deltas) - 1:
+        c0, c1, c2 = costs[i - 1], costs[i], costs[i + 1]
+        denom = c0 - 2 * c1 + c2
+        if denom > 1e-6:
+            f_star += 0.5 * (deltas[i + 1] - deltas[i]) * (c0 - c2) / denom * 0.5
+    logger.info(
+        f"[autocal] fov {fov:.2f} -> {f_star:.2f} "
+        f"(band mismatch {c_ref:.2f} -> {costs[i]:.2f} @ {cal_w}w)"
+    )
+    return float(f_star), {
+        "fov_delta_deg": float(f_star - fov),
+        "band_cost_at_profile": c_ref,
+        "band_cost_at_best": costs[i],
+    }
+
+
+def _measure_seam_global_dy(lf, lb, ov, xc, out_h, win: int = 96):
+    """Robust global vertical offset (back relative to front) at one seam.
+
+    Multi-window phase correlation down the seam column, restricted to the
+    true overlap: immune to the aperture problem (windows need 2-D texture to
+    pass the std gate) and to DIS/fb-consistency failures in blown-out scenes
+    — a handful of good windows anywhere along the seam is enough. Returns
+    (median_dy, n_windows); (0, n) when fewer than 4 windows qualify.
+    """
+    import cv2
+    import numpy as np
+
+    han = cv2.createHanningWindow((win, win), cv2.CV_32F)
+    vals = []
+    for yc in range(int(0.12 * out_h), int(0.88 * out_h), 64):
+        for xoff in (-40, 0, 40):
+            y0, y1 = yc - win // 2, yc + win // 2
+            x0, x1 = xc + xoff - win // 2, xc + xoff + win // 2
+            if ov[y0:y1, x0:x1].mean() < 0.9:
+                continue
+            a = lf[y0:y1, x0:x1].astype(np.float32)
+            b = lb[y0:y1, x0:x1].astype(np.float32)
+            if a.std() < 4.0 or b.std() < 4.0:
+                continue
+            (dx, dy), resp = cv2.phaseCorrelate(a * han, b * han)
+            if resp > 0.30 and abs(dy) < 40.0 and abs(dx) < 80.0:
+                vals.append(dy)
+    if len(vals) < 4:
+        return 0.0, len(vals)
+    return float(np.clip(np.median(vals), -30.0, 30.0)), len(vals)
+
+
+def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clean2=None,
+                                theta1_deg=None, theta2_deg=None):
     """Locally align the hemispheres across the seam corridors (parallax).
 
     The ~2-3 cm lens baseline displaces near content by 30-80 px between the
@@ -641,19 +1127,23 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h):
     At w1=1 the front is untouched (its exclusive zone keeps true geometry),
     at w1=0 the back is untouched, and at the seam (w1=0.5) both meet halfway —
     so along the entire corridor both images share one continuous intermediate
-    geometry and the mismatch collapses. Flow is Farneback multi-scale on
-    luminance, computed only in the two corridor strips, tapered to zero at
-    strip borders, and clamped; far/aligned content measures ~zero flow and is
-    unchanged.
+    geometry and the mismatch collapses. Flow is DIS (patch-based + variational
+    refinement) on luminance, computed only in the two corridor strips, tapered
+    to zero at strip borders, and clamped; far/aligned content measures ~zero
+    flow and is unchanged.
 
-    Reliability refinement (measured on real captures): Farneback's smooth
-    expansion cannot represent the discontinuous disparity at high-contrast
-    depth edges / occlusions — fb-consistency error is 3-4.5x higher on edge
-    pixels, and the warp there leaves the offset nearly unchanged (a residual
-    few-px double edge once the multiband mixes both hemispheres near the
-    seam). The flow is therefore attenuated by a forward/backward-consistency
-    confidence, and the (1-confidence) field is returned so the seam optimizer
-    can keep its cut away from unreliable correspondence.
+    Reliability handling (measured on real captures): at occlusion boundaries
+    and repeated texture the forward/backward flows disagree (fb-error 3-32+ px
+    vs ~1 px elsewhere) — the measured vector there is untrustworthy. Those
+    pixels are not left unwarped (that provably kept the double edges: post-
+    align edge mismatch was within 1-3% of pre-align, and 45-68% of rows had a
+    visible residual inside the seam mixing band); instead their flow is
+    COMPLETED by diffusion from surrounding reliable measurements
+    (_complete_unreliable_flow), so whole structures move coherently. A second
+    pass measures the small residual between the aligned hemispheres and folds
+    it into the field (single final resample). The (1-confidence) field is
+    still returned so the seam optimizer keeps its cut away from unreliable
+    correspondence.
 
     Returns (front', back', stats, flow_unreliability) — the last is a float32
     (out_h, out_w) field, 0 where flow is reliable/absent, →1 where measured
@@ -665,8 +1155,53 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h):
     if out_w < 1024:  # degenerate sizes (unit tests): nothing meaningful to align
         return front, back, None, None
 
-    lf = cv2.cvtColor(front, cv2.COLOR_BGR2GRAY)
-    lb = cv2.cvtColor(back, cv2.COLOR_BGR2GRAY)
+    # Measurement images: outside its clean region each hemisphere is BLACK
+    # (invalid), and the corridor strips are ~3x wider than the true overlap.
+    # DIS aggressively matches black-vs-content there and floods the strip
+    # with saturated garbage vectors (measured: flow-magnitude p90 pinned at
+    # the clamp on every capture, 87-99% low confidence), which the
+    # completion fill then spreads INTO the overlap. Pre-filling each side
+    # with the other (as the multiband already does) makes non-overlap zones
+    # identical → measured flow 0 → only the true overlap carries disparity.
+    # The warp itself still samples the REAL hemispheres.
+    if clean1 is not None and clean2 is not None:
+        lf = cv2.cvtColor(np.where(clean1[..., None], front, back), cv2.COLOR_BGR2GRAY)
+        lb = cv2.cvtColor(np.where(clean2[..., None], back, front), cv2.COLOR_BGR2GRAY)
+        # True-overlap mask: ONLY here do lf/lb compare different lenses. In
+        # the pre-filled zones both strips are the same image by construction,
+        # so DIS reports flow=0 at confidence 1.0 — fake "measurements" that
+        # (a) anchored the completion diffusion to zero and (b) dominated the
+        # regularizer's DC weighting (the pre-fill zones are most of the
+        # strip), crushing a real, correctly-measured −20px vertical seam
+        # offset to ~−2px (066: beam sheared at the seam, ceiling streaks
+        # duplicated near the zenith). The mask keeps the pre-fill's warp
+        # behaviour (flow→0 outside overlap is still correct) but excludes
+        # the fake zones from every alignment STATISTIC.
+        ov_meas = (clean1 & clean2).astype(np.float32)
+        # Rim-MTF trust: past ~99° the fisheye optics go soft; DIS between a
+        # mushy rim view and the other lens's sharp view produces flow that
+        # is fb-CONSISTENT (mush matches mush under any shift) yet wrong —
+        # with the rim-corrected wider overlap this liquified a tower facade
+        # seen through a window (126). Measurements there get zero trust; the
+        # completion diffuses coherent flow outward from the optically sound
+        # zone instead.
+        if theta1_deg is not None and theta2_deg is not None:
+            rim = np.maximum(theta1_deg, theta2_deg)
+            ov_meas = ov_meas * np.clip((100.0 - rim) / 1.5, 0.0, 1.0).astype(np.float32)
+    else:
+        lf = cv2.cvtColor(front, cv2.COLOR_BGR2GRAY)
+        lb = cv2.cvtColor(back, cv2.COLOR_BGR2GRAY)
+        ov_meas = None
+    # Dark scenes starve every measurement stage — DIS gradients, the texture
+    # gate (grad−6/12), the structure tensor (τ=2500) and the phase-window
+    # std gate are all scaled for normal exposure, but a dark ceiling carries
+    # 5-10× weaker gradients (a ~20-gray conduit on a ~35-gray ceiling), so
+    # alignment silently degrades exactly where the user cannot see well
+    # either. Equalize the MEASUREMENT strips only (identical operator on
+    # both sides; the warp still samples the real hemispheres).
+    _clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(16, 16))
+    lf = _clahe.apply(lf)
+    lb = _clahe.apply(lb)
     map_x = np.tile(np.arange(out_w, dtype=np.float32), (out_h, 1))
     map_y = np.repeat(np.arange(out_h, dtype=np.float32)[:, None], out_w, axis=1)
     fx_full = np.zeros((out_h, out_w), np.float32)
@@ -676,56 +1211,58 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h):
     half_strip = 560
     taper = 64
     max_flow = 100.0
-    # Forward/backward consistency scale (px). Measured on real captures: the
-    # fb-error p90 is ~1.0-1.5 px on flat/distant content (reliable flow) but
-    # 3.6-32+ px exactly on high-contrast depth edges and occlusions, where
-    # Farneback's smooth quadratic expansion cannot represent the discontinuous
-    # true disparity — warping there half-aligns the edge and leaves the
-    # residual double image. tau=2 keeps confidence ~1 on flat content and
-    # collapses it precisely on those unreliable pixels.
+    # Forward/backward consistency scale (px). fb-error stays ~0-1.5 px where
+    # correspondence is trustworthy and jumps to 3.6-32+ px at occlusion
+    # boundaries / repeated texture. tau=2 keeps confidence ~1 on the former
+    # and collapses it on the latter, which routes those pixels to the
+    # diffusion fill in _complete_unreliable_flow.
     fb_tau = 2.0
+    # Pass-2 residual clamp: after the pass-1 warp both hemispheres already
+    # share coarse geometry, so any genuine residual is small; a tight clamp
+    # stops the refinement from ever undoing the first pass.
+    max_residual_flow = 24.0
+    strips = (("left", out_w // 4), ("right", 3 * out_w // 4))
+    ramp = np.ones(2 * half_strip, np.float32)
+    ramp[:taper] = np.linspace(0, 1, taper, dtype=np.float32)
+    ramp[-taper:] = np.linspace(1, 0, taper, dtype=np.float32)
+    # Global vertical seam offset: real captures carry a per-capture ~0-20px
+    # UNIFORM vertical misregistration at a seam (bimodal across captures,
+    # not explained by the shared factory calibration). Routing it through
+    # the flow works positionally but the correction then rides the feather
+    # weight w1, which transitions 0→1 across only the ~200px true-overlap
+    # band — a ±10px vertical shift compressed into that band bends every
+    # horizontal edge into a visible V-wave at the seam (066: beam soffit and
+    # door header dipped ~10px). Instead: measure the offset robustly with
+    # phase correlation, subtract it from the flow measurements, and apply it
+    # in the same final warp as a raised-cosine profile spanning the FULL
+    # strip (max slope ~0.03 px/px — invisible), so the seam meets exactly
+    # while straight architecture stays straight.
+    goff_full = np.zeros((1, out_w), np.float32)
+    s_prof = (0.5 + 0.5 * np.cos(
+        np.pi * np.abs(np.arange(2 * half_strip, dtype=np.float32) - half_strip) / half_strip
+    )).astype(np.float32)
     stats = {}
-    for name, xc in (("left", out_w // 4), ("right", 3 * out_w // 4)):
+
+    for name, xc in strips:
         x0, x1 = xc - half_strip, xc + half_strip
-        a, b = lf[:, x0:x1], lb[:, x0:x1]
-        flow = cv2.calcOpticalFlowFarneback(
-            a, b, None,
-            pyr_scale=0.5, levels=5, winsize=41,
-            iterations=3, poly_n=7, poly_sigma=1.5, flags=0,
+        fx, fy, conf, fb_err = _strip_flow_with_confidence(
+            lf[:, x0:x1], lb[:, x0:x1], max_flow, fb_tau
         )
-        fx = np.clip(flow[..., 0], -max_flow, max_flow)
-        fy = np.clip(flow[..., 1], -max_flow, max_flow)
-
-        # Forward/backward consistency: where F and B disagree the measured
-        # correspondence is unreliable (occlusion boundary / discontinuity) —
-        # a warp from it drags pixels with wrong vectors. Attenuate the flow
-        # by confidence so unreliable pixels KEEP TRUE GEOMETRY: their real
-        # (large) mismatch then stays visible to the seam optimizer, which
-        # routes the cut — and its multiband mixing band — around them, so a
-        # single complete edge is rendered instead of two offset copies.
-        bflow = cv2.calcOpticalFlowFarneback(
-            b, a, None,
-            pyr_scale=0.5, levels=5, winsize=41,
-            iterations=3, poly_n=7, poly_sigma=1.5, flags=0,
+        g_dy, g_n = (0.0, 0)
+        if ov_meas is not None:
+            g_dy, g_n = _measure_seam_global_dy(lf, lb, ov_meas, xc, out_h)
+        goff = g_dy * s_prof
+        goff_full[0, x0:x1] = goff
+        fy = fy - goff[None, :]
+        apx, apy = _directional_measurability(lf[:, x0:x1])
+        conf_m = conf if ov_meas is None else conf * ov_meas[:, x0:x1]
+        fx, fy = _complete_unreliable_flow(
+            fx, fy, conf_m, conf_x=conf_m * apx, conf_y=conf_m * apy
         )
-        gx, gy = np.meshgrid(
-            np.arange(x1 - x0, dtype=np.float32),
-            np.arange(out_h, dtype=np.float32),
+        fx, fy = _regularize_strip_flow(
+            fx, fy, lf[:, x0:x1], x0, out_w, out_h,
+            conf=conf_m * apy, conf_par=conf_m * apx
         )
-        bx = cv2.remap(bflow[..., 0], gx + fx, gy + fy,
-                       cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-        by = cv2.remap(bflow[..., 1], gx + fx, gy + fy,
-                       cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-        fb_err = np.hypot(fx + bx, fy + by)
-        conf = np.exp(-((fb_err / fb_tau) ** 2)).astype(np.float32)
-        # Smooth so attenuation cannot introduce warp discontinuities of its own.
-        conf = cv2.GaussianBlur(conf, (0, 0), 8.0)
-        fx *= conf
-        fy *= conf
-
-        ramp = np.ones(x1 - x0, np.float32)
-        ramp[:taper] = np.linspace(0, 1, taper, dtype=np.float32)
-        ramp[-taper:] = np.linspace(1, 0, taper, dtype=np.float32)
         fx_full[:, x0:x1] = fx * ramp[None, :]
         fy_full[:, x0:x1] = fy * ramp[None, :]
         unrel_full[:, x0:x1] = (1.0 - conf) * ramp[None, :]
@@ -736,17 +1273,64 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h):
             "fb_err_median_px": float(np.median(fb_err)),
             "fb_err_p95_px": float(np.percentile(fb_err, 95)),
             "low_confidence_pct": float(100.0 * (conf < 0.5).mean()),
+            "global_dy_px": g_dy,
+            "global_dy_windows": g_n,
         }
 
     wf = w1.astype(np.float32)
-    front_a = cv2.remap(
-        front, map_x + (wf - 1.0) * fx_full, map_y + (wf - 1.0) * fy_full,
-        cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT,
-    )
-    back_a = cv2.remap(
-        back, map_x + wf * fx_full, map_y + wf * fy_full,
-        cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT,
-    )
+
+    def _warp(fxf, fyf):
+        f = cv2.remap(
+            front, map_x + (wf - 1.0) * fxf, map_y + (wf - 1.0) * fyf - 0.5 * goff_full,
+            cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT,
+        )
+        b = cv2.remap(
+            back, map_x + wf * fxf, map_y + wf * fyf + 0.5 * goff_full,
+            cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT,
+        )
+        return f, b
+
+    front_a, back_a = _warp(fx_full, fy_full)
+
+    # Refinement pass: re-measure the small residual between the ALIGNED
+    # hemispheres and fold it into the displacement field. The pass-1 warp
+    # applies flow sampled at the destination grid (an inverse-warp
+    # approximation), which under-corrects where the flow field itself varies
+    # — exactly at depth edges. Composing the residual additively (second-order
+    # error only, residual ≤ max_residual_flow px) and re-warping the ORIGINAL
+    # hemispheres keeps single-resample sharpness.
+    if clean1 is not None and clean2 is not None:
+        laf = cv2.cvtColor(np.where(clean1[..., None], front_a, back_a), cv2.COLOR_BGR2GRAY)
+        lab = cv2.cvtColor(np.where(clean2[..., None], back_a, front_a), cv2.COLOR_BGR2GRAY)
+    else:
+        laf = cv2.cvtColor(front_a, cv2.COLOR_BGR2GRAY)
+        lab = cv2.cvtColor(back_a, cv2.COLOR_BGR2GRAY)
+    laf = _clahe.apply(laf)
+    lab = _clahe.apply(lab)
+    for name, xc in strips:
+        x0, x1 = xc - half_strip, xc + half_strip
+        rx, ry, conf2, _ = _strip_flow_with_confidence(
+            laf[:, x0:x1], lab[:, x0:x1], max_residual_flow, fb_tau
+        )
+        apx2, apy2 = _directional_measurability(laf[:, x0:x1])
+        conf2_m = conf2 if ov_meas is None else conf2 * ov_meas[:, x0:x1]
+        rx, ry = _complete_unreliable_flow(
+            rx, ry, conf2_m, conf_x=conf2_m * apx2, conf_y=conf2_m * apy2
+        )
+        rx, ry = _regularize_strip_flow(
+            rx, ry, laf[:, x0:x1], x0, out_w, out_h,
+            conf=conf2_m * apy2, conf_par=conf2_m * apx2
+        )
+        fx_full[:, x0:x1] += rx * ramp[None, :]
+        fy_full[:, x0:x1] += ry * ramp[None, :]
+        unrel_full[:, x0:x1] = np.maximum(
+            unrel_full[:, x0:x1], (1.0 - conf2) * ramp[None, :]
+        )
+        rmag = np.hypot(rx, ry)
+        stats[name]["residual_median_px"] = float(np.median(rmag))
+        stats[name]["residual_p95_px"] = float(np.percentile(rmag, 95))
+
+    front_a, back_a = _warp(fx_full, fy_full)
     return front_a, back_a, stats, unrel_full
 
 
@@ -780,6 +1364,22 @@ def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None):
     import numpy as np
 
     diff = np.abs(front.astype(np.int16) - back.astype(np.int16)).sum(axis=2).astype(np.float32)
+    # Veiling flare can wash one hemisphere's view of real structure to
+    # near-uniform white; the raw luminance mismatch is then SMALL exactly
+    # where content disagrees most (one lens sees a door header, the other a
+    # blank wall), and the seam happily routes through it — chopping the
+    # structure out of the composite (039: doorway top-right corner vanished).
+    # Price that disagreement with the GRADIENT-magnitude mismatch: high where
+    # one side has an edge the other lacks, and — unlike a CLAHE-equalized
+    # intensity diff, which amplified dark-scene noise into fake cost and sent
+    # the path straight through a doorway (027) — near zero where both sides
+    # are merely flat or noisy.
+    gf = cv2.GaussianBlur(cv2.cvtColor(front, cv2.COLOR_BGR2GRAY).astype(np.float32), (0, 0), 1.5)
+    gb = cv2.GaussianBlur(cv2.cvtColor(back, cv2.COLOR_BGR2GRAY).astype(np.float32), (0, 0), 1.5)
+    def _gmag(g):
+        return cv2.magnitude(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3),
+                             cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3))
+    diff = diff + 4.0 * np.abs(_gmag(gf) - _gmag(gb))
     # Pyramid-mixing clearance: level k of the multiband reconstruction mixes
     # both hemispheres within ~3*2^k px of the seam (measured on real captures:
     # the level-0 cut is perfectly binary; levels 1-4 transition over
@@ -803,6 +1403,45 @@ def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None):
         cost = cost + occ * (2.0 * max(scale, 8.0))
     BIG = np.float32(1e9)
 
+    # Ownership bias: the path cost above only prices what the cut CROSSES —
+    # it is indifferent to handing a whole region to the lens that cannot see
+    # it. With asymmetric veiling flare that is exactly what happened: the cut
+    # drifted onto the flare-washed side of a doorway corner, so the corner
+    # (crisp in the other lens) rendered as mush for the rows below the header
+    # ("the door is being cut"). Per row, charge each candidate cut column for
+    # the structure it gives away: gradient energy visible only in BACK that
+    # lands on the FRONT side of the cut, plus the mirror term. Prefix/suffix
+    # sums make it O(w) per row; T ignores noise-level asymmetry, the clip
+    # keeps one huge edge from dominating the whole row.
+    gmf = cv2.GaussianBlur(_gmag(gf), (0, 0), 3.0)
+    gmb = cv2.GaussianBlur(_gmag(gb), (0, 0), 3.0)
+    T = 6.0
+    q_b_only = np.clip(gmb - gmf - T, 0.0, 25.0)   # structure only back sees
+    q_f_only = np.clip(gmf - gmb - T, 0.0, 25.0)   # structure only front sees
+    # Flare-only gate: one-sided structure comes from two very different
+    # situations. FLARE-WASHING — both lenses see the same surface, one view
+    # lifted to near-uniform white — has a LOW raw color mismatch, and there
+    # the seeing lens should own the region. TRUE OCCLUSION — a shaft
+    # interior one lens physically cannot see — has a HUGE raw mismatch, and
+    # forcing ownership there smeared the occluder's crisp boundary into a
+    # dark gradient (006 ceiling shaft). Fade the bias out as the raw
+    # mismatch grows past what flare can explain.
+    raw3 = cv2.GaussianBlur(
+        np.abs(front.astype(np.int16) - back.astype(np.int16)).sum(axis=2).astype(np.float32),
+        (0, 0), 3.0)
+    flare_gate = np.clip((300.0 - raw3) / 150.0, 0.0, 1.0)
+    # ... and flare is a BRIGHT phenomenon (scattered light lifts a surface
+    # toward white). One-sided sharpness in DARK content is a different beast
+    # — a shaft interior seen well by one lens and as vignetted murk by the
+    # other (006) — and re-owning it drags the occluder's boundary along.
+    # Require both views bright before trusting the flare interpretation.
+    lum_gate = np.clip(
+        (cv2.GaussianBlur(np.minimum(gf, gb), (0, 0), 3.0) - 120.0) / 50.0, 0.0, 1.0)
+    flare_gate *= lum_gate
+    q_b_only *= flare_gate
+    q_f_only *= flare_gate
+    LAMBDA_OWN = 1.0
+
     paths = []
     for xc, side_lo, side_hi in (
         (out_w // 4, 0, out_w // 2),
@@ -811,6 +1450,17 @@ def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None):
         x0 = max(side_lo, xc - 480)
         x1 = min(side_hi, xc + 480)
         Cw = np.where(corridor[:, x0:x1], cost[:, x0:x1], BIG)
+        # Front owns x >= path at the LEFT seam and x < path at the RIGHT
+        # seam (mask = left <= x < right). Charge accordingly.
+        qb = q_b_only[:, x0:x1].astype(np.float64)
+        qf = q_f_only[:, x0:x1].astype(np.float64)
+        if xc == out_w // 4:
+            give_b_to_front = np.cumsum(qb[:, ::-1], axis=1)[:, ::-1]  # x' >= path
+            give_f_to_back = np.cumsum(qf, axis=1) - qf                # x' < path
+        else:
+            give_b_to_front = np.cumsum(qb, axis=1) - qb               # x' < path
+            give_f_to_back = np.cumsum(qf[:, ::-1], axis=1)[:, ::-1]   # x' >= path
+        Cw = Cw + LAMBDA_OWN * (give_b_to_front + give_f_to_back)
         D = Cw.astype(np.float64).copy()
         for y in range(1, out_h):
             prev = D[y - 1]
@@ -1230,38 +1880,39 @@ def _stitch_arrays(
         l1 = _scale_lens_to_region(calib.lens1, sx_full, sy_full)
         l2 = _scale_lens_to_region(calib.lens2, sx_full, sy_full)
         l2_draw = l2
-        m1x, m1y, v1 = _hemisphere_map(
-            out_w, out_h, l1.cx, l1.cy, l1.radius, fov, 0.0, l1.rot,
-            src_h=top.shape[0], src_w=top.shape[1], lens_label="lens1",
-        )
-        m2x, m2y, v2 = _hemisphere_map(
-            out_w, out_h, l2.cx, l2.cy, l2.radius, fov, 0.0, l2.rot,
-            src_h=bot.shape[0], src_w=bot.shape[1], lens_label="lens2",
-            body_flip=True,
-        )
-        front = cv2.remap(top, m1x, m1y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
-        back = cv2.remap(bot, m2x, m2y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
-        top_rot = _fisheye_remap_footprint(top, m1x, m1y, v1)
-        bot_rot = _fisheye_remap_footprint(bot, m2x, m2y, v2)
     else:
         top = img[:, 0:W // 2].copy()
         bot = img[:, W // 2:W].copy()
         l1 = _scale_lens_to_region(calib.lens1, sx_full, sy_full)
         l2 = _scale_lens_to_region(calib.lens2, sx_full, sy_full)
         l2_draw = LensCalibration(l2.cx - W // 2, l2.cy, l2.radius, l2.rot)
-        m1x, m1y, v1 = _hemisphere_map(
-            out_w, out_h, l1.cx, l1.cy, l1.radius, fov, 0.0, l1.rot,
-            src_h=top.shape[0], src_w=top.shape[1], lens_label="lens1",
-        )
-        m2x, m2y, v2 = _hemisphere_map(
-            out_w, out_h, l2_draw.cx, l2_draw.cy, l2_draw.radius, fov, 0.0, l2_draw.rot,
-            src_h=bot.shape[0], src_w=bot.shape[1], lens_label="lens2",
-            body_flip=True,
-        )
-        front = cv2.remap(top, m1x, m1y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
-        back = cv2.remap(bot, m2x, m2y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
-        top_rot = _fisheye_remap_footprint(top, m1x, m1y, v1)
-        bot_rot = _fisheye_remap_footprint(bot, m2x, m2y, v2)
+
+    fov, autocal = _autocal_fov(top, bot, l1, l2_draw, fov)
+    meta["fisheye_fov_deg_effective"] = fov
+    meta["fov_autocal"] = autocal
+
+    m1x, m1y, v1 = _hemisphere_map(
+        out_w, out_h, l1.cx, l1.cy, l1.radius, fov, 0.0, l1.rot,
+        src_h=top.shape[0], src_w=top.shape[1], lens_label="lens1",
+    )
+    m2x, m2y, v2 = _hemisphere_map(
+        out_w, out_h, l2_draw.cx, l2_draw.cy, l2_draw.radius, fov, 0.0, l2_draw.rot,
+        src_h=bot.shape[0], src_w=bot.shape[1], lens_label="lens2",
+        body_flip=True,
+    )
+    # Validity must include SAMPLING bounds, not just the FOV cone: the
+    # fisheye circle can be clipped by the sensor edge (measured: lens1
+    # cx−r < 0 on real X2 files), so θ-valid rays can still land outside the
+    # source image and remap black. Without this, those black pixels enter
+    # the feather, the clean masks, and the local gain ratio (which then
+    # confidently darkens the other hemisphere into grey blobs).
+    v1 &= (m1x >= 0) & (m1x < top.shape[1] - 1) & (m1y >= 0) & (m1y < top.shape[0] - 1)
+    v2 &= (m2x >= 0) & (m2x < bot.shape[1] - 1) & (m2y >= 0) & (m2y < bot.shape[0] - 1)
+
+    front = cv2.remap(top, m1x, m1y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+    back = cv2.remap(bot, m2x, m2y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+    top_rot = _fisheye_remap_footprint(top, m1x, m1y, v1)
+    bot_rot = _fisheye_remap_footprint(bot, m2x, m2y, v2)
 
     sphere1 = front.copy()
     sphere2 = back.copy()
@@ -1285,7 +1936,22 @@ def _stitch_arrays(
     theta2_deg = (
         np.hypot(m2x - l2_draw.cx, m2y - l2_draw.cy) / max(l2_draw.radius, 1e-6) * (fov / 2.0)
     )
+    # Rim illumination correction first: with the vignetting gain restored,
+    # the clean-theta estimate extends toward the true mutual FOV and the
+    # seam corridor widens — a doorway/opening at a seam longitude can then
+    # be owned entirely by the lens that sees it open (Studio parity) instead
+    # of being sliced at the 90° meridian.
+    front, back = _correct_rim_illumination(
+        front, back, overlap, theta1_deg, theta2_deg, fov
+    )
+    sphere1 = front.copy()
+    sphere2 = back.copy()
+    sphere1[~v1] = 0
+    sphere2[~v2] = 0
     theta_clean = _estimate_clean_theta(front, back, overlap, theta1_deg, theta2_deg, fov)
+    # Even corrected, the last degree of the image circle carries demosaic
+    # fringing and noise amplified by the ~3x gain — keep a safety margin.
+    theta_clean = float(min(theta_clean, fov / 2.0 - 1.2))
     clean1 = v1 & (theta1_deg <= theta_clean)
     clean2 = v2 & (theta2_deg <= theta_clean)
     meta["blend_theta_clean_deg"] = theta_clean
@@ -1334,11 +2000,72 @@ def _stitch_arrays(
     # arrays, so these stay untouched by the alignment below).
     front_pre_align, back_pre_align = front, back
     front, back, flow_stats, flow_unreliability = _parallax_align_hemispheres(
-        front, back, w1, out_w, out_h
+        front, back, w1, out_w, out_h, clean1, clean2,
+        theta1_deg=theta1_deg, theta2_deg=theta2_deg,
     )
     if flow_stats is not None:
         meta["parallax_align"] = flow_stats
         logger.info(f"Parallax alignment: {flow_stats}")
+
+    # Spatially-varying exposure/flare equalization (low-frequency only).
+    # The global gain fixes overall exposure, but veiling flare near bright
+    # openings is direction-dependent: the SAME wall can differ by a smooth
+    # ±20% between hemispheres, which the multiband's wide low-frequency
+    # transition renders as a soft smudge across the seam corridor. Measured
+    # on the flow-ALIGNED hemispheres (pre-alignment ratios compare different
+    # content at parallax edges and smear a false tint onto nearby surfaces),
+    # heavily low-passed, and split symmetrically so neither side is globally
+    # rebiased and high-frequency content is untouched.
+    ratio_region = clean1 & clean2
+    if ratio_region.sum() > 1000:
+        fF = front.astype(np.float32)
+        bF = back.astype(np.float32)
+        # Erode the overlap and use a generous brightness floor so the dim
+        # chromatic ring at each lens's validity boundary can never bias the
+        # ratio (it reads as a consistent false darkening that the variance
+        # gate cannot catch).
+        m = cv2.erode(ratio_region.astype(np.uint8), np.ones((25, 25), np.uint8)).astype(bool)
+        m &= np.all(front > 30, axis=2) & np.all(back > 30, axis=2)
+        mf = m.astype(np.float32)
+        den = _lowpass_field(mf, 96.0)
+        ok = den > 1e-3
+        den_s = np.maximum(den, 1e-3)
+
+        # Reliability: a low-frequency gain can only equalize a ratio that IS
+        # low-frequency. Where the true ratio changes abruptly (a dark door
+        # leaf against a flare-brightened wall) the smoothed field straddles
+        # the transition and TINTS both sides. Measure the local ratio
+        # variance on luminance and fade the correction out where the ratio
+        # is not spatially consistent; the same weight applies to all
+        # channels so no colour fringing is introduced.
+        lum_f = cv2.cvtColor(front, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        lum_b = cv2.cvtColor(back, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        rl = np.where(m, lum_f / np.maximum(lum_b, 1.0), 0.0)
+        rl_low = np.where(ok, _lowpass_field(rl * mf, 96.0) / den_s, 1.0)
+        dev = np.where(m, (rl - rl_low) ** 2, 0.0)
+        var_low = np.where(ok, _lowpass_field(dev, 96.0) / den_s, 1.0)
+        rel_var = var_low / (rl_low ** 2 + 1e-6)
+        w = np.exp(-rel_var / 0.02).astype(np.float32)
+
+        # Spatial support: the ratio is only MEASURED inside the overlap; the
+        # gain is applied to the full hemispheres. Without a fade the smooth
+        # field carries extrapolated values a few hundred px past the overlap
+        # and then snaps to 1.0 at the support edge — on a plain wall/ceiling
+        # that renders as a distinct vertical luminance band beside the seam
+        # (visible on real captures ~400px right of the seam). Fade the
+        # correction out with the measurement support so it is exactly 1.0
+        # wherever the ratio was not measured nearby.
+        sup = np.clip(den * 4.0, 0.0, 1.0)
+
+        half = np.ones_like(fF)
+        for c in range(3):
+            r = np.where(m, fF[..., c] / np.maximum(bF[..., c], 1.0), 0.0)
+            r_low = np.where(ok, _lowpass_field(r * mf, 96.0) / den_s, 1.0)
+            r_eff = 1.0 + (np.clip(r_low, 0.7, 1.4) - 1.0) * w * sup
+            half[..., c] = np.sqrt(r_eff)
+        front = np.clip(fF / half, 0, 255).astype(np.uint8)
+        back = np.clip(bF * half, 0, 255).astype(np.uint8)
+        meta["local_gain_range"] = [float(half.min() ** 2), float(half.max() ** 2)]
 
     seam_mask, seam_left, seam_right = _optimize_seam_mask(
         front, back, w1, out_w, out_h, flow_unreliability

@@ -49,15 +49,16 @@ if str(_BACKEND) not in sys.path:
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
-from app.services.fisheye_stitch import _save_png, _stitch_arrays  # noqa: E402
+from app.services.fisheye_stitch import (  # noqa: E402
+    _save_png,
+    _stitch_arrays,
+    _strip_flow_with_confidence,
+)
 
 # ── Production constants (must mirror _parallax_align_hemispheres exactly) ────
 STRIP_HALF = 560
 TAPER = 64
 MAX_FLOW = 100.0
-FARNEBACK = dict(
-    pyr_scale=0.5, levels=5, winsize=41, iterations=3, poly_n=7, poly_sigma=1.5, flags=0
-)
 # Multiband mixing half-width: levels 1-4 transition over ±6/14/24/48 px of the
 # seam (documented + measured in fisheye_stitch._optimize_seam_mask).
 MIX_BAND = 48
@@ -66,17 +67,6 @@ CONF_TAU = 2.0          # px — fb-error scale for the confidence map
 EDGE_GRAD_T = 40.0      # Sobel magnitude defining "high-contrast" pixels
 RESID_T = 60.0          # sum-of-channels |front-back| defining a visible residual
 FB_ERR_LOW_CONF = 2.0   # px — fb-error above this = unreliable correspondence
-
-
-def _fb_error(fwd: np.ndarray, bwd: np.ndarray) -> np.ndarray:
-    """Forward/backward consistency error |F(x) + B(x + F(x))| per pixel (px)."""
-    h, w = fwd.shape[:2]
-    gx, gy = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
-    bx = cv2.remap(bwd[..., 0], gx + fwd[..., 0], gy + fwd[..., 1],
-                   cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-    by = cv2.remap(bwd[..., 1], gx + fwd[..., 0], gy + fwd[..., 1],
-                   cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-    return np.hypot(fwd[..., 0] + bx, fwd[..., 1] + by)
 
 
 def _jet(x: np.ndarray, vmax: float) -> np.ndarray:
@@ -135,8 +125,12 @@ def main() -> None:
     clean_overlap = art.clean_lens1 & art.clean_lens2
 
     H, W = blended.shape[:2]
-    lf = cv2.cvtColor(front_pre, cv2.COLOR_BGR2GRAY)
-    lb = cv2.cvtColor(back_pre, cv2.COLOR_BGR2GRAY)
+    # Mirror production: pre-fill each hemisphere with the other outside its
+    # clean region so DIS only measures true-overlap disparity.
+    c1 = art.clean_lens1[..., None]
+    c2 = art.clean_lens2[..., None]
+    lf = cv2.cvtColor(np.where(c1, front_pre, back_pre), cv2.COLOR_BGR2GRAY)
+    lb = cv2.cvtColor(np.where(c2, back_pre, front_pre), cv2.COLOR_BGR2GRAY)
 
     # Full-canvas diagnostic fields (zero outside the two corridors)
     mag_full = np.zeros((H, W), np.float32)
@@ -145,14 +139,9 @@ def main() -> None:
     for name, xc in (("left", W // 4), ("right", 3 * W // 4)):
         x0, x1 = xc - STRIP_HALF, xc + STRIP_HALF
         a, b = lf[:, x0:x1], lb[:, x0:x1]
-        fwd = cv2.calcOpticalFlowFarneback(a, b, None, **FARNEBACK)
-        bwd = cv2.calcOpticalFlowFarneback(b, a, None, **FARNEBACK)
-        fwd[..., 0] = np.clip(fwd[..., 0], -MAX_FLOW, MAX_FLOW)
-        fwd[..., 1] = np.clip(fwd[..., 1], -MAX_FLOW, MAX_FLOW)
-        bwd[..., 0] = np.clip(bwd[..., 0], -MAX_FLOW, MAX_FLOW)
-        bwd[..., 1] = np.clip(bwd[..., 1], -MAX_FLOW, MAX_FLOW)
-        mag_full[:, x0:x1] = np.hypot(fwd[..., 0], fwd[..., 1])
-        err_full[:, x0:x1] = _fb_error(fwd, bwd)
+        fx, fy, _conf, fb_err = _strip_flow_with_confidence(a, b, MAX_FLOW, CONF_TAU)
+        mag_full[:, x0:x1] = np.hypot(fx, fy)
+        err_full[:, x0:x1] = fb_err
         strip_meta[name] = {"x0": int(x0), "x1": int(x1), "xc": int(xc)}
     conf_full = np.exp(-((err_full / CONF_TAU) ** 2)).astype(np.float32)
 

@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Box, Typography, InputBase, Menu, MenuItem, Pagination, useMediaQuery, useTheme } from '@mui/material';
-import { CameraAltRounded, ViewInArRounded, SearchRounded, KeyboardArrowDownRounded, CheckRounded, ArrowBackRounded, LayersRounded, MapRounded, DeleteOutlineRounded, BusinessRounded } from '@mui/icons-material';
+import { CameraAltRounded, ViewInArRounded, SearchRounded, KeyboardArrowDownRounded, CheckRounded, ArrowBackRounded, LayersRounded, MapRounded, DeleteOutlineRounded, BusinessRounded, SortRounded, ArrowDownwardRounded, ArrowUpwardRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { statusConfig, getRoomHistory } from '@store/workflowSelectors';
 import type { MockCapture } from '@/data/mockData';
@@ -148,7 +148,8 @@ export default function CapturesPage() {
   const [projectId, setProjectId] = useState<string>(() => sessionStorage.getItem(`captures_projectId_${role}`) || '');
   const [towerId, setTowerId] = useState<string>(() => sessionStorage.getItem(`captures_towerId_${role}`) || '');
   const [floorId, setFloorId] = useState<string>(() => sessionStorage.getItem(`captures_floorId_${role}`) || '');
-
+  const [sortOrder, setSortOrder] = useState<'latest' | 'oldest'>('latest');
+  const [sortAnchor, setSortAnchor] = useState<null | HTMLElement>(null);
 
   // Reactive: read live data from the workflow store.
   const mockCaptures = useWorkflowStore(s => s.captures);
@@ -182,6 +183,17 @@ export default function CapturesPage() {
   const [deleteTarget, setDeleteTarget] = useState<MockCapture | null>(null);
   const tourCaptureIds = useMemo(() => new Set(tours.map(t => t.captureId)), [tours]);
 
+  // Gallery shows one card per pin (latest only). Deleting that card must remove the
+  // whole pin timeline — otherwise the previous visit becomes the new latest and
+  // reappears in the same slot (looks stacked; requires multiple deletes).
+  const confirmDeleteCapture = () => {
+    if (!deleteTarget) return;
+    const pin = allPins.find(p => p.captureIds.includes(deleteTarget.id));
+    const idsToDelete = pin ? [...pin.captureIds] : [deleteTarget.id];
+    idsToDelete.forEach(id => deleteCapture(id));
+    setDeleteTarget(null);
+  };
+
   // For field engineers on /my-captures, restrict the project list and captures
   // to their assigned projects only (same scoping as CaptureWorkflowPage).
   const assignedProjectIds = useMemo(() => {
@@ -208,27 +220,20 @@ export default function CapturesPage() {
   }), [mockCaptures, assignedProjectIds, allPinCaptureIds, latestPinCaptureIds]);
 
   const filtered = useMemo(() => {
-    return galleryCaptures.filter(c => {
+    const list = galleryCaptures.filter(c => {
       const matchesProject = !projectId || projectId === 'all' || c.projectId === projectId;
       const matchesTower = !towerId || towerId === 'all' || c.towerId === towerId;
       const floorLabel = floorSelectionLabel(floorId, availableFloors);
       const matchesFloor = !floorId || floorId === 'all' || (floorLabel !== null && c.floorLabel === floorLabel);
       return matchesProject && matchesTower && matchesFloor;
     });
-  }, [galleryCaptures, projectId, towerId, floorId, availableFloors]);
+    const dir = sortOrder === 'oldest' ? 1 : -1;
+    const sortKey = (c: MockCapture) => String(c.capturedAt ?? c.uploadedAt ?? '');
+    return [...list].sort((a, b) => dir * sortKey(a).localeCompare(sortKey(b)));
+  }, [galleryCaptures, projectId, towerId, floorId, availableFloors, sortOrder]);
 
   const [page, setPage] = useState(1);
   const itemsPerPage = isMobile ? CAPTURES_PAGE_SIZE_MOBILE : isMdUp ? CAPTURES_PAGE_SIZE_DESKTOP : CAPTURES_PAGE_SIZE_TABLET;
-  const paginatedFiltered = useMemo(() => filtered.slice((page - 1) * itemsPerPage, page * itemsPerPage), [filtered, page, itemsPerPage]);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / itemsPerPage));
-
-  React.useEffect(() => {
-    setPage(1);
-  }, [projectId, towerId, floorId]);
-
-  React.useEffect(() => {
-    if (page > totalPages) setPage(totalPages);
-  }, [page, totalPages]);
 
   // Group captures by Tower → Floor so the history reads structurally:
   // each floor is a section holding its own captures, with a link to its plan.
@@ -250,7 +255,39 @@ export default function CapturesPage() {
   };
 
   const groupedByFloor = useMemo(() => buildFloorGroups(filtered), [filtered, allFloors]);
-  const paginatedGroupedByFloor = useMemo(() => buildFloorGroups(paginatedFiltered), [paginatedFiltered, allFloors]);
+
+  // Engineer view paginates whole floor-groups per page — a floor's captures
+  // never split across pages, even if that makes a page larger/smaller than
+  // itemsPerPage. Packing stops as soon as adding the next group would exceed
+  // the target, unless the page is still empty (then it takes that one group).
+  const floorGroupPages = useMemo(() => {
+    const pages: (typeof groupedByFloor)[] = [];
+    let current: typeof groupedByFloor = [];
+    let currentCount = 0;
+    for (const group of groupedByFloor) {
+      if (current.length > 0 && currentCount + group.captures.length > itemsPerPage) {
+        pages.push(current);
+        current = [];
+        currentCount = 0;
+      }
+      current.push(group);
+      currentCount += group.captures.length;
+    }
+    if (current.length > 0) pages.push(current);
+    return pages.length > 0 ? pages : [[]];
+  }, [groupedByFloor, itemsPerPage]);
+
+  const totalPages = isEngineerView ? floorGroupPages.length : Math.max(1, Math.ceil(filtered.length / itemsPerPage));
+  const paginatedFiltered = useMemo(() => filtered.slice((page - 1) * itemsPerPage, page * itemsPerPage), [filtered, page, itemsPerPage]);
+  const paginatedGroupedByFloor = floorGroupPages[Math.min(page, floorGroupPages.length) - 1] ?? [];
+
+  React.useEffect(() => {
+    setPage(1);
+  }, [projectId, towerId, floorId, sortOrder]);
+
+  React.useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
   const floorTotalCounts = useMemo(() => {
     const map = new Map<string, number>();
@@ -260,8 +297,13 @@ export default function CapturesPage() {
     return map;
   }, [groupedByFloor]);
 
-  const pageStart = filtered.length === 0 ? 0 : (page - 1) * itemsPerPage + 1;
-  const pageEnd = Math.min(page * itemsPerPage, filtered.length);
+  const pageCapturesCount = isEngineerView
+    ? paginatedGroupedByFloor.reduce((sum, g) => sum + g.captures.length, 0)
+    : paginatedFiltered.length;
+  const pageStart = filtered.length === 0 ? 0 : isEngineerView
+    ? floorGroupPages.slice(0, page - 1).reduce((sum, grp) => sum + grp.reduce((s, g) => s + g.captures.length, 0), 0) + 1
+    : (page - 1) * itemsPerPage + 1;
+  const pageEnd = pageStart === 0 ? 0 : pageStart - 1 + pageCapturesCount;
 
   const showProjectName = !projectId || projectId === 'all';
 
@@ -438,7 +480,57 @@ export default function CapturesPage() {
           </Box>
         )}
         </Box>
+
+        {/* Sort */}
+        {isSelectionComplete && (
+          <Box
+            onClick={e => setSortAnchor(e.currentTarget)}
+            sx={{
+              display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0,
+              px: 1.5, py: 0.875, borderRadius: '10px', cursor: 'pointer',
+              border: `1.5px solid ${sortAnchor ? P.blue : P.border}`,
+              backgroundColor: sortAnchor ? P.blueSoft : P.white,
+              color: P.strong, fontSize: '0.8125rem', fontWeight: 600,
+              transition: T, '&:hover': { borderColor: P.blue },
+              whiteSpace: 'nowrap', alignSelf: { xs: 'stretch', md: 'center' },
+              justifyContent: { xs: 'space-between', md: 'flex-start' },
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+              <SortRounded sx={{ fontSize: 16, color: P.subtle }} />
+              {sortOrder === 'latest' ? 'Latest first' : 'Oldest first'}
+            </Box>
+            {sortOrder === 'latest'
+              ? <ArrowDownwardRounded sx={{ fontSize: 14, color: P.muted }} />
+              : <ArrowUpwardRounded sx={{ fontSize: 14, color: P.muted }} />}
+          </Box>
+        )}
       </Box>
+
+      {/* Sort menu */}
+      <Menu
+        anchorEl={sortAnchor}
+        open={Boolean(sortAnchor)}
+        onClose={() => setSortAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        slotProps={{ paper: { sx: { borderRadius: '12px', boxShadow: '0 8px 24px rgba(15,23,42,0.12)', mt: 0.5, border: `1px solid ${colors.borderLight}` } } }}
+      >
+        <MenuItem
+          selected={sortOrder === 'latest'}
+          onClick={() => { setSortOrder('latest'); setSortAnchor(null); }}
+          sx={{ fontSize: '0.875rem', gap: 1, minWidth: 160, borderRadius: '8px', mx: 0.5 }}
+        >
+          <ArrowDownwardRounded sx={{ fontSize: 15, color: sortOrder === 'latest' ? colors.primary : colors.textMuted }} /> Latest first
+        </MenuItem>
+        <MenuItem
+          selected={sortOrder === 'oldest'}
+          onClick={() => { setSortOrder('oldest'); setSortAnchor(null); }}
+          sx={{ fontSize: '0.875rem', gap: 1, minWidth: 160, borderRadius: '8px', mx: 0.5 }}
+        >
+          <ArrowUpwardRounded sx={{ fontSize: 15, color: sortOrder === 'oldest' ? colors.primary : colors.textMuted }} /> Oldest first
+        </MenuItem>
+      </Menu>
 
       {/* Project menu */}
       <Menu
@@ -642,10 +734,10 @@ export default function CapturesPage() {
       <ConfirmDialog
         open={!!deleteTarget}
         title="Delete this capture?"
-        description={`The capture for ${deleteTarget?.roomName ?? 'this point'}${deleteTarget ? ` (${deleteTarget.towerName} · ${deleteTarget.floorLabel})` : ''} and any tour generated from it will be permanently removed. This cannot be undone.`}
+        description={`The capture for ${deleteTarget?.roomName ?? 'this point'}${deleteTarget ? ` (${deleteTarget.towerName} · ${deleteTarget.floorLabel})` : ''}, any earlier visits at this point, and any tour generated from them will be permanently removed. This cannot be undone.`}
         confirmLabel="Delete capture"
         destructive
-        onConfirm={() => { if (deleteTarget) deleteCapture(deleteTarget.id); setDeleteTarget(null); }}
+        onConfirm={confirmDeleteCapture}
         onCancel={() => setDeleteTarget(null)}
       />
     </Box>

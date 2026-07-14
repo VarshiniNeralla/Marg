@@ -4,7 +4,7 @@ import { Box, Typography, InputBase, Menu, MenuItem, Pagination, useMediaQuery, 
 import {
   ViewInArRounded, PlayArrowRounded, CameraAltRounded,
   KeyboardArrowDownRounded, CheckRounded, SearchRounded, ArrowBackRounded, DeleteRounded,
-  BusinessRounded, LayersRounded
+  BusinessRounded, LayersRounded, SortRounded, ArrowDownwardRounded, ArrowUpwardRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { statusConfig } from '@/data/mockData';
@@ -162,9 +162,11 @@ export default function ToursPage() {
   const [floorId, setFloorId]     = useState<string>(() => sessionStorage.getItem(`tours_floorId_${role}`) || '');
   
   const [query, setQuery]             = useState('');
+  const [sortOrder, setSortOrder]     = useState<'latest' | 'oldest'>('latest');
   const [menuAnchor, setMenuAnchor]   = useState<null | HTMLElement>(null);
   const [towerMenuAnchor, setTowerMenuAnchor] = useState<null | HTMLElement>(null);
   const [floorMenuAnchor, setFloorMenuAnchor] = useState<null | HTMLElement>(null);
+  const [sortAnchor, setSortAnchor]   = useState<null | HTMLElement>(null);
   const towerPillRef = useRef<HTMLDivElement>(null);
   const [floorMenuWidth, setFloorMenuWidth] = useState<number | undefined>();
 
@@ -203,16 +205,20 @@ export default function ToursPage() {
     return buildFloorOptions(allFloors, towerId, towerIds);
   }, [allFloors, projectId, towerId, availableTowers]);
 
-  const filtered = useMemo(() => allTours.filter(t => {
-    const matchProject = !projectId || projectId === 'all' || t.projectId === projectId;
-    const matchTower   = !towerId || towerId === 'all' || t.towerId === towerId;
-    const floorLabel   = floorSelectionLabel(floorId, availableFloors);
-    const matchFloor   = !floorId || floorId === 'all' || (floorLabel !== null && t.floorLabel === floorLabel);
-    const q = query.trim().toLowerCase();
-    const matchQuery   = !q || t.roomName.toLowerCase().includes(q) || t.projectName.toLowerCase().includes(q) || t.towerName.toLowerCase().includes(q) || t.floorLabel.toLowerCase().includes(q);
+  const filtered = useMemo(() => {
+    const list = allTours.filter(t => {
+      const matchProject = !projectId || projectId === 'all' || t.projectId === projectId;
+      const matchTower   = !towerId || towerId === 'all' || t.towerId === towerId;
+      const floorLabel   = floorSelectionLabel(floorId, availableFloors);
+      const matchFloor   = !floorId || floorId === 'all' || (floorLabel !== null && t.floorLabel === floorLabel);
+      const q = query.trim().toLowerCase();
+      const matchQuery   = !q || t.roomName.toLowerCase().includes(q) || t.projectName.toLowerCase().includes(q) || t.towerName.toLowerCase().includes(q) || t.floorLabel.toLowerCase().includes(q);
 
-    return matchProject && matchTower && matchFloor && matchQuery;
-  }), [allTours, projectId, towerId, floorId, availableFloors, query]);
+      return matchProject && matchTower && matchFloor && matchQuery;
+    });
+    const dir = sortOrder === 'oldest' ? 1 : -1;
+    return [...list].sort((a, b) => dir * String(a.lastCapture ?? '').localeCompare(String(b.lastCapture ?? '')));
+  }, [allTours, projectId, towerId, floorId, availableFloors, query, sortOrder]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / toursPerPage));
   const paginatedTours = useMemo(
@@ -222,7 +228,7 @@ export default function ToursPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [projectId, towerId, floorId, query]);
+  }, [projectId, towerId, floorId, query, sortOrder]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -363,20 +369,67 @@ export default function ToursPage() {
         )}
         </Box>
 
-        {/* Search */}
         {isSelectionComplete && (
-          <Box sx={{
-            display: 'flex', alignItems: 'center', gap: 0.75,
-            width: { xs: '100%', md: 220 }, flexShrink: 0, px: 1.25, py: 0.75,
-            borderRadius: '10px', backgroundColor: P.white,
-            border: `1.5px solid ${P.border}`, transition: T,
-            '&:focus-within': { borderColor: P.blue },
-          }}>
-            <SearchRounded sx={{ fontSize: 16, color: P.subtle, flexShrink: 0 }} />
-            <InputBase placeholder="Search tours…" value={query} onChange={e => setQuery(e.target.value)} sx={{ flex: 1, fontSize: '0.8125rem', '& input::placeholder': { color: P.subtle, opacity: 1 } }} />
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: { xs: '100%', md: 'auto' }, flexShrink: 0, flexWrap: 'wrap' }}>
+            {/* Sort */}
+            <Box
+              onClick={e => setSortAnchor(e.currentTarget)}
+              sx={{
+                display: 'flex', alignItems: 'center', gap: 0.75,
+                px: 1.5, py: 0.875, borderRadius: '10px', cursor: 'pointer',
+                border: `1.5px solid ${sortAnchor ? P.blue : P.border}`,
+                backgroundColor: sortAnchor ? P.blueSoft : P.white,
+                color: P.strong, fontSize: '0.8125rem', fontWeight: 600,
+                transition: T, '&:hover': { borderColor: P.blue },
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <SortRounded sx={{ fontSize: 16, color: P.subtle }} />
+              {sortOrder === 'latest' ? 'Latest first' : 'Oldest first'}
+              {sortOrder === 'latest'
+                ? <ArrowDownwardRounded sx={{ fontSize: 14, color: P.muted }} />
+                : <ArrowUpwardRounded sx={{ fontSize: 14, color: P.muted }} />}
+            </Box>
+
+            {/* Search */}
+            <Box sx={{
+              display: 'flex', alignItems: 'center', gap: 0.75,
+              flex: { xs: 1, md: 'initial' }, width: { xs: 'auto', md: 220 }, minWidth: 0,
+              px: 1.25, py: 0.75, borderRadius: '10px', backgroundColor: P.white,
+              border: `1.5px solid ${P.border}`, transition: T,
+              '&:focus-within': { borderColor: P.blue },
+            }}>
+              <SearchRounded sx={{ fontSize: 16, color: P.subtle, flexShrink: 0 }} />
+              <InputBase placeholder="Search tours…" value={query} onChange={e => setQuery(e.target.value)} sx={{ flex: 1, fontSize: '0.8125rem', '& input::placeholder': { color: P.subtle, opacity: 1 } }} />
+            </Box>
           </Box>
         )}
       </Box>
+
+      {/* Sort menu */}
+      <Menu
+        anchorEl={sortAnchor}
+        open={Boolean(sortAnchor)}
+        onClose={() => setSortAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        slotProps={{ paper: { sx: { borderRadius: '12px', boxShadow: '0 8px 24px rgba(15,23,42,0.12)', mt: 0.5, border: `1px solid ${colors.borderLight}` } } }}
+      >
+        <MenuItem
+          selected={sortOrder === 'latest'}
+          onClick={() => { setSortOrder('latest'); setSortAnchor(null); }}
+          sx={{ fontSize: '0.875rem', gap: 1, minWidth: 160, borderRadius: '8px', mx: 0.5 }}
+        >
+          <ArrowDownwardRounded sx={{ fontSize: 15, color: sortOrder === 'latest' ? colors.primary : colors.textMuted }} /> Latest first
+        </MenuItem>
+        <MenuItem
+          selected={sortOrder === 'oldest'}
+          onClick={() => { setSortOrder('oldest'); setSortAnchor(null); }}
+          sx={{ fontSize: '0.875rem', gap: 1, minWidth: 160, borderRadius: '8px', mx: 0.5 }}
+        >
+          <ArrowUpwardRounded sx={{ fontSize: 15, color: sortOrder === 'oldest' ? colors.primary : colors.textMuted }} /> Oldest first
+        </MenuItem>
+      </Menu>
 
       {/* Project menu */}
       <Menu anchorEl={menuAnchor} open={!!menuAnchor} onClose={() => setMenuAnchor(null)}
