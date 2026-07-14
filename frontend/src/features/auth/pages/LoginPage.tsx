@@ -83,8 +83,8 @@ const ROLE_OPTIONS = [
 ] as const;
 
 const DEMO_CREDENTIALS = [
-  { role: 'admin',          roleLabel: 'Admin',          email: 'admin@myhomeconstructions.com',    password: 'SiteVision@123', color: '#3b82f6' },
-  { role: 'manager',        roleLabel: 'Manager',        email: 'manager@myhomeconstructions.com',  password: 'SiteVision@123', color: '#8b5cf6' },
+  { role: 'admin',          roleLabel: 'Admin',          email: 'admin@myhomeconstructions.com',    password: 'Prangan@123', color: '#3b82f6' },
+  { role: 'manager',        roleLabel: 'Manager',        email: 'manager@myhomeconstructions.com',  password: 'Prangan@123', color: '#8b5cf6' },
 ];
 
 export default function LoginPage() {

@@ -35,6 +35,22 @@ export function formatReportDate(value: string | undefined | null): string {
 
   return trimmed;
 }
+/** Compact date for list rows — e.g. "14 Jul". */
+export function formatReportDateCompact(value?: string | null): string {
+  if (!value) return '';
+  const d = parseApiDate(value.trim());
+  if (!d) return value.trim();
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+
+/** Compact range for previous-report cards — e.g. "13 Jul → 14 Jul". */
+export function formatReportDateRangeCompact(before?: string, after?: string): string {
+  const b = formatReportDateCompact(before);
+  const a = formatReportDateCompact(after);
+  if (b && a) return b === a ? b : `${b} → ${a}`;
+  return b || a || 'Comparison';
+}
+
 export function formatReportDateRange(before?: string, after?: string): string {
   const b = formatReportDate(before);
   const a = formatReportDate(after);

@@ -4,6 +4,7 @@ export const AUTH_STORE_KEY = 'sitesurelabs-auth';
 export const WORKFLOW_STORE_KEY = 'sitesurelabs-workflow';
 export const SETTINGS_STORE_KEY = 'sitesurelabs-settings-v2';
 export const USER_STORE_KEY = 'sitesurelabs-user';
+export const FAVORITE_TOURS_STORE_KEY = 'sitesurelabs-favorite-tours';
 
 /** Legacy keys migrated on first load — cleared on reset. */
 export const LEGACY_KEYS = [
@@ -19,6 +20,7 @@ export const STORE_VERSION = {
   workflow: 3,
   settings: 2,
   user: 1,
+  favoriteTours: 2,
 } as const;
 
 /** Safely parse persisted JSON; returns null on corruption. */
@@ -37,6 +39,7 @@ export function clearAllPersistedStorage(): void {
   localStorage.removeItem(WORKFLOW_STORE_KEY);
   localStorage.removeItem(SETTINGS_STORE_KEY);
   localStorage.removeItem(USER_STORE_KEY);
+  localStorage.removeItem(FAVORITE_TOURS_STORE_KEY);
   for (const key of LEGACY_KEYS) {
     localStorage.removeItem(key);
   }

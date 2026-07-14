@@ -371,7 +371,7 @@ export default function AuditPage() {
                     px: 2.5,
                     py: 1.5,
                     minHeight: 52,
-                    borderBottom: i < visibleActivity.length - 1 ? `1px solid ${colors.borderLight}` : 'none',
+                    borderBottom: i < items.length - 1 ? `1px solid ${colors.borderLight}` : 'none',
                     '&:hover': { backgroundColor: colors.bg },
                   }}
                 >

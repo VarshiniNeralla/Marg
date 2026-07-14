@@ -25,6 +25,7 @@ import { toast } from 'react-toastify';
 import { formatReportGeneratedAt } from '@/utils/reportFormat';
 
 const PAGE_SIZE = 8;
+const SEARCH_FETCH_LIMIT = 100;
 
 function formatReportCardTitle(item: ProgressReportSummary): string {
   const parts = [item.tower, item.floor].filter(Boolean);
@@ -40,6 +41,24 @@ function progressColor(pct: number): string {
   if (pct >= 50) return '#16a34a';
   if (pct > 0) return '#d97706';
   return '#64748b';
+}
+
+function matchesReportQuery(item: ProgressReportSummary, rawQuery: string): boolean {
+  const q = rawQuery.trim().toLowerCase();
+  if (!q) return true;
+  const haystack = [
+    item.projectName,
+    item.tower,
+    item.floor,
+    item.pinName,
+    item.summary,
+    item.beforeDate,
+    item.afterDate,
+  ]
+    .filter((v): v is string => typeof v === 'string' && v.length > 0)
+    .join(' ')
+    .toLowerCase();
+  return haystack.includes(q);
 }
 
 function ReportListCard({
@@ -160,27 +179,51 @@ export default function ProgressReportsPage() {
   const user = useAuthStore(s => s.user);
   const location = useLocation();
   const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState<ProgressReportSummary[]>([]);
   const [total, setTotal] = useState(0);
+  const [libraryTotal, setLibraryTotal] = useState(0);
   const [selectedReport, setSelectedReport] = useState<ProgressAnalysisReport | null>(null);
   const [selectedMeta, setSelectedMeta] = useState<Parameters<typeof ProgressAnalysisDrawer>[0]['meta']>(undefined);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openingId, setOpeningId] = useState<string | null>(null);
 
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
+    return () => window.clearTimeout(t);
+  }, [query]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedQuery]);
+
   const loadReports = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await progressAnalysisService.listReports({ page, limit: PAGE_SIZE });
-      setItems(result.items);
-      setTotal(result.total);
+      if (debouncedQuery) {
+        const result = await progressAnalysisService.listReports({
+          page: 1,
+          limit: SEARCH_FETCH_LIMIT,
+        });
+        setLibraryTotal(result.total);
+        const matched = result.items.filter(item => matchesReportQuery(item, debouncedQuery));
+        const start = (page - 1) * PAGE_SIZE;
+        setItems(matched.slice(start, start + PAGE_SIZE));
+        setTotal(matched.length);
+      } else {
+        const result = await progressAnalysisService.listReports({ page, limit: PAGE_SIZE });
+        setItems(result.items);
+        setTotal(result.total);
+        setLibraryTotal(result.total);
+      }
     } catch {
       toast.error('Failed to load progress reports');
     } finally {
       setLoading(false);
     }
-  }, [page]);
+  }, [page, debouncedQuery]);
 
   useEffect(() => {
     loadReports();
@@ -192,19 +235,17 @@ export default function ProgressReportsPage() {
     return () => window.removeEventListener('focus', onFocus);
   }, [loadReports]);
 
-  const filtered = items.filter(item => {
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      item.projectName.toLowerCase().includes(q)
-      || item.tower.toLowerCase().includes(q)
-      || item.floor.toLowerCase().includes(q)
-      || item.pinName.toLowerCase().includes(q)
-      || item.summary.toLowerCase().includes(q)
-    );
-  });
-
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  const isSearching = debouncedQuery.length > 0;
+  const emptyTitle = isSearching ? 'No matching reports' : 'No progress reports yet';
+  const emptyBody = isSearching
+    ? `Nothing matched “${debouncedQuery}”. Try another project, tower, floor, or pin name.`
+    : 'Run a timeline comparison from a virtual tour to generate your first report.';
 
   const openReport = async (summary: ProgressReportSummary) => {
     setOpeningId(summary.reportId);
@@ -263,44 +304,61 @@ export default function ProgressReportsPage() {
           </Typography>
         </Box>
         <Typography sx={{ fontSize: '0.9375rem', color: P.muted }}>
-          {total} report{total !== 1 ? 's' : ''} · AI-generated construction progress analyses from timeline comparisons across your projects.
+          {libraryTotal} report{libraryTotal !== 1 ? 's' : ''}
+          {isSearching ? ` · ${total} match${total !== 1 ? 'es' : ''}` : ''}
+          {' · '}AI-generated construction progress analyses from timeline comparisons across your projects.
         </Typography>
       </Box>
 
       <Box sx={{
         display: 'flex', alignItems: 'center', gap: 1, mb: 2.5,
         px: 1.5, py: 1, borderRadius: '10px',
-        border: `1px solid ${colors.borderLight}`, backgroundColor: colors.card,
+        border: `1px solid ${query ? colors.primary : colors.borderLight}`,
+        backgroundColor: colors.card,
+        transition: `border-color ${motion.durationFast}`,
       }}>
-        <SearchRounded sx={{ fontSize: 18, color: colors.textSubdued }} />
+        <SearchRounded sx={{ fontSize: 18, color: query ? colors.primary : colors.textSubdued }} />
         <InputBase
           value={query}
           onChange={e => setQuery(e.target.value)}
           placeholder="Search by project, tower, floor, capture point, or summary…"
           sx={{ flex: 1, fontSize: '0.875rem' }}
+          inputProps={{ 'aria-label': 'Search progress reports' }}
         />
+        {query && (
+          <Box
+            onClick={() => setQuery('')}
+            sx={{
+              px: 0.875, py: 0.25, borderRadius: '6px', cursor: 'pointer',
+              fontSize: '0.6875rem', fontWeight: 700, color: colors.textMuted,
+              '&:hover': { color: colors.primary, backgroundColor: colors.primarySoft },
+            }}
+          >
+            Clear
+          </Box>
+        )}
       </Box>
 
       {loading ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
           <CircularProgress size={32} />
         </Box>
-      ) : filtered.length === 0 ? (
+      ) : items.length === 0 ? (
         <Box sx={{
           py: 8, textAlign: 'center', borderRadius: '14px',
           border: `1px dashed ${colors.border}`, backgroundColor: colors.bg,
         }}>
           <AutoAwesomeRounded sx={{ fontSize: 40, color: colors.borderLight, mb: 1.5 }} />
           <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600, color: colors.textStrong, mb: 0.5 }}>
-            No progress reports yet
+            {emptyTitle}
           </Typography>
           <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>
-            Run a timeline comparison from a virtual tour to generate your first report.
+            {emptyBody}
           </Typography>
         </Box>
       ) : (
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          {filtered.map(item => (
+          {items.map(item => (
             <ReportListCard
               key={item.reportId}
               item={item}
@@ -311,7 +369,7 @@ export default function ProgressReportsPage() {
         </Box>
       )}
 
-      {totalPages > 1 && !loading && (
+      {totalPages > 1 && !loading && items.length > 0 && (
         <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3 }}>
           <Pagination
             count={totalPages}

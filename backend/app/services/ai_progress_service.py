@@ -310,6 +310,58 @@ class AIProgressService:
     async def get_job(self, org_id: str, job_id: str) -> dict[str, Any] | None:
         return await self._db[_COLLECTION_JOBS].find_one({"_id": job_id, "org_id": org_id})
 
+    async def purge_for_timeline(self, org_id: str, timeline_id: str) -> int:
+        """
+        Remove cached analyses / jobs that reference a deleted capture.
+
+        Progress reports store capture ids as before/after timeline ids and keep
+        baked-in image URLs, so deleting a capture without this purge leaves
+        ghost reports (and stale images) in the compare / library UI.
+        """
+        tid = _sanitize_text(timeline_id, max_len=64)
+        if not tid:
+            return 0
+        match = {
+            "org_id": org_id,
+            "$or": [
+                {"before_timeline_id": tid},
+                {"after_timeline_id": tid},
+            ],
+        }
+        cache_result = await self._db[_COLLECTION_CACHE].delete_many(match)
+        jobs_result = await self._db[_COLLECTION_JOBS].delete_many(match)
+        removed = int(cache_result.deleted_count) + int(jobs_result.deleted_count)
+        if removed:
+            logger.info(
+                "Purged {} progress-analysis record(s) for timeline_id={} org_id={}",
+                removed,
+                tid,
+                org_id,
+            )
+        return removed
+
+    async def _existing_capture_ids(self, org_id: str, ids: set[str]) -> set[str]:
+        clean = {_sanitize_text(i, max_len=64) for i in ids if i}
+        clean.discard("")
+        if not clean:
+            return set()
+        # Captures use `_id` / `id` plus `orgId` (workflow tenant field).
+        cursor = self._db["captures"].find(
+            {
+                "orgId": org_id,
+                "$or": [
+                    {"_id": {"$in": list(clean)}},
+                    {"id": {"$in": list(clean)}},
+                ],
+            },
+            {"_id": 1, "id": 1},
+        )
+        existing: set[str] = set()
+        async for doc in cursor:
+            existing.add(str(doc.get("id") or doc.get("_id") or ""))
+        existing.discard("")
+        return existing
+
     async def list_reports(
         self,
         org_id: str,
@@ -333,18 +385,50 @@ class AIProgressService:
             query["before_timeline_id"] = _sanitize_text(before_timeline_id, max_len=64)
             query["after_timeline_id"] = _sanitize_text(after_timeline_id, max_len=64)
 
-        total = await self._db[_COLLECTION_CACHE].count_documents(query)
+        # Fetch a wider window so we can drop orphans (deleted captures) and
+        # still fill `limit` results. Orphans are deleted eagerly.
+        fetch_limit = min(max(limit * 4, limit + skip), 200)
         cursor = (
             self._db[_COLLECTION_CACHE]
             .find(query)
             .sort([("saved_at", -1), ("created_at", -1)])
-            .skip(skip)
-            .limit(limit)
+            .limit(fetch_limit)
         )
-        docs = await cursor.to_list(length=limit)
-        enriched: list[dict[str, Any]] = []
+        docs = await cursor.to_list(length=fetch_limit)
+
+        timeline_ids: set[str] = set()
         for doc in docs:
+            timeline_ids.add(str(doc.get("before_timeline_id") or ""))
+            timeline_ids.add(str(doc.get("after_timeline_id") or ""))
+        timeline_ids.discard("")
+        existing = await self._existing_capture_ids(org_id, timeline_ids)
+
+        valid_docs: list[dict[str, Any]] = []
+        orphan_ids: list[Any] = []
+        for doc in docs:
+            before_id = str(doc.get("before_timeline_id") or "")
+            after_id = str(doc.get("after_timeline_id") or "")
+            if before_id in existing and after_id in existing:
+                valid_docs.append(doc)
+            else:
+                orphan_ids.append(doc["_id"])
+
+        if orphan_ids:
+            await self._db[_COLLECTION_CACHE].delete_many(
+                {"_id": {"$in": orphan_ids}, "org_id": org_id}
+            )
+            logger.info(
+                "Dropped {} orphaned progress report(s) with missing captures org_id={}",
+                len(orphan_ids),
+                org_id,
+            )
+
+        page = valid_docs[skip : skip + limit]
+        enriched: list[dict[str, Any]] = []
+        for doc in page:
             enriched.append(await self._ensure_report_metadata(org_id, doc))
+        # Approximate total after orphan removal within the fetched window.
+        total = len(valid_docs) if len(docs) < fetch_limit else max(len(valid_docs), skip + len(page))
         return [_serialize_report_summary(doc) for doc in enriched], total
 
     async def _ensure_report_metadata(
@@ -415,6 +499,14 @@ class AIProgressService:
             {"_id": oid, "org_id": org_id, "saved": True},
         )
         if not doc:
+            return None
+
+        before_id = str(doc.get("before_timeline_id") or "")
+        after_id = str(doc.get("after_timeline_id") or "")
+        existing = await self._existing_capture_ids(org_id, {before_id, after_id})
+        if before_id not in existing or after_id not in existing:
+            # Source captures were deleted — drop the ghost report.
+            await self._db[_COLLECTION_CACHE].delete_one({"_id": doc["_id"], "org_id": org_id})
             return None
 
         return _serialize_report_detail(doc)

@@ -5,6 +5,7 @@ import {
   ViewInArRounded, PlayArrowRounded, CameraAltRounded,
   KeyboardArrowDownRounded, CheckRounded, SearchRounded, ArrowBackRounded, DeleteRounded,
   BusinessRounded, LayersRounded, SortRounded, ArrowDownwardRounded, ArrowUpwardRounded,
+  StarRounded, StarBorderRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { statusConfig } from '@/data/mockData';
@@ -12,6 +13,7 @@ import type { MockTour } from '@/data/mockData';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore , getRoleLandingPath } from '@store/authStore';
+import { useFavoriteToursStore, EMPTY_FAVORITES } from '@store/favoriteToursStore';
 import { buildFloorOptions, floorSelectionLabel, locationFilterMenuPaperSx, locationFilterToolbarSx, type FloorOption } from '@/utils/locationFilters';
 import { resolveTourThumbnailUrl } from '@/utils/captureMedia';
 
@@ -53,12 +55,16 @@ function TourCard({
   thumbUrl,
   showProjectName,
   compact,
+  isFavorite,
+  onToggleFavorite,
   onDelete,
 }: {
   tour: MockTour;
   thumbUrl: string;
   showProjectName?: boolean;
   compact?: boolean;
+  isFavorite: boolean;
+  onToggleFavorite: () => void;
   onDelete: () => void;
 }) {
   const st = (statusConfig.tour as Record<string, { label: string; color: string; bg: string }>)[tour.status] ?? statusConfig.tour.draft;
@@ -84,6 +90,7 @@ function TourCard({
           '&:hover .tour-thumb': { boxShadow: '0 12px 32px rgba(15,23,42,0.14)' },
           '&:hover .tour-play': { opacity: 1, transform: 'scale(1)' },
           '&:hover .tour-delete': { opacity: 1 },
+          '&:hover .tour-fav': { opacity: 1 },
         },
       }}
     >
@@ -119,6 +126,32 @@ function TourCard({
           ) : (
             <Typography sx={{ fontSize: '0.5625rem', fontWeight: 700, color: st.color }}>{st.label}</Typography>
           )}
+        </Box>
+        <Box
+          className="tour-fav"
+          sx={{
+            position: 'absolute', bottom: 8, left: 8, zIndex: 10,
+            opacity: { xs: 1, sm: isFavorite ? 1 : 0 },
+            transition: `opacity ${motion.durationNormal} ${motion.easeOut}`,
+          }}
+        >
+          <Box
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleFavorite(); }}
+            title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+            sx={{
+              width: 32, height: 32, borderRadius: '8px',
+              backgroundColor: isFavorite ? 'rgba(245,158,11,0.95)' : 'rgba(0,0,0,0.5)',
+              backdropFilter: 'blur(8px)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer',
+              transition: 'background-color 150ms ease, transform 150ms ease',
+              '&:hover': { backgroundColor: isFavorite ? 'rgba(217,119,6,1)' : 'rgba(0,0,0,0.7)', transform: 'scale(1.05)' },
+            }}
+          >
+            {isFavorite
+              ? <StarRounded sx={{ color: '#fff', fontSize: 16 }} />
+              : <StarBorderRounded sx={{ color: '#fff', fontSize: 16 }} />}
+          </Box>
         </Box>
         <Box className="tour-delete" sx={{ position: 'absolute', bottom: 8, right: 8, zIndex: 10, opacity: 0, display: { xs: 'none', sm: 'block' }, transition: `opacity ${motion.durationNormal} ${motion.easeOut}` }}>
           <Box
@@ -163,6 +196,7 @@ export default function ToursPage() {
   
   const [query, setQuery]             = useState('');
   const [sortOrder, setSortOrder]     = useState<'latest' | 'oldest'>('latest');
+  const [viewMode, setViewMode]       = useState<'all' | 'favorites'>('all');
   const [menuAnchor, setMenuAnchor]   = useState<null | HTMLElement>(null);
   const [towerMenuAnchor, setTowerMenuAnchor] = useState<null | HTMLElement>(null);
   const [floorMenuAnchor, setFloorMenuAnchor] = useState<null | HTMLElement>(null);
@@ -176,6 +210,16 @@ export default function ToursPage() {
   const allTowers   = useWorkflowStore(s => s.towers);
   const allFloors   = useWorkflowStore(s => s.floors);
   const deleteTour  = useWorkflowStore(s => s.deleteTour);
+  const favoritesMap = useFavoriteToursStore(s =>
+    user?.id ? (s.byUser[user.id] ?? EMPTY_FAVORITES) : EMPTY_FAVORITES,
+  );
+  const toggleFavorite = useFavoriteToursStore(s => s.toggleFavorite);
+  const removeFavorite = useFavoriteToursStore(s => s.removeFavorite);
+  const favoriteIds = useMemo(() => new Set(Object.keys(favoritesMap)), [favoritesMap]);
+  const favoriteCount = useMemo(
+    () => allTours.filter(t => favoriteIds.has(t.id)).length,
+    [allTours, favoriteIds],
+  );
   
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
   const [page, setPage] = useState(1);
@@ -207,6 +251,7 @@ export default function ToursPage() {
 
   const filtered = useMemo(() => {
     const list = allTours.filter(t => {
+      if (viewMode === 'favorites' && !favoriteIds.has(t.id)) return false;
       const matchProject = !projectId || projectId === 'all' || t.projectId === projectId;
       const matchTower   = !towerId || towerId === 'all' || t.towerId === towerId;
       const floorLabel   = floorSelectionLabel(floorId, availableFloors);
@@ -218,7 +263,7 @@ export default function ToursPage() {
     });
     const dir = sortOrder === 'oldest' ? 1 : -1;
     return [...list].sort((a, b) => dir * String(a.lastCapture ?? '').localeCompare(String(b.lastCapture ?? '')));
-  }, [allTours, projectId, towerId, floorId, availableFloors, query, sortOrder]);
+  }, [allTours, projectId, towerId, floorId, availableFloors, query, sortOrder, viewMode, favoriteIds]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / toursPerPage));
   const paginatedTours = useMemo(
@@ -228,7 +273,7 @@ export default function ToursPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [projectId, towerId, floorId, query, sortOrder]);
+  }, [projectId, towerId, floorId, query, sortOrder, viewMode]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -256,7 +301,7 @@ export default function ToursPage() {
     }).length;
   };
 
-  const isSelectionComplete = Boolean(projectId);
+  const isSelectionComplete = Boolean(projectId) || viewMode === 'favorites';
   const showTowerFilter = Boolean(projectId && projectId !== 'all');
   const showFloorFilter = showTowerFilter && Boolean(towerId);
   const filterCount = 1 + (showTowerFilter ? 1 : 0) + (showFloorFilter ? 1 : 0);
@@ -286,9 +331,51 @@ export default function ToursPage() {
         }}>
           Virtual Tours
         </Typography>
-        <Typography sx={{ fontSize: '0.9375rem', color: P.muted }}>
+        <Typography sx={{ fontSize: '0.9375rem', color: P.muted, mb: 2 }}>
           {allTours.length} tour{allTours.length !== 1 ? 's' : ''} · {projects.length} project{projects.length !== 1 ? 's' : ''}
+          {favoriteCount > 0 ? ` · ${favoriteCount} favorite${favoriteCount !== 1 ? 's' : ''}` : ''}
         </Typography>
+
+        {/* All / Favorites switcher */}
+        <Box sx={{
+          display: 'inline-flex', alignItems: 'center', gap: 0.5,
+          p: 0.5, borderRadius: '12px', backgroundColor: P.bg, border: `1px solid ${P.border}`,
+        }}>
+          {([
+            { id: 'all' as const, label: 'All tours', icon: <ViewInArRounded sx={{ fontSize: 15 }} /> },
+            { id: 'favorites' as const, label: 'Favorites', icon: <StarRounded sx={{ fontSize: 15 }} />, count: favoriteCount },
+          ]).map(tab => {
+            const active = viewMode === tab.id;
+            return (
+              <Box
+                key={tab.id}
+                onClick={() => setViewMode(tab.id)}
+                sx={{
+                  display: 'inline-flex', alignItems: 'center', gap: 0.75,
+                  px: 1.5, py: 0.75, borderRadius: '9px', cursor: 'pointer',
+                  backgroundColor: active ? P.white : 'transparent',
+                  color: active ? P.strong : P.muted,
+                  fontSize: '0.8125rem', fontWeight: active ? 700 : 600,
+                  boxShadow: active ? '0 1px 3px rgba(15,23,42,0.08)' : 'none',
+                  transition: T,
+                  '&:hover': { color: P.strong },
+                }}
+              >
+                <Box sx={{ color: active && tab.id === 'favorites' ? '#f59e0b' : 'inherit', display: 'flex' }}>{tab.icon}</Box>
+                {tab.label}
+                {tab.count !== undefined && (
+                  <Box sx={{
+                    px: 0.625, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700,
+                    backgroundColor: active ? 'rgba(245,158,11,0.12)' : P.white,
+                    color: active ? '#d97706' : P.muted,
+                  }}>
+                    {tab.count}
+                  </Box>
+                )}
+              </Box>
+            );
+          })}
+        </Box>
       </Box>
 
       {/* Toolbar */}
@@ -558,9 +645,21 @@ export default function ToursPage() {
         </Box>
       ) : filtered.length === 0 ? (
         <Box sx={{ py: 8, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>
-          <ViewInArRounded sx={{ fontSize: 44, color: P.subtle, mb: 1.5 }} />
-          <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>No tours found</Typography>
-          <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Try a different search or filter.</Typography>
+          {viewMode === 'favorites' ? (
+            <>
+              <StarBorderRounded sx={{ fontSize: 44, color: P.subtle, mb: 1.5 }} />
+              <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>No favorite tours yet</Typography>
+              <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>
+                Tap the star on any tour card to save it here.
+              </Typography>
+            </>
+          ) : (
+            <>
+              <ViewInArRounded sx={{ fontSize: 44, color: P.subtle, mb: 1.5 }} />
+              <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>No tours found</Typography>
+              <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Try a different search or filter.</Typography>
+            </>
+          )}
         </Box>
       ) : (
         <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: { xs: 2, sm: 3 }, width: '100%', minWidth: 0 }}>
@@ -572,6 +671,8 @@ export default function ToursPage() {
               thumbUrl={resolveTourThumbnailUrl(tour as typeof tour & Record<string, unknown>, allCaptures)}
               showProjectName={showProjectName}
               compact={isMobile}
+              isFavorite={favoriteIds.has(tour.id)}
+              onToggleFavorite={() => { if (user?.id) toggleFavorite(user.id, tour.id); }}
               onDelete={() => setDeleteTarget(tour)}
             />
           ))}
@@ -597,7 +698,13 @@ export default function ToursPage() {
         description={`The generated tour for ${deleteTarget?.roomName ?? 'this room'} will be permanently removed. The underlying capture point will still exist. This cannot be undone.`}
         confirmLabel="Delete tour"
         destructive
-        onConfirm={() => { if (deleteTarget) deleteTour(deleteTarget.id); setDeleteTarget(null); }}
+        onConfirm={() => {
+          if (deleteTarget) {
+            deleteTour(deleteTarget.id);
+            if (user?.id) removeFavorite(user.id, deleteTarget.id);
+          }
+          setDeleteTarget(null);
+        }}
         onCancel={() => setDeleteTarget(null)}
       />
     </Box>

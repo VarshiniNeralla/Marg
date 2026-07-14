@@ -1,18 +1,22 @@
-import React, { useEffect, useState } from 'react';
-import { Box, Typography, CircularProgress } from '@mui/material';
-import { HistoryRounded, ChevronRightRounded, AccessTimeRounded } from '@mui/icons-material';
-import { colors } from '@theme/tokens';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Box, Typography, CircularProgress, Collapse } from '@mui/material';
+import {
+  HistoryRounded, ChevronRightRounded, KeyboardArrowDownRounded,
+} from '@mui/icons-material';
+import { colors, motion } from '@theme/tokens';
 import {
   progressAnalysisService,
   type ProgressReportSummary,
 } from '@/services/progressAnalysisService';
-import { formatReportDateRange, formatReportGeneratedAt } from '@/utils/reportFormat';
+import { formatReportDateRangeCompact, formatReportGeneratedAt } from '@/utils/reportFormat';
 
 export interface PreviousReportsPanelProps {
   projectId?: string;
   pinName: string;
   beforeTimelineId?: string;
   afterTimelineId?: string;
+  /** Capture ids currently on this pin's timeline. Reports for deleted captures are hidden. */
+  validTimelineIds?: string[];
   onSelect: (summary: ProgressReportSummary) => void;
 }
 
@@ -21,10 +25,17 @@ export default function PreviousReportsPanel({
   pinName,
   beforeTimelineId,
   afterTimelineId,
+  validTimelineIds,
   onSelect,
 }: PreviousReportsPanelProps) {
   const [loading, setLoading] = useState(true);
   const [reports, setReports] = useState<ProgressReportSummary[]>([]);
+  const [open, setOpen] = useState(false);
+
+  const validIdSet = useMemo(
+    () => (validTimelineIds ? new Set(validTimelineIds) : null),
+    [validTimelineIds],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -36,7 +47,7 @@ export default function PreviousReportsPanel({
           pinName,
           beforeTimelineId,
           afterTimelineId,
-          limit: 5,
+          limit: 12,
         });
         if (!cancelled) setReports(result.items);
       } catch {
@@ -48,56 +59,109 @@ export default function PreviousReportsPanel({
     return () => { cancelled = true; };
   }, [projectId, pinName, beforeTimelineId, afterTimelineId]);
 
+  useEffect(() => {
+    setOpen(false);
+  }, [projectId, pinName, beforeTimelineId, afterTimelineId]);
+
+  const visibleReports = useMemo(() => {
+    if (!validIdSet) return reports;
+    return reports.filter(
+      r => validIdSet.has(r.beforeTimelineId) && validIdSet.has(r.afterTimelineId),
+    );
+  }, [reports, validIdSet]);
+
   if (loading) {
     return (
-      <Box sx={{ px: 1.25, py: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
-        <CircularProgress size={14} sx={{ color: '#7c3aed' }} />
-        <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>Loading previous reports…</Typography>
+      <Box sx={{ borderTop: `1px solid ${colors.borderLight}`, px: 1.5, py: 1.25, display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
+        <CircularProgress size={12} sx={{ color: colors.textSubdued }} />
+        <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>Loading reports…</Typography>
       </Box>
     );
   }
 
-  if (reports.length === 0) return null;
+  if (visibleReports.length === 0) return null;
 
   return (
-    <Box sx={{ borderTop: '1px solid rgba(124,58,237,0.12)', px: 1.25, py: 1 }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.75 }}>
-        <HistoryRounded sx={{ fontSize: 13, color: '#7c3aed' }} />
-        <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: '#7c3aed' }}>
-          Previous Reports
+    <Box sx={{ borderTop: `1px solid ${colors.borderLight}`, mt: 0.5 }}>
+      <Box
+        onClick={() => setOpen(v => !v)}
+        role="button"
+        aria-expanded={open}
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 0.75,
+          px: 1.5,
+          py: 1,
+          cursor: 'pointer',
+          userSelect: 'none',
+          transition: `background-color ${motion.durationFast}`,
+          '&:hover': { backgroundColor: colors.bg },
+        }}
+      >
+        <HistoryRounded sx={{ fontSize: 14, color: open ? colors.primary : colors.textSubdued }} />
+        <Typography sx={{ flex: 1, fontSize: '0.75rem', fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.01em' }}>
+          Saved reports
         </Typography>
+        <Box
+          sx={{
+            px: 0.625,
+            py: 0.125,
+            borderRadius: '999px',
+            fontSize: '0.625rem',
+            fontWeight: 700,
+            backgroundColor: open ? 'rgba(37,99,235,0.1)' : colors.bg,
+            color: open ? colors.primary : colors.textMuted,
+          }}
+        >
+          {visibleReports.length}
+        </Box>
+        <KeyboardArrowDownRounded
+          sx={{
+            fontSize: 18,
+            color: colors.textMuted,
+            transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+            transition: `transform ${motion.durationFast}`,
+          }}
+        />
       </Box>
-      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-        {reports.map(report => (
-          <Box
-            key={report.reportId}
-            onClick={() => onSelect(report)}
-            sx={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1,
-              px: 1, py: 0.625, borderRadius: '6px', cursor: 'pointer',
-              backgroundColor: 'rgba(124,58,237,0.04)',
-              border: '1px solid rgba(124,58,237,0.1)',
-              '&:hover': { backgroundColor: 'rgba(124,58,237,0.08)' },
-            }}
-          >
-            <Box sx={{ minWidth: 0 }}>
-              <Typography sx={{ fontSize: '0.625rem', fontWeight: 600, color: colors.textStrong }} noWrap>
-                {formatReportDateRange(report.beforeDate, report.afterDate)}
-              </Typography>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.375, mt: 0.25 }}>
-                <AccessTimeRounded sx={{ fontSize: 11, color: '#7c3aed' }} />
-                <Typography sx={{ fontSize: '0.5625rem', fontWeight: 700, color: '#7c3aed' }} noWrap>
-                  {formatReportGeneratedAt(report.savedAt, report.createdAt) || 'Generated recently'}
-                </Typography>
+
+      <Collapse in={open} timeout={180} unmountOnExit>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, px: 1, pb: 1 }}>
+          {visibleReports.map(report => {
+            const generated = formatReportGeneratedAt(report.savedAt, report.createdAt);
+            return (
+              <Box
+                key={report.reportId}
+                onClick={() => onSelect(report)}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  px: 1,
+                  py: 0.75,
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  transition: 'background-color 120ms ease',
+                  '&:hover': { backgroundColor: colors.bg },
+                }}
+              >
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.textStrong, letterSpacing: '-0.01em' }} noWrap>
+                    {formatReportDateRangeCompact(report.beforeDate, report.afterDate)}
+                  </Typography>
+                  <Typography sx={{ fontSize: '0.625rem', color: colors.textMuted, mt: 0.125 }} noWrap>
+                    {report.overallProgressPercentage}% progress
+                    {report.confidence > 0 ? ` · ${report.confidence}% conf.` : ''}
+                    {generated ? ` · ${generated}` : ''}
+                  </Typography>
+                </Box>
+                <ChevronRightRounded sx={{ fontSize: 16, color: colors.textSubdued, flexShrink: 0 }} />
               </Box>
-              <Typography sx={{ fontSize: '0.5625rem', color: colors.textMuted, mt: 0.25 }} noWrap>
-                {report.overallProgressPercentage}% progress · {report.confidence}% confidence
-              </Typography>
-            </Box>
-            <ChevronRightRounded sx={{ fontSize: 16, color: colors.textSubdued, flexShrink: 0 }} />
-          </Box>
-        ))}
-      </Box>
+            );
+          })}
+        </Box>
+      </Collapse>
     </Box>
   );
 }

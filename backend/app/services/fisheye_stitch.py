@@ -928,9 +928,16 @@ def _regularize_strip_flow(fx, fy, guide_gray, x0, out_w, out_h, conf=None,
     # can never bend architecture again.
     pw = gate if conf is None else gate * conf * conf
     pw_lp = _lowpass_field(pw, 400.0)
+    # Weighted mean that DECAYS TO ZERO where nothing was measured: the old
+    # eps*lowpass(perp) numerator fell back to the unweighted mean of raw
+    # flow in zero-weight regions — in an evidence desert (a whole strip of
+    # blown-out, motion-blurred content) that is a smooth average of clamp-
+    # saturated garbage, bending architecture by tens of px. No evidence ->
+    # no correction; the phase-correlation global dy carries the real
+    # systematic offset regardless.
     eps = 0.02
-    dc_x = (_lowpass_field(perp_x * pw, 400.0) + eps * _lowpass_field(perp_x, 400.0)) / (pw_lp + eps)
-    dc_y = (_lowpass_field(perp_y * pw, 400.0) + eps * _lowpass_field(perp_y, 400.0)) / (pw_lp + eps)
+    dc_x = _lowpass_field(perp_x * pw, 400.0) / (pw_lp + eps)
+    dc_y = _lowpass_field(perp_y * pw, 400.0) / (pw_lp + eps)
     if conf is not None:
         # max() with the blur: a thin confident band (a beam edge a few tens
         # of px tall surrounded by blown-out zero-confidence sky) must keep
@@ -1079,19 +1086,33 @@ def _autocal_fov(top, bot, l1, l2, fov, *, cal_w=1920, cal_h=960):
 
 
 def _measure_seam_global_dy(lf, lb, ov, xc, out_h, win: int = 96):
-    """Robust global vertical offset (back relative to front) at one seam.
+    """Robust global vertical offset + per-window shift anchors at one seam.
 
     Multi-window phase correlation down the seam column, restricted to the
     true overlap: immune to the aperture problem (windows need 2-D texture to
     pass the std gate) and to DIS/fb-consistency failures in blown-out scenes
     — a handful of good windows anywhere along the seam is enough. Returns
-    (median_dy, n_windows); (0, n) when fewer than 4 windows qualify.
+    (median_dy, n_windows, anchors) where anchors is the accepted window list
+    [(yc, xoff, dx, dy, resp), ...]; median_dy is 0 when fewer than 4 qualify.
+
+    The anchors exist for content whose flow is unmeasurable (blown-out or
+    motion-blurred strips) yet carries a real rigid disparity: DIS dies
+    wholesale, the evidence gate correctly refuses to warp, and a window
+    frame with a true ~25-40px horizontal offset renders as a double image
+    the seam must cut (Floor-4 001: mullion snapped at the sill; 005:
+    ceiling boxes duplicated). Injected as synthetic low-confidence flow
+    measurements they ride the NORMAL pipeline — diffusion smooths between
+    bands, the guided filter attaches the disparity to image edges, and the
+    evidence gate counts them as real support. Applying them as a warp-level
+    offset instead (scalar or y-profile) was tried and TEARS the boundary
+    between corrected desert and confident zero-change neighbours.
     """
     import cv2
     import numpy as np
 
     han = cv2.createHanningWindow((win, win), cv2.CV_32F)
     vals = []
+    anchors = []
     for yc in range(int(0.12 * out_h), int(0.88 * out_h), 64):
         for xoff in (-40, 0, 40):
             y0, y1 = yc - win // 2, yc + win // 2
@@ -1105,9 +1126,48 @@ def _measure_seam_global_dy(lf, lb, ov, xc, out_h, win: int = 96):
             (dx, dy), resp = cv2.phaseCorrelate(a * han, b * han)
             if resp > 0.30 and abs(dy) < 40.0 and abs(dx) < 80.0:
                 vals.append(dy)
+                anchors.append((yc, xoff, float(dx), float(dy), float(resp)))
     if len(vals) < 4:
-        return 0.0, len(vals)
-    return float(np.clip(np.median(vals), -30.0, 30.0)), len(vals)
+        return 0.0, len(vals), anchors
+    return float(np.clip(np.median(vals), -30.0, 30.0)), len(vals), anchors
+
+
+def _measure_seam_anchors_coarse(lf, lb, ov, xc, out_h, win: int = 96):
+    """Half-resolution phase-correlation anchors (192px effective context).
+
+    Walking-blur + blown-out strips can defeat even full-resolution phase
+    correlation (Floor-4 001: 4 windows accepted on the whole seam, none on
+    the misaligned window frame). At half resolution the blur diameter
+    halves, a 96px window sees 192px of real structure, and a 30px disparity
+    becomes a comfortable 15px peak. Same gates, coordinates and shifts
+    scaled back to full resolution."""
+    import cv2
+    import numpy as np
+
+    lf2 = cv2.resize(lf, (lf.shape[1] // 2, lf.shape[0] // 2), interpolation=cv2.INTER_AREA)
+    lb2 = cv2.resize(lb, (lb.shape[1] // 2, lb.shape[0] // 2), interpolation=cv2.INTER_AREA)
+    ov2 = cv2.resize(ov, (ov.shape[1] // 2, ov.shape[0] // 2), interpolation=cv2.INTER_AREA)
+    xc2, h2 = xc // 2, out_h // 2
+    han = cv2.createHanningWindow((win, win), cv2.CV_32F)
+    anchors = []
+    for yc in range(int(0.12 * h2), int(0.88 * h2), 48):
+        for xoff in (-20, 0, 20):
+            y0, y1 = yc - win // 2, yc + win // 2
+            x0, x1 = xc2 + xoff - win // 2, xc2 + xoff + win // 2
+            if ov2[y0:y1, x0:x1].mean() < 0.85:
+                continue
+            a = lf2[y0:y1, x0:x1].astype(np.float32)
+            b = lb2[y0:y1, x0:x1].astype(np.float32)
+            if a.std() < 3.0 or b.std() < 3.0:
+                continue
+            (dx, dy), resp = cv2.phaseCorrelate(a * han, b * han)
+            if resp > 0.25 and abs(dy) < 25.0 and abs(dx) < 45.0:
+                anchors.append(
+                    (yc * 2, xoff * 2, float(dx * 2), float(dy * 2), float(resp))
+                )
+    return anchors
+
+
 
 
 def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clean2=None,
@@ -1249,13 +1309,50 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
             lf[:, x0:x1], lb[:, x0:x1], max_flow, fb_tau
         )
         g_dy, g_n = (0.0, 0)
+        anchors = []
         if ov_meas is not None:
-            g_dy, g_n = _measure_seam_global_dy(lf, lb, ov_meas, xc, out_h)
+            g_dy, g_n, fine = _measure_seam_global_dy(lf, lb, ov_meas, xc, out_h)
+            coarse = _measure_seam_anchors_coarse(lf, lb, ov_meas, xc, out_h)
+            # fine first: where both scales measured, the sharper wins
+            anchors = [(a, 48, 0.30) for a in fine] + [(a, 96, 0.25) for a in coarse]
         goff = g_dy * s_prof
         goff_full[0, x0:x1] = goff
         fy = fy - goff[None, :]
         apx, apy = _directional_measurability(lf[:, x0:x1])
         conf_m = conf if ov_meas is None else conf * ov_meas[:, x0:x1]
+        # Phase-correlation anchors: in strips where DIS dies wholesale
+        # (blown-out + motion-blurred; conf≈0 for hundreds of px) a rigid
+        # structure still carries a real measurable shift. Overwrite ONLY
+        # low-confidence pixels inside each accepted Hanning window with the
+        # window's rigid (dx, dy) at moderate confidence, then let the normal
+        # completion/guided-filter/evidence machinery smooth, attach to
+        # image edges, and taper it.
+        n_anch = 0
+        anchored = np.zeros(fx.shape, bool)
+        for (ayc, axoff, adx, ady, aresp), hw, floor in anchors:
+            ac = float(np.clip((aresp - floor) / 0.40, 0.0, 1.0)) * 0.6
+            if ac <= 0.05:
+                continue
+            ay0, ay1 = max(0, ayc - hw), min(out_h, ayc + hw)
+            ax0 = max(0, xc + axoff - hw - x0)
+            ax1 = min(fx.shape[1], xc + axoff + hw - x0)
+            if ax0 >= ax1 or ay0 >= ay1:
+                continue
+            low = (conf_m[ay0:ay1, ax0:ax1] < 0.25) & ~anchored[ay0:ay1, ax0:ax1]
+            if not low.any():
+                continue
+            n_anch += 1
+            anchored[ay0:ay1, ax0:ax1] |= low
+            sub_fx = fx[ay0:ay1, ax0:ax1]
+            sub_fy = fy[ay0:ay1, ax0:ax1]
+            sub_c = conf_m[ay0:ay1, ax0:ax1]
+            sub_fx[low] = adx
+            # anchor dy is absolute; fy already has the global profile
+            # removed, so store the residual vs goff at these columns
+            goff_tile = np.broadcast_to(goff[ax0:ax1][None, :], sub_fy.shape)
+            sub_fy[low] = ady - goff_tile[low]
+            sub_c[low] = np.maximum(sub_c[low], ac)
+        stats_anchors = n_anch
         fx, fy = _complete_unreliable_flow(
             fx, fy, conf_m, conf_x=conf_m * apx, conf_y=conf_m * apy
         )
@@ -1275,6 +1372,7 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
             "low_confidence_pct": float(100.0 * (conf < 0.5).mean()),
             "global_dy_px": g_dy,
             "global_dy_windows": g_n,
+            "flow_anchors": stats_anchors,
         }
 
     wf = w1.astype(np.float32)

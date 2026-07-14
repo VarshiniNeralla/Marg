@@ -63,35 +63,115 @@ function CompareAnalyzeButton({
     <Box
       onClick={loading || disabled ? undefined : onClick}
       sx={{
-        mx: 1.25,
-        mb: 1.25,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         gap: 0.75,
-        py: 0.875,
-        borderRadius: '8px',
+        py: 1,
+        px: 1.5,
+        borderRadius: '10px',
         cursor: loading || disabled ? 'default' : 'pointer',
-        backgroundColor: loading ? 'rgba(124,58,237,0.08)' : '#7c3aed',
-        color: loading ? '#7c3aed' : '#fff',
-        fontSize: '0.75rem',
+                        backgroundColor: loading ? 'rgba(37,99,235,0.08)' : colors.primary,
+        color: loading ? colors.primary : '#fff',
+        fontSize: '0.8125rem',
         fontWeight: 700,
         opacity: disabled && !loading ? 0.5 : 1,
-        transition: 'opacity 0.2s',
-        '&:hover': loading || disabled ? {} : { backgroundColor: '#6d28d9' },
+        transition: 'opacity 0.2s, background-color 0.15s',
+        '&:hover': loading || disabled ? {} : { backgroundColor: colors.primaryHover },
       }}
     >
       {loading ? (
         <>
-          <CircularProgress size={14} sx={{ color: '#7c3aed' }} />
-          Analyzing construction progress...
+          <CircularProgress size={14} sx={{ color: colors.primary }} />
+          Analyzing…
         </>
       ) : (
         <>
-          <AutoAwesomeRounded sx={{ fontSize: 15 }} />
-          Analyze Construction Progress
+          <AutoAwesomeRounded sx={{ fontSize: 16 }} />
+          Analyze progress
         </>
       )}
+    </Box>
+  );
+}
+
+/** Compact A | B selection row — replaces the tall slot cards. */
+function CompareSlotRow({
+  compareIds,
+  pinTimeline,
+  onView,
+}: {
+  compareIds: [string | null, string | null];
+  pinTimeline: { id: string; dateLabel: string; isLatest?: boolean }[];
+  onView: (id: string) => void;
+}) {
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+      {(['A', 'B'] as const).map((slot, idx) => {
+        const slotId = compareIds[idx];
+        const snap = slotId ? pinTimeline.find(s => s.id === slotId) : null;
+        const snapIndex = snap ? pinTimeline.findIndex(s => s.id === snap.id) : -1;
+        const slotColor = slot === 'A' ? '#7c3aed' : '#d97706';
+        const isEmpty = !slotId;
+        return (
+          <React.Fragment key={slot}>
+            {idx === 1 && (
+              <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: colors.textSubdued, flexShrink: 0 }}>
+                →
+              </Typography>
+            )}
+            <Box
+              onClick={() => { if (slotId) onView(slotId); }}
+              sx={{
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 0.75,
+                minWidth: 0,
+                px: 1,
+                py: 0.75,
+                borderRadius: '10px',
+                border: `1.5px ${isEmpty ? 'dashed' : 'solid'} ${isEmpty ? colors.borderLight : slotColor}`,
+                backgroundColor: isEmpty ? colors.bg : slot === 'A' ? 'rgba(124,58,237,0.05)' : 'rgba(217,119,6,0.05)',
+                cursor: slotId ? 'pointer' : 'default',
+              }}
+            >
+              <Box
+                sx={{
+                  width: 22,
+                  height: 22,
+                  borderRadius: '6px',
+                  flexShrink: 0,
+                  backgroundColor: isEmpty ? colors.borderLight : slotColor,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Typography sx={{ fontSize: '0.625rem', fontWeight: 800, color: isEmpty ? colors.textSubdued : '#fff' }}>
+                  {slot}
+                </Typography>
+              </Box>
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                {snap ? (
+                  <>
+                    <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: colors.textStrong, lineHeight: 1.2 }} noWrap>
+                      {snap.isLatest ? 'Latest' : `Visit ${snapIndex + 1}`}
+                    </Typography>
+                    <Typography sx={{ fontSize: '0.5625rem', color: colors.textMuted, lineHeight: 1.3 }} noWrap>
+                      {snap.dateLabel}
+                    </Typography>
+                  </>
+                ) : (
+                  <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, fontWeight: 500 }}>
+                    Tap timeline
+                  </Typography>
+                )}
+              </Box>
+            </Box>
+          </React.Fragment>
+        );
+      })}
     </Box>
   );
 }
@@ -109,61 +189,24 @@ function CompareWillAnalyzePreview({
   ] as const;
 
   return (
-    <Box
-      sx={{
-        mx: 1.25,
-        mb: 1.25,
-        p: 1,
-        borderRadius: '8px',
-        backgroundColor: 'rgba(255,255,255,0.75)',
-        border: '1px solid rgba(124,58,237,0.12)',
-      }}
-    >
-      <Typography
-        sx={{
-          fontSize: '0.5625rem',
-          fontWeight: 700,
-          color: colors.textMuted,
-          textTransform: 'uppercase',
-          letterSpacing: '0.06em',
-          mb: 0.75,
-        }}
-      >
-        Will analyze
-      </Typography>
-      {rows.map((row, i) => (
+    <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.75 }}>
+      {rows.map(row => (
         <Box
           key={row.tag}
           sx={{
-            display: 'grid',
-            gridTemplateColumns: row.imageUrl ? 'auto 1fr 108px' : 'auto 1fr auto',
-            alignItems: 'center',
-            gap: 0.75,
-            mb: i === 0 ? 0.75 : 0,
+            borderRadius: '10px',
+            overflow: 'hidden',
+            border: `1px solid ${colors.borderLight}`,
+            backgroundColor: '#fff',
           }}
         >
-          <Box sx={{ px: 0.75, py: 0.25, borderRadius: '4px', backgroundColor: row.bg }}>
-            <Typography sx={{ fontSize: '0.5625rem', fontWeight: 800, color: row.color, lineHeight: 1.2 }}>
-              {row.tag}
-            </Typography>
-          </Box>
-          <Box sx={{ minWidth: 0 }}>
-            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textStrong }} noWrap>
-              {row.label}
-            </Typography>
-            <Typography sx={{ fontSize: '0.625rem', color: colors.textMuted }} noWrap>
-              {row.date}
-            </Typography>
-          </Box>
           {row.imageUrl ? (
             <Box
               sx={{
-                width: 108,
-                aspectRatio: '2 / 1',
-                borderRadius: '6px',
-                overflow: 'hidden',
+                width: '100%',
+                aspectRatio: '16 / 9',
                 backgroundColor: '#0f1929',
-                border: `1px solid ${colors.borderLight}`,
+                overflow: 'hidden',
               }}
             >
               <Box
@@ -171,10 +214,25 @@ function CompareWillAnalyzePreview({
                 key={`${row.captureId ?? row.tag}-${row.imageUrl}`}
                 src={row.imageUrl}
                 alt={row.tag}
-                sx={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+                sx={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
               />
             </Box>
-          ) : null}
+          ) : (
+            <Box sx={{ height: 56, backgroundColor: colors.bg }} />
+          )}
+          <Box sx={{ px: 0.875, py: 0.625 }}>
+            <Box sx={{ display: 'inline-flex', px: 0.5, py: 0.125, borderRadius: '4px', backgroundColor: row.bg, mb: 0.25 }}>
+              <Typography sx={{ fontSize: '0.5rem', fontWeight: 800, color: row.color, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                {row.tag}
+              </Typography>
+            </Box>
+            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textStrong, lineHeight: 1.2 }} noWrap>
+              {row.label}
+            </Typography>
+            <Typography sx={{ fontSize: '0.5625rem', color: colors.textMuted }} noWrap>
+              {row.date}
+            </Typography>
+          </Box>
         </Box>
       ))}
     </Box>
@@ -1203,6 +1261,10 @@ export default function TourViewerPage() {
 
   const handleSaveAnalysisReport = useCallback(async () => {
     if (!analysisReportId || analysisSaved) return;
+    if (!isManagerOrAdmin(user)) {
+      toast.error('Only managers and admins can save reports to the library');
+      return;
+    }
     setAnalysisSaveLoading(true);
     try {
       const summary = await progressAnalysisService.saveReport(analysisReportId);
@@ -1214,12 +1276,17 @@ export default function TourViewerPage() {
       setAnalysisDrawerOpen(false);
       toast.success('Saved to Progress Reports');
       navigate('/progress-reports');
-    } catch {
-      toast.error('Failed to save report');
+    } catch (err) {
+      const status = (err as { status?: number } | null)?.status;
+      toast.error(
+        status === 403
+          ? 'Only managers and admins can save reports to the library'
+          : 'Failed to save report',
+      );
     } finally {
       setAnalysisSaveLoading(false);
     }
-  }, [analysisReportId, analysisSaved, navigate]);
+  }, [analysisReportId, analysisSaved, navigate, user]);
 
   const handleHotspotClick = useCallback((targetTourId: string) => {
     navigate(`/tours/${targetTourId}`);
@@ -1595,18 +1662,10 @@ export default function TourViewerPage() {
                   ) : undefined
                 }
               >
-                {/* Summary row */}
-                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.625 }}>
-                    <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#16a34a' }} />
-                    <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: '#16a34a', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                      Latest
-                    </Typography>
-                  </Box>
-                  <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, fontWeight: 500 }} noWrap>
-                    {latestSnap.dateLabel} · {pinTimeline.length} capture{pinTimeline.length !== 1 ? 's' : ''}
-                  </Typography>
-                </Box>
+                {/* Capture count — light context under the scrubber */}
+                <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, mb: 1.25 }}>
+                  {latestSnap.dateLabel} · {pinTimeline.length} visit{pinTimeline.length !== 1 ? 's' : ''}
+                </Typography>
 
                 {/* Timeline scrubber */}
                 <CaptureTimeline
@@ -1617,73 +1676,24 @@ export default function TourViewerPage() {
                   compareMode={isComparing}
                 />
 
-                {/* Compare UI — shown only when compare mode is active */}
+                {/* Compare UI */}
                 {isComparing && (
-                  <Box sx={{ mt: 1.5, borderRadius: '10px', overflow: 'hidden', border: `1px solid rgba(124,58,237,0.18)`, backgroundColor: 'rgba(124,58,237,0.04)' }}>
-                    {/* Instruction banner — hidden once both visits are selected */}
-                    {!(compareIds[0] && compareIds[1]) && (
-                      <Box sx={{ px: 1.5, py: 1, borderBottom: `1px solid rgba(124,58,237,0.12)`, display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                        <CompareRounded sx={{ fontSize: 13, color: '#7c3aed', flexShrink: 0 }} />
-                        <Typography sx={{ fontSize: '0.6875rem', color: '#7c3aed', fontWeight: 600, lineHeight: 1.4 }}>
-                          {!compareIds[0]
-                            ? 'Tap any two visits on the timeline above'
-                            : 'Tap a second visit to compare'}
-                        </Typography>
-                      </Box>
+                  <Box sx={{ mt: 1.5, display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+                    {!bothSelected && (
+                      <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, fontWeight: 500 }}>
+                        {!compareIds[0]
+                          ? 'Select two visits on the timeline'
+                          : 'Select a second visit'}
+                      </Typography>
                     )}
 
-                    {/* A / B slot cards */}
-                    <Box sx={{ display: 'flex', gap: 1, p: 1.25 }}>
-                      {(['A', 'B'] as const).map((slot, idx) => {
-                        const slotId = compareIds[idx];
-                        const snap = slotId ? pinTimeline.find(s => s.id === slotId) : null;
-                        const snapIndex = snap ? pinTimeline.findIndex(s => s.id === snap.id) : -1;
-                        const slotColor = slot === 'A' ? '#7c3aed' : '#d97706';
-                        const isEmpty = !slotId;
-                        return (
-                          <Box
-                            key={slot}
-                            sx={{
-                              flex: 1,
-                              borderRadius: '8px',
-                              border: `1.5px ${isEmpty ? 'dashed' : 'solid'} ${isEmpty ? colors.border : slotColor}`,
-                              backgroundColor: isEmpty ? 'transparent' : slot === 'A' ? 'rgba(124,58,237,0.06)' : 'rgba(217,119,6,0.06)',
-                              p: 1,
-                              display: 'flex',
-                              flexDirection: 'column',
-                              alignItems: 'center',
-                              gap: 0.5,
-                              minWidth: 0,
-                            }}
-                          >
-                            {/* Badge */}
-                            <Box sx={{ width: 22, height: 22, borderRadius: '50%', backgroundColor: isEmpty ? colors.borderLight : slotColor, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                              <Typography sx={{ fontSize: '0.6875rem', fontWeight: 800, color: isEmpty ? colors.textSubdued : '#fff' }}>{slot}</Typography>
-                            </Box>
-                            {snap ? (
-                              <>
-                                <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textStrong, textAlign: 'center', lineHeight: 1.3 }} noWrap>
-                                  {snap.isLatest ? 'Latest' : `Visit ${snapIndex + 1}`}
-                                </Typography>
-                                <Typography sx={{ fontSize: '0.625rem', color: colors.textMuted, textAlign: 'center' }} noWrap>
-                                  {snap.dateLabel}
-                                </Typography>
-                                <Box
-                                  onClick={() => { setActiveSnapId(slotId!); setPanoramaOverride(resolvePanorama(slotId!)); }}
-                                  sx={{ mt: 0.25, px: 1, py: 0.375, borderRadius: '5px', backgroundColor: slotColor, color: '#fff', fontSize: '0.625rem', fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', '&:hover': { opacity: 0.88 } }}
-                                >
-                                  View {slot}
-                                </Box>
-                              </>
-                            ) : (
-                              <Typography sx={{ fontSize: '0.625rem', color: colors.textSubdued, textAlign: 'center', lineHeight: 1.4 }}>
-                                Tap node
-                              </Typography>
-                            )}
-                          </Box>
-                        );
-                      })}
-                    </Box>
+                    {!bothSelected && (
+                      <CompareSlotRow
+                        compareIds={compareIds}
+                        pinTimeline={pinTimeline}
+                        onView={(id) => { setActiveSnapId(id); setPanoramaOverride(resolvePanorama(id)); }}
+                      />
+                    )}
 
                     {bothSelected && orderedComparePreview && (
                       <CompareWillAnalyzePreview
@@ -1703,25 +1713,30 @@ export default function TourViewerPage() {
                       />
                     )}
 
-                    {/* Clear button when both selected */}
                     {bothSelected && (
-                      <>
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
                         <CompareAnalyzeButton
                           loading={analysisLoading}
                           onClick={handleAnalyzeProgress}
                         />
                         <Box
                           onClick={() => setCompareIds([null, null])}
-                          sx={{ mx: 1.25, mb: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, py: 0.625, borderRadius: '7px', border: `1px solid ${colors.borderLight}`, color: colors.textMuted, fontSize: '0.6875rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: colors.danger, color: colors.danger } }}
+                          sx={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5,
+                            py: 0.5, color: colors.textMuted, fontSize: '0.6875rem', fontWeight: 600,
+                            cursor: 'pointer', '&:hover': { color: colors.danger },
+                          }}
                         >
-                          <CloseRounded sx={{ fontSize: 12 }} /> Clear selection
+                          <CloseRounded sx={{ fontSize: 13 }} /> Clear selection
                         </Box>
-                      </>
+                      </Box>
                     )}
-                    {canViewPreviousReports && isComparing && (
+
+                    {canViewPreviousReports && (
                       <PreviousReportsPanel
                         projectId={tour.projectId}
                         pinName={pinLabel}
+                        validTimelineIds={pinTimeline.map(s => s.id)}
                         onSelect={handleOpenPreviousReport}
                       />
                     )}
@@ -1787,12 +1802,9 @@ export default function TourViewerPage() {
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                   <HistoryRounded sx={{ fontSize: 14, color: colors.textMuted }} />
                   <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: colors.textStrong }}>Progress Timeline</Typography>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.375, ml: 0.5 }}>
-                    <Box sx={{ width: 5, height: 5, borderRadius: '50%', backgroundColor: '#16a34a' }} />
-                    <Typography sx={{ fontSize: '0.625rem', fontWeight: 700, color: '#16a34a' }}>
-                      {pinTimeline.length} capture{pinTimeline.length !== 1 ? 's' : ''}
-                    </Typography>
-                  </Box>
+                  <Typography sx={{ fontSize: '0.625rem', fontWeight: 600, color: colors.textMuted, ml: 0.5 }}>
+                    {pinTimeline.length} visit{pinTimeline.length !== 1 ? 's' : ''}
+                  </Typography>
                 </Box>
                 {pinTimeline.length > 1 && (
                   <Box
@@ -1812,44 +1824,20 @@ export default function TourViewerPage() {
                   compareIds={isComparing ? compareIds : undefined}
                   compareMode={isComparing}
                 />
-                {/* Compare slots */}
                 {isComparing && (
-                  <Box sx={{ mt: 1.25, borderRadius: '10px', overflow: 'hidden', border: '1px solid rgba(124,58,237,0.18)', backgroundColor: 'rgba(124,58,237,0.04)' }}>
-                    {!(compareIds[0] && compareIds[1]) && (
-                      <Box sx={{ px: 1.25, py: 0.875, borderBottom: '1px solid rgba(124,58,237,0.12)', display: 'flex', alignItems: 'center', gap: 0.625 }}>
-                        <CompareRounded sx={{ fontSize: 12, color: '#7c3aed', flexShrink: 0 }} />
-                        <Typography sx={{ fontSize: '0.6875rem', color: '#7c3aed', fontWeight: 600 }}>
-                          {!compareIds[0] ? 'Tap any two visits on the timeline' : 'Tap a second visit'}
-                        </Typography>
-                      </Box>
+                  <Box sx={{ mt: 1.25, display: 'flex', flexDirection: 'column', gap: 1.125 }}>
+                    {!bothSelected && (
+                      <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, fontWeight: 500 }}>
+                        {!compareIds[0] ? 'Select two visits on the timeline' : 'Select a second visit'}
+                      </Typography>
                     )}
-                    <Box sx={{ display: 'flex', gap: 1, p: 1 }}>
-                      {(['A', 'B'] as const).map((slot, idx) => {
-                        const slotId = compareIds[idx];
-                        const snap = slotId ? pinTimeline.find(s => s.id === slotId) : null;
-                        const snapIndex = snap ? pinTimeline.findIndex(s => s.id === snap.id) : -1;
-                        const slotColor = slot === 'A' ? '#7c3aed' : '#d97706';
-                        return (
-                          <Box key={slot} sx={{ flex: 1, borderRadius: '8px', border: `1.5px ${!slotId ? 'dashed' : 'solid'} ${!slotId ? colors.border : slotColor}`, backgroundColor: !slotId ? 'transparent' : slot === 'A' ? 'rgba(124,58,237,0.06)' : 'rgba(217,119,6,0.06)', p: 0.875, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.375 }}>
-                            <Box sx={{ width: 20, height: 20, borderRadius: '50%', backgroundColor: !slotId ? colors.borderLight : slotColor, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                              <Typography sx={{ fontSize: '0.625rem', fontWeight: 800, color: !slotId ? colors.textSubdued : '#fff' }}>{slot}</Typography>
-                            </Box>
-                            {snap ? (
-                              <>
-                                <Typography sx={{ fontSize: '0.625rem', fontWeight: 600, color: colors.textStrong, textAlign: 'center' }} noWrap>
-                                  {snap.isLatest ? 'Latest' : `Visit ${snapIndex + 1}`}
-                                </Typography>
-                                <Box onClick={() => { setActiveSnapId(slotId!); setPanoramaOverride(resolvePanorama(slotId!)); }} sx={{ px: 0.875, py: 0.25, borderRadius: '4px', backgroundColor: slotColor, color: '#fff', fontSize: '0.5625rem', fontWeight: 700, cursor: 'pointer' }}>
-                                  View {slot}
-                                </Box>
-                              </>
-                            ) : (
-                              <Typography sx={{ fontSize: '0.5625rem', color: colors.textSubdued, textAlign: 'center' }}>Tap node</Typography>
-                            )}
-                          </Box>
-                        );
-                      })}
-                    </Box>
+                    {!bothSelected && (
+                      <CompareSlotRow
+                        compareIds={compareIds}
+                        pinTimeline={pinTimeline}
+                        onView={(id) => { setActiveSnapId(id); setPanoramaOverride(resolvePanorama(id)); }}
+                      />
+                    )}
                     {bothSelected && orderedComparePreview && (
                       <CompareWillAnalyzePreview
                         key={`${orderedComparePreview.beforeCaptureId}-${orderedComparePreview.afterCaptureId}`}
@@ -1868,20 +1856,27 @@ export default function TourViewerPage() {
                       />
                     )}
                     {bothSelected && (
-                      <>
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.625 }}>
                         <CompareAnalyzeButton
                           loading={analysisLoading}
                           onClick={handleAnalyzeProgress}
                         />
-                        <Box onClick={() => setCompareIds([null, null])} sx={{ mx: 1, mb: 0.875, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, py: 0.5, borderRadius: '6px', border: `1px solid ${colors.borderLight}`, color: colors.textMuted, fontSize: '0.625rem', fontWeight: 600, cursor: 'pointer' }}>
+                        <Box
+                          onClick={() => setCompareIds([null, null])}
+                          sx={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5,
+                            py: 0.5, color: colors.textMuted, fontSize: '0.625rem', fontWeight: 600, cursor: 'pointer',
+                          }}
+                        >
                           <CloseRounded sx={{ fontSize: 11 }} /> Clear
                         </Box>
-                      </>
+                      </Box>
                     )}
-                    {canViewPreviousReports && isComparing && (
+                    {canViewPreviousReports && (
                       <PreviousReportsPanel
                         projectId={tour.projectId}
                         pinName={pinLabel}
+                        validTimelineIds={pinTimeline.map(s => s.id)}
                         onSelect={handleOpenPreviousReport}
                       />
                     )}
@@ -1925,7 +1920,7 @@ export default function TourViewerPage() {
         meta={analysisMeta ?? undefined}
         reportId={analysisReportId}
         saved={analysisSaved}
-        onSave={handleSaveAnalysisReport}
+        onSave={canViewPreviousReports ? handleSaveAnalysisReport : undefined}
         saveLoading={analysisSaveLoading}
       />
     </Box>

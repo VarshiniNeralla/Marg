@@ -13,10 +13,12 @@ from app.core.config import get_settings
 from app.core.dependencies import CallerContext, DB
 from app.core.exceptions import NotFoundException, ValidationException
 from app.core.permissions import require_permission
+from loguru import logger
 
 settings = get_settings()
 from app.services.cloudinary_service import cloudinary_folder, signed_upload_params, upload_media
 from app.services.room_map_service import RoomMapService
+from app.services.ai_progress_service import AIProgressService
 from app.utils.pagination import success_response
 
 router = APIRouter(tags=["Workflow"])
@@ -427,6 +429,8 @@ async def update_room(room_id: str, payload: dict[str, Any], ctx: CallerContext,
 
 @router.delete("/rooms/{room_id}", summary="Delete room")
 async def delete_room(room_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("rooms", "delete"))):
+    # Drop captures that lived only on this room so Media Library can't resurface them.
+    await db["captures"].delete_many({"orgId": ctx.org_id, "roomId": room_id})
     await _delete(db, "rooms", room_id, ctx)
     return success_response(message="Room deleted")
 
@@ -477,6 +481,14 @@ async def publish_capture(capture_id: str, payload: dict[str, Any], ctx: CallerC
 @router.delete("/captures/{capture_id}", summary="Delete capture")
 async def delete_capture(capture_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "delete"))):
     await _delete(db, "captures", capture_id, ctx)
+    # Drop progress analyses that compared this capture so saved-report history
+    # cannot resurface deleted panorama images in the tour compare UI.
+    try:
+        purged = await AIProgressService(db).purge_for_timeline(ctx.org_id, capture_id)
+        if purged:
+            logger.info("Capture {} deleted with {} linked progress-analysis purge(s)", capture_id, purged)
+    except Exception:
+        logger.exception("Failed to purge progress analyses for deleted capture {}", capture_id)
     return success_response(message="Capture deleted")
 
 
@@ -651,6 +663,27 @@ async def update_capture_pin(pin_id: str, payload: dict[str, Any], ctx: CallerCo
 
 @router.delete("/pins/{pin_id}", summary="Delete capture pin")
 async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "delete"))):
+    # Cascade: removing a pin must also remove its capture timeline. Otherwise
+    # orphaned captures stay in Mongo and reappear in Media Library / snapshot.
+    pin = await db["capture_pins"].find_one({"_id": _id_filter(pin_id), "orgId": ctx.org_id})
+    if not pin:
+        raise NotFoundException("capture pin", pin_id)
+    capture_ids = [
+        cid for cid in (pin.get("captureIds") or pin.get("capture_ids") or [])
+        if isinstance(cid, str) and cid
+    ]
+    room_id = pin.get("roomId") or pin.get("room_id")
+    for cid in capture_ids:
+        await db["captures"].delete_one({"_id": _id_filter(cid), "orgId": ctx.org_id})
+        try:
+            purged = await AIProgressService(db).purge_for_timeline(ctx.org_id, cid)
+            if purged:
+                logger.info("Pin {} cascade: purged {} progress analyses for capture {}", pin_id, purged, cid)
+        except Exception:
+            logger.exception("Failed to purge progress analyses for capture {} during pin delete {}", cid, pin_id)
+    if room_id:
+        await db["captures"].delete_many({"orgId": ctx.org_id, "roomId": str(room_id)})
+        await db["rooms"].delete_one({"_id": _id_filter(str(room_id)), "orgId": ctx.org_id})
     await _delete(db, "capture_pins", pin_id, ctx)
     return success_response(message="Capture pin deleted")
 

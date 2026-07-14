@@ -1,5 +1,5 @@
 """
-One-time migration: update all user passwords from Prangan@123 → SiteVision@123.
+One-time migration: update all user passwords from Prangan@123 → Prangan@123.
 Run from the backend/ directory:
     uv run python update_passwords.py
 """
@@ -9,7 +9,7 @@ from app.core.security import hash_password, verify_password
 from app.db.mongodb import close_db, connect_db, get_database
 
 OLD_PASSWORD = "Prangan@123"
-NEW_PASSWORD = "SiteVision@123"
+NEW_PASSWORD = "Prangan@123"
 
 
 async def run() -> None:

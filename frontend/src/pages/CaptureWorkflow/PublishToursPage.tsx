@@ -1,14 +1,17 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Box, Typography, Snackbar, Alert, useMediaQuery, useTheme } from '@mui/material';
 import {
   ArrowBackRounded, ArrowForwardRounded, ViewInArRounded, PublishRounded,
   CheckCircleRounded, RadioButtonUncheckedRounded, LayersRounded,
   ChevronLeftRounded, ChevronRightRounded,
+  CheckBoxRounded, CheckBoxOutlineBlankRounded, IndeterminateCheckBoxRounded,
 } from '@mui/icons-material';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getFloorsByTower, getFloorPlanByFloor, getCapturePinsByFloorPlan } from '@store/workflowSelectors';
+import { resolveCaptureThumbnailUrl } from '@/utils/captureMedia';
+import type { MockCapture } from '@/data/mockData';
 
 const P = {
   border: '#e4e7ec', muted: '#6b7280', subtle: '#9ca3af', strong: '#111827',
@@ -48,6 +51,7 @@ export default function PublishToursPage() {
   const floors     = useWorkflowStore(s => s.floors);
   const floorPlans = useWorkflowStore(s => s.floorPlans);
   const allPins    = useWorkflowStore(s => s.capturePins);
+  const captures   = useWorkflowStore(s => s.captures);
   const tours      = useWorkflowStore(s => s.tours);
   const publishFloorPlanTour = useWorkflowStore(s => s.publishFloorPlanTour);
   const navigate = useNavigate();
@@ -58,6 +62,7 @@ export default function PublishToursPage() {
   const [toast, setToast]         = useState('');
   const [publishing, setPublishing] = useState(false);
   const [pinPage, setPinPage]       = useState(0);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const PAGE_SIZE = 5;
 
@@ -71,26 +76,72 @@ export default function PublishToursPage() {
   const floorPlan = getFloorPlanByFloor(floorPlans, towerId, floorId);
   const pins = floorPlan ? getCapturePinsByFloorPlan(allPins, floorPlan.id) : [];
   const pinsWithCapture = pins.filter(p => p.captureIds.length > 0);
-  const canPublish = pinsWithCapture.length > 0 && !publishing;
+  const readyIds = useMemo(() => pinsWithCapture.map(p => p.id), [pinsWithCapture]);
+  const readyKey = readyIds.join('|');
+  const floorPlanId = floorPlan?.id ?? '';
+
+  // Default-select every ready pin whenever the floor's ready set changes.
+  useEffect(() => {
+    setSelectedIds(new Set(readyIds));
+    setPinPage(0);
+  }, [floorPlanId, readyKey]); // eslint-disable-line react-hooks/exhaustive-deps -- readyIds derived from readyKey
+
+  const selectedReady = useMemo(
+    () => pinsWithCapture.filter(p => selectedIds.has(p.id)),
+    [pinsWithCapture, selectedIds],
+  );
+  const selectedCount = selectedReady.length;
+  const allReadySelected = readyIds.length > 0 && readyIds.every(id => selectedIds.has(id));
+  const someReadySelected = readyIds.some(id => selectedIds.has(id));
+  const canPublish = selectedCount > 0 && !publishing;
 
   const totalPinPages = Math.ceil(pins.length / PAGE_SIZE);
   const visiblePins = useMemo(
     () => pins.slice(pinPage * PAGE_SIZE, (pinPage + 1) * PAGE_SIZE),
-    [pins, pinPage, PAGE_SIZE],
+    [pins, pinPage],
   );
+
+  function toggleSelectAll() {
+    if (allReadySelected) setSelectedIds(new Set());
+    else setSelectedIds(new Set(readyIds));
+  }
+
+  function togglePin(pinId: string, ready: boolean) {
+    if (!ready) return;
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(pinId)) next.delete(pinId);
+      else next.add(pinId);
+      return next;
+    });
+  }
 
   function handlePublish() {
     if (!floorPlan || !canPublish) return;
     setPublishing(true);
-    const tourIds = publishFloorPlanTour(floorPlan.id);
+    const tourIds = publishFloorPlanTour(floorPlan.id, [...selectedIds]);
     setPublishing(false);
     if (tourIds.length) {
-      setToast(`Walkthrough published · ${pinsWithCapture.length} stops in pin order`);
+      setToast(`Walkthrough published · ${selectedCount} stop${selectedCount !== 1 ? 's' : ''} in pin order`);
       setTimeout(() => navigate(`/tours/${tourIds[0]}`), 600);
     } else {
-      setToast('No pins with captures to publish yet');
+      setToast('No selected pins with captures to publish yet');
     }
   }
+
+  function pinThumbUrl(pin: { captureIds: string[] }): string | null {
+    const latestId = pin.captureIds[pin.captureIds.length - 1];
+    if (!latestId) return null;
+    const cap = captures.find(c => c.id === latestId);
+    if (!cap) return null;
+    return resolveCaptureThumbnailUrl(cap as MockCapture & Record<string, unknown>);
+  }
+
+  const SelectAllIcon = allReadySelected
+    ? CheckBoxRounded
+    : someReadySelected
+      ? IndeterminateCheckBoxRounded
+      : CheckBoxOutlineBlankRounded;
 
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto', pb: { xs: 3, sm: 6 } }}>
@@ -115,13 +166,11 @@ export default function PublishToursPage() {
           color: P.strong, letterSpacing: '-0.05em', lineHeight: 1.05, mb: 0.5,
         }}>Publish Tours</Typography>
         <Typography sx={{ fontSize: '0.9375rem', color: P.muted }}>
-          Select a floor and publish its captures as a sequential walkthrough tour.
+          Select pins to include, then publish them as a sequential walkthrough tour.
         </Typography>
       </Box>
 
-      {/* ── Selectors ──
-          Mobile: compact grid (2 col top row, 1 col floor full-width)
-          Desktop: horizontal flex row                                    */}
+      {/* ── Selectors ── */}
       <Box sx={{
         display: 'grid',
         gridTemplateColumns: { xs: '1fr 1fr', sm: '1fr 1fr 1fr' },
@@ -132,7 +181,6 @@ export default function PublishToursPage() {
         border: `1.5px solid ${P.border}`,
         backgroundColor: P.white,
       }}>
-        {/* Project — spans full width on mobile */}
         <Box sx={{ gridColumn: { xs: '1 / -1', sm: 'auto' } }}>
           <Field label="Project">
             <Box component="select" value={projectId}
@@ -183,44 +231,100 @@ export default function PublishToursPage() {
         <Box>
           {/* Walkthrough order */}
           <Box sx={{ borderRadius: '14px', border: `1.5px solid ${P.border}`, backgroundColor: P.white, overflow: 'hidden', mb: 2 }}>
-            {/* Header row */}
-            <Box sx={{ px: { xs: 1.75, sm: 2.5 }, py: { xs: 1.25, sm: 1.75 }, borderBottom: `1px solid ${P.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong }}>Walkthrough order</Typography>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                <Typography sx={{ fontSize: '0.75rem', color: pinsWithCapture.length === pins.length ? '#16a34a' : P.muted, fontWeight: 600 }}>
-                  {pinsWithCapture.length} of {pins.length} ready
+            {/* Header row with Select all */}
+            <Box sx={{ px: { xs: 1.75, sm: 2.5 }, py: { xs: 1.25, sm: 1.75 }, borderBottom: `1px solid ${P.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1.5 }}>
+              <Box
+                onClick={readyIds.length ? toggleSelectAll : undefined}
+                sx={{
+                  display: 'flex', alignItems: 'center', gap: 1,
+                  cursor: readyIds.length ? 'pointer' : 'default',
+                  userSelect: 'none',
+                  minWidth: 0,
+                }}
+              >
+                <SelectAllIcon sx={{
+                  fontSize: 22,
+                  color: allReadySelected || someReadySelected ? P.blue : P.subtle,
+                  flexShrink: 0,
+                }} />
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong, lineHeight: 1.2 }}>
+                    Walkthrough order
+                  </Typography>
+                  <Typography sx={{ fontSize: '0.6875rem', color: P.muted, fontWeight: 600 }}>
+                    {readyIds.length ? (allReadySelected ? 'Deselect all' : 'Select all ready') : 'No ready pins'}
+                  </Typography>
+                </Box>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0 }}>
+                <Typography sx={{ fontSize: '0.75rem', color: selectedCount > 0 ? '#16a34a' : P.muted, fontWeight: 600 }}>
+                  {selectedCount} of {pinsWithCapture.length} selected
                 </Typography>
-                {pinsWithCapture.length === pins.length && (
+                {selectedCount > 0 && selectedCount === pinsWithCapture.length && (
                   <CheckCircleRounded sx={{ fontSize: 14, color: '#16a34a' }} />
                 )}
               </Box>
             </Box>
-            {/* Pin list — paginated, compact on mobile */}
+
+            {/* Pin list — paginated */}
             <Box>
               {visiblePins.map((pin, i) => {
                 const ready = pin.captureIds.length > 0;
+                const selected = selectedIds.has(pin.id);
                 const latestCaptureId = pin.captureIds[pin.captureIds.length - 1];
+                const thumbUrl = pinThumbUrl(pin);
                 const isLast = i === visiblePins.length - 1 && totalPinPages <= 1;
                 return (
                   <Box
                     key={pin.id}
-                    onClick={() => latestCaptureId && navigate(`/captures/${latestCaptureId}`)}
+                    onClick={() => togglePin(pin.id, ready)}
                     sx={{
                       display: 'flex', alignItems: 'center', gap: { xs: 1.25, sm: 1.5 },
-                      px: { xs: 1.75, sm: 2.5 }, py: { xs: 1, sm: 1.5 },
+                      px: { xs: 1.75, sm: 2.5 }, py: { xs: 1, sm: 1.25 },
                       borderBottom: isLast ? 'none' : `1px solid ${P.border}`,
-                      cursor: latestCaptureId ? 'pointer' : 'default',
-                      transition: T, '&:hover': latestCaptureId ? { backgroundColor: P.bg } : {},
+                      cursor: ready ? 'pointer' : 'default',
+                      opacity: ready ? 1 : 0.55,
+                      backgroundColor: selected ? 'rgba(37,99,235,0.04)' : 'transparent',
+                      transition: T, '&:hover': ready ? { backgroundColor: selected ? 'rgba(37,99,235,0.07)' : P.bg } : {},
                     }}
                   >
-                    <Box sx={{
-                      width: { xs: 26, sm: 30 }, height: { xs: 26, sm: 30 }, borderRadius: '50%',
-                      backgroundColor: ready ? '#16a34a' : 'transparent',
-                      border: `2px ${ready ? 'solid' : 'dashed'} ${ready ? '#15803d' : P.subtle}`,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                    }}>
-                      <Typography sx={{ fontSize: '0.75rem', fontWeight: 800, color: ready ? '#fff' : P.subtle }}>{pin.sequenceNumber}</Typography>
+                    {ready
+                      ? (selected
+                        ? <CheckBoxRounded sx={{ fontSize: 22, color: P.blue, flexShrink: 0 }} />
+                        : <CheckBoxOutlineBlankRounded sx={{ fontSize: 22, color: P.subtle, flexShrink: 0 }} />)
+                      : <RadioButtonUncheckedRounded sx={{ fontSize: 22, color: P.subtle, flexShrink: 0 }} />}
+
+                    {/* Thumbnail (or dashed placeholder) */}
+                    <Box
+                      onClick={(e) => {
+                        if (!latestCaptureId) return;
+                        e.stopPropagation();
+                        navigate(`/captures/${latestCaptureId}`);
+                      }}
+                      sx={{
+                        width: { xs: 40, sm: 44 }, height: { xs: 40, sm: 44 },
+                        borderRadius: '10px', overflow: 'hidden', flexShrink: 0,
+                        border: `1.5px solid ${ready ? P.border : P.subtle}`,
+                        backgroundColor: P.bg,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        cursor: latestCaptureId ? 'pointer' : 'default',
+                      }}
+                    >
+                      {thumbUrl ? (
+                        <Box
+                          component="img"
+                          src={thumbUrl}
+                          alt=""
+                          loading="lazy"
+                          sx={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                        />
+                      ) : (
+                        <Typography sx={{ fontSize: '0.75rem', fontWeight: 800, color: P.subtle }}>
+                          {pin.sequenceNumber}
+                        </Typography>
+                      )}
                     </Box>
+
                     <Box sx={{ flex: 1, minWidth: 0 }}>
                       <Typography sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' }, fontWeight: 600, color: P.strong, lineHeight: 1.3 }}>
                         Pin {pin.sequenceNumber}
@@ -229,6 +333,7 @@ export default function PublishToursPage() {
                         {ready ? `${pin.captureIds.length} capture${pin.captureIds.length !== 1 ? 's' : ''}` : 'No capture yet'}
                       </Typography>
                     </Box>
+
                     {ready
                       ? <CheckCircleRounded sx={{ fontSize: { xs: 16, sm: 18 }, color: '#16a34a', flexShrink: 0 }} />
                       : <RadioButtonUncheckedRounded sx={{ fontSize: { xs: 16, sm: 18 }, color: P.subtle, flexShrink: 0 }} />}
@@ -237,7 +342,7 @@ export default function PublishToursPage() {
               })}
             </Box>
 
-            {/* Pagination footer — only shown when pins exceed the page size */}
+            {/* Pagination footer */}
             {totalPinPages > 1 && (
               <Box sx={{
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -249,7 +354,7 @@ export default function PublishToursPage() {
                   sx={{
                     display: 'flex', alignItems: 'center', gap: 0.5,
                     px: 1, py: 0.5, borderRadius: '8px', cursor: pinPage === 0 ? 'default' : 'pointer',
-                    border: `1.5px solid ${pinPage === 0 ? P.border : P.border}`,
+                    border: `1.5px solid ${P.border}`,
                     color: pinPage === 0 ? P.subtle : P.strong,
                     opacity: pinPage === 0 ? 0.4 : 1,
                     transition: T, userSelect: 'none',
@@ -299,13 +404,17 @@ export default function PublishToursPage() {
             }}
           >
             <PublishRounded sx={{ fontSize: 17 }} />
-            {publishing ? 'Publishing…' : `Generate & Publish Tour (${pinsWithCapture.length} pin${pinsWithCapture.length !== 1 ? 's' : ''})`}
+            {publishing
+              ? 'Publishing…'
+              : selectedCount > 0
+                ? `Generate & Publish Tour (${selectedCount} pin${selectedCount !== 1 ? 's' : ''})`
+                : 'Select pins to publish'}
           </Box>
-          {pinsWithCapture.length < pins.length && (
-            <Typography sx={{ mt: 1, fontSize: '0.75rem', color: P.subtle, textAlign: 'center' }}>
-              Pins without captures are skipped. Tour follows pin order 1 → {pins.length}.
-            </Typography>
-          )}
+          <Typography sx={{ mt: 1, fontSize: '0.75rem', color: P.subtle, textAlign: 'center' }}>
+            {selectedCount > 0
+              ? `Tour follows selected pin order (${selectedReady.map(p => p.sequenceNumber).join(' → ')}).`
+              : 'Pins without captures cannot be selected. Choose at least one ready pin.'}
+          </Typography>
 
           {/* Already published tours for this floor */}
           {(() => {

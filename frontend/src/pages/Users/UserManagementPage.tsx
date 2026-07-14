@@ -64,7 +64,7 @@ interface EditForm {
   assignedProjectIds: string[];
 }
 
-const EMPTY_CREATE: CreateForm = { name: '', email: '', role: 'field_engineer', designation: '', password: 'SiteVision@123', assignedProjectIds: [] };
+const EMPTY_CREATE: CreateForm = { name: '', email: '', role: 'field_engineer', designation: '', password: 'Prangan@123', assignedProjectIds: [] };
 const EMPTY_EDIT: EditForm = { name: '', designation: '', role: 'field_engineer', newPassword: '', assignedProjectIds: [] };
 const USERS_PAGE_SIZE = 6;
 
@@ -632,7 +632,7 @@ export default function UserManagementPage() {
                 <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary }}>Temporary Password</Typography>
                 <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>Must: 8+ chars, uppercase, digit, special (@$!%*?&)</Typography>
               </Box>
-              <Box component="input" type="text" value={createForm.password} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCreateForm(f => ({ ...f, password: e.target.value }))} placeholder="e.g. SiteVision@123" sx={{ ...inputSx, fontFamily: 'monospace', letterSpacing: '0.04em' }} />
+              <Box component="input" type="text" value={createForm.password} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCreateForm(f => ({ ...f, password: e.target.value }))} placeholder="e.g. Prangan@123" sx={{ ...inputSx, fontFamily: 'monospace', letterSpacing: '0.04em' }} />
               <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.5 }}>
                 This password will be shown to you after creation. Share it with the user.
               </Typography>
