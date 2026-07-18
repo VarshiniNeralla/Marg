@@ -13,6 +13,15 @@
 const RAW_BASE_URL = import.meta.env.VITE_API_BASE_URL as string | undefined;
 
 function resolveBaseUrl(): string {
+  // When opened via a LAN IP/hostname (not localhost), point the API at the same
+  // host on port 8002 so teammates don't hit *their* localhost.
+  if (import.meta.env.DEV && typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host && host !== 'localhost' && host !== '127.0.0.1') {
+      return `http://${host}:8002`;
+    }
+  }
+
   if (RAW_BASE_URL && RAW_BASE_URL.trim()) {
     // Strip any trailing slash so callers can safely append `/api/v1`.
     return RAW_BASE_URL.trim().replace(/\/+$/, '');
@@ -28,10 +37,10 @@ function resolveBaseUrl(): string {
     );
   }
 
-  // Development fallback.
+  // Development fallback (local browser on this machine).
   // eslint-disable-next-line no-console
-  console.warn('[config] VITE_API_BASE_URL not set — falling back to http://localhost:8000');
-  return 'http://localhost:8000';
+  console.warn('[config] VITE_API_BASE_URL not set — falling back to http://localhost:8002');
+  return 'http://localhost:8002';
 }
 
 /** Base origin of the backend, e.g. "https://sitevision-api.onrender.com" (no trailing slash). */

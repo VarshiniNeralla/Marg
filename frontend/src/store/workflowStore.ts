@@ -459,6 +459,23 @@ export const useWorkflowStore = create<WorkflowState>()(
         // back-fill re-upload of records that belong to other projects.
         const replace = options?.replace ?? false;
 
+        // One-time salvage: an earlier hydrate path tombstoned real published
+        // walkthroughs that failed a strict media URL check (media often lives on
+        // captures). Un-tombstone any that still exist server-side so favorites
+        // and the Virtual Tours list can show them again.
+        try {
+          const salvageKey = 'sitesurelabs-clear-false-junk-tour-tombstones-v1';
+          if (!localStorage.getItem(salvageKey)) {
+            const salvageIds = (migrated.tours ?? [])
+              .filter(t => isLiveUploadedTour(t))
+              .map(t => t.id);
+            if (salvageIds.length) clearTombstones(salvageIds);
+            localStorage.setItem(salvageKey, '1');
+          }
+        } catch {
+          /* localStorage unavailable — skip salvage */
+        }
+
         // Records the client intentionally deleted. They must never be kept from
         // local state nor re-uploaded, even though the API snapshot omits them —
         // otherwise a delete is undone on the next reload (resurrection bug).
@@ -531,8 +548,9 @@ export const useWorkflowStore = create<WorkflowState>()(
           const apiToursRaw = replace
             ? (migrated.tours ?? [])
             : (migrated.tours ?? s.tours);
-          // Only keep published floor walkthroughs with uploaded media so every
-          // role shares the same engineer-uploaded Virtual Tours catalog.
+          // Catalog filter only — never delete Mongo records that fail the check.
+          // Walkthrough media can live on linked captures (TourViewer derives it);
+          // auto-deleting here permanently wiped real favorites/published tours.
           const liveTours = apiToursRaw.filter(
             t => !tombstones.has(t.id) && isLiveUploadedTour(t),
           );
@@ -558,18 +576,6 @@ export const useWorkflowStore = create<WorkflowState>()(
             capturePins: cleanPins,
           };
         });
-
-        // Drop non-walkthrough / unpublished junk still sitting in Mongo (e.g.
-        // Workflow-page generateTour stubs) so the next snapshot matches the UI.
-        const junkTours = (migrated.tours ?? []).filter(
-          t => !tombstones.has(t.id) && !isLiveUploadedTour(t),
-        );
-        if (junkTours.length) {
-          addTombstones(...junkTours.map(t => t.id));
-          for (const junk of junkTours) {
-            mirrorApi('deleteTour', [junk.id], 'reconcile-junk-tour');
-          }
-        }
 
         // Back-fill re-syncs local-only records to the backend. Skip it entirely
         // in replace mode — those records belong to projects outside this user's

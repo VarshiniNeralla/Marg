@@ -1092,6 +1092,7 @@ def _measure_seam_global_dy(lf, lb, ov, xc, out_h, win: int = 96):
 
     han = cv2.createHanningWindow((win, win), cv2.CV_32F)
     vals = []
+    anchors = []
     for yc in range(int(0.12 * out_h), int(0.88 * out_h), 64):
         for xoff in (-40, 0, 40):
             y0, y1 = yc - win // 2, yc + win // 2
@@ -1105,9 +1106,39 @@ def _measure_seam_global_dy(lf, lb, ov, xc, out_h, win: int = 96):
             (dx, dy), resp = cv2.phaseCorrelate(a * han, b * han)
             if resp > 0.30 and abs(dy) < 40.0 and abs(dx) < 80.0:
                 vals.append(dy)
+                anchors.append((yc, xoff, float(dx), float(dy), float(resp)))
     if len(vals) < 4:
-        return 0.0, len(vals)
-    return float(np.clip(np.median(vals), -30.0, 30.0)), len(vals)
+        return 0.0, len(vals), anchors
+    return float(np.clip(np.median(vals), -30.0, 30.0)), len(vals), anchors
+
+
+
+def _measure_seam_anchors_coarse(lf, lb, ov, xc, out_h, win: int = 96):
+    import cv2
+    import numpy as np
+
+    lf2 = cv2.resize(lf, (lf.shape[1] // 2, lf.shape[0] // 2), interpolation=cv2.INTER_AREA)
+    lb2 = cv2.resize(lb, (lb.shape[1] // 2, lb.shape[0] // 2), interpolation=cv2.INTER_AREA)
+    ov2 = cv2.resize(ov, (ov.shape[1] // 2, ov.shape[0] // 2), interpolation=cv2.INTER_AREA)
+    xc2, h2 = xc // 2, out_h // 2
+    han = cv2.createHanningWindow((win, win), cv2.CV_32F)
+    anchors = []
+    for yc in range(int(0.12 * h2), int(0.88 * h2), 48):
+        for xoff in (-20, 0, 20):
+            y0, y1 = yc - win // 2, yc + win // 2
+            x0, x1 = xc2 + xoff - win // 2, xc2 + xoff + win // 2
+            if ov2[y0:y1, x0:x1].mean() < 0.85:
+                continue
+            a = lf2[y0:y1, x0:x1].astype(np.float32)
+            b = lb2[y0:y1, x0:x1].astype(np.float32)
+            if a.std() < 3.0 or b.std() < 3.0:
+                continue
+            (dx, dy), resp = cv2.phaseCorrelate(a * han, b * han)
+            if resp > 0.25 and abs(dy) < 25.0 and abs(dx) < 45.0:
+                anchors.append(
+                    (yc * 2, xoff * 2, float(dx * 2), float(dy * 2), float(resp))
+                )
+    return anchors
 
 
 def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clean2=None,
@@ -1165,8 +1196,8 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
     # identical → measured flow 0 → only the true overlap carries disparity.
     # The warp itself still samples the REAL hemispheres.
     if clean1 is not None and clean2 is not None:
-        lf = cv2.cvtColor(np.where(clean1[..., None], front, back), cv2.COLOR_BGR2GRAY)
-        lb = cv2.cvtColor(np.where(clean2[..., None], back, front), cv2.COLOR_BGR2GRAY)
+        lf = cv2.cvtColor(front, cv2.COLOR_BGR2GRAY)
+        lb = cv2.cvtColor(back, cv2.COLOR_BGR2GRAY)
         # True-overlap mask: ONLY here do lf/lb compare different lenses. In
         # the pre-filled zones both strips are the same image by construction,
         # so DIS reports flow=0 at confidence 1.0 — fake "measurements" that
@@ -1249,13 +1280,42 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
             lf[:, x0:x1], lb[:, x0:x1], max_flow, fb_tau
         )
         g_dy, g_n = (0.0, 0)
+        anchors = []
         if ov_meas is not None:
-            g_dy, g_n = _measure_seam_global_dy(lf, lb, ov_meas, xc, out_h)
+            g_dy, g_n, fine = _measure_seam_global_dy(lf, lb, ov_meas, xc, out_h)
+            coarse = _measure_seam_anchors_coarse(lf, lb, ov_meas, xc, out_h)
+            anchors = [(a, 48, 0.30) for a in fine] + [(a, 96, 0.25) for a in coarse]
         goff = g_dy * s_prof
         goff_full[0, x0:x1] = goff
         fy = fy - goff[None, :]
         apx, apy = _directional_measurability(lf[:, x0:x1])
         conf_m = conf if ov_meas is None else conf * ov_meas[:, x0:x1]
+
+        n_anch = 0
+        anchored = np.zeros(fx.shape, bool)
+        for (ayc, axoff, adx, ady, aresp), hw, floor in anchors:
+            ac = float(np.clip((aresp - floor) / 0.40, 0.0, 1.0)) * 0.6
+            if ac <= 0.05:
+                continue
+            ay0, ay1 = max(0, ayc - hw), min(out_h, ayc + hw)
+            ax0 = max(0, xc + axoff - hw - x0)
+            ax1 = min(fx.shape[1], xc + axoff + hw - x0)
+            if ax0 >= ax1 or ay0 >= ay1:
+                continue
+            low = (conf_m[ay0:ay1, ax0:ax1] < 0.25) & ~anchored[ay0:ay1, ax0:ax1]
+            if not low.any():
+                continue
+            n_anch += 1
+            anchored[ay0:ay1, ax0:ax1] |= low
+            sub_fx = fx[ay0:ay1, ax0:ax1]
+            sub_fy = fy[ay0:ay1, ax0:ax1]
+            sub_c = conf_m[ay0:ay1, ax0:ax1]
+            sub_fx[low] = adx
+            goff_tile = np.broadcast_to(goff[ax0:ax1][None, :], sub_fy.shape)
+            sub_fy[low] = ady - goff_tile[low]
+            sub_c[low] = np.maximum(sub_c[low], ac)
+        stats_anchors = n_anch
+
         fx, fy = _complete_unreliable_flow(
             fx, fy, conf_m, conf_x=conf_m * apx, conf_y=conf_m * apy
         )
@@ -1379,9 +1439,7 @@ def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None):
     def _gmag(g):
         return cv2.magnitude(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3),
                              cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3))
-    
     diff = diff + 4.0 * np.abs(_gmag(gf) - _gmag(gb))
-    
     # Pyramid-mixing clearance: level k of the multiband reconstruction mixes
     # both hemispheres within ~3*2^k px of the seam (measured on real captures:
     # the level-0 cut is perfectly binary; levels 1-4 transition over
@@ -1394,17 +1452,15 @@ def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None):
     # features. Aligned edges (near-zero mismatch) stay freely crossable and
     # flat regions are unaffected.
     diff = diff + cv2.GaussianBlur(diff, (0, 0), 16.0)
-    # Calculate dynamic programming seam mask
-    # We give the DP seam the full valid overlap region (0.01 to 0.99)
-    # to allow it to route around large near-field obstacles (like workers).
-    corridor = (w1 >= 0.01) & (w1 <= 0.99)
+    corridor = (w1 >= 0.15) & (w1 <= 0.85)
     scale = float(np.median(diff[corridor])) if corridor.any() else 1.0
     cost = diff + ((w1 - 0.5) ** 2).astype(np.float32) * max(scale, 1.0)
     if flow_unreliability is not None:
-        pass # We deliberately DO NOT add flow_unreliability to the cost here.
-        # While high unreliability indicates bad flow (e.g. at parallax occlusions like workers),
-        # penalizing it forces the seam out of the FOV entirely, causing objects to disappear.
-        # The raw image difference (diff) naturally guides the seam around the occlusion.
+        # Spread with the same sigma as the mismatch term so the penalty also
+        # buys clearance from the multiband mixing band, and scale it like the
+        # centering prior so it stays subordinate to real content mismatch.
+        occ = cv2.GaussianBlur(flow_unreliability.astype(np.float32), (0, 0), 16.0)
+        cost = cost + occ * (2.0 * max(scale, 8.0))
     BIG = np.float32(1e9)
 
     # Ownership bias: the path cost above only prices what the cut CROSSES —
@@ -1422,6 +1478,28 @@ def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None):
     T = 6.0
     q_b_only = np.clip(gmb - gmf - T, 0.0, 25.0)   # structure only back sees
     q_f_only = np.clip(gmf - gmb - T, 0.0, 25.0)   # structure only front sees
+    # Flare-only gate: one-sided structure comes from two very different
+    # situations. FLARE-WASHING — both lenses see the same surface, one view
+    # lifted to near-uniform white — has a LOW raw color mismatch, and there
+    # the seeing lens should own the region. TRUE OCCLUSION — a shaft
+    # interior one lens physically cannot see — has a HUGE raw mismatch, and
+    # forcing ownership there smeared the occluder's crisp boundary into a
+    # dark gradient (006 ceiling shaft). Fade the bias out as the raw
+    # mismatch grows past what flare can explain.
+    raw3 = cv2.GaussianBlur(
+        np.abs(front.astype(np.int16) - back.astype(np.int16)).sum(axis=2).astype(np.float32),
+        (0, 0), 3.0)
+    flare_gate = np.clip((300.0 - raw3) / 150.0, 0.0, 1.0)
+    # ... and flare is a BRIGHT phenomenon (scattered light lifts a surface
+    # toward white). One-sided sharpness in DARK content is a different beast
+    # — a shaft interior seen well by one lens and as vignetted murk by the
+    # other (006) — and re-owning it drags the occluder's boundary along.
+    # Require both views bright before trusting the flare interpretation.
+    lum_gate = np.clip(
+        (cv2.GaussianBlur(np.minimum(gf, gb), (0, 0), 3.0) - 120.0) / 50.0, 0.0, 1.0)
+    flare_gate *= lum_gate
+    q_b_only *= flare_gate
+    q_f_only *= flare_gate
     LAMBDA_OWN = 1.0
 
     paths = []
@@ -1931,8 +2009,6 @@ def _stitch_arrays(
     sphere1[~v1] = 0
     sphere2[~v2] = 0
     theta_clean = _estimate_clean_theta(front, back, overlap, theta1_deg, theta2_deg, fov)
-    # Even corrected, the last degree of the image circle carries demosaic
-    # fringing and noise amplified by the ~3x gain — keep a safety margin.
     theta_clean = float(min(theta_clean, fov / 2.0 - 1.2))
     clean1 = v1 & (theta1_deg <= theta_clean)
     clean2 = v2 & (theta2_deg <= theta_clean)
@@ -1967,8 +2043,8 @@ def _stitch_arrays(
         sphere2 = back.copy()
         sphere2[~v2] = 0
 
-    d1 = cv2.distanceTransform(clean1.astype(np.uint8), cv2.DIST_L2, 5)
-    d2 = cv2.distanceTransform(clean2.astype(np.uint8), cv2.DIST_L2, 5)
+    d1 = cv2.distanceTransform(v1.astype(np.uint8), cv2.DIST_L2, 5)
+    d2 = cv2.distanceTransform(v2.astype(np.uint8), cv2.DIST_L2, 5)
     # Coverage safety net: theta1+theta2≈180° guarantees every valid pixel is
     # inside at least one clean mask; if a pathological calibration ever broke
     # that, fall back to the original full-validity feather rather than render
@@ -2059,7 +2135,7 @@ def _stitch_arrays(
         "right_median_abs": float(np.median(np.abs(seam_right - 3 * out_w // 4))),
         "right_max_abs": float(np.max(np.abs(seam_right - 3 * out_w // 4))),
     }
-    blended = _multiband_blend(front, back, seam_mask, clean1, clean2)
+    blended = _multiband_blend(front, back, seam_mask, v1, v2)
     meta["blend_method"] = "multiband+seam_dp"
 
     from app.services.stitch_ownership import build_full_ownership_report

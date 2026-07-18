@@ -20,6 +20,7 @@ export default defineConfig({
     },
   },
   server: {
+    host: true, // expose on LAN so others can open http://<your-ip>:5173
     port: 5173,
     allowedHosts: 'all',
     proxy: {

@@ -60,6 +60,53 @@ Tap the **star** on any tour card to save it.
 
 ---
 
+## Share on your network (same Wi‑Fi / office LAN)
+
+Others on your network can use the app by opening your machine’s IP in a browser.
+
+### On your computer
+
+1. **Start the backend** (listens on all interfaces):
+
+```bash
+cd backend
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8002
+```
+
+2. **Start the frontend** (exposes a Network URL):
+
+```bash
+cd frontend
+npm run dev
+```
+
+Vite will print something like:
+
+- Local: `http://localhost:5173/`
+- Network: `http://172.20.7.22:5173/` ← share this one
+
+3. If Windows Firewall asks, **allow access** on ports **5173** and **8002** (Private networks).
+
+### Share with teammates
+
+Send them the **Network** URL, for example:
+
+`http://172.20.7.22:5173`
+
+They must be on the **same Wi‑Fi / network** as you. Keep both servers running while they use it.
+
+### Find your IP again
+
+In PowerShell:
+
+```powershell
+Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -like '172.*' -or $_.IPAddress -like '192.168.*' -or $_.IPAddress -like '10.*' }
+```
+
+Use the Ethernet / Wi‑Fi address (not `vEthernet` / WSL unless that’s intentional).
+
+---
+
 ## Need help?
 
 If something looks wrong (empty list, missing favorite, tour won’t open), try a refresh first. If it still fails, contact your admin with the project name and floor.

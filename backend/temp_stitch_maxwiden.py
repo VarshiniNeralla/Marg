@@ -1379,9 +1379,7 @@ def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None):
     def _gmag(g):
         return cv2.magnitude(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3),
                              cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3))
-    
     diff = diff + 4.0 * np.abs(_gmag(gf) - _gmag(gb))
-    
     # Pyramid-mixing clearance: level k of the multiband reconstruction mixes
     # both hemispheres within ~3*2^k px of the seam (measured on real captures:
     # the level-0 cut is perfectly binary; levels 1-4 transition over
@@ -1394,17 +1392,15 @@ def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None):
     # features. Aligned edges (near-zero mismatch) stay freely crossable and
     # flat regions are unaffected.
     diff = diff + cv2.GaussianBlur(diff, (0, 0), 16.0)
-    # Calculate dynamic programming seam mask
-    # We give the DP seam the full valid overlap region (0.01 to 0.99)
-    # to allow it to route around large near-field obstacles (like workers).
-    corridor = (w1 >= 0.01) & (w1 <= 0.99)
+    corridor = (w1 >= 0.15) & (w1 <= 0.85)
     scale = float(np.median(diff[corridor])) if corridor.any() else 1.0
     cost = diff + ((w1 - 0.5) ** 2).astype(np.float32) * max(scale, 1.0)
     if flow_unreliability is not None:
-        pass # We deliberately DO NOT add flow_unreliability to the cost here.
-        # While high unreliability indicates bad flow (e.g. at parallax occlusions like workers),
-        # penalizing it forces the seam out of the FOV entirely, causing objects to disappear.
-        # The raw image difference (diff) naturally guides the seam around the occlusion.
+        # Spread with the same sigma as the mismatch term so the penalty also
+        # buys clearance from the multiband mixing band, and scale it like the
+        # centering prior so it stays subordinate to real content mismatch.
+        occ = cv2.GaussianBlur(flow_unreliability.astype(np.float32), (0, 0), 16.0)
+        cost = cost + occ * (2.0 * max(scale, 8.0))
     BIG = np.float32(1e9)
 
     # Ownership bias: the path cost above only prices what the cut CROSSES —
@@ -1422,6 +1418,28 @@ def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None):
     T = 6.0
     q_b_only = np.clip(gmb - gmf - T, 0.0, 25.0)   # structure only back sees
     q_f_only = np.clip(gmf - gmb - T, 0.0, 25.0)   # structure only front sees
+    # Flare-only gate: one-sided structure comes from two very different
+    # situations. FLARE-WASHING — both lenses see the same surface, one view
+    # lifted to near-uniform white — has a LOW raw color mismatch, and there
+    # the seeing lens should own the region. TRUE OCCLUSION — a shaft
+    # interior one lens physically cannot see — has a HUGE raw mismatch, and
+    # forcing ownership there smeared the occluder's crisp boundary into a
+    # dark gradient (006 ceiling shaft). Fade the bias out as the raw
+    # mismatch grows past what flare can explain.
+    raw3 = cv2.GaussianBlur(
+        np.abs(front.astype(np.int16) - back.astype(np.int16)).sum(axis=2).astype(np.float32),
+        (0, 0), 3.0)
+    flare_gate = np.clip((300.0 - raw3) / 150.0, 0.0, 1.0)
+    # ... and flare is a BRIGHT phenomenon (scattered light lifts a surface
+    # toward white). One-sided sharpness in DARK content is a different beast
+    # — a shaft interior seen well by one lens and as vignetted murk by the
+    # other (006) — and re-owning it drags the occluder's boundary along.
+    # Require both views bright before trusting the flare interpretation.
+    lum_gate = np.clip(
+        (cv2.GaussianBlur(np.minimum(gf, gb), (0, 0), 3.0) - 120.0) / 50.0, 0.0, 1.0)
+    flare_gate *= lum_gate
+    q_b_only *= flare_gate
+    q_f_only *= flare_gate
     LAMBDA_OWN = 1.0
 
     paths = []

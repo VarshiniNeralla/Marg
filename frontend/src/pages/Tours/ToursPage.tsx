@@ -251,13 +251,22 @@ export default function ToursPage() {
 
   const filtered = useMemo(() => {
     const list = allTours.filter(t => {
-      if (viewMode === 'favorites' && !favoriteIds.has(t.id)) return false;
+      const q = query.trim().toLowerCase();
+      const matchQuery = !q
+        || t.roomName.toLowerCase().includes(q)
+        || t.projectName.toLowerCase().includes(q)
+        || t.towerName.toLowerCase().includes(q)
+        || t.floorLabel.toLowerCase().includes(q);
+
+      // Favorites is a cross-project shelf — ignore leftover session location filters.
+      if (viewMode === 'favorites') {
+        return favoriteIds.has(t.id) && matchQuery;
+      }
+
       const matchProject = !projectId || projectId === 'all' || t.projectId === projectId;
       const matchTower   = !towerId || towerId === 'all' || t.towerId === towerId;
       const floorLabel   = floorSelectionLabel(floorId, availableFloors);
       const matchFloor   = !floorId || floorId === 'all' || (floorLabel !== null && t.floorLabel === floorLabel);
-      const q = query.trim().toLowerCase();
-      const matchQuery   = !q || t.roomName.toLowerCase().includes(q) || t.projectName.toLowerCase().includes(q) || t.towerName.toLowerCase().includes(q) || t.floorLabel.toLowerCase().includes(q);
 
       return matchProject && matchTower && matchFloor && matchQuery;
     });

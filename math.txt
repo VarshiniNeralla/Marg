@@ -1,0 +1,783 @@
+================================================================================
+  MATHEMATICS OF DUAL-FISHEYE → EQUIRECTANGULAR STITCHING
+  (as implemented in backend/app/services/fisheye_stitch.py)
+================================================================================
+
+This document teaches the math used by our stitcher so you can reason about
+every stage: projection, rotation, exposure, parallax alignment, seam routing,
+and multiband blending.
+
+Work through the sections in order. Each builds on the previous.
+
+Notation used throughout
+------------------------
+  Degrees vs radians: code stores angles in degrees for human values (FOV,
+  Euler angles) and converts to radians for trig. In formulas here, θ and φ
+  are radians unless marked °.
+
+  Bold lowercase = vectors. Capital R = rotation matrices.
+  lon, lat = equirectangular longitude / latitude.
+  (u, v) or (mapx, mapy) = source fisheye pixel coordinates.
+  (cx, cy), R_pix = fisheye circle centre and radius in pixels.
+  FOV = full angular field of view of one fisheye lens (° unless noted).
+
+
+================================================================================
+1. WHAT THE PIPELINE IS TRYING TO DO
+================================================================================
+
+A dual-fisheye camera (Insta360) captures TWO circular images at once — front
+and back lenses — with a small physical baseline (~2–3 cm) between them.
+
+Goal: produce ONE equirectangular panorama (a 2:1 rectangle where every
+direction on the unit sphere maps to exactly one pixel).
+
+Pipeline stages (math at each stage is covered below):
+
+  (A) Parse calibration: centres, radii, Euler rotations (yaw/pitch/roll).
+  (B) For every output equirect pixel → build a 3D ray → rotate into each
+      lens frame → project with the equidistant fisheye model → sample.
+  (C) Correct rim vignetting and global/local exposure.
+  (D) Feather / align / route seams / multiband-blend the two hemispheres.
+
+Hard geometric truth: a FIXED remap cannot remove parallax at all depths.
+Near objects appear in different places in the two lenses. Later stages
+(optical flow + seam DP) only approximately fix that.
+
+
+================================================================================
+2. ANGLES, UNITS, AND TRIG YOU NEED FLUENTLY
+================================================================================
+
+Degrees ↔ radians
+-----------------
+  θ_rad = θ_deg · π / 180
+  θ_deg = θ_rad · 180 / π
+
+Common constants:
+  90°  = π/2
+  180° = π
+  360° = 2π
+
+Right-handed 3D frame we use
+----------------------------
+  +Y = up (zenith)
+  +Z = forward (lon = 0, lat = 0)
+  +X = to the camera's LEFT in a standard right-handed frame —
+       BUT our heading convention flips the lon→X sign so that increasing
+       displayed longitude matches turning RIGHT in GPano/PSV viewers
+       (see §4).
+
+Spherical identity (unit ray):
+  ||d|| = 1  ⇒  X² + Y² + Z² = 1
+
+
+================================================================================
+3. EQUIRECTANGULAR IMAGE COORDINATES
+================================================================================
+
+An equirectangular image of width W and height H covers the whole sphere:
+
+  longitude lon ∈ [−π, +π]     (left → right across the image)
+  latitude  lat ∈ [+π/2, −π/2] (top = zenith, bottom = nadir)
+
+Pixel → angles (matches _hemisphere_map):
+
+  lon(x) = −π + 2π · (x + 0.5) / W     for discrete centres,
+  or continuous linspace: lon ∈ [−π, π] across columns.
+
+  lat(y) = +π/2 − π · (y + 0.5) / H
+  or linspace: lat from +π/2 (row 0) down to −π/2 (last row).
+
+Pixel centres of important loci:
+  Equator:      y = H/2          (lat = 0)
+  Prime meridian (forward): x = W/2   (lon = 0)
+  Left seam corridor ≈ lon = −π/2  →  x ≈ W/4
+  Right seam corridor ≈ lon = +π/2 →  x ≈ 3W/4
+
+Yaw offset: before building rays we can add a constant:
+
+  lon ← lon + yaw_offset
+
+which rotates the entire panorama horizontally (used if needed; our main
+path uses yaw_offset = 0 and puts orientation into the lens rotation R).
+
+
+================================================================================
+4. FROM (lon, lat) TO A 3D DIRECTION RAY
+================================================================================
+
+On the unit sphere, a direction is:
+
+  X = −cos(lat) · sin(lon)
+  Y =  sin(lat)
+  Z =  cos(lat) · cos(lon)
+
+Why the minus on X?
+-------------------
+Turning RIGHT by +lon in a Y-up, Z-forward viewer should look toward
+scene-right. In a right-handed frame, that direction is (−sin(lon), 0, cos(lon)).
+Using X = +cos(lat)·sin(lon) would make longitude increase the wrong way and
+produce a left–right mirrored panorama.
+
+Checks you should be able to do by hand:
+  lon=0, lat=0     → (0, 0, 1)   forward
+  lon=0, lat=π/2   → (0, 1, 0)   zenith
+  lon=0, lat=−π/2  → (0,−1, 0)   nadir
+  lon=+π/2, lat=0  → (−1, 0, 0)  viewer-right (= −X)
+  lon=−π/2, lat=0  → (+1, 0, 0)  viewer-left  (= +X)
+
+Vector form:
+  d = (X, Y, Z)^T ,  ||d|| = 1
+
+
+================================================================================
+5. 3D ROTATIONS (EULER ANGLES → MATRIX)
+================================================================================
+
+Each lens has a calibrated orientation (ra, rb, rc) = (yaw, pitch, roll)
+in degrees. Code builds:
+
+  R = Rz(c) · Rx(b) · Ry(a)
+
+with a,b,c in radians. Explicit matrices:
+
+  Ry(a) = [[ cos a,  0, sin a],
+           [     0,  1,     0],
+           [−sin a,  0, cos a]]
+
+  Rx(b) = [[1,     0,      0],
+           [0, cos b, −sin b],
+           [0, sin b,  cos b]]
+
+  Rz(c) = [[cos c, −sin c, 0],
+           [sin c,  cos c, 0],
+           [    0,      0, 1]]
+
+Composition
+-----------
+Rotation matrices are orthogonal: R^T R = I, det R = 1.
+Applied as:  v_lens = R · v_world
+
+Lens 2 body flip
+----------------
+The back lens points roughly opposite the front. Besides its small
+calibration Euler angles, we compose an extra Ry(π):
+
+  R_lens2_effective = R_calibrated · Ry(π)
+
+where Ry(π) = diag(−1, 1, −1) up to the same axis convention as Ry above.
+This flips the optical axis so the second fisheye covers the opposite
+hemisphere.
+
+Mental model: world ray → rotate into the lens's body frame → project.
+
+
+================================================================================
+6. ANGLE IN THE LENS FRAME: θ AND φ
+================================================================================
+
+After rotation, the ray in the lens frame is (Xr, Yr, Zr).
+
+The optical axis of the fisheye is +Z. Angles:
+
+  θ = arccos( clamp(Zr, −1, 1) )     "polar angle from optical axis"
+  φ = atan2(Yr, Xr)                  "azimuth around the optical axis"
+
+Properties:
+  θ = 0           → looking straight along the lens (+Z)
+  θ = π/2 (90°)   → ray in the plane perpendicular to +Z (equator for that lens)
+  θ > FOV/2       → outside the usable fisheye cone → invalid
+
+Valid mask:
+  valid ⇔  θ ≤ FOV/2
+
+Also enforced later: the projected (u,v) must lie inside the source image
+bounds (the circle can be clipped by the sensor edge).
+
+
+================================================================================
+7. THE EQUIDISTANT FISHEYE PROJECTION (CORE LENS MODEL)
+================================================================================
+
+Many fisheye projections exist (equidistant, equisolid, stereographic, …).
+Ours uses the EQUIDISTANT model:
+
+  r_image = R_pix · (θ / (FOV/2))
+
+where:
+  θ        = polar angle from optical axis (radians)
+  FOV      = full field of view (radians)
+  R_pix    = calibrated circle radius in pixels
+  r_image  = distance from (cx, cy) in the fisheye image
+
+Interpretation: angle is LINEAR with image radius. At θ = FOV/2 you sit
+exactly on the calibrated circle rim.
+
+Pixel coordinates:
+
+  u = cx + r_image · cos(φ)
+  v = cy + r_image · sin(φ)
+
+(or mapx, mapy in code).
+
+Inverse (useful for intuition): given a fisheye pixel,
+
+  r = hypot(u − cx, v − cy)
+  θ = (r / R_pix) · (FOV/2)
+
+which is exactly how theta1_deg / theta2_deg are recovered after remap:
+
+  θ° = hypot(mapx−cx, mapy−cy) / radius · (FOV° / 2)
+
+Why FOV matters so much
+-----------------------
+If the assumed FOV is wrong by ΔFOV, every feature shifts RADIALLY in the
+fisheye, which becomes a nearly CONSTANT horizontal offset at the equirect
+seams, independent of depth. True parallax IS depth-dependent. That is why
+_autocal_fov fine-tunes FOV: systematic seam offset ≠ parallax.
+
+Typical values in our profiles (full FOV per lens, degrees):
+  ONE X2 ≈ 206.3°,  X3 ≈ 204°,  X4/X5 ≈ 205°,  generic ≈ 205.5°
+so half-FOV ≈ 102–103° — slightly more than a hemisphere, creating overlap.
+
+
+================================================================================
+8. REMAPPING = INVERSE WARP
+================================================================================
+
+We do NOT push each fisheye pixel forward. We pull:
+
+  For each output (x,y):
+    compute (u,v) in the source via the formulas above
+    sample bilinearly:  colour(x,y) = source(u,v)
+
+This is OpenCV cv2.remap with maps (mapx, mapy). Benefits: no holes, easy
+masking with `valid`.
+
+Two remaps → two full equirect "hemispheres" (front, back), each black
+outside its valid cone.
+
+
+================================================================================
+9. OVERLAP GEOMETRY OF TWO BACK-TO-BACK LENSES
+================================================================================
+
+Ideal opposite lenses: if lens1 sees a direction at angle θ₁ from its
+optical axis, lens2 sees roughly:
+
+  θ₂ ≈ 180° − θ₁
+
+Consequently:
+  At θ₁ = 90° both are near their equators → good for exposure ratio.
+  At θ₁ ≈ 100° (outer rim), lens2 is at ≈ 80° (still sharp / bright).
+  Overlap band ≈ mutual FOV excess beyond 180° of coverage.
+
+This identity is the backbone of vignetting estimation and of the
+"clean theta" guarantee: if you only blend where θ ≤ θ_clean for BOTH
+lenses with θ_clean ≥ 92°, and θ₁+θ₂≈180°, every output pixel still has
+at least one covering lens.
+
+
+================================================================================
+10. VIGNETTING AND RIM ILLUMINATION CORRECTION
+================================================================================
+
+Real fisheye rims lose light. Empirically ~65% luminance drop near θ≈102°.
+
+Per-lens relative illumination at angle θ (from overlap):
+
+  At a pixel where lens k is at θ and the other lens is near 180°−θ
+  (and thus unvignetted if θ is large):
+
+    ratio_raw = L_self / L_other
+
+Cancel the GLOBAL exposure difference with a symmetric ring at 90°:
+
+  k = median( L_front / L_back )  over  |θ₁−90°|≤2° and |θ₂−90°|≤2°
+
+Then relative illumination of the front at a rim bin:
+
+  I_front(θ) ≈ median(L_front/L_back) / k
+
+Gain to restore flat illumination:
+
+  g(θ) = clip( 1 / I(θ) , 1.0 , 3.5 )
+
+Enforce monotone non-decreasing g with θ (vignetting only gets worse):
+
+  g ← cumulative_max(g)
+
+Light smooth (3-tap):
+  g_i ← 0.25 g_{i−1} + 0.5 g_i + 0.25 g_{i+1}
+
+Apply:  colour ← colour · g(θ)
+
+Clean angle θ_clean
+-------------------
+Largest θ where relative illumination still ≥ 0.9, clamped to [92°, FOV/2].
+Feather / ownership uses clean masks:
+
+  clean1 = valid1 ∧ (θ₁ ≤ θ_clean)
+  clean2 = valid2 ∧ (θ₂ ≤ θ_clean)
+
+(plus a safety margin: θ_clean ≤ FOV/2 − 1.2° to avoid demosaic fringe).
+
+
+================================================================================
+11. GLOBAL EXPOSURE GAIN
+================================================================================
+
+After remap (and rim correction), match back to front on clean overlap:
+
+  For each channel c ∈ {B,G,R}:
+    g_c = median( front_c / back_c )   over clean1 ∩ clean2, pixels > 10
+
+  back ← clip( back · (g_B, g_G, g_R) , 0, 255 )
+
+Why MEDIAN not mean? Means are biased by residual parallax (different
+content) and residual rim darkness. Median of per-pixel ratios is robust.
+
+
+================================================================================
+12. DISTANCE-TRANSFORM FEATHER WEIGHTS
+================================================================================
+
+Want a soft ownership weight w₁ ∈ [0,1] for the front lens.
+
+Euclidean distance transform on binary masks:
+
+  d1(p) = distance from p to nearest NON-clean1 pixel
+          (large deep inside clean1, 0 on the boundary)
+  d2(p) similarly for clean2
+
+Normalized feather:
+
+  w1(p) = d1(p) / ( d1(p) + d2(p) + ε )
+
+Properties:
+  Inside front-only region: w1 → 1
+  Inside back-only:         w1 → 0
+  Midway in overlap:        w1 ≈ 0.5
+
+These weights define the SEAM CORRIDORS (where 0.15 ≤ w1 ≤ 0.85) used by
+parallax warp and seam DP. The binary seam mask later replaces simple
+alpha for the final multiband composite.
+
+
+================================================================================
+13. PARALLAX / STEREO DISPARITY (WHY FLOW EXISTS)
+================================================================================
+
+Two cameras separated by baseline B ≈ 2–3 cm. For a scene point at depth Z
+along a viewing ray, approximate disparity:
+
+  disparity ≈ (f · B) / Z
+
+In equirectangular pixels this becomes tens of pixels for near objects
+(arm's-length walls ~30–80 px) and near zero for distant walls.
+
+A static geometric model assumes BOTH lenses share ONE optical centre.
+That assumption fails for near content → double edges at seams.
+
+Optical-flow seam warp measures the 2D displacement field flow = (fx, fy)
+from front→back in the corridor and warps BOTH images toward a common
+geometry:
+
+  front'(x) = front( x + (w1 − 1) · flow )
+  back'(x)  = back(  x +  w1      · flow )
+
+At w1=1 (front exclusive): front untouched, back pulled fully by flow.
+At w1=0 (back exclusive):  back untouched, front pulls.
+At w1=0.5 (seam):          both meet halfway.
+
+Plus a measured global vertical offset goff(x) applied symmetrically so
+a uniform pitch misregistration does not create a V-bend at the seam.
+
+
+================================================================================
+14. OPTICAL FLOW CONFIDENCE (FORWARD–BACKWARD CHECK)
+================================================================================
+
+DIS optical flow computes dense (fx, fy). Reliability via cyclic consistency:
+
+  flow_fwd : A → B
+  flow_bwd : B → A
+
+At each pixel, sample bwd at the forward-warped location and form:
+
+  e_fb = || flow_fwd + flow_bwd_sampled ||
+       = hypot( fx + bx , fy + by )
+
+Confidence (Gaussian falloff with scale τ = fb_tau ≈ 2 px):
+
+  conf = exp( − (e_fb / τ)² )
+
+conf ≈ 1 where correspondence is consistent; → 0 at occlusions /
+repeated texture where the two flows disagree.
+
+
+================================================================================
+15. STRUCTURE TENSOR AND THE APERTURE PROBLEM
+================================================================================
+
+Along a long thin horizontal edge, many shifts look equally good → flow
+along that edge is UNMEASUREABLE (aperture problem). Forward–backward
+consistency can still look good while reporting the wrong shift.
+
+Local structure tensor from image gradients Ix, Iy (Sobel), smoothed:
+
+  Jxx = Gσ * (Ix²)
+  Jyy = Gσ * (Iy²)
+
+Measurability per axis (τ keeps flat regions neutral):
+
+  den = Jxx + Jyy + 2τ
+  apx = clip( 2 (Jxx + τ) / den , 0, 1 )    # horizontal measurability
+  apy = clip( 2 (Jyy + τ) / den , 0, 1 )    # vertical
+
+Then confidence for completing fx vs fy is conf·apx vs conf·apy.
+
+
+================================================================================
+16. NORMALIZED-CONVOLUTION FLOW COMPLETION
+================================================================================
+
+Where conf is low, do NOT zero the flow (that left double edges). Diffuse
+from trustworthy neighbours:
+
+  weight w = conf²
+  For increasing Gaussian σ ∈ {12, 32, 80}:
+    filled_flow = (Gσ * (flow · w)) / (Gσ * w)    wherever support appears
+
+Blend measured vs diffused:
+
+  flow_out = c_s · flow_raw + (1 − c_s) · flow_diffused
+
+with c_s = max(conf, Gσ_small(conf)) so thin confident bands stay trusted.
+
+
+================================================================================
+17. EPIPOLAR CONSTRAINT ON THE EQUIRECT SPHERE
+================================================================================
+
+For dual fisheye with baseline roughly antipodal / along the front optical
+axis, the expected parallax direction at (lon, lat) is:
+
+  u = ( ux , uy )  ∝  ( −sin(lon)/cos(lat)  ,  sin(lat)·cos(lon) )
+
+Normalize:
+
+  û = u / ||u||
+
+At seam longitudes lon = ±π/2 this direction is exactly HORIZONTAL for
+all latitudes. Therefore true disparity lives mostly in the PARALLEL
+component:
+
+  par  = fx · ux + fy · uy
+  perp = flow − par · û
+
+Regularization:
+  • Keep high-frequency parallel flow only where image gradient supports it
+    (guided filter / texture gate).
+  • Perpendicular flow ≈ residual rotation error → keep mostly low-pass,
+    allow limited confident deviations (±20 px gated).
+
+Guided filter (He et al., confidence-weighted)
+----------------------------------------------
+Local linear model q = a·I + b inside a window, with guide image I:
+
+  mean_I  = box(I · w) / box(w)
+  mean_p  = box(p · w) / box(w)
+  mean_II = box(I² · w) / box(w)
+  mean_Ip = box(I · p · w) / box(w)
+
+  var_I   = mean_II − mean_I²
+  cov_Ip  = mean_Ip − mean_I · mean_p
+
+  a = cov_Ip / (var_I + ε)
+  b = mean_p − a · mean_I
+
+  q = box(a)·I + box(b)
+
+Effect: disparity is piecewise-smooth, edges follow IMAGE edges (doorframes
+stay sharp depth boundaries; flat beams get one coherent disparity).
+
+
+================================================================================
+18. PHASE CORRELATION (GLOBAL / ANCHOR SHIFTS)
+================================================================================
+
+To measure a rigid (dx, dy) between two windows A, B:
+
+  (Δx, Δy), response = phaseCorrelate( A ⊙ Hann , B ⊙ Hann )
+
+Phase correlation finds the translational peak of the normalized
+cross-power spectrum:
+
+  R(ω) = (F(A) · conj(F(B))) / |F(A) · conj(F(B))|
+  peak of inverseFFT(R) → (Δx, Δy)
+
+Used for:
+  • Global vertical seam offset (median over many windows)
+  • Coarse anchors that seed flow completion in flare-washed deserts
+  • FOV self-calibration cost (indirectly via mismatch after remap)
+
+
+Raised-cosine profile for applying global dy across a strip of half-width Hs:
+
+  s(t) = 0.5 + 0.5 · cos( π · |t − Hs| / Hs ) ,   t ∈ [0, 2 Hs]
+
+Max slope is gentle (~0.03 px/px) so straight architecture does not bend.
+
+
+================================================================================
+19. FOV AUTO-CALIBRATION (PARABOLIC GRID SEARCH)
+================================================================================
+
+Profile FOV is a good prior. Per capture we evaluate overlap mismatch cost
+at FOV + δ for δ ∈ {−1.5, −1.0, …, +1.5} degrees.
+
+Band cost (gradient-weighted):
+
+  After exposure-matching gb ← gb · (mean(gf)/mean(gb)) on the band,
+
+  C(F) = Σ |gf − gb| · min(|∇gf|, 200)  /  Σ weight
+
+Pick discrete minimum at index i. Parabolic refinement (3-point):
+
+  Let c0, c1, c2 be costs at δ_{i−1}, δ_i, δ_{i+1} with step h.
+  Vertex of interpolating parabola:
+
+    δ* = δ_i + (h/2) · (c0 − c2) / (c0 − 2 c1 + c2)
+
+(implemented with the neighbouring deltas in code).
+
+Why it works: a wrong FOV creates a depth-independent seam shift; near
+parallax biases absolute cost but the MINIMUM still tracks the FOV term.
+
+
+================================================================================
+20. SEAM ROUTING BY DYNAMIC PROGRAMMING
+================================================================================
+
+We want a vertical cut through each seam corridor that minimizes visible
+mismatch (avoid double-cutting near objects).
+
+Per-pixel base mismatch:
+
+  Diff_colour = Σ_c |front_c − back_c|
+  Diff_grad   = ||∇front|| − ||∇back||   (Sobel magnitude)
+  Diff = Diff_colour + 4 · |Diff_grad|
+
+Morphological closing on Diff fills narrow "canyon" low-cost channels
+between two displaced copies of the same person (ghost traps).
+
+Clearance term (for multiband mixing radius):
+
+  Diff ← Diff + Gσ(Diff)     (σ ≈ 16 px)
+
+Cost with centering prior toward w1 = 0.5:
+
+  cost = Diff + (w1 − 0.5)² · max(median(Diff_on_corridor), 1)
+
+Occlusion prior from flow:
+
+  cost += Gσ(1 − conf) · (2 · max(scale, 8))
+
+Ownership bias (flare-aware): charge handing structure to the lens that
+cannot see it, using one-sided gradient energy gated by brightness and
+low raw mismatch (flare signature).
+
+Dynamic programming (min-cost path, |Δx| ≤ 2 per row)
+-----------------------------------------------------
+Let Cw[y, x] be the cost in the corridor strip.
+D[0, x] = Cw[0, x]
+For y = 1 … H−1:
+  D[y, x] = Cw[y, x] + min_{k ∈ {x−2…x+2}} D[y−1, k]
+
+Backtrack from argmin D[H−1] with local ±2 search.
+
+Two paths (left seam ≈ W/4, right ≈ 3W/4) define the binary ownership mask:
+
+  mask(x,y) = 1  if  left(y) ≤ x < right(y)   else 0
+
+= front owns the middle band; back owns the outer lon bands.
+
+
+================================================================================
+21. BURT–ADELSON MULTIBAND (LAPLACIAN PYRAMID) BLENDING
+================================================================================
+
+Simple alpha blend:
+  out = w·A + (1−w)·B
+shows BOTH low-frequency exposure/flare ramps AND high-frequency ghosts.
+
+Multiband idea: blend DIFFERENT frequencies with DIFFERENT transition widths.
+
+Gaussian pyramid
+----------------
+  G₀ = image
+  G_{k+1} = pyrDown(G_k)     # blur + 2× downsample
+
+Laplacian pyramid
+-----------------
+  L_k = G_k − pyrUp(G_{k+1})   for k = 0 … N−1
+  L_N = G_N                    # residual coarse image
+
+Number of levels (approx):
+
+  N = floor( log2( min(H,W) / 16 ) )
+
+Blend each level with the SAME binary mask downsampled to that level:
+
+  L_out,k = M_k · L_A,k + (1 − M_k) · L_B,k
+
+Reconstruct:
+
+  out = L_N
+  for k = N−1 … 0:
+    out = pyrUp(out) + L_k
+
+Effect:
+  Fine levels (edges): M is sharp → no ghosts.
+  Coarse levels (illumination): M is soft over a huge region → no seam ramp.
+
+Sources are pre-filled outside clean regions so coarse levels never
+diffuse black borders into the sphere.
+
+
+================================================================================
+22. LOCAL LOW-FREQUENCY EXPOSURE / FLARE EQUALIZATION
+================================================================================
+
+After flow alignment, residual direction-dependent flare remains:
+
+  r(x) = front(x) / back(x)     (per channel, on eroded clean overlap)
+
+Low-pass the ratio with large σ (~96) via pyramid resize trick:
+
+  r_low = (Gσ * (r · m)) / (Gσ * m)
+
+Reliability from ratio variance:
+
+  var_rel = Gσ( (r − r_low)² ) / (r_low² + ε)
+  w_rel   = exp( − var_rel / 0.02 )
+
+Support fade so gains → 1 outside measured overlap:
+
+  support = clip( 4 · Gσ(m) , 0, 1 )
+
+Effective ratio and symmetric half-gain:
+
+  r_eff = 1 + ( clip(r_low, 0.7, 1.4) − 1 ) · w_rel · support
+  half  = √ r_eff
+  front ← front / half
+  back  ← back  · half
+
+Identity: (front/half) / (back·half) = front/(back · r_eff) ≈ 1 when
+r_eff ≈ r. Splitting √ keeps neither side globally biased.
+
+
+================================================================================
+23. END-TO-END FORMULA CHEAT SHEET
+================================================================================
+
+Equirect → world ray:
+  X = −cos(lat) sin(lon)
+  Y =  sin(lat)
+  Z =  cos(lat) cos(lon)
+
+World → lens:
+  v' = R v ,   R = Rz(roll) Rx(pitch) Ry(yaw)  [· Ry(π) for lens2]
+
+Fisheye equidistant:
+  θ = arccos(Z')
+  φ = atan2(Y', X')
+  r = R_pix · θ / (FOV/2)
+  u = cx + r cos φ
+  v = cy + r sin φ
+
+Feather:
+  w1 = d1 / (d1 + d2 + ε)
+
+Parallax warp:
+  front' = front( x+(w1−1)f , y+(w1−1)g )
+  back'  = back(  x+ w1 f   , y+ w1 g   )
+
+FB confidence:
+  conf = exp( −(||f_fwd + f_bwd|| / τ)² )
+
+Multiband:
+  L_out = M ⊙ L_A + (1−M) ⊙ L_B ; reconstruct by successive pyrUp + add
+
+
+================================================================================
+24. PRACTICE PROBLEMS (WORK THESE BY HAND)
+================================================================================
+
+P1. At lon = π/2, lat = 0, what is the world ray (X,Y,Z)?
+    Answer: (−1, 0, 0).
+
+P2. For FOV = 206°, radius = 1500 px, what image radius corresponds to θ=90°?
+    θ_rad = π/2, FOV/2 = 103° = 103·π/180.
+    r = 1500 · (π/2) / (103·π/180) = 1500 · 90/103 ≈ 1310.7 px.
+
+P3. If θ₁ = 100° at a seam pixel, estimate θ₂.
+    ≈ 180° − 100° = 80°.
+
+P4. Baseline B = 0.025 m, effective "focal" in equirect sense such that
+    near wall at Z = 0.8 m produces ~40 px disparity. Approximate product
+    f·B ≈ disparity · Z = 40 · 0.8 = 32 px·m. (Order-of-magnitude only;
+    equirect "f" varies with latitude — this just builds intuition.)
+
+P5. Rotation check: Ry(π) applied to (0,0,1) should give (0,0,−1)
+    (optical axis flip). Verify with the Ry matrix.
+
+P6. If fb_err = 0, conf = 1. If fb_err = τ, conf = e^{−1} ≈ 0.37.
+    If fb_err = 2τ, conf = e^{−4} ≈ 0.018.
+
+P7. Distance feather: d1=30, d2=10 → w1 = 30/40 = 0.75.
+
+
+================================================================================
+25. HOW TO KEEP GETTING BETTER AT THIS MATH
+================================================================================
+
+1. Trace ONE pixel through §23's cheat sheet with real numbers from a
+   stitch_metadata.json (cx, cy, radius, rot, fov).
+
+2. Draw the unit sphere, mark lon/lat grid, and sketch which lens owns
+   which hemisphere for θ ≤ 90° vs the overlap shells beyond 90°.
+
+3. Distinguish THREE "misalignment" causes mentally:
+     (a) wrong FOV / rotation      → depth-INdependent
+     (b) parallax                   → depth-dependent
+     (c) exposure / flare            → not geometric at all
+
+4. Re-derive epipolar direction at lon=±90° until "must be horizontal"
+   feels obvious — that single fact justifies most of the flow regularizer.
+
+5. Rebuild a tiny Laplacian pyramid on paper (2 levels, 4×4 then 2×2) to
+   see why low frequencies blend wide and high frequencies stay sharp.
+
+
+================================================================================
+26. CODE MAP (WHERE EACH FORMULA LIVES)
+================================================================================
+
+  §3–7 projection + rotation     →  _hemisphere_map, _rot_matrix, _lens_rot_matrix
+  §10 rim / clean theta         →  _correct_rim_illumination, _estimate_clean_theta
+  §11 global gain               →  _stitch_arrays (exposure_gain_bgr)
+  §12 distance feather          →  cv2.distanceTransform → w1
+  §13–17 parallax / flow        →  _parallax_align_hemispheres and helpers
+  §18 phase correlation         →  _measure_seam_global_dy, _measure_seam_anchors_coarse
+  §19 FOV autocal               →  _autocal_fov
+  §20 seam DP                   →  _optimize_seam_mask
+  §21 multiband                 →  _multiband_blend
+  §22 local flare gain          →  _stitch_arrays (half = sqrt(r_eff))
+
+
+================================================================================
+End of math.txt — master the cheat sheet (§23), then the failure modes (§25.3).
+================================================================================

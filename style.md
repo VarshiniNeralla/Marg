@@ -137,13 +137,13 @@ The canonical spacing scale is:
 
 | Token | Value |
 | --- | --- |
-| `--space-1` | `4px` |
-| `--space-2` | `8px` |
+| `--space-1` | `4px`  |
+| `--space-2` | `8px`  |
 | `--space-3` | `12px` |
 | `--space-4` | `16px` |
 | `--space-6` | `24px` |
 | `--space-8` | `32px` |
-| `--space-12` | `48px` |
+| `--space-12`| `48px` |
 
 Common layout patterns:
 
@@ -183,7 +183,7 @@ Canonical shadows:
 | `--shadow-md` | `0 4px 12px rgba(15, 23, 42, 0.08), 0 2px 4px rgba(15, 23, 42, 0.06)` |
 | `--shadow-lg` | `0 12px 32px rgba(15, 23, 42, 0.12), 0 4px 10px rgba(15, 23, 42, 0.06)` |
 | `--shadow-xl` | `0 24px 60px rgba(15, 23, 42, 0.18), 0 8px 20px rgba(15, 23, 42, 0.08)` |
-| `--shadow-btn` | `0 4px 14px rgba(37, 99, 235, 0.32)` |
+| `--shadow-btn`| `0 4px 14px rgba(37, 99, 235, 0.32)` |
 
 Local shadow patterns:
 

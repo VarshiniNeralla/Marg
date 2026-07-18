@@ -11,3 +11,14 @@ frontend/node_modules/
 frontend/dist/
 
 *.pyc
+
+learn.py
+
+actual
+
+backend/debug_dir_*
+backend/debug_out
+backend/debug_thumbnails
+backend/debug_*.jpg
+backend/debug_*.png
+backend/*_test.jpg
