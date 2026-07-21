@@ -980,9 +980,9 @@ def _regularize_strip_flow(fx, fy, guide_gray, x0, out_w, out_h, conf=None,
         # conf_s's thin-band smooth plus the σ24 reach below.
         ev = cv2.GaussianBlur(conf_s, (0, 0), 24.0)
         ev = np.clip(ev * 1.5, 0.0, 1.0)
-        par_shrunk = par * ev
+        par = par * ev
 
-    return par_shrunk * ux + perp_x, par_shrunk * uy + perp_y, par
+    return par * ux + perp_x, par * uy + perp_y
 
 
 def _autocal_fov(top, bot, l1, l2, fov, *, cal_w=1920, cal_h=960):
@@ -1206,8 +1206,7 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
     map_y = np.repeat(np.arange(out_h, dtype=np.float32)[:, None], out_w, axis=1)
     fx_full = np.zeros((out_h, out_w), np.float32)
     fy_full = np.zeros((out_h, out_w), np.float32)
-    unrel_full = np.zeros((out_h, out_w), dtype=np.float32)
-    par_full = np.zeros((out_h, out_w), dtype=np.float32)
+    unrel_full = np.zeros((out_h, out_w), np.float32)
 
     half_strip = 560
     taper = 64
@@ -1260,14 +1259,13 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
         fx, fy = _complete_unreliable_flow(
             fx, fy, conf_m, conf_x=conf_m * apx, conf_y=conf_m * apy
         )
-        fx, fy, par = _regularize_strip_flow(
+        fx, fy = _regularize_strip_flow(
             fx, fy, lf[:, x0:x1], x0, out_w, out_h,
             conf=conf_m * apy, conf_par=conf_m * apx
         )
         fx_full[:, x0:x1] = fx * ramp[None, :]
         fy_full[:, x0:x1] = fy * ramp[None, :]
         unrel_full[:, x0:x1] = (1.0 - conf) * ramp[None, :]
-        par_full[:, x0:x1] = par * ramp[None, :]
         mag = np.hypot(fx, fy)
         stats[name] = {
             "median_px": float(np.median(mag)),
@@ -1319,7 +1317,7 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
         rx, ry = _complete_unreliable_flow(
             rx, ry, conf2_m, conf_x=conf2_m * apx2, conf_y=conf2_m * apy2
         )
-        rx, ry, par2 = _regularize_strip_flow(
+        rx, ry = _regularize_strip_flow(
             rx, ry, laf[:, x0:x1], x0, out_w, out_h,
             conf=conf2_m * apy2, conf_par=conf2_m * apx2
         )
@@ -1333,10 +1331,10 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
         stats[name]["residual_p95_px"] = float(np.percentile(rmag, 95))
 
     front_a, back_a = _warp(fx_full, fy_full)
-    return front_a, back_a, stats, unrel_full, par_full
+    return front_a, back_a, stats, unrel_full
 
 
-def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None, flow_mag=None):
+def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None):
     """Route each seam through the lowest-mismatch path (parallax avoidance).
 
     Measured on real captures: hemisphere alignment is sub-pixel where scene
@@ -1401,20 +1399,7 @@ def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None, 
     # to allow it to route around large near-field obstacles (like workers).
     corridor = (w1 >= 0.10) & (w1 <= 0.90)
     scale = float(np.median(diff[corridor])) if corridor.any() else 1.0
-    
-    gray_front = cv2.cvtColor(front, cv2.COLOR_BGR2GRAY)
-    grad_x = cv2.Sobel(gray_front, cv2.CV_32F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(gray_front, cv2.CV_32F, 0, 1, ksize=3)
-    edge_mag = np.hypot(grad_x, grad_y)
-    edge_mag = cv2.GaussianBlur(edge_mag, (0, 0), 16.0)
-    
     cost = diff + ((w1 - 0.5) ** 2).astype(np.float32) * max(scale * 0.1, 1.0)
-    cost = cost + edge_mag * (1.0 / max(np.percentile(edge_mag[corridor], 95), 1.0)) * max(scale * 0.5, 8.0)
-    
-    if flow_mag is not None:
-        mag_penalty = cv2.GaussianBlur(np.abs(flow_mag).astype(np.float32), (0, 0), 16.0)
-        cost = cost + mag_penalty * max(scale * 10.0, 50.0)
-
     if flow_unreliability is not None:
         # Spread with the same sigma as the mismatch term so the penalty also
         # buys clearance from the multiband mixing band, and scale it like the
@@ -2019,7 +2004,7 @@ def _stitch_arrays(
     # Keep pre-warp references for seam/flow diagnostics (remap returns new
     # arrays, so these stay untouched by the alignment below).
     front_pre_align, back_pre_align = front, back
-    front, back, flow_stats, flow_unreliability, flow_mag = _parallax_align_hemispheres(
+    front, back, flow_stats, flow_unreliability = _parallax_align_hemispheres(
         front, back, w1, out_w, out_h, clean1, clean2,
         theta1_deg=theta1_deg, theta2_deg=theta2_deg,
     )
@@ -2088,7 +2073,7 @@ def _stitch_arrays(
         meta["local_gain_range"] = [float(half.min() ** 2), float(half.max() ** 2)]
 
     seam_mask, seam_left, seam_right = _optimize_seam_mask(
-        front, back, w1, out_w, out_h, flow_unreliability, flow_mag=flow_mag
+        front, back, w1, out_w, out_h, flow_unreliability
     )
     meta["seam_optimized"] = True
     meta["seam_offset_px"] = {
