@@ -35,13 +35,22 @@ function waitForHydration(store: PersistStore): Promise<void> {
 
 /** Block render until all persisted stores have rehydrated from localStorage,
  *  then restore the access token via the httpOnly refresh cookie when a live
- *  session was persisted. Guests skip the refresh call entirely. */
+ *  session was persisted. Guests skip the refresh call entirely.
+ *
+ *  A persisted live session is trusted as authenticated IMMEDIATELY (no
+ *  token yet), before the network refresh even starts — required for the
+ *  packaged mobile app to be usable offline at all (see authStore.ts's
+ *  assumeAuthenticatedFromPersistedSession for the full rationale). The
+ *  refresh below still runs in the background to obtain a real token. */
 export default function StoreHydrationGate({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
     Promise.all(STORES.map(waitForHydration))
-      .then(() => restoreSessionFromCookie())
+      .then(() => {
+        useAuthStore.getState().assumeAuthenticatedFromPersistedSession();
+        return restoreSessionFromCookie();
+      })
       .finally(() => setReady(true));
   }, []);
 

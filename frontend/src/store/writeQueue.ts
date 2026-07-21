@@ -278,6 +278,23 @@ export function pendingWriteCount(): number {
   return queue.length;
 }
 
+/**
+ * True if a write creating this record is still queued/unsent. Callers that
+ * reconcile local state against a (possibly stale) API snapshot — e.g.
+ * hydrateFromApi's back-fill of "local record missing from the API" — MUST
+ * check this before re-enqueueing a create for the same id: the API snapshot
+ * can be stale simply because THIS queue's own pending write hasn't reached
+ * the backend yet, not because the write was ever lost. Without this check,
+ * an offline-created record (pin/room/capture) whose original create is still
+ * queued at the moment of a reconnect races the backfill's OWN independent
+ * createX call for the identical id — each generates a fresh nested id for
+ * anything the action allocates inline (e.g. createCapturePin's backing
+ * room), producing two distinct backend records for what was meant to be one.
+ */
+export function isCreatePending(op: WriteOpName, id: string): boolean {
+  return queue.some(e => e.op === op && (e.args[0] as { id?: string } | undefined)?.id === id);
+}
+
 // ── Triggers ─────────────────────────────────────────────────────────────────
 
 if (typeof window !== 'undefined') {

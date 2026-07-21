@@ -38,6 +38,12 @@ def get_cors_kwargs() -> dict[str, Any]:
             "Origin",
             "Cookie",
             "X-Requested-With",
+            # Sent by the mobile app's axios client to bypass ngrok's free-tier
+            # browser-warning interstitial when the API base is a dev tunnel;
+            # harmless against a real deployed backend. Without listing it here
+            # explicitly, the browser's own preflight for this header is
+            # correctly rejected by CORS (400) before ngrok is ever involved.
+            "ngrok-skip-browser-warning",
         ],
         "expose_headers": ["X-Request-ID", "Set-Cookie"],
         "max_age": 600,

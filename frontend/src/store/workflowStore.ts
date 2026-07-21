@@ -11,7 +11,7 @@ import type { UploadedFileResponse } from '@/services/uploadService';
 import { STORE_VERSION, WORKFLOW_STORE_KEY } from './persistence';
 import { createSafeStorage } from './safeStorage';
 import { addTombstones, tombstoneSet, clearTombstones } from './tombstones';
-import { enqueueWrite, SYNC_ERROR_EVENT as WRITE_QUEUE_SYNC_ERROR_EVENT } from './writeQueue';
+import { enqueueWrite, isCreatePending, SYNC_ERROR_EVENT as WRITE_QUEUE_SYNC_ERROR_EVENT } from './writeQueue';
 import { isLiveUploadedTour } from './tourFilters';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -584,7 +584,11 @@ export const useWorkflowStore = create<WorkflowState>()(
           const apiCaptureIds = new Set((migrated.captures ?? []).map(c => c.id));
           for (const cap of get().captures) {
             // Skip tombstoned ids — re-uploading a deleted capture would resurrect it.
-            if (!apiCaptureIds.has(cap.id) && !tombstones.has(cap.id)) {
+            // Skip ids whose ORIGINAL create is still queued/unsent: the API
+            // snapshot is stale exactly BECAUSE that write hasn't landed yet,
+            // not because it was lost — re-enqueuing here would race the
+            // pending write and create two backend records for one capture.
+            if (!apiCaptureIds.has(cap.id) && !tombstones.has(cap.id) && !isCreatePending('createCapture', cap.id)) {
               mirrorApi('createCapture', [cap as MockCapture], 'backfill-capture');
             }
           }
@@ -594,7 +598,16 @@ export const useWorkflowStore = create<WorkflowState>()(
           for (const pin of cleanPins) {
             if (tombstones.has(pin.id)) continue;
             if (!apiPinIds.has(pin.id)) {
-              mirrorApi('createCapturePin', [pin], 'backfill-pin');
+              // Same race as captures above: a pin created offline allocates
+              // its OWN backing room inline (createCapturePin → createRoom),
+              // so re-sending the create here doesn't just risk a duplicate
+              // pin document — the still-pending original write creates its
+              // own room too, and the two rooms/pins can never converge back
+              // into one (this was reproduced end-to-end: offline capture +
+              // app kill + reconnect created 2 rooms + 2 pins for 1 capture).
+              if (!isCreatePending('createCapturePin', pin.id)) {
+                mirrorApi('createCapturePin', [pin], 'backfill-pin');
+              }
             } else {
               const apiPin = (apiPins ?? []).find(p => p.id === pin.id);
               if (apiPin && pin.captureIds.length !== (apiPin.captureIds?.length ?? 0)) {

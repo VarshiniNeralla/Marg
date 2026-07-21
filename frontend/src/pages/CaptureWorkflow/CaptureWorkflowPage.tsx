@@ -13,6 +13,10 @@ import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getFloorPlanByFloor, getFloorsWithPlanByTower, countFloorsWithPlanByTower } from '@store/workflowSelectors';
 import { uploadCaptureFiles } from '@/services/uploadService';
+import {
+  enqueueFileUpload, discardFileUpload, retryFileUpload,
+  fileUploadStatusForPin, allQueuedPinStatuses, FILE_QUEUE_CHANGED_EVENT, FILE_UPLOAD_SUCCEEDED_EVENT,
+} from '@store/fileUploadQueue';
 import { useDeviceType, usesCameraCapture } from '@/hooks/useDeviceType';
 import CameraCaptureDialog from '@/features/capturePins/CameraCaptureDialog';
 
@@ -40,6 +44,48 @@ const STEPS: { key: Step; label: string; num: number }[] = [
   { key: 'floor',   label: 'Floor',   num: 3 },
   { key: 'capture', label: 'Capture', num: 4 },
 ];
+
+/* ── Last-viewed capture location, persisted across an app restart ───────
+   Landing back on the Overview after a force-close (very likely mid-capture,
+   e.g. the offline-capture-then-kill flow this page's file queue exists for)
+   meant re-selecting Project → Tower → Floor by hand every time before
+   reaching the exact floor plan pins live on. Restored on mount ONLY if the
+   referenced project/tower/floor still exist (see the validation effect
+   below) — a stale reference (deleted/reassigned since) must fall back to a
+   normal fresh start, not a broken restored selection. */
+const LAST_CAPTURE_LOCATION_KEY = 'sitesurelabs-last-capture-location-v1';
+
+interface LastCaptureLocation {
+  step: Step;
+  projectId: string;
+  towerId: string;
+  floorId: string;
+}
+
+function loadLastCaptureLocation(): LastCaptureLocation | null {
+  try {
+    const raw = localStorage.getItem(LAST_CAPTURE_LOCATION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<LastCaptureLocation>;
+    if (!parsed.step || !parsed.projectId) return null;
+    return {
+      step: parsed.step,
+      projectId: parsed.projectId,
+      towerId: parsed.towerId ?? '',
+      floorId: parsed.floorId ?? '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveLastCaptureLocation(loc: LastCaptureLocation): void {
+  try {
+    localStorage.setItem(LAST_CAPTURE_LOCATION_KEY, JSON.stringify(loc));
+  } catch {
+    /* best-effort — losing this only means landing on Overview, not data loss */
+  }
+}
 
 /* ── Step indicator — clickable to go back ──────────────────────────────── */
 function StepIndicator({
@@ -233,7 +279,10 @@ function FloorCard({ label, number, onClick }: { label: string; number: number; 
 }
 
 /* ── Persisted pin shape for rendering ──────────────────────────────────── */
-type PinUploadStatus = 'uploading' | 'failed';
+// 'queued' = written to on-device storage, waiting for connectivity to
+// actually upload (see fileUploadQueue.ts) — distinct from 'uploading' so the
+// UI can tell "captured, will send later" apart from "sending right now".
+type PinUploadStatus = 'queued' | 'uploading' | 'failed';
 
 interface RenderPin {
   id: string;
@@ -680,17 +729,22 @@ export default function CaptureWorkflowPage() {
   const createRoom         = useWorkflowStore(s => s.createRoom);
   const uploadCapture      = useWorkflowStore(s => s.uploadCapture);
   const createCapturePin   = useWorkflowStore(s => s.createCapturePin);
-  const attachCaptureToPin = useWorkflowStore(s => s.attachCaptureToPin);
+  // attachCaptureToPin is called from fileUploadQueue.ts now (via getState()),
+  // not from this component — the queue may finish an upload long after this
+  // page unmounts (offline capture, app restart, later reconnect).
   const deleteCapturePin   = useWorkflowStore(s => s.deleteCapturePin);
   const navigate = useNavigate();
 
   const deviceType  = useDeviceType();
   const isMobile    = usesCameraCapture(deviceType);
 
-  const [step, setStep]               = useState<Step>('project');
-  const [selectedProject, setProject] = useState<string>('');
-  const [selectedTower, setTower]     = useState<string>('');
-  const [selectedFloor, setFloor]     = useState<string>('');
+  // Lazy initializers so a restored location is present on the FIRST render
+  // (myTowers/myFloors below already filter correctly) rather than flashing
+  // an empty Overview step before an effect could restore it.
+  const [step, setStep]               = useState<Step>(() => loadLastCaptureLocation()?.step ?? 'project');
+  const [selectedProject, setProject] = useState<string>(() => loadLastCaptureLocation()?.projectId ?? '');
+  const [selectedTower, setTower]     = useState<string>(() => loadLastCaptureLocation()?.towerId ?? '');
+  const [selectedFloor, setFloor]     = useState<string>(() => loadLastCaptureLocation()?.floorId ?? '');
   const [pinPos, setPinPos]           = useState<{ x: number; y: number } | null>(null);
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
   const [activeCapturePinId, setActiveCapturePinId] = useState<string | null>(null);
@@ -729,10 +783,13 @@ export default function CaptureWorkflowPage() {
     setPinPos(pos);
   }, []);
 
-  /** True while this pin has an in-flight or failed upload — such pins must
-      never be pruned as "empty", or the upload/retry would be orphaned. */
+  /** True while this pin has an in-flight, queued-on-device, or failed
+      upload — such pins must never be pruned as "empty", or the queued
+      file / retry would be orphaned. */
   const isPinBusy = (id: string) =>
-    uploadingPinsRef.current.has(id) || failedFilesRef.current.has(id);
+    uploadingPinsRef.current.has(id) ||
+    failedFilesRef.current.has(id) ||
+    !!fileUploadStatusForPin(id);
 
   // Mobile camera state
   const [cameraOpen, setCameraOpen]   = useState(false);
@@ -779,6 +836,30 @@ export default function CaptureWorkflowPage() {
           .map(p => ({ id: p.id, sequenceNumber: p.sequenceNumber, x: p.x, y: p.y, hasCapture: p.captureIds.length > 0, status: pinStatus[p.id] }));
       })()
     : [];
+
+  // Validate a RESTORED location once the real project/tower/floor lists
+  // have loaded (they're empty on the very first render) — a project/tower
+  // deleted or reassigned since the last session must fall back to a plain
+  // fresh start, not a broken restored selection stuck on missing data.
+  const didValidateRestoredLocation = useRef(false);
+  useEffect(() => {
+    if (didValidateRestoredLocation.current) return;
+    if (!projects.length) return; // wait for real data before judging validity
+    didValidateRestoredLocation.current = true;
+    if (selectedProject && !myProjects.some(p => p.id === selectedProject)) {
+      setStep('project'); setProject(''); setTower(''); setFloor('');
+    } else if (selectedTower && !myTowers.some(t => t.id === selectedTower)) {
+      setStep('tower'); setTower(''); setFloor('');
+    } else if (selectedFloor && !myFloors.some(f => f.id === selectedFloor)) {
+      setStep('floor'); setFloor('');
+    }
+  }, [projects.length, myProjects, myTowers, myFloors, selectedProject, selectedTower, selectedFloor]);
+
+  // Persist the current location on every change so a force-close during
+  // capture reopens on the same floor plan instead of the Overview step.
+  useEffect(() => {
+    saveLastCaptureLocation({ step, projectId: selectedProject, towerId: selectedTower, floorId: selectedFloor });
+  }, [step, selectedProject, selectedTower, selectedFloor]);
 
   function handlePinClick(pinId: string) {
     setSelectedPinId(prev => (prev === pinId ? null : pinId));
@@ -843,40 +924,36 @@ export default function CaptureWorkflowPage() {
     if (prev) jumpToStep(prev.key);
   }
 
-  /* ── Background upload for one pin ─────────────────────────────────────
-     The pin already exists in the store (numbered, rendered, persisted via the
-     writeQueue). This uploads its files and attaches the resulting capture —
-     the upload API, validation, and server processing are untouched. */
+  /* ── Background upload for one pin (Phase 1: on-device file queue) ──────
+     The pin already exists in the store (numbered, rendered, persisted via
+     the writeQueue). The captured file is written to on-device storage and
+     handed to fileUploadQueue.ts, which owns the actual network upload +
+     attachCaptureToPin call from here on — this function's only job is to
+     get the bytes safely onto disk and mark the pin 'queued' so it survives
+     the app being closed before connectivity returns. The queue's own status
+     changes (queued → uploading → gone/failed) are picked up by the
+     `FILE_QUEUE_CHANGED_EVENT` listener below, which re-derives `pinStatus`
+     for every pin — this function never sets 'uploading' or clears the
+     status itself. */
   async function runPinUpload(pinId: string, files: File[]) {
     uploadingPinsRef.current.add(pinId);            // synchronous — blocks double-fire
-    setPinStatus(s => ({ ...s, [pinId]: 'uploading' }));
+    setPinStatus(s => ({ ...s, [pinId]: 'queued' }));
     try {
-      const result = await uploadCaptureFiles(files);
-      const fileCount = result.count || files.length;
-      // Attach to the SAME pin — no-op if the user deleted the pin mid-upload.
-      const captureId = attachCaptureToPin(pinId, fileCount, result.files);
-      failedFilesRef.current.delete(pinId);
-      if (captureId) {
-        const seq = useWorkflowStore.getState().capturePins.find(p => p.id === pinId)?.sequenceNumber;
-        setToast(`Capture uploaded for Pin ${seq ?? ''} · sent for review`);
+      // Multiple files from one capture (e.g. a multi-select desktop upload)
+      // enqueue as separate entries; fileUploadQueue.ts uploads them for the
+      // same pin strictly in order, so this doesn't reorder captures.
+      for (const file of files) {
+        await enqueueFileUpload(pinId, file);
       }
-      setPinStatus(s => {
-        const { [pinId]: _done, ...rest } = s;
-        return rest;
-      });
+      failedFilesRef.current.delete(pinId);
     } catch (err) {
-      // Surface the SERVER's real message (size limit, unsupported type, auth,
-      // etc.) instead of a generic string so the user knows how to fix it.
-      // The error may arrive as a raw AxiosError (response.data.message) or as
-      // the interceptor's normalised ApiError (message) — handle both.
-      const e = err as { message?: string; response?: { data?: { message?: string } } };
-      const msg =
-        e?.response?.data?.message ||
-        e?.message ||
-        'Upload failed. Please check your connection and try again.';
+      // Only Filesystem.writeFile (disk full, permission revoked) throws here
+      // — network failures are handled entirely inside the queue's own flush
+      // loop and surface as a 'failed' queue status, not a thrown error.
+      const e = err as { message?: string };
+      const msg = e?.message || 'Could not save the capture on this device. Please try again.';
       const pinStillExists = useWorkflowStore.getState().capturePins.some(p => p.id === pinId);
       if (pinStillExists) {
-        // Keep the pin, mark it failed, and stash the files so Retry can re-send them.
         failedFilesRef.current.set(pinId, files);
         setPinStatus(s => ({ ...s, [pinId]: 'failed' }));
         setErrorToast(msg);
@@ -886,12 +963,82 @@ export default function CaptureWorkflowPage() {
     }
   }
 
-  /** Re-send the stashed files of a failed pin upload. */
+  /** Re-send a pin's queued upload — either replays the on-device queue entry
+      (network failure) or, if nothing was ever written to disk (a pure
+      writeFile failure), re-enqueues the originally-captured files. */
   function retryPinUpload(pinId: string) {
+    if (uploadingPinsRef.current.has(pinId)) return;
+    if (fileUploadStatusForPin(pinId)) {
+      retryFileUpload(pinId);
+      return;
+    }
     const files = failedFilesRef.current.get(pinId);
-    if (!files?.length || uploadingPinsRef.current.has(pinId)) return;
-    void runPinUpload(pinId, files);
+    if (files?.length) void runPinUpload(pinId, files);
   }
+
+  /* Mirror fileUploadQueue.ts's per-pin status into pinStatus so the pin
+     marker / action panel reflect 'queued' (on-device, awaiting network) and
+     clear automatically once the queue finishes uploading — without this
+     page having to poll the queue or duplicate its retry/backoff logic.
+
+     Seed from the FULL queue on mount, not just pins already known to this
+     page's local state: pinStatus starts empty on every fresh mount, but a
+     pin captured in a PREVIOUS app session (before a kill/restart) already
+     has a real, persisted queue entry — without this seed, only pins
+     captured within the CURRENT page lifetime ever show the queued/
+     uploading marker, even though every pin's file is uploading correctly
+     (reproduced: after an offline-capture + app-kill + reopen, only the
+     newest pin showed the upload spinner; the earlier pins uploaded and
+     turned green with no visible progress indicator at all). */
+  useEffect(() => {
+    let cancelled = false;
+    void allQueuedPinStatuses().then(seed => {
+      if (cancelled || !Object.keys(seed).length) return;
+      setPinStatus(prev => ({ ...seed, ...prev }));
+    });
+
+    function syncFromQueue() {
+      setPinStatus(prev => {
+        const next: Record<string, PinUploadStatus> = {};
+        let changed = false;
+        for (const pinId of Object.keys(prev)) {
+          const queued = fileUploadStatusForPin(pinId);
+          if (queued) {
+            next[pinId] = queued;
+            if (queued !== prev[pinId]) changed = true;
+          } else if (prev[pinId] !== 'failed' || failedFilesRef.current.has(pinId)) {
+            // Queue entry is gone (uploaded, or never queued e.g. legacy
+            // in-memory retry) — drop the status unless it's a writeFile-
+            // level failure being tracked purely via failedFilesRef.
+            changed = true;
+          } else {
+            next[pinId] = prev[pinId];
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+    window.addEventListener(FILE_QUEUE_CHANGED_EVENT, syncFromQueue);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(FILE_QUEUE_CHANGED_EVENT, syncFromQueue);
+    };
+  }, []);
+
+  /* The actual attachCaptureToPin call now happens inside fileUploadQueue.ts,
+     possibly long after this page queued the file (offline capture, app
+     restart, then reconnect) — listen for its success event to show the same
+     toast the old inline-upload code used to show synchronously. */
+  useEffect(() => {
+    function onUploadSucceeded(e: Event) {
+      const pinId = (e as CustomEvent<{ pinId: string }>).detail?.pinId;
+      if (!pinId) return;
+      const seq = useWorkflowStore.getState().capturePins.find(p => p.id === pinId)?.sequenceNumber;
+      setToast(`Capture uploaded for Pin ${seq ?? ''} · sent for review`);
+    }
+    window.addEventListener(FILE_UPLOAD_SUCCEEDED_EVENT, onUploadSucceeded);
+    return () => window.removeEventListener(FILE_UPLOAD_SUCCEEDED_EVENT, onUploadSucceeded);
+  }, []);
 
   /* ── Core upload pipeline — optimistic pin, background upload ─────────── */
   async function handleCaptureFiles(fileList: FileList | File[] | null) {
@@ -1143,11 +1290,13 @@ export default function CaptureWorkflowPage() {
                 <Typography sx={{ fontSize: '0.75rem', color: selStatus === 'failed' ? '#dc2626' : P.muted, fontWeight: selStatus ? 600 : 400 }}>
                   {selStatus === 'uploading'
                     ? 'Uploading capture…'
-                    : selStatus === 'failed'
-                      ? 'Upload failed — retry or delete this pin'
-                      : selectedPinObj.captureIds.length > 0
-                        ? `${selectedPinObj.captureIds.length} capture${selectedPinObj.captureIds.length !== 1 ? 's' : ''} attached`
-                        : 'No capture yet'}
+                    : selStatus === 'queued'
+                      ? 'Saved on device — will upload once online'
+                      : selStatus === 'failed'
+                        ? 'Upload failed — retry or delete this pin'
+                        : selectedPinObj.captureIds.length > 0
+                          ? `${selectedPinObj.captureIds.length} capture${selectedPinObj.captureIds.length !== 1 ? 's' : ''} attached`
+                          : 'No capture yet'}
                 </Typography>
               </Box>
               {/* Actions */}
@@ -1164,6 +1313,11 @@ export default function CaptureWorkflowPage() {
                   <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600 }}>
                     <Box sx={{ width: 12, height: 12, borderRadius: '50%', border: `2px solid ${P.blue}`, borderTopColor: 'transparent', animation: 'pinspin 0.8s linear infinite', '@keyframes pinspin': { to: { transform: 'rotate(360deg)' } } }} />
                     Uploading…
+                  </Box>
+                )}
+                {selStatus === 'queued' && (
+                  <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600 }}>
+                    <CloudUploadRounded sx={{ fontSize: 15 }} /> Queued
                   </Box>
                 )}
                 {!selStatus && (isMobile ? (
@@ -1197,8 +1351,11 @@ export default function CaptureWorkflowPage() {
                 })()}
                 <Box
                   onClick={() => {
-                    // Drop any upload tracking for the pin along with the pin itself.
+                    // Drop any upload tracking for the pin along with the pin itself
+                    // — including its on-device queued file, if any, so a deleted
+                    // pin can never come back via a queued upload finishing later.
                     failedFilesRef.current.delete(selectedPinObj.id);
+                    void discardFileUpload(selectedPinObj.id);
                     setPinStatus(s => {
                       const { [selectedPinObj.id]: _gone, ...rest } = s;
                       return rest;

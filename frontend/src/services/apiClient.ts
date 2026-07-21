@@ -11,6 +11,15 @@ export const apiClient = axios.create({
   withCredentials: true,   // sends the httpOnly refresh-token cookie
   headers: {
     'Content-Type': 'application/json',
+    // Only relevant when API_V1_URL points at a free-tier ngrok tunnel (mobile
+    // device testing without a deployed backend): ngrok's free plan serves an
+    // HTML "you're about to visit an ngrok site" interstitial to any request
+    // it doesn't recognize as an ordinary browser navigation — including XHR/
+    // fetch, so every API call came back as that HTML page instead of JSON,
+    // which the browser then reported as a misleading generic CORS error
+    // (the HTML response has no CORS headers). Harmless no-op against a real
+    // deployed backend (the header is simply ignored).
+    'ngrok-skip-browser-warning': 'true',
   },
 });
 
@@ -49,8 +58,23 @@ apiClient.interceptors.response.use(
 
     original._retry = true;
 
-    const restored = await restoreSessionFromCookie();
-    if (!restored) {
+    const outcome = await restoreSessionFromCookie();
+
+    if (outcome === 'offline') {
+      // Backend unreachable — the persisted session is still presumed valid,
+      // it just couldn't be confirmed right now. Signing the user out here
+      // (as this code used to) is a dead end for a field app: they'd be sent
+      // to a login screen they also cannot reach without connectivity, and
+      // every offline-queued capture tied to that session becomes invisible.
+      // Reject this ONE request; the token stays as-is and the same request
+      // (or the durable write/file queues) can retry once online.
+      return Promise.reject(normaliseError(error));
+    }
+
+    if (outcome === 'no-session') {
+      // The server was actually reached and confirmed there is no valid
+      // session (expired/revoked cookie, or no persisted session at all) —
+      // this is the one case that legitimately means "log out".
       useAuthStore.getState().clearAuth();
       if (!window.location.pathname.startsWith('/login')) {
         window.location.replace('/login');

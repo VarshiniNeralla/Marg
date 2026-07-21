@@ -33,6 +33,22 @@ interface AuthState {
   setAccessToken: (token: string) => void;
   updateUser: (partial: Partial<AuthUser>) => void;
   clearAuth: () => void;
+  /**
+   * Optimistically treat a PERSISTED live session as authenticated before the
+   * network refresh has confirmed it — no token yet (still null), just the
+   * router-facing flag. Without this, the app is unusable offline: on every
+   * cold start isAuthenticated starts false and only flips true once
+   * /auth/refresh succeeds, which is impossible with no connectivity, so a
+   * field engineer reopening the app in a dead zone is bounced to a login
+   * screen they also cannot reach — the exact scenario Phase 1's offline
+   * capture queue exists for. Safe because: (1) any real API call still
+   * needs a genuine token, which arrives from the refresh once online, or
+   * the call correctly fails as a network error (never destructive, see
+   * apiClient.ts's 'offline' vs 'no-session' distinction); (2) if the
+   * server, once reached, actually rejects the session, that's the
+   * 'no-session' path, which still logs out for real.
+   */
+  assumeAuthenticatedFromPersistedSession: () => void;
 }
 
 type PersistedAuth = Pick<AuthState, 'user' | 'sessionKind'>;
@@ -71,6 +87,12 @@ export const useAuthStore = create<AuthState>()(
 
       clearAuth() {
         set({ accessToken: null, user: null, isAuthenticated: false, sessionKind: null });
+      },
+
+      assumeAuthenticatedFromPersistedSession() {
+        set(s => (s.user && s.sessionKind === 'live' && !s.isAuthenticated
+          ? { isAuthenticated: true }
+          : {}));
       },
     }),
     {

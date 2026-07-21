@@ -141,6 +141,19 @@ export default function LoginPage() {
         return;
       }
 
+      // setAuth MUST run before backendAuth.me(): apiClient's request
+      // interceptor reads the access token straight from the auth store, so
+      // calling me() first sends it with NO Authorization header at all
+      // (guaranteed 401 — reproduced: fresh login → GET /auth/me → 401 in
+      // the exact same instant). This previously called setAuth once with
+      // the full profile AFTER me() resolved to avoid a different problem —
+      // two parallel authenticated requests landing on a rate-limited tunnel
+      // right after login — but that fix broke basic token availability,
+      // which is the more fundamental requirement. Set the token immediately
+      // with the login response's own profile fields (already sufficient to
+      // render the app); if me() then returns richer data, setAuth again —
+      // this second call updates fields only, isAuthenticated is already
+      // true, so it does not re-trigger WorkflowApiBootstrap's mount effect.
       setAuth(data.access_token, {
         id: data.user.id,
         name: data.user.name,
@@ -151,7 +164,7 @@ export default function LoginPage() {
         org_slug: 'myhome',
         avatar_url: data.user.avatar_url,
         assignedProjectIds: data.user.assignedProjectIds,
-      }, data.sessionKind ?? 'live');
+      }, 'live');
       try {
         const me = await backendAuth.me();
         setAuth(data.access_token, {
@@ -166,7 +179,7 @@ export default function LoginPage() {
           assignedProjectIds: me.assigned_project_ids,
         }, 'live');
       } catch {
-        // partial data
+        // partial data — the login response's profile fields are already set
       }
       // Clear any stale profile data from a previously logged-in user
       patchProfile({ name: '', designation: '', phone: '', bio: '', avatarUrl: '' });
