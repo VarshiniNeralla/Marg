@@ -15,6 +15,7 @@ from app.services.panorama_service import (
     GpanoPose,
     PanoramaValidationError,
     classify_projection_bgr,
+    classify_projection_bytes,
     inject_gpano_xmp,
     is_equirectangular,
     is_insp,
@@ -190,7 +191,22 @@ async def upload_media(
     # when calibration is available. If stitching is unavailable for `.insp`, we
     # preserve the prior product behavior: upload the raw image and let the
     # frontend render it with DualFisheyeAdapter.
-    if tag_if_panorama and is_raw_capture(filename):
+    
+    is_raw = False
+    if tag_if_panorama:
+        if is_raw_capture(filename):
+            is_raw = True
+        else:
+            # Fallback for manual web uploads of camera JPEGs: analyze pixels of 2:1 images
+            raw = file_obj.read()
+            dims = measure_image(raw)
+            if dims and is_equirectangular(dims[0], dims[1]):
+                proj = await to_thread.run_sync(classify_projection_bytes, raw)
+                if proj == "dualfisheye":
+                    is_raw = True
+            file_obj.seek(0)
+
+    if is_raw:
         from loguru import logger
 
         ext = Path(filename).suffix.lower()

@@ -13,6 +13,7 @@ import { useSettingsStore } from '@store/settingsStore';
 import { userService } from '@services/userService';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { resetApplicationData } from '@store/resetApplicationData';
+import { pruneOrphanedPins } from '@store/pruneOrphanedPins';
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
 
@@ -331,9 +332,29 @@ function SecurityTab({ onSaved }: { onSaved: () => void }) {
 
 function AdvancedTab() {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pruneResult, setPruneResult] = useState<number | null>(null);
 
   return (
     <>
+      <SectionCard title="Capture Pins">
+        <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted, mb: 2, lineHeight: 1.6 }}>
+          Remove capture pins that have no photo attached and nothing queued to upload — leftovers from
+          interrupted or abandoned capture attempts. Pins with a capture, or an in-progress/queued upload, are never touched.
+        </Typography>
+        <Box
+          onClick={() => setPruneResult(pruneOrphanedPins())}
+          sx={{
+            display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.5, py: 1,
+            borderRadius: '8px', border: `1.5px solid ${colors.border}`, color: colors.textStrong,
+            fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer',
+            '&:hover': { backgroundColor: colors.bg },
+            transition: `all ${motion.durationFast}`,
+          }}
+        >
+          Clean Up Empty Pins
+        </Box>
+      </SectionCard>
+
       <SectionCard title="Application Data">
         <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted, mb: 2, lineHeight: 1.6 }}>
           Reset all locally stored application data including projects, captures, tours, settings, and session state.
@@ -362,6 +383,12 @@ function AdvancedTab() {
         onConfirm={() => { setConfirmOpen(false); resetApplicationData(); }}
         onCancel={() => setConfirmOpen(false)}
       />
+
+      <Snackbar open={pruneResult !== null} autoHideDuration={3000} onClose={() => setPruneResult(null)} anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}>
+        <Alert severity="success" sx={{ borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }} onClose={() => setPruneResult(null)}>
+          {pruneResult === 1 ? 'Removed 1 empty pin' : `Removed ${pruneResult} empty pins`}
+        </Alert>
+      </Snackbar>
     </>
   );
 }

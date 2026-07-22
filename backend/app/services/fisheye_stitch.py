@@ -522,6 +522,7 @@ def _hemisphere_map(
     src_w: int | None = None,
     lens_label: str = "",
     body_flip: bool = False,
+    upright_base: bool = False,
 ):
     import numpy as np
 
@@ -546,6 +547,9 @@ def _hemisphere_map(
     X = -np.cos(lat) * np.sin(lon)
     Y = np.sin(lat)
     Z = np.cos(lat) * np.cos(lon)
+    if upright_base:
+        X = -X
+        Y = -Y
     R = _lens_rot_matrix(rot, body_flip=body_flip)
     vec = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=0)
     vr = R @ vec
@@ -1911,14 +1915,18 @@ def _stitch_arrays(
     meta["fisheye_fov_deg_effective"] = fov
     meta["fov_autocal"] = autocal
 
+    model_str = str(meta.get("camera_model", ""))
+    is_upright = (calib.layout == "side-by-side") or ("X3" in model_str)
     m1x, m1y, v1 = _hemisphere_map(
         out_w, out_h, l1.cx, l1.cy, l1.radius, fov, 0.0, l1.rot,
         src_h=top.shape[0], src_w=top.shape[1], lens_label="lens1",
+        upright_base=is_upright,
     )
     m2x, m2y, v2 = _hemisphere_map(
         out_w, out_h, l2_draw.cx, l2_draw.cy, l2_draw.radius, fov, 0.0, l2_draw.rot,
         src_h=bot.shape[0], src_w=bot.shape[1], lens_label="lens2",
         body_flip=True,
+        upright_base=is_upright,
     )
     # Validity must include SAMPLING bounds, not just the FOV cone: the
     # fisheye circle can be clipped by the sensor edge (measured: lens1

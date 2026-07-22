@@ -222,6 +222,12 @@ public class Insta360CameraPlugin extends Plugin {
                         ? fileUrl
                         : "http://" + CAMERA_HOST + (fileUrl.startsWith("/") ? fileUrl : "/" + fileUrl);
                 String fileName = absoluteUrl.substring(absoluteUrl.lastIndexOf('/') + 1);
+                
+                // Force raw dual-fisheye extension so the backend knows to stitch it
+                if (fileName.toLowerCase().endsWith(".jpg")) {
+                    fileName = fileName.substring(0, fileName.length() - 4) + ".insp";
+                }
+                
                 File outFile = new File(getContext().getCacheDir(), fileName);
                 downloadToFile(absoluteUrl, outFile);
 

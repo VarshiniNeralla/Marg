@@ -56,18 +56,16 @@ def is_raw_capture(filename: str) -> bool:
 
 def is_dual_fisheye_layout(width: int, height: int) -> bool:
     """
-    Heuristic for unstitched Insta360 dual-fisheye frames (top-bottom or side-by-side).
-
+    Heuristic for unstitched Insta360 dual-fisheye frames (top-bottom).
+    
     Equirectangular panoramas are ~2:1 (width > height). Raw dual-fisheye is often
-  ~1:2 stacked (e.g. 3040×6080) or side-by-side with similar extreme aspect.
+    ~1:2 stacked (e.g. 3040×6080). A side-by-side 2:1 dual fisheye is ambiguous 
+    by dimensions alone and must be classified via pixel analysis.
     """
     if width <= 0 or height <= 0:
         return False
-    if is_equirectangular(width, height):
-        return False
-    ratio = width / height
     inv = height / width
-    return (_MIN_RATIO <= ratio <= _MAX_RATIO) or (_MIN_RATIO <= inv <= _MAX_RATIO)
+    return _MIN_RATIO <= inv <= _MAX_RATIO
 
 
 def validate_stitched_output(width: int, height: int, *, filename: str = "") -> None:
@@ -117,6 +115,24 @@ def classify_projection_bgr(img_bgr) -> Literal["flat", "dualfisheye", "equirect
     ]
     dark_corners = sum(float(np.mean(c)) < 18.0 for c in corners)
     return "dualfisheye" if dark_corners >= 3 else "equirectangular"
+
+
+def classify_projection_bytes(data: bytes) -> Literal["flat", "dualfisheye", "equirectangular"]:
+    """
+    Decodes the image bytes and analyzes the corners to determine the projection.
+    This resolves the ambiguity of 2:1 aspect ratio images (which could be
+    side-by-side dual-fisheye or equirectangular).
+    """
+    import cv2
+    import numpy as np
+
+    try:
+        np_arr = np.frombuffer(data, np.uint8)
+        img_bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        return classify_projection_bgr(img_bgr)
+    except Exception as exc:
+        logger.error(f"Failed to decode image bytes for projection classification: {exc}")
+        return "flat"
 
 
 def measure_image(data: bytes) -> Optional[tuple[int, int]]:
