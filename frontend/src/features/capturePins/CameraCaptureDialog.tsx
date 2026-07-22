@@ -2,10 +2,13 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Typography, IconButton, CircularProgress } from '@mui/material';
 import {
   CloseRounded, CameraAltRounded, CameraswitchRounded,
-  ReplayRounded, CheckRounded, ErrorOutlineRounded,
+  ReplayRounded, CheckRounded, ErrorOutlineRounded, WifiTetheringRounded,
 } from '@mui/icons-material';
+import { Capacitor } from '@capacitor/core';
+import { Insta360Camera } from '@/plugins/insta360Camera';
 
-type Phase = 'starting' | 'live' | 'captured' | 'uploading' | 'error';
+type Phase = 'starting' | 'live' | 'captured' | 'uploading' | 'error'
+  | 'insta360-connecting' | 'insta360-capturing';
 
 interface CameraCaptureDialogProps {
   open: boolean;
@@ -13,18 +16,22 @@ interface CameraCaptureDialogProps {
   /** Receives the captured frame as a File and performs the upload. Resolve to close. */
   onCapture: (file: File) => Promise<void>;
   onClose: () => void;
+  /** When set, capture is sourced from the Insta360 camera over its own WiFi AP
+   *  (OSC HTTP API) instead of the device's own getUserMedia camera. The SSID
+   *  pattern matches the camera's advertised AP name, e.g. "X3 " for an X3. */
+  insta360SsidPattern?: string;
+  /** WPA2 password for the Insta360's WiFi AP (visible on the camera/companion app). */
+  insta360Password?: string;
 }
 
 /**
- * Full-screen camera capture for mobile/tablet. Opens the rear ("environment")
- * camera via getUserMedia, lets the engineer snap a frame, review it, then hands
- * the resulting File to the existing upload pipeline via onCapture.
- *
- * For now this captures a single still from the device's back camera. The
- * Insta360 integration will replace the stream source later without changing
- * this component's contract (open → capture File → onCapture).
+ * Full-screen camera capture for mobile/tablet. Either opens the rear
+ * ("environment") camera via getUserMedia, or — when insta360SsidPattern is
+ * given — connects to the Insta360 camera's own WiFi AP and triggers a
+ * physical capture over its OSC HTTP API. Either path hands the resulting
+ * File to the existing upload pipeline via onCapture, unchanged.
  */
-export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose }: CameraCaptureDialogProps) {
+export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose, insta360SsidPattern, insta360Password }: CameraCaptureDialogProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -70,12 +77,42 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
     }
   }, [stopStream]);
 
+  const captureFromInsta360 = useCallback(async (ssidPattern: string, password?: string) => {
+    setPhase('insta360-connecting');
+    setError('');
+    try {
+      await Insta360Camera.connect({ ssidPattern, password });
+      setPhase('insta360-capturing');
+      const { filePath, fileName } = await Insta360Camera.capturePhoto();
+      const response = await fetch(Capacitor.convertFileSrc(filePath));
+      const blob = await response.blob();
+      const file = new File([blob], fileName, { type: blob.type || 'image/jpeg' });
+      setShot({ url: URL.createObjectURL(blob), file });
+      setPhase('captured');
+    } catch (e) {
+      setError((e as { message?: string })?.message || 'Could not capture from the Insta360 camera.');
+      setPhase('error');
+    }
+  }, []);
+
   // Open/close lifecycle
   useEffect(() => {
     if (open) {
-      void startStream(facingMode);
+      if (insta360SsidPattern) {
+        void captureFromInsta360(insta360SsidPattern, insta360Password);
+      } else {
+        void startStream(facingMode);
+      }
     } else {
       stopStream();
+      // Deliberately NOT calling Insta360Camera.disconnect() here: this runs
+      // every time the dialog closes, i.e. after every single capture. The
+      // native side already reuses an existing connection (see
+      // Insta360CameraPlugin.connect()'s cameraNetwork != null short-circuit),
+      // so tearing it down here would force Android's "Connect to device"
+      // system picker to run again for every subsequent pin instead of once
+      // per session. The connection is released via disconnectInsta360()
+      // when the engineer actually leaves the capture workflow.
       setShot(null);
       setPhase('starting');
       setError('');
@@ -87,6 +124,7 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
 
   // Re-acquire when the user flips the camera
   useEffect(() => {
+    if (insta360SsidPattern) return;
     if (open && phase !== 'captured' && phase !== 'uploading') {
       void startStream(facingMode);
     }
@@ -116,7 +154,11 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
   function retake() {
     if (shot) URL.revokeObjectURL(shot.url);
     setShot(null);
-    void startStream(facingMode);
+    if (insta360SsidPattern) {
+      void captureFromInsta360(insta360SsidPattern, insta360Password);
+    } else {
+      void startStream(facingMode);
+    }
   }
 
   async function confirm() {
@@ -142,7 +184,7 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
           <CloseRounded />
         </IconButton>
         <Typography sx={{ color: '#fff', fontSize: '0.9375rem', fontWeight: 700 }}>{pinLabel}</Typography>
-        {(phase === 'live' || phase === 'starting') ? (
+        {!insta360SsidPattern && (phase === 'live' || phase === 'starting') ? (
           <IconButton onClick={() => setFacingMode(m => (m === 'environment' ? 'user' : 'environment'))} sx={{ color: '#fff', backgroundColor: 'rgba(255,255,255,0.12)', '&:hover': { backgroundColor: 'rgba(255,255,255,0.2)' } }}>
             <CameraswitchRounded />
           </IconButton>
@@ -153,15 +195,20 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
       <Box sx={{ flex: 1, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
         {shot ? (
           <Box component="img" src={shot.url} alt="Captured" sx={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+        ) : insta360SsidPattern ? (
+          <WifiTetheringRounded sx={{ fontSize: 64, color: 'rgba(255,255,255,0.25)' }} />
         ) : (
           <video ref={videoRef} playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
         )}
 
-        {(phase === 'starting' || phase === 'uploading') && (
+        {(phase === 'starting' || phase === 'uploading' || phase === 'insta360-connecting' || phase === 'insta360-capturing') && (
           <Box sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1.5, backgroundColor: 'rgba(0,0,0,0.55)' }}>
             <CircularProgress sx={{ color: '#fff' }} />
             <Typography sx={{ color: 'rgba(255,255,255,0.85)', fontSize: '0.875rem' }}>
-              {phase === 'uploading' ? 'Uploading capture…' : 'Opening camera…'}
+              {phase === 'uploading' ? 'Uploading capture…'
+                : phase === 'insta360-connecting' ? 'Connecting to Insta360 camera…'
+                : phase === 'insta360-capturing' ? 'Capturing 360° photo…'
+                : 'Opening camera…'}
             </Typography>
           </Box>
         )}
@@ -170,7 +217,10 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
           <Box sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1.5, px: 4, textAlign: 'center', backgroundColor: 'rgba(0,0,0,0.8)' }}>
             <ErrorOutlineRounded sx={{ fontSize: 44, color: '#f87171' }} />
             <Typography sx={{ color: '#fff', fontSize: '0.9375rem', fontWeight: 600 }}>{error}</Typography>
-            <Box onClick={() => startStream(facingMode)} sx={{ mt: 1, px: 2.5, py: 1, borderRadius: '10px', backgroundColor: 'rgba(255,255,255,0.14)', color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(255,255,255,0.22)' } }}>
+            <Box
+              onClick={() => (insta360SsidPattern ? captureFromInsta360(insta360SsidPattern, insta360Password) : startStream(facingMode))}
+              sx={{ mt: 1, px: 2.5, py: 1, borderRadius: '10px', backgroundColor: 'rgba(255,255,255,0.14)', color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(255,255,255,0.22)' } }}
+            >
               Try again
             </Box>
           </Box>

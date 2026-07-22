@@ -23,6 +23,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(Insta360CameraPlugin.class);
         super.onCreate(savedInstanceState);
 
         this.bridge.getWebView().setWebChromeClient(new WebChromeClient() {

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- The Insta360 X3's OSC API is plain HTTP with no TLS (it's a camera's
+         local control API, not a public server). Android blocks cleartext
+         traffic by default since API 28, so this domain-scoped exception is
+         needed — scoped to the camera's fixed AP address only, not enabled
+         app-wide, since every other network call in this app goes through
+         the real backend over HTTPS. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.42.1</domain>
+    </domain-config>
+</network-security-config>

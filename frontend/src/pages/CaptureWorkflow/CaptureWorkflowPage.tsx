@@ -19,6 +19,7 @@ import {
 } from '@store/fileUploadQueue';
 import { useDeviceType, usesCameraCapture } from '@/hooks/useDeviceType';
 import CameraCaptureDialog from '@/features/capturePins/CameraCaptureDialog';
+import { Insta360Camera } from '@/plugins/insta360Camera';
 
 /* ── palette ────────────────────────────────────────────────────────────── */
 const P = {
@@ -84,6 +85,34 @@ function saveLastCaptureLocation(loc: LastCaptureLocation): void {
     localStorage.setItem(LAST_CAPTURE_LOCATION_KEY, JSON.stringify(loc));
   } catch {
     /* best-effort — losing this only means landing on Overview, not data loss */
+  }
+}
+
+/* Which physical camera captures pins on this device — sticky per-device
+   choice (an engineer either carries the Insta360 for a shoot or doesn't;
+   re-prompting every pin would be busywork). The Insta360 X3's OSC WiFi AP
+   advertises as "X3 <SERIAL>.OSC" (confirmed on-device: "X3 8TV8SF.OSC") —
+   note the space after "X3", not an underscore. */
+const CAMERA_SOURCE_KEY = 'sitesurelabs-camera-source-v1';
+const INSTA360_SSID_PATTERN = 'X3 ';
+// Insta360's factory-default WiFi password for the X3's own OSC AP (confirmed
+// on-device) — not a per-device secret, so no need to prompt or persist it.
+const INSTA360_WIFI_PASSWORD = '88888888';
+type CameraSource = 'device' | 'insta360';
+
+function loadCameraSource(): CameraSource {
+  try {
+    return localStorage.getItem(CAMERA_SOURCE_KEY) === 'insta360' ? 'insta360' : 'device';
+  } catch {
+    return 'device';
+  }
+}
+
+function saveCameraSource(source: CameraSource): void {
+  try {
+    localStorage.setItem(CAMERA_SOURCE_KEY, source);
+  } catch {
+    /* best-effort */
   }
 }
 
@@ -793,8 +822,27 @@ export default function CaptureWorkflowPage() {
 
   // Mobile camera state
   const [cameraOpen, setCameraOpen]   = useState(false);
+  const [cameraSource, setCameraSource] = useState<CameraSource>(() => loadCameraSource());
   // Hidden file input for mobile fallback (capture="environment")
   const mobileInputRef = useRef<HTMLInputElement>(null);
+
+  function toggleCameraSource() {
+    setCameraSource(prev => {
+      const next = prev === 'insta360' ? 'device' : 'insta360';
+      saveCameraSource(next);
+      return next;
+    });
+  }
+
+  // The Insta360 WiFi connection is intentionally kept alive across captures
+  // (see CameraCaptureDialog's close-lifecycle comment) so Android's "Connect
+  // to device" system picker only appears once per session instead of once
+  // per pin. Release it when the engineer actually leaves this page — not
+  // sooner — so the underlying NetworkCallback doesn't linger past the
+  // workflow it was opened for.
+  useEffect(() => {
+    return () => { void Insta360Camera.disconnect(); };
+  }, []);
 
   const [toast, setToast] = useState('');
 
@@ -1386,7 +1434,15 @@ export default function CaptureWorkflowPage() {
                   <CameraAltRounded sx={{ fontSize: 26, color: P.white }} />
                 </Box>
                 <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>Take Picture</Typography>
-                <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Opens your rear camera</Typography>
+                <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>
+                  {cameraSource === 'insta360' ? 'Captures via the Insta360 camera' : 'Opens your rear camera'}
+                </Typography>
+              </Box>
+              <Box
+                onClick={(e) => { e.stopPropagation(); toggleCameraSource(); }}
+                sx={{ mt: 1, display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.25, py: 0.625, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue } }}
+              >
+                {cameraSource === 'insta360' ? 'Using Insta360 · Switch to phone camera' : 'Using phone camera · Switch to Insta360'}
               </Box>
             </Box>
           )}
@@ -1481,6 +1537,8 @@ export default function CaptureWorkflowPage() {
           // If camera was for a new pin but no image taken, clear the pending pin
           // so the user isn't stuck with a pin they can't complete.
         }}
+        insta360SsidPattern={cameraSource === 'insta360' ? INSTA360_SSID_PATTERN : undefined}
+        insta360Password={cameraSource === 'insta360' ? INSTA360_WIFI_PASSWORD : undefined}
       />
 
       {/* Hidden file input for mobile fallback when getUserMedia is blocked */}
