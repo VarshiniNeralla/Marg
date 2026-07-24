@@ -11,6 +11,9 @@ import {
   type NormalizedProgressReport,
 } from '@/utils/reportNormalization';
 import { formatReportDate, formatReportGeneratedAt } from '@/utils/reportFormat';
+import { Capacitor } from '@capacitor/core';
+import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
 
 function floorPlanPageHtml(meta: ProgressReportVisualMeta): string {
   const url = escapeHtml(meta.floorPlanImageUrl!);
@@ -561,38 +564,31 @@ export function buildReportPdfHtml(
 </html>`;
 }
 
-export function exportReportToPdf(
-  report: ProgressAnalysisReport,
-  meta?: ProgressReportVisualMeta,
-): void {
-  const html = buildReportPdfHtml(report, meta);
-  const win = window.open('', '_blank');
-  if (!win) return;
-  win.document.write(html);
-  win.document.close();
-  win.focus();
+/** Waits for every <img> under `root` to finish loading (success or error). */
+function waitForImages(root: ParentNode): Promise<void> {
+  const imgs = Array.from(root.querySelectorAll('img')) as HTMLImageElement[];
+  if (!imgs.length) return Promise.resolve();
+  return Promise.all(
+    imgs.map(img => {
+      if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+      return new Promise<void>(resolve => {
+        img.onload = () => resolve();
+        img.onerror = () => resolve();
+      });
+    }),
+  ).then(() => undefined);
+}
 
-  const waitForImages = (): Promise<void> => {
-    const imgs = Array.from(win.document.images);
-    if (!imgs.length) return Promise.resolve();
-    return Promise.all(
-      imgs.map(img => {
-        if (img.complete && img.naturalWidth > 0) return Promise.resolve();
-        return new Promise<void>(resolve => {
-          img.onload = () => resolve();
-          img.onerror = () => resolve();
-        });
-      }),
-    ).then(() => undefined);
-  };
-
-  const waitForFloorPlanLayout = (): Promise<void> => new Promise(resolve => {
+/** Waits for the floor-plan pin overlay's inline layout script to finish
+ *  positioning the pin marker (see FLOOR_PLAN_INIT_SCRIPT) — needed before
+ *  rasterizing/printing so the pin isn't captured mid-layout or missing. */
+function waitForFloorPlanLayout(root: ParentNode, runInit: () => void): Promise<void> {
+  return new Promise(resolve => {
     let attempts = 0;
     const tick = () => {
-      const init = (win as Window & { initReportFloorPlans?: () => void }).initReportFloorPlans;
-      if (typeof init === 'function') init();
-      const floorImgs = Array.from(win.document.querySelectorAll('.floorplan-img-full')) as HTMLImageElement[];
-      const wraps = Array.from(win.document.querySelectorAll('.floorplan-wrap-full'));
+      runInit();
+      const floorImgs = Array.from(root.querySelectorAll('.floorplan-img-full')) as HTMLImageElement[];
+      const wraps = Array.from(root.querySelectorAll('.floorplan-wrap-full'));
       const imgsReady = !floorImgs.length || floorImgs.every(img => img.complete && img.naturalWidth > 0);
       const layoutReady = wraps.length === 0 || wraps.every(w => w.getAttribute('data-floorplan-ready') === '1');
       if ((imgsReady && layoutReady) || attempts >= 60) resolve();
@@ -603,14 +599,158 @@ export function exportReportToPdf(
     };
     tick();
   });
+}
 
-  waitForImages()
-    .then(() => waitForFloorPlanLayout())
-    .then(() => {
+/** Same base64-stripping convention as fileUploadQueue.ts's fileToBase64. */
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => {
+      const result = reader.result as string;
+      resolve(result.slice(result.indexOf(',') + 1));
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** Layout-positions the floor-plan pin marker inline, mirroring what
+ *  FLOOR_PLAN_INIT_SCRIPT does inside the popup-window path — needed here
+ *  because that script is injected as a <script> tag meant for a fresh
+ *  document (via document.write), which doesn't execute when the same HTML
+ *  is parsed into a hidden container in the CURRENT document instead. */
+function layoutFloorPlanPins(root: ParentNode): void {
+  root.querySelectorAll('.floorplan-wrap-full').forEach(wrap => {
+    const img = wrap.querySelector('.floorplan-img-full') as HTMLImageElement | null;
+    const pin = wrap.querySelector('.floorplan-pin') as HTMLElement | null;
+    if (!img) return;
+    const layout = () => {
+      const iw = img.naturalWidth;
+      const ih = img.naturalHeight;
+      if (!iw || !ih) return;
+      const el = wrap as HTMLElement;
+      el.style.aspectRatio = `${iw} / ${ih}`;
+      el.style.width = '100%';
+      el.style.height = 'auto';
+      el.style.maxHeight = '200mm';
+      el.style.flex = '0 0 auto';
+      if (pin) {
+        const pinX = parseFloat(pin.getAttribute('data-pin-x') ?? '');
+        const pinY = parseFloat(pin.getAttribute('data-pin-y') ?? '');
+        if (!isNaN(pinX) && !isNaN(pinY)) {
+          pin.style.left = `${pinX}%`;
+          pin.style.top = `${pinY}%`;
+          pin.style.display = 'block';
+        }
+      }
+      wrap.setAttribute('data-floorplan-ready', '1');
+    };
+    if (img.complete && img.naturalWidth) layout();
+    else img.addEventListener('load', layout);
+  });
+}
+
+/** Renders the report as a real PDF file client-side (html2canvas → jsPDF,
+ *  one page image per .print-page section) and hands it to Android's native
+ *  Share sheet. Used only on native — window.print() has no OS-level "Save
+ *  as PDF" destination inside a Capacitor WebView, so the web print flow
+ *  below silently does nothing there. */
+async function exportReportToPdfNative(
+  report: ProgressAnalysisReport,
+  meta: ProgressReportVisualMeta | undefined,
+  reportTitle: string,
+): Promise<void> {
+  const html = buildReportPdfHtml(report, meta);
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/);
+  const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/);
+  // Strip the trailing <script>FLOOR_PLAN_INIT_SCRIPT</script> — scripts set
+  // via innerHTML never execute anyway; layoutFloorPlanPins() below does the
+  // equivalent positioning directly against this container instead.
+  const bodyContent = (bodyMatch?.[1] ?? '').replace(/<script[\s\S]*?<\/script>/, '');
+
+  const container = document.createElement('div');
+  // Offscreen, not display:none — html2canvas cannot rasterize elements that
+  // are display:none or otherwise not actually laid out/painted.
+  container.style.cssText = 'position:fixed; top:0; left:-99999px; z-index:-1;';
+  const styleEl = document.createElement('style');
+  styleEl.textContent = styleMatch?.[1] ?? '';
+  container.appendChild(styleEl);
+  const contentWrap = document.createElement('div');
+  contentWrap.innerHTML = bodyContent;
+  container.appendChild(contentWrap);
+  document.body.appendChild(container);
+
+  try {
+    await waitForImages(container);
+    layoutFloorPlanPins(container);
+    await waitForFloorPlanLayout(container, () => layoutFloorPlanPins(container));
+
+    const { default: html2canvas } = await import('html2canvas');
+    const { jsPDF } = await import('jspdf');
+
+    const pages = Array.from(contentWrap.querySelectorAll('.print-page')) as HTMLElement[];
+    const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+    const pageWidthMm = 210;
+    const pageHeightMm = 297;
+
+    for (let i = 0; i < pages.length; i++) {
+      const canvas = await html2canvas(pages[i], { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
+      if (i > 0) pdf.addPage();
+      pdf.addImage(imgData, 'JPEG', 0, 0, pageWidthMm, pageHeightMm);
+    }
+
+    const pdfBlob = pdf.output('blob') as Blob;
+    const base64 = await blobToBase64(pdfBlob);
+    const fileName = `${reportTitle.replace(/[^a-z0-9]+/gi, '-')}-${Date.now()}.pdf`;
+
+    await Filesystem.writeFile({
+      path: fileName,
+      data: base64,
+      directory: Directory.Cache,
+      recursive: true,
+    });
+    const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
+
+    await Share.share({
+      title: reportTitle,
+      url: uri,
+      dialogTitle: 'Share progress report',
+    });
+  } finally {
+    document.body.removeChild(container);
+  }
+}
+
+function exportReportToPdfWeb(
+  report: ProgressAnalysisReport,
+  meta?: ProgressReportVisualMeta,
+): void {
+  const html = buildReportPdfHtml(report, meta);
+  const win = window.open('', '_blank');
+  if (!win) return;
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+
+  waitForImages(win.document)
+    .then(() => waitForFloorPlanLayout(win.document, () => {
       const init = (win as Window & { initReportFloorPlans?: () => void }).initReportFloorPlans;
       if (typeof init === 'function') init();
+    }))
+    .then(() => {
       setTimeout(() => win.print(), 400);
     });
+}
+
+export function exportReportToPdf(
+  report: ProgressAnalysisReport,
+  meta?: ProgressReportVisualMeta,
+): void | Promise<void> {
+  if (Capacitor.isNativePlatform()) {
+    return exportReportToPdfNative(report, meta, BRAND_REPORT_TITLE);
+  }
+  exportReportToPdfWeb(report, meta);
 }
 
 export function formatReportAsText(

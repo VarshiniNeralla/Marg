@@ -16,6 +16,7 @@ from app.services.panorama_service import (
     PanoramaValidationError,
     classify_projection_bgr,
     classify_projection_bytes,
+    ensure_under_size,
     inject_gpano_xmp,
     is_equirectangular,
     is_insp,
@@ -299,10 +300,20 @@ async def upload_media(
         dims = measure_image(raw)
         if dims and is_equirectangular(dims[0], dims[1]):
             tagged = await to_thread.run_sync(inject_gpano_xmp, raw, dims[0], dims[1])
+            # A camera-native 360 JPEG (e.g. an Insta360 X3 OSC capture,
+            # ~14-15MB) can exceed Cloudinary's free-plan 10MB/file limit even
+            # though it needed no stitching at all. Re-encode at a lower
+            # (still high) JPEG quality ONLY if it's actually over the cap —
+            # every capture that already fits is left byte-for-byte untouched.
+            tagged = await to_thread.run_sync(ensure_under_size, tagged, settings.MAX_UPLOAD_BYTES)
             upload_source = BytesIO(tagged)
             upload_filename = Path(filename).stem + ".jpg"
             effective_resource_type = "image"
         else:
+            # Flat (non-panorama) capture — same safety net: an oversized
+            # phone/camera photo shouldn't fail outright when a lower-quality
+            # re-encode would let it upload fine.
+            raw = await to_thread.run_sync(ensure_under_size, raw, settings.MAX_UPLOAD_BYTES)
             upload_source = BytesIO(raw)
 
     def _upload() -> dict:

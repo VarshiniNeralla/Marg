@@ -253,11 +253,18 @@ def inject_gpano_xmp(
         return data
     gpano_pose = pose if isinstance(pose, GpanoPose) else GpanoPose.from_metadata(pose)
     try:
-        # Normalise to a clean baseline JPEG first (handles .png inputs too).
-        with Image.open(io.BytesIO(data)) as img:
-            buf = io.BytesIO()
-            img.convert("RGB").save(buf, format="JPEG", quality=92)
-            jpeg = buf.getvalue()
+        if data.startswith(b"\xff\xd8"):
+            # Already a JPEG (the common case: a camera-native OSC/Studio export) —
+            # skip the decode/re-encode entirely and patch the marker segment
+            # directly into the original bytes, so no additional generation loss
+            # is introduced on top of whatever the camera itself already encoded.
+            jpeg = data
+        else:
+            # Non-JPEG input (e.g. a .png export) — normalise to a baseline JPEG first.
+            with Image.open(io.BytesIO(data)) as img:
+                buf = io.BytesIO()
+                img.convert("RGB").save(buf, format="JPEG", quality=92)
+                jpeg = buf.getvalue()
 
         # A JPEG starts with SOI (FF D8). Insert an APP1 (FF E1) XMP segment
         # immediately after it. Segment length is big-endian and includes the
@@ -272,4 +279,43 @@ def inject_gpano_xmp(
         return jpeg[:2] + app1 + jpeg[2:]
     except Exception as exc:
         logger.warning(f"GPano XMP injection failed (continuing): {exc}")
+        return data
+
+
+def ensure_under_size(data: bytes, max_bytes: int) -> bytes:
+    """
+    Re-encodes a JPEG at progressively lower quality until it fits under
+    `max_bytes`, only if it doesn't already. Never resizes/downsamples — this
+    exists purely to fit Cloudinary's free-plan 10MB/file cap for genuinely
+    large native camera JPEGs (e.g. an Insta360 X3's un-stitched, un-resized
+    360 panorama, ~14-15MB), without reintroducing the quality loss that a
+    fixed low-quality re-encode (or a forced resize) would cause for files
+    that don't need it at all.
+
+    Best-effort: returns the original bytes if Pillow can't decode them, or
+    if even the lowest quality step still doesn't fit (Cloudinary's own
+    upload will then surface a clear error rather than silently truncating).
+    """
+    if len(data) <= max_bytes or not _PIL_OK:
+        return data
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            rgb = img.convert("RGB")
+            for quality in (85, 75, 65, 55, 45):
+                buf = io.BytesIO()
+                rgb.save(buf, format="JPEG", quality=quality, optimize=True)
+                out = buf.getvalue()
+                if len(out) <= max_bytes:
+                    logger.info(
+                        f"[capture-pipeline] re-encoded to fit {max_bytes // (1024*1024)}MB cap: "
+                        f"{len(data) / (1024*1024):.1f}MB -> {len(out) / (1024*1024):.1f}MB @ quality={quality}"
+                    )
+                    return out
+            logger.warning(
+                f"[capture-pipeline] could not fit under {max_bytes // (1024*1024)}MB "
+                f"even at quality=45 ({len(data) / (1024*1024):.1f}MB original); uploading as-is"
+            )
+            return out  # last (smallest) attempt — closest we can get
+    except Exception as exc:
+        logger.warning(f"Size-capping re-encode failed (continuing with original): {exc}")
         return data

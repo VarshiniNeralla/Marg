@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   Box,
   IconButton,
@@ -24,6 +24,7 @@ import ProgressReportView from '@/components/ProgressReport/ProgressReportView';
 import { normalizeProgressReport } from '@/utils/reportNormalization';
 import { BRAND_REPORT_TITLE } from '@/utils/reportBranding';
 import { toast } from 'react-toastify';
+import { Capacitor } from '@capacitor/core';
 
 export interface ProgressAnalysisDrawerProps {
   open: boolean;
@@ -63,10 +64,23 @@ export default function ProgressAnalysisDrawer({
     }
   }, [report, meta]);
 
-  const handleExportPdf = useCallback(() => {
-    if (!report) return;
-    exportReportToPdf(report, meta);
-  }, [report, meta]);
+  const [pdfLoading, setPdfLoading] = useState(false);
+
+  const handleExportPdf = useCallback(async () => {
+    if (!report || pdfLoading) return;
+    setPdfLoading(true);
+    try {
+      await exportReportToPdf(report, meta);
+      // On web, exportReportToPdf hands off to the browser's print dialog —
+      // there's nothing further to confirm here. On native it resolves only
+      // after the file was written and handed to the native Share sheet.
+      if (Capacitor.isNativePlatform()) toast.success('PDF ready to share');
+    } catch {
+      toast.error('Failed to generate PDF');
+    } finally {
+      setPdfLoading(false);
+    }
+  }, [report, meta, pdfLoading]);
 
   if (!report || !normalized) return null;
 
@@ -83,10 +97,12 @@ export default function ProgressAnalysisDrawer({
               <ContentCopyRounded fontSize="small" />
             </IconButton>
           </Tooltip>
-          <Tooltip title="Export engineering PDF">
-            <IconButton onClick={handleExportPdf} size="small" sx={{ border: `1px solid ${colors.border}`, borderRadius: '8px' }}>
-              <PictureAsPdfRounded fontSize="small" />
-            </IconButton>
+          <Tooltip title={pdfLoading ? 'Generating PDF…' : 'Export engineering PDF'}>
+            <span>
+              <IconButton onClick={handleExportPdf} disabled={pdfLoading} size="small" sx={{ border: `1px solid ${colors.border}`, borderRadius: '8px' }}>
+                {pdfLoading ? <CircularProgress size={16} /> : <PictureAsPdfRounded fontSize="small" />}
+              </IconButton>
+            </span>
           </Tooltip>
           {onSave && reportId && (
             <Button

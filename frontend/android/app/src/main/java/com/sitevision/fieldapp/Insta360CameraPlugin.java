@@ -222,12 +222,19 @@ public class Insta360CameraPlugin extends Plugin {
                         ? fileUrl
                         : "http://" + CAMERA_HOST + (fileUrl.startsWith("/") ? fileUrl : "/" + fileUrl);
                 String fileName = absoluteUrl.substring(absoluteUrl.lastIndexOf('/') + 1);
-                
-                // Force raw dual-fisheye extension so the backend knows to stitch it
-                if (fileName.toLowerCase().endsWith(".jpg")) {
-                    fileName = fileName.substring(0, fileName.length() - 4) + ".insp";
-                }
-                
+
+                // NOTE: this file is downloaded exactly as-is from camera.takePicture,
+                // which is the X3's own already-stitched, already-equirectangular JPEG
+                // — not a raw unstitched dual-fisheye frame. Do NOT rename it to .insp:
+                // that extension tells the backend to run its raw dual-fisheye stitcher
+                // (fisheye_stitch.py), which splits this already-correct image in half
+                // and reprojects each half as if it were a separate fisheye lens circle.
+                // Confirmed root cause of both an earlier upside-down-panorama bug and a
+                // later wavy-seam/blurry-output bug — the backend's fixed 5760x2880
+                // stitcher output also downsamples the X3's native ~6080x3040 capture.
+                // Keep the real .jpg extension so the backend's flat/equirectangular
+                // pass-through path (GPano tagging only, no stitching) handles it.
+
                 File outFile = new File(getContext().getCacheDir(), fileName);
                 downloadToFile(absoluteUrl, outFile);
 

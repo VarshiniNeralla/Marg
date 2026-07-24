@@ -168,20 +168,23 @@ _ALLOWED_CONTENT_TYPES = {
 }
 
 
-def _validate_upload_size(file: UploadFile, *, is_raw_360: bool = False) -> int:
+def _validate_upload_size(file: UploadFile, *, will_be_reprocessed: bool = False) -> int:
     """Returns the file size in bytes, raising if it exceeds the configured cap.
     Uses seek/tell so we don't buffer the whole file in memory just to size it.
 
     Raw 360 files (.dng/.insp/.insv) are STITCHED down to a small equirectangular
-    JPEG before they reach Cloudinary, so the raw input gets a larger cap — only
-    the stitched output must fit Cloudinary's limit."""
+    JPEG before they reach Cloudinary, and a plain capture JPEG that's still over
+    Cloudinary's cap gets re-encoded down to fit (see panorama_service.ensure_
+    under_size) — both cases get a larger pre-check cap here because only the
+    FINAL, already-shrunk bytes actually need to fit Cloudinary's limit, not
+    whatever the camera originally handed us."""
     try:
         file.file.seek(0, 2)   # seek to end
         size = file.file.tell()
         file.file.seek(0)       # rewind for the actual upload
     except Exception:
         return 0  # unseekable stream — let Cloudinary's own limits apply
-    cap = settings.MAX_RAW_UPLOAD_BYTES if is_raw_360 else settings.MAX_UPLOAD_BYTES
+    cap = settings.MAX_RAW_UPLOAD_BYTES if will_be_reprocessed else settings.MAX_UPLOAD_BYTES
     if size > cap:
         mb = cap // (1024 * 1024)
         actual_mb = size / (1024 * 1024)
@@ -189,9 +192,9 @@ def _validate_upload_size(file: UploadFile, *, is_raw_360: bool = False) -> int:
         logger.warning(
             f"Upload rejected: {file.filename} is {actual_mb:.1f} MB > {mb} MB cap"
         )
-        if is_raw_360:
+        if will_be_reprocessed:
             raise ValidationException(
-                f"File is {actual_mb:.0f} MB, over the {mb} MB limit for raw 360 files."
+                f"File is {actual_mb:.0f} MB, over the {mb} MB limit for 360 captures."
             )
         raise ValidationException(
             f"File is {actual_mb:.0f} MB, over the {mb} MB limit. Upload a smaller "
@@ -220,12 +223,18 @@ async def _upload_files(
         if ctype and not any(ctype.startswith(p) for p in allowed_types):
             raise ValidationException(f"Unsupported content type for {kind}: {ctype}")
         is_raw_360 = kind == "captures" and ext in {".dng", ".insp", ".insv"}
+        # Plain capture JPEGs may ALSO be genuine, un-shrunk 360 panoramas (an
+        # Insta360 X3's native OSC output, ~14-15MB) that get re-encoded down
+        # to fit Cloudinary's cap in upload_media — give them the same larger
+        # pre-check cap as raw files, since only the post-compression bytes
+        # actually need to fit under Cloudinary's limit.
+        will_be_reprocessed = kind == "captures" and (is_raw_360 or ext in {".jpg", ".jpeg"})
         from loguru import logger
         logger.info(
             f"[capture-upload] file={file.filename} ext={ext} kind={kind} "
             f"is_raw_360={is_raw_360} entity_id={entity_id}"
         )
-        _validate_upload_size(file, is_raw_360=is_raw_360)
+        _validate_upload_size(file, will_be_reprocessed=will_be_reprocessed)
         asset = await upload_media(
             file_obj=file.file,
             filename=file.filename or f"upload{ext}",

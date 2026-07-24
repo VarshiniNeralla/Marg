@@ -101,10 +101,14 @@ const INSTA360_WIFI_PASSWORD = '88888888';
 type CameraSource = 'device' | 'insta360';
 
 function loadCameraSource(): CameraSource {
+  // The Insta360 is the only camera this workflow captures with now — the
+  // in-app switch-to-phone-camera toggle was removed, but a device-only
+  // record can still exist from before that decision, so an explicit
+  // 'device' value is honored rather than silently overridden.
   try {
-    return localStorage.getItem(CAMERA_SOURCE_KEY) === 'insta360' ? 'insta360' : 'device';
+    return localStorage.getItem(CAMERA_SOURCE_KEY) === 'device' ? 'device' : 'insta360';
   } catch {
-    return 'device';
+    return 'insta360';
   }
 }
 
@@ -325,7 +329,7 @@ interface RenderPin {
 
 /* ── Floor plan viewer with pin, fullscreen, pinch-to-zoom ──────────────── */
 function FloorPlanWithPin({
-  floorPlan, pin, pins, onPinPlace, onPinClick, onPinActivate,
+  floorPlan, pin, pins, onPinPlace, onPinClick, onPinActivate, isCaptureModeUI, onLongPressCapture,
 }: {
   floorPlan: Record<string, unknown> | null;
   pin: { x: number; y: number } | null;
@@ -333,6 +337,13 @@ function FloorPlanWithPin({
   onPinPlace: (x: number, y: number) => void;
   onPinClick: (pinId: string) => void;
   onPinActivate: (pinId: string) => void;
+  isCaptureModeUI?: boolean;
+  /** When set, holding a press on empty floor-plan space for ~500ms places a
+   *  pin AND immediately triggers a capture at that spot — skipping the
+   *  separate tap-then-Take-Picture step. Only wired up for the Insta360
+   *  source (see CaptureWorkflowPage's cameraSource), since the phone-camera
+   *  path still needs a live preview to compose the shot. */
+  onLongPressCapture?: (x: number, y: number) => void;
 }) {
   const [scale, setScale]       = useState(1);
   const [offset, setOffset]     = useState({ x: 0, y: 0 });
@@ -350,6 +361,59 @@ function FloorPlanWithPin({
 
   // Double-tap zoom on empty floor plan space
   const lastTapRef = useRef<{ t: number; x: number; y: number }>({ t: 0, x: 0, y: 0 });
+
+  // Long-press-to-capture (Insta360 fast-capture flow — see onLongPressCapture prop).
+  const LONG_PRESS_MS = 500;
+  const LONG_PRESS_MOVE_TOLERANCE = 10; // px — cancels the hold if it turns into a pan
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const longPressFiredRef = useRef(false);
+
+  function clientToPlanPercent(clientX: number, clientY: number): { x: number; y: number } | null {
+    const wrap = imgWrapRef.current;
+    if (!wrap) return null;
+    const rect = wrap.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    const x = ((clientX - rect.left) / rect.width) * 100;
+    const y = ((clientY - rect.top) / rect.height) * 100;
+    if (x < 0 || y < 0 || x > 100 || y > 100) return null;
+    return { x, y };
+  }
+
+  function cancelLongPress() {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    longPressStartRef.current = null;
+  }
+
+  function armLongPress(clientX: number, clientY: number) {
+    if (!onLongPressCapture) return;
+    cancelLongPress();
+    longPressFiredRef.current = false;
+    longPressStartRef.current = { x: clientX, y: clientY };
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTimerRef.current = null;
+      const start = longPressStartRef.current;
+      longPressStartRef.current = null;
+      if (!start) return;
+      const pos = clientToPlanPercent(clientX, clientY);
+      if (!pos) return;
+      longPressFiredRef.current = true;
+      onLongPressCapture(pos.x, pos.y);
+    }, LONG_PRESS_MS);
+  }
+
+  /** Cancels the pending long-press if the pointer has moved past the pan
+   *  tolerance since the press started — called from the existing move
+   *  handlers so a real pan/drag never turns into an accidental capture. */
+  function maybeCancelLongPressOnMove(clientX: number, clientY: number) {
+    const start = longPressStartRef.current;
+    if (!start) return;
+    const dist = Math.hypot(clientX - start.x, clientY - start.y);
+    if (dist > LONG_PRESS_MOVE_TOLERANCE) cancelLongPress();
+  }
 
   const clampOffset = useCallback((ox: number, oy: number, s: number) => {
     const el = containerRef.current;
@@ -421,17 +485,22 @@ function FloorPlanWithPin({
     if ((e.target as Element).closest?.('[data-pin-id]')) return;
     setIsDragging(true);
     dragStart.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
+    armLongPress(e.clientX, e.clientY);
   }
   function onMouseMove(e: React.MouseEvent) {
+    maybeCancelLongPressOnMove(e.clientX, e.clientY);
     if (!isDragging) return;
     setOffset(clampOffset(dragStart.current.ox + e.clientX - dragStart.current.x, dragStart.current.oy + e.clientY - dragStart.current.y, scale));
   }
-  function onMouseUp() { setIsDragging(false); }
+  function onMouseUp() { setIsDragging(false); cancelLongPress(); }
 
   // ── Desktop click → place pin ───────────────────────────────────────────
   function onCanvasClick(e: React.MouseEvent) {
     if (isDragging) return;
     if ((e.target as Element).closest?.('[data-pin-id]')) return;
+    // Long-press already placed + captured this exact press — don't also
+    // fire the ordinary tap-to-place-pending-pin behavior for the same click.
+    if (longPressFiredRef.current) { longPressFiredRef.current = false; return; }
     const wrap = imgWrapRef.current;
     if (!wrap) return;
     const rect = wrap.getBoundingClientRect();
@@ -458,11 +527,13 @@ function FloorPlanWithPin({
 
     if (e.touches.length === 2) {
       e.preventDefault();
+      cancelLongPress(); // a second finger means pinch-zoom, never a long-press
       const [t1, t2] = [e.touches[0], e.touches[1]] as unknown as [React.Touch, React.Touch];
       pinchStartRef.current = { dist: getTouchDist(t1, t2), scale, midX: getTouchMid(t1, t2).x, midY: getTouchMid(t1, t2).y };
     } else if (e.touches.length === 1) {
       const t = e.touches[0];
       touchDragStart.current = { ox: offset.x, oy: offset.y, mx: t.clientX, my: t.clientY };
+      armLongPress(t.clientX, t.clientY);
     }
   }
 
@@ -472,6 +543,7 @@ function FloorPlanWithPin({
 
     if (e.touches.length === 2 && pinchStartRef.current) {
       e.preventDefault();
+      cancelLongPress();
       const [t1, t2] = [e.touches[0], e.touches[1]] as unknown as [React.Touch, React.Touch];
       const newDist = getTouchDist(t1, t2);
       const rawScale = (newDist / pinchStartRef.current.dist) * pinchStartRef.current.scale;
@@ -484,6 +556,7 @@ function FloorPlanWithPin({
       setOffset(prev => clampOffset(prev.x + (mid.x - midX) * 0.4, prev.y + (mid.y - midY) * 0.4, newScale));
     } else if (e.touches.length === 1 && !pinchStartRef.current) {
       const t = e.touches[0];
+      maybeCancelLongPressOnMove(t.clientX, t.clientY);
       const dx = t.clientX - touchDragStart.current.mx;
       const dy = t.clientY - touchDragStart.current.my;
       setOffset(clampOffset(touchDragStart.current.ox + dx, touchDragStart.current.oy + dy, scale));
@@ -493,6 +566,7 @@ function FloorPlanWithPin({
   function onTouchEnd(e: React.TouchEvent) {
     if ((e.target as Element).closest?.('[data-pin-id]')) return;
 
+    cancelLongPress();
     if (e.touches.length < 2) pinchStartRef.current = null;
 
     // Double-tap to zoom in/out on empty floor plan space
@@ -528,12 +602,16 @@ function FloorPlanWithPin({
   }
 
   function onTouchCancel() {
+    cancelLongPress();
     pinchStartRef.current = null;
     touchMovedRef.current = false;
   }
 
   // ── Touch tap on pin → place pin if nothing selected ────────────────────
   function onTouchPinPlace(e: React.TouchEvent) {
+    // Long-press already placed + captured this exact press — don't also
+    // fire the ordinary tap-to-place-pending-pin behavior for the same touch.
+    if (longPressFiredRef.current) { longPressFiredRef.current = false; return; }
     if (touchMovedRef.current) return;
     if ((e.target as Element).closest?.('[data-pin-id]')) return;
     if (e.changedTouches.length !== 1) return;
@@ -559,7 +637,7 @@ function FloorPlanWithPin({
         { icon: <ZoomInRounded sx={{ fontSize: 15 }} />, fn: () => zoom(1) },
         { icon: <ZoomOutRounded sx={{ fontSize: 15 }} />, fn: () => zoom(-1) },
         { icon: <CenterFocusStrongRounded sx={{ fontSize: 15 }} />, fn: resetView },
-        { icon: fullscreen ? <FullscreenExitRounded sx={{ fontSize: 15 }} /> : <FullscreenRounded sx={{ fontSize: 15 }} />, fn: () => setFullscreen(f => !f) },
+        ...(isCaptureModeUI ? [] : [{ icon: fullscreen ? <FullscreenExitRounded sx={{ fontSize: 15 }} /> : <FullscreenRounded sx={{ fontSize: 15 }} />, fn: () => setFullscreen(f => !f) }]),
       ].map((b, i) => (
         <Box key={i} onClick={(e) => { e.stopPropagation(); b.fn(); }} sx={{ width: 28, height: 28, borderRadius: '7px', backgroundColor: 'rgba(255,255,255,0.1)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#fff', transition: T, '&:hover': { backgroundColor: 'rgba(37,99,235,0.7)' } }}>
           {b.icon}
@@ -568,25 +646,26 @@ function FloorPlanWithPin({
     </Box>
   );
 
+  const isBorderless = fullscreen || isCaptureModeUI;
   const viewer = (
     <Box sx={{
-      borderRadius: fullscreen ? 0 : '18px', overflow: 'hidden',
-      border: fullscreen ? 'none' : `1.5px solid ${P.border}`,
+      borderRadius: isBorderless ? 0 : '18px', overflow: 'hidden',
+      border: isBorderless ? 'none' : `1.5px solid ${P.border}`,
       backgroundColor: '#0f172a', position: 'relative',
       width: '100%', height: '100%',
-      boxShadow: fullscreen ? 'none' : '0 8px 32px rgba(15,23,42,0.16)',
+      boxShadow: isBorderless ? 'none' : '0 8px 32px rgba(15,23,42,0.16)',
     }}>
       {/* Top bar */}
       <Box sx={{ position: 'absolute', top: 0, left: 0, right: 0, px: 2, py: 1.25, background: 'linear-gradient(180deg,rgba(10,12,20,0.92) 0%,transparent 100%)', zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-          {fullscreen && (
+          {fullscreen && !isCaptureModeUI && (
             <Box onClick={() => setFullscreen(false)} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, mr: 1.5, px: 1.25, py: 0.5, borderRadius: '8px', backgroundColor: 'rgba(255,255,255,0.08)', backdropFilter: 'blur(8px)', cursor: 'pointer', color: 'rgba(255,255,255,0.85)', fontSize: '0.8125rem', fontWeight: 600, transition: T, '&:hover': { backgroundColor: 'rgba(255,255,255,0.15)' } }}>
               <ArrowBackRounded sx={{ fontSize: 14 }} /> Back
             </Box>
           )}
           <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: pin ? '#22c55e' : '#f59e0b', boxShadow: pin ? '0 0 6px #22c55e' : '0 0 6px #f59e0b', flexShrink: 0 }} />
           <Typography sx={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.95)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {pin ? 'Point placed' : 'Tap to drop pin'}
+            {pin ? 'Point placed' : onLongPressCapture ? 'Hold to capture' : 'Tap to drop pin'}
           </Typography>
         </Box>
         {controls}
@@ -710,10 +789,12 @@ function FloorPlanWithPin({
         </Box>
       </Box>
 
-      {!pin && (
+      {!pin && !isCaptureModeUI && (
         <Box sx={{ position: 'absolute', bottom: 20, left: '50%', transform: 'translateX(-50%)', px: 2, py: 1, backgroundColor: 'rgba(15, 23, 42, 0.85)', backdropFilter: 'blur(8px)', borderRadius: '24px', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, width: 'max-content', maxWidth: '90%' }}>
           <AddLocationAltRounded sx={{ fontSize: 18, color: '#f59e0b' }} />
-          <Typography sx={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.95)', fontWeight: 500, textAlign: 'center' }}>Tap anywhere to drop pin</Typography>
+          <Typography sx={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.95)', fontWeight: 500, textAlign: 'center' }}>
+            {onLongPressCapture ? 'Hold anywhere to place a pin and capture' : 'Tap anywhere to drop pin'}
+          </Typography>
         </Box>
       )}
 
@@ -725,6 +806,13 @@ function FloorPlanWithPin({
     </Box>
   );
 
+  if (isCaptureModeUI) {
+    return (
+      <Box sx={{ width: '100%', height: '100%' }}>
+        {viewer}
+      </Box>
+    );
+  }
   if (!fullscreen) {
     return (
       <Box sx={{
@@ -777,6 +865,7 @@ export default function CaptureWorkflowPage() {
   const [pinPos, setPinPos]           = useState<{ x: number; y: number } | null>(null);
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
   const [activeCapturePinId, setActiveCapturePinId] = useState<string | null>(null);
+  const [isCaptureMode, setIsCaptureMode]           = useState(false);
 
   // Desktop upload state
   const [dragging, setDragging]       = useState(false);
@@ -960,7 +1049,10 @@ export default function CaptureWorkflowPage() {
     const targetIdx = STEPS.findIndex(s => s.key === target);
     if (targetIdx >= stepIdx) return;
     // Clean up any pins placed on this floor that were never captured.
-    if (step === 'capture') pruneEmptyPinsOnCurrentFloor();
+    if (step === 'capture') {
+      pruneEmptyPinsOnCurrentFloor();
+      setIsCaptureMode(false);
+    }
     setStep(target);
     if (targetIdx <= 0) { setProject(''); setTower(''); setFloor(''); setPendingPin(null); setActiveCapturePinId(null); }
     else if (targetIdx <= 1) { setTower(''); setFloor(''); setPendingPin(null); setActiveCapturePinId(null); }
@@ -1282,7 +1374,7 @@ export default function CaptureWorkflowPage() {
             <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(3,1fr)', sm: 'repeat(4,1fr)', md: 'repeat(5,1fr)' }, gap: 1 }}>
               {myFloors.map(f => (
                 <FloorCard key={f.id} label={f.label} number={f.number}
-                  onClick={() => { setFloor(f.id); setStep('capture'); }} />
+                  onClick={() => { setFloor(f.id); setStep('capture'); setIsCaptureMode(false); }} />
               ))}
             </Box>
           )}
@@ -1298,30 +1390,72 @@ export default function CaptureWorkflowPage() {
             { label: 'Floor',   value: selectedFloorObj?.label },
           ]} />
 
-          {/* Instruction row */}
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5, gap: 1, flexWrap: 'wrap' }}>
-            <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
-              {floorPins.length > 0
-                ? isMobile
-                  ? `${floorPins.length} pin${floorPins.length !== 1 ? 's' : ''} · tap pin to select · double-tap to capture`
-                  : `${floorPins.length} pin${floorPins.length !== 1 ? 's' : ''} placed · tap a pin to capture again or view history`
-                : 'No pins yet — tap the plan to place your first capture point'}
-            </Typography>
-            <Box component={Link} to="/my-captures" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.5, py: 0.625, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none', transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}>
-              View History <ArrowForwardRounded sx={{ fontSize: 13 }} />
+          {!isCaptureMode ? (
+            <Box sx={{ py: 8, textAlign: 'center', border: `1.5px solid ${P.border}`, borderRadius: '18px', backgroundColor: P.white, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <Box sx={{ width: 64, height: 64, borderRadius: '16px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 2, boxShadow: '0 8px 24px rgba(37,99,235,0.25)' }}>
+                <CameraAltRounded sx={{ fontSize: 32, color: P.white }} />
+              </Box>
+              <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: P.strong, mb: 1 }}>Ready to Capture</Typography>
+              <Typography sx={{ fontSize: '0.875rem', color: P.muted, mb: 3, maxWidth: 300 }}>
+                {floorPins.length > 0 ? `${floorPins.length} pin${floorPins.length !== 1 ? 's' : ''} already placed on this floor.` : 'No captures on this floor yet.'}
+              </Typography>
+              <Box
+                onClick={() => setIsCaptureMode(true)}
+                sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 3, py: 1.25, borderRadius: '12px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, color: '#fff', fontSize: '0.9375rem', fontWeight: 700, cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.3)', transition: T, '&:hover': { transform: 'translateY(-2px)', boxShadow: '0 6px 20px rgba(37,99,235,0.4)' } }}
+              >
+                Go to Capture Mode
+              </Box>
+              <Box
+                component={Link}
+                to={`/floor-plans/${selectedProject}/${selectedTower}/${selectedFloor}?pinsOnly=1&returnTo=${encodeURIComponent('/capture-workflow')}`}
+                sx={{ mt: 2.5, display: 'inline-flex', alignItems: 'center', gap: 0.5, color: P.subtle, fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none', transition: T, '&:hover': { color: P.blue } }}
+              >
+                <HistoryRounded sx={{ fontSize: 14 }} /> View previous captures
+              </Box>
             </Box>
-          </Box>
+          ) : (
+            <Box sx={{ position: 'fixed', inset: 0, zIndex: 1400, backgroundColor: '#0f172a', display: 'flex', flexDirection: 'column' }}>
+              {/* Header inside Capture Mode */}
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, px: 2, py: 1.5, background: 'rgba(15,23,42,0.95)', zIndex: 20 }}>
+                <Typography sx={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.7)', fontWeight: 500, minWidth: 0, flex: 1, lineHeight: 1.35 }}>
+                  {floorPins.length > 0
+                    ? isMobile
+                      ? `${floorPins.length} pin${floorPins.length !== 1 ? 's' : ''} · tap to select · ${cameraSource === 'insta360' ? 'hold plan to capture' : 'double-tap to capture'}`
+                      : `${floorPins.length} pin${floorPins.length !== 1 ? 's' : ''} placed · tap a pin to capture again or view history`
+                    : isMobile && cameraSource === 'insta360'
+                      ? '' // instruction shown via the bottom pill instead — avoid repeating it here
+                      : 'No pins yet — tap the plan to place your first capture point'}
+                </Typography>
+                <Box onClick={() => setIsCaptureMode(false)} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.5, py: 0.75, borderRadius: '8px', border: `1.5px solid rgba(255,255,255,0.2)`, color: 'rgba(255,255,255,0.9)', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', flexShrink: 0, transition: T, '&:hover': { backgroundColor: 'rgba(255,255,255,0.1)' } }}>
+                  <CloseRounded sx={{ fontSize: 14 }} /> Exit
+                </Box>
+              </Box>
+              
+              <Box sx={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
 
-          <Box sx={{ mb: selectedPinObj ? 1.5 : 2.5 }}>
-            <FloorPlanWithPin
-              floorPlan={(floorPlan as unknown) as Record<string, unknown> | null}
-              pin={pinPos}
-              pins={floorPins}
-              onPinPlace={(x, y) => { setPendingPin({ x, y }); setSelectedPinId(null); setActiveCapturePinId(null); }}
-              onPinClick={handlePinClick}
-              onPinActivate={handlePinActivate}
-            />
-          </Box>
+                <Box sx={{ position: 'absolute', inset: 0 }}>
+                  <FloorPlanWithPin
+                    floorPlan={(floorPlan as unknown) as Record<string, unknown> | null}
+                    pin={pinPos}
+                    pins={floorPins}
+                    onPinPlace={(x, y) => { setPendingPin({ x, y }); setSelectedPinId(null); setActiveCapturePinId(null); }}
+                    onPinClick={handlePinClick}
+                    onPinActivate={handlePinActivate}
+                    isCaptureModeUI={true}
+                    onLongPressCapture={
+                      isMobile && cameraSource === 'insta360'
+                        ? (x, y) => {
+                            setSelectedPinId(null);
+                            setActiveCapturePinId(null); // always a new pin, never a re-capture
+                            setPendingPin({ x, y });
+                            openMobileCapture();
+                          }
+                        : undefined
+                    }
+                  />
+                </Box>
+                {/* Overlaid Controls Container */}
+                <Box sx={{ position: 'absolute', bottom: 0, left: 0, right: 0, p: { xs: 2, sm: 3 }, pointerEvents: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', zIndex: 20, '& > *': { pointerEvents: 'auto', width: '100%', maxWidth: 420, boxShadow: '0 8px 32px rgba(0,0,0,0.25)' } }}>
 
           {/* Pin action panel */}
           {selectedPinObj && (() => {
@@ -1423,38 +1557,29 @@ export default function CaptureWorkflowPage() {
             );
           })()}
 
-          {/* Mobile: "Take Picture" CTA when a pin is placed and no pin is selected */}
+          {/* Mobile: "Take Picture" CTA when a pin is placed and no pin is selected —
+              a compact button, not a big card, so it doesn't cover the floor plan. */}
           {isMobile && pinPos && !selectedPinObj && (
-            <Box sx={{ mb: 2.5 }}>
+            <Box sx={{ display: 'flex', justifyContent: 'center', boxShadow: 'none !important' }}>
               <Box
                 onClick={() => openMobileCapture()}
-                sx={{ borderRadius: '16px', p: 3, textAlign: 'center', border: `2px solid ${P.blue}55`, backgroundColor: 'rgba(37,99,235,0.03)', cursor: 'pointer', transition: T, '&:active': { backgroundColor: P.blueSoft } }}
+                sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.5, py: 1.25, borderRadius: '999px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, color: '#fff', fontSize: '0.9375rem', fontWeight: 700, cursor: 'pointer', boxShadow: '0 4px 16px rgba(37,99,235,0.35)', transition: T, '&:active': { transform: 'scale(0.97)' } }}
               >
-                <Box sx={{ width: 52, height: 52, borderRadius: '14px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 1.5, boxShadow: '0 6px 18px rgba(37,99,235,0.3)' }}>
-                  <CameraAltRounded sx={{ fontSize: 26, color: P.white }} />
-                </Box>
-                <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>Take Picture</Typography>
-                <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>
-                  {cameraSource === 'insta360' ? 'Captures via the Insta360 camera' : 'Opens your rear camera'}
-                </Typography>
-              </Box>
-              <Box
-                onClick={(e) => { e.stopPropagation(); toggleCameraSource(); }}
-                sx={{ mt: 1, display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.25, py: 0.625, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue } }}
-              >
-                {cameraSource === 'insta360' ? 'Using Insta360 · Switch to phone camera' : 'Using phone camera · Switch to Insta360'}
+                <CameraAltRounded sx={{ fontSize: 18 }} /> Take Picture
               </Box>
             </Box>
           )}
 
-          {/* Mobile: prompt to place pin first */}
+          {/* Mobile: prompt to place pin first — a small pill, not a card,
+              so it never blocks the floor plan the engineer is looking at. */}
           {isMobile && !pinPos && !selectedPinObj && !activeCapturePinId && (
-            <Box sx={{ mb: 2.5, borderRadius: '16px', p: 3, textAlign: 'center', border: `2px dashed ${P.border}`, backgroundColor: P.bg }}>
-              <Box sx={{ width: 52, height: 52, borderRadius: '14px', backgroundColor: P.bg, border: `1.5px solid ${P.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 1.5 }}>
-                <AddLocationAltRounded sx={{ fontSize: 26, color: P.subtle }} />
+            <Box sx={{ display: 'flex', justifyContent: 'center', boxShadow: 'none !important' }}>
+              <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 1, px: 2, py: 1, borderRadius: '999px', backgroundColor: 'rgba(15,23,42,0.85)', backdropFilter: 'blur(8px)' }}>
+                <AddLocationAltRounded sx={{ fontSize: 16, color: '#f59e0b', flexShrink: 0 }} />
+                <Typography sx={{ fontSize: '0.8125rem', color: 'rgba(255,255,255,0.95)', fontWeight: 500 }}>
+                  {cameraSource === 'insta360' ? 'Long-press the plan to place & capture' : 'Tap the plan to place a pin'}
+                </Typography>
               </Box>
-              <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>Tap the floor plan</Typography>
-              <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Drop a pin where you're standing, then take a picture</Typography>
             </Box>
           )}
 
@@ -1463,7 +1588,7 @@ export default function CaptureWorkflowPage() {
             <Box sx={{ mb: 2.5 }}>
               <Box
                 onClick={() => openMobileCapture()}
-                sx={{ borderRadius: '16px', p: 3, textAlign: 'center', border: `2px solid ${P.blue}55`, backgroundColor: 'rgba(37,99,235,0.03)', cursor: 'pointer', transition: T, '&:active': { backgroundColor: P.blueSoft } }}
+                sx={{ borderRadius: '16px', p: 3, textAlign: 'center', border: `2px solid ${P.blue}55`, backgroundColor: 'rgba(255,255,255,0.96)', backdropFilter: 'blur(12px)', cursor: 'pointer', transition: T, '&:active': { backgroundColor: P.blueSoft } }}
               >
                 <Box sx={{ width: 52, height: 52, borderRadius: '14px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 1.5, boxShadow: '0 6px 18px rgba(37,99,235,0.3)' }}>
                   <CameraAltRounded sx={{ fontSize: 26, color: P.white }} />
@@ -1486,24 +1611,25 @@ export default function CaptureWorkflowPage() {
                 onDragLeave={() => setDragging(false)}
                 onDrop={(e) => { e.preventDefault(); setDragging(false); if (ready && !isUploading) void handleCaptureFiles(e.dataTransfer.files); }}
                 sx={{
-                  borderRadius: '16px', p: { xs: 2.5, sm: 3.5 }, textAlign: 'center',
+                  borderRadius: '16px', p: { xs: 2, sm: 2.5 }, textAlign: 'center',
                   border: `2px dashed ${dragging ? P.blue : ready ? P.blue + '55' : P.border}`,
-                  backgroundColor: dragging ? P.blueSoft : ready ? 'rgba(37,99,235,0.02)' : P.bg,
+                  backgroundColor: dragging ? P.blueSoft : 'rgba(255,255,255,0.96)',
+                  backdropFilter: 'blur(12px)',
                   transition: T, cursor: ready ? 'pointer' : 'default',
                 }}
               >
                 {ready ? (
                   <>
-                    <Box sx={{ width: 52, height: 52, borderRadius: '14px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 1.5, boxShadow: '0 6px 18px rgba(37,99,235,0.3)' }}>
-                      <CloudUploadRounded sx={{ fontSize: 26, color: P.white }} />
+                    <Box sx={{ width: 44, height: 44, borderRadius: '12px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, display: 'flex', alignItems: 'center', justifyContent: 'center', mx: 'auto', mb: 1.25, boxShadow: '0 6px 18px rgba(37,99,235,0.3)' }}>
+                      <CloudUploadRounded sx={{ fontSize: 22, color: P.white }} />
                     </Box>
-                    <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>
+                    <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>
                       {recapPin ? `Attach new capture to Pin ${recapPin.sequenceNumber}` : 'Upload Capture Image'}
                     </Typography>
-                    <Typography sx={{ fontSize: '0.875rem', color: P.muted, mb: 1.75 }}>Drag & drop or click to browse</Typography>
-                    <Typography sx={{ fontSize: '0.75rem', color: P.subtle, mb: 2.5 }}>Supported: .jpg .jpeg .png .dng .insp</Typography>
-                    <Box component="label" htmlFor="capture-file-input" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.75, py: 1.125, borderRadius: '10px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, cursor: isUploading ? 'default' : 'pointer', fontSize: '0.875rem', fontWeight: 700, color: P.white, boxShadow: '0 4px 14px rgba(37,99,235,0.3)', opacity: isUploading ? 0.7 : 1, '&:hover': { opacity: isUploading ? 0.7 : 0.9 } }}>
-                      <PhotoCameraRounded sx={{ fontSize: 17 }} /> {isUploading ? 'Uploading…' : 'Browse & Upload'}
+                    <Typography sx={{ fontSize: '0.8125rem', color: P.muted, mb: 1 }}>Drag & drop or click to browse</Typography>
+                    <Typography sx={{ fontSize: '0.6875rem', color: P.subtle, mb: 2 }}>Supported: .jpg .jpeg .png .dng .insp</Typography>
+                    <Box component="label" htmlFor="capture-file-input" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 2, py: 0.875, borderRadius: '8px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, cursor: isUploading ? 'default' : 'pointer', fontSize: '0.8125rem', fontWeight: 700, color: P.white, boxShadow: '0 4px 14px rgba(37,99,235,0.3)', opacity: isUploading ? 0.7 : 1, '&:hover': { opacity: isUploading ? 0.7 : 0.9 } }}>
+                      <PhotoCameraRounded sx={{ fontSize: 16 }} /> {isUploading ? 'Uploading…' : 'Browse & Upload'}
                     </Box>
                     <Box component="input" id="capture-file-input" type="file" multiple accept=".jpg,.jpeg,.png,.dng,.insp" disabled={isUploading} onChange={(e: React.ChangeEvent<HTMLInputElement>) => { void handleCaptureFiles(e.target.files); (e.target as HTMLInputElement).value = ''; }} sx={{ display: 'none' }} />
                     {uploadError && <Typography sx={{ mt: 1.75, fontSize: '0.8125rem', color: P.red }}>{uploadError}</Typography>}
@@ -1520,6 +1646,10 @@ export default function CaptureWorkflowPage() {
               </Box>
             );
           })()}
+                </Box>
+              </Box>
+            </Box>
+          )}
         </Box>
       )}
 
