@@ -27,6 +27,23 @@ from app.services.fisheye_stitch import StitchResult, stitch_equirectangular
 def _stitch_raw_360(raw: bytes, filename: str) -> Optional[StitchResult]:
     """Thread-pool wrapper: stitch a raw dual-fisheye file to equirectangular."""
     from loguru import logger
+
+    # TEMPORARY DEBUG (2026-07-25): persist a copy of every raw capture before
+    # stitching so a defective stitch can be re-run/diagnosed offline against
+    # its actual source bytes — the backend otherwise only keeps the final
+    # Cloudinary-hosted stitched output, with no way to recover the original
+    # upload after the fact. REMOVE once the seam-alignment issue is closed.
+    try:
+        from pathlib import Path as _Path
+        import time as _time
+        debug_dir = _Path(__file__).resolve().parents[2] / "uploads" / "_debug_raw_captures"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        debug_path = debug_dir / f"{int(_time.time())}_{filename}"
+        debug_path.write_bytes(raw)
+        logger.info(f"[debug] saved raw capture to {debug_path}")
+    except Exception as exc:
+        logger.warning(f"[debug] failed to save raw capture copy: {exc!r}")
+
     try:
         logger.info(f"[capture-pipeline] stitching started file={filename} bytes={len(raw)}")
         result = stitch_equirectangular(raw, filename)

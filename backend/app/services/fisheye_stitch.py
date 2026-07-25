@@ -1536,7 +1536,10 @@ def _multiband_blend(front, back, mask, clean1, clean2):
     import numpy as np
 
     h, w = mask.shape
-    levels = max(2, int(np.floor(np.log2(max(16, min(h, w)) / 16.0))))
+    # Increase the base scale divisor from 16.0 to 8.0 to add one extra pyramid 
+    # level. This widens the maximum blending region, helping to hide sharp 
+    # global exposure/lighting differences between the two lenses.
+    levels = max(2, int(np.floor(np.log2(max(16, min(h, w)) / 8.0))))
 
     mask = mask.astype(np.float32)
     f = np.where(clean1[..., None], front, back).astype(np.float32)
@@ -1934,20 +1937,29 @@ def _stitch_arrays(
         # covering the full 360° wrap-around seam behind the camera), falling
         # back to the naive centered-square guess only if detection fails.
         if calib is None and W == 2 * H and H > 0:
-            lens_region = img[:, 0:W // 2]
-            detected = _detect_fisheye_circle(lens_region)
-            if detected is not None:
-                cx, cy, radius = detected
+            half = float(H)
+            # Detect EACH lens independently — the two circles are NOT
+            # identical (measured on a real capture: lens1 cx=2957 cy=2944
+            # r=3048 vs lens2 cx=2991 cy=2872 r=3164, a ~72px cy and ~116px
+            # radius difference). An earlier version of this fallback detected
+            # only lens1's circle and reused it for lens2, which put lens2's
+            # hemisphere sampling off by exactly that much — a real, localized
+            # cause of the seam waviness/steps seen near strong edges (desk,
+            # PC case) even after lens1's own wrap-around coverage looked fine.
+            det1 = _detect_fisheye_circle(img[:, 0:W // 2])
+            det2 = _detect_fisheye_circle(img[:, W // 2:W])
+            if det1 is not None and det2 is not None:
+                cx1, cy1, r1 = det1
+                cx2, cy2, r2 = det2
                 source = "detected"
             else:
-                half = float(H)
-                cx = prof.default_center_frac[0] * half
-                cy = prof.default_center_frac[1] * half
-                radius = prof.default_radius_frac * half
+                cx1 = cy1 = prof.default_center_frac[0] * half
+                r1 = prof.default_radius_frac * half
+                cx2, cy2, r2 = cx1, cy1, r1
                 source = "profile"
             calib = DualFisheyeCalibration(
-                lens1=LensCalibration(cx, cy, radius, (0.0, 0.0, 0.0)),
-                lens2=LensCalibration(cx, cy, radius, (0.0, 0.0, 0.0)),
+                lens1=LensCalibration(cx1, cy1, r1, (0.0, 0.0, 0.0)),
+                lens2=LensCalibration(cx2, cy2, r2, (0.0, 0.0, 0.0)),
                 width=W,
                 height=H,
                 layout="side-by-side",
@@ -1956,7 +1968,8 @@ def _stitch_arrays(
             logger.info(
                 f"[calibration] no embedded calibration for {filename}; using "
                 f"{source} calibration: layout=side-by-side lens_region={H}x{H} "
-                f"cx={cx:.1f} cy={cy:.1f} radius={radius:.1f} model={model or prof.model}"
+                f"lens1(cx={cx1:.1f},cy={cy1:.1f},r={r1:.1f}) "
+                f"lens2(cx={cx2:.1f},cy={cy2:.1f},r={r2:.1f}) model={model or prof.model}"
             )
         if not (calib and calib.source in ("embedded", "embedded_trailer", "detected", "profile")):
             logger.warning(f"No usable calibration for {filename}; cannot stitch reliably")

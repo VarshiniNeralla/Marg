@@ -51,7 +51,7 @@ export interface PendingWrite {
 }
 
 type WriteOps = typeof workflowApiService;
-type WriteOpName = keyof WriteOps;
+export type WriteOpName = keyof WriteOps;
 
 // ── Persistence ────────────────────────────────────────────────────────────
 

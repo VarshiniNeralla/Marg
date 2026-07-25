@@ -11,7 +11,7 @@ import type { UploadedFileResponse } from '@/services/uploadService';
 import { STORE_VERSION, WORKFLOW_STORE_KEY } from './persistence';
 import { createSafeStorage } from './safeStorage';
 import { addTombstones, tombstoneSet, clearTombstones } from './tombstones';
-import { enqueueWrite, isCreatePending, SYNC_ERROR_EVENT as WRITE_QUEUE_SYNC_ERROR_EVENT } from './writeQueue';
+import { enqueueWrite, isCreatePending, SYNC_ERROR_EVENT as WRITE_QUEUE_SYNC_ERROR_EVENT, type WriteOpName } from './writeQueue';
 import { isLiveUploadedTour } from './tourFilters';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -481,14 +481,35 @@ export const useWorkflowStore = create<WorkflowState>()(
         // otherwise a delete is undone on the next reload (resurrection bug).
         const tombstones = tombstoneSet();
 
-        // Merge helper: local entries fill gaps the API doesn't have (e.g. a capture
-        // that was written locally but whose mirrorApi call got a 401). API wins on
-        // same id so backend is always the source of truth for existing records.
-        // Tombstoned ids are dropped entirely.
-        const mergeById = <T extends { id: string }>(api: T[] | undefined, local: T[]): T[] => {
+        // Merge helper: the API snapshot is authoritative for deletion — a hard
+        // delete on ANY device makes the row physically absent from every future
+        // snapshot, on every device, so "missing from the API" already means
+        // "deleted" without needing a matching local tombstone (tombstones are
+        // per-device localStorage and never sync across devices; trusting them
+        // for this check is what let a delete on desktop go invisible on phone
+        // and vice versa). A local-only item is kept ONLY if it's a genuinely
+        // unsynced create (`createOp`/`isCreatePending`) still in this device's
+        // own write queue — that's the one case where "missing from the API" means
+        // "not yet uploaded" rather than "deleted elsewhere." Tombstoned ids are
+        // still dropped outright (belt-and-suspenders for the reconcile logic
+        // below, which re-issues deletes when a tombstoned id reappears).
+        const mergeById = <T extends { id: string }>(
+          api: T[] | undefined,
+          local: T[],
+          createOp?: WriteOpName,
+        ): T[] => {
           const map = new Map<string, T>();
-          for (const item of local) {
-            if (!tombstones.has(item.id)) map.set(item.id, item);
+          if (api) {
+            for (const item of local) {
+              if (tombstones.has(item.id)) continue;
+              if (createOp && isCreatePending(createOp, item.id)) map.set(item.id, item);
+            }
+          } else {
+            // No API data at all for this collection (e.g. request failed) —
+            // fall back to local so a transient error can't wipe the UI.
+            for (const item of local) {
+              if (!tombstones.has(item.id)) map.set(item.id, item);
+            }
           }
           for (const item of (api ?? [])) {
             if (!tombstones.has(item.id)) map.set(item.id, item);
@@ -500,8 +521,15 @@ export const useWorkflowStore = create<WorkflowState>()(
         // API pins if the API returned them, otherwise keep local state.
         const apiPins = migrated.capturePins;
         const localPins = get().capturePins;
-        const basePins = (replace ? (apiPins ?? []) : (apiPins ?? localPins))
-          // Never re-introduce a pin the client deleted.
+        const basePins = (
+          replace
+            ? (apiPins ?? [])
+            : mergeById(apiPins, localPins, 'createCapturePin')
+        )
+          // Belt-and-suspenders: mergeById already drops tombstoned/non-pending
+          // local-only ids when apiPins is present; this also covers the rare
+          // case apiPins is undefined (failed request) and falls back to raw
+          // localPins.
           .filter(p => !tombstones.has(p.id));
         // Deduplicate captureIds within each pin.
         const deduped = basePins.map(p => ({
@@ -531,7 +559,7 @@ export const useWorkflowStore = create<WorkflowState>()(
           const mergedCaptures = (
             replace
               ? (migrated.captures ?? [])
-              : mergeById(migrated.captures, s.captures)
+              : mergeById(migrated.captures, s.captures, 'createCapture')
           ).filter(c => !tombstones.has(c.id));
 
           // Captures that still live under a pin timeline.
@@ -551,9 +579,18 @@ export const useWorkflowStore = create<WorkflowState>()(
           // Catalog filter only — never delete Mongo records that fail the check.
           // Walkthrough media can live on linked captures (TourViewer derives it);
           // auto-deleting here permanently wiped real favorites/published tours.
-          const liveTours = apiToursRaw.filter(
-            t => !tombstones.has(t.id) && isLiveUploadedTour(t),
-          );
+          //
+          // Deliberately NOT filtering by `tombstones` here: a tombstone only means
+          // THIS device asked to delete the tour at some point — it's a per-device
+          // localStorage set that never syncs to other devices. If the server
+          // snapshot still contains the tour, either the delete hasn't landed yet
+          // or (permanent 404/409/422) never will — either way the reconcile block
+          // below keeps re-issuing the delete, but hiding it from THIS device's
+          // list in the meantime just produces "desktop shows fewer tours than
+          // phone" drift that never resolves. Showing the true server state here
+          // lets the user see and retry a stuck delete instead of it silently
+          // vanishing on one device forever while every other device still has it.
+          const liveTours = apiToursRaw.filter(isLiveUploadedTour);
 
           return {
             ...s,
@@ -565,9 +602,12 @@ export const useWorkflowStore = create<WorkflowState>()(
             flats:         migrated.flats         ?? s.flats,
             rooms:         migrated.rooms         ?? s.rooms,
             tours:         liveTours,
-            // Drop floor-plan records the client superseded on re-upload so a stale
-            // duplicate snapshot can't resurrect an empty plan for the floor.
-            floorPlans:    (migrated.floorPlans ?? s.floorPlans).filter(fp => !tombstones.has(fp.id)),
+            // Trust the API snapshot directly for floor plans (same reasoning as
+            // `liveTours` above): `migrated.floorPlans ?? s.floorPlans` already
+            // means "server data wins whenever the API returned any," so a
+            // remaining local-tombstone filter here would only hide a floor plan
+            // the server still reports — i.e. per-device drift, not real deletion.
+            floorPlans:    (migrated.floorPlans ?? s.floorPlans),
             defects:       migrated.defects       ?? s.defects,
             notifications: migrated.notifications ?? s.notifications,
             auditLogs:     migrated.auditLogs     ?? s.auditLogs,
