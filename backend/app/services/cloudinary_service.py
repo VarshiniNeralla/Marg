@@ -14,17 +14,14 @@ from app.core.exceptions import ValidationException
 from app.services.panorama_service import (
     GpanoPose,
     PanoramaValidationError,
-    classify_projection_bgr,
-    classify_projection_bytes,
     ensure_under_size,
     inject_gpano_xmp,
     is_equirectangular,
-    is_insp,
     is_raw_capture,
     measure_image,
     validate_stitched_output,
 )
-from app.services.fisheye_stitch import StitchResult, _decode_raw_rgb, stitch_equirectangular
+from app.services.fisheye_stitch import StitchResult, stitch_equirectangular
 
 
 def _stitch_raw_360(raw: bytes, filename: str) -> Optional[StitchResult]:
@@ -47,30 +44,6 @@ def _stitch_raw_360(raw: bytes, filename: str) -> Optional[StitchResult]:
         logger.error(f"[capture-pipeline] stitching failed for {filename}: {exc!r}")
         return None
 
-
-def _extract_insp_preview(raw: bytes, filename: str) -> Optional[tuple[bytes, int, int]]:
-    """
-    Fallback for `.insp` files that decode to a viewable 2:1 preview but do not
-    expose the raw calibration blob needed for our stitcher.
-    """
-    from loguru import logger
-    import cv2
-
-    img = _decode_raw_rgb(raw, filename)
-    if img is None:
-        return None
-    h, w = img.shape[:2]
-    projection = classify_projection_bgr(img)
-    logger.info(
-        f"[capture-pipeline] insp_preview_check file={filename} "
-        f"decoded={w}x{h} projection={projection}"
-    )
-    if projection != "equirectangular":
-        return None
-    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 92])
-    if not ok:
-        return None
-    return buf.tobytes(), w, h
 
 settings = get_settings()
 
@@ -192,20 +165,19 @@ async def upload_media(
     # when calibration is available. If stitching is unavailable for `.insp`, we
     # preserve the prior product behavior: upload the raw image and let the
     # frontend render it with DualFisheyeAdapter.
-    
-    is_raw = False
-    if tag_if_panorama:
-        if is_raw_capture(filename):
-            is_raw = True
-        else:
-            # Fallback for manual web uploads of camera JPEGs: analyze pixels of 2:1 images
-            raw = file_obj.read()
-            dims = measure_image(raw)
-            if dims and is_equirectangular(dims[0], dims[1]):
-                proj = await to_thread.run_sync(classify_projection_bytes, raw)
-                if proj == "dualfisheye":
-                    is_raw = True
-            file_obj.seek(0)
+    #
+    # Deliberately extension-only, NOT content-sniffed: a prior version of this
+    # function also ran classify_projection_bytes on any 2:1 .jpg and routed it
+    # into the raw stitcher if the corners looked "dark enough" to resemble an
+    # unstitched dual-fisheye frame. That heuristic false-positived on genuine,
+    # already-equirectangular Insta360 X3 OSC captures whose corners happened
+    # to be a dim ceiling/room corner — misrouting real photos into a stitcher
+    # built for a different image format entirely, producing wavy/misaligned
+    # output (confirmed on-device: real captures split into two visibly
+    # mismatched halves). Trusting the extension alone is what the OSC capture
+    # pipeline actually needs; a manually-uploaded raw file with a wrong/generic
+    # .jpg extension is a rare edge case not worth reintroducing that bug for.
+    is_raw = tag_if_panorama and is_raw_capture(filename)
 
     if is_raw:
         from loguru import logger
@@ -218,51 +190,24 @@ async def upload_media(
         raw = file_obj.read()
         result = await to_thread.run_sync(_stitch_raw_360, raw, filename)
         if result is None:
-            if is_insp(filename):
-                preview = await to_thread.run_sync(_extract_insp_preview, raw, filename)
-                if preview is not None:
-                    preview_jpg, width, height = preview
-                    try:
-                        validate_stitched_output(width, height, filename=filename)
-                    except PanoramaValidationError as exc:
-                        raise ValidationException(str(exc)) from exc
-                    tagged = await to_thread.run_sync(
-                        inject_gpano_xmp,
-                        preview_jpg,
-                        width,
-                        height,
-                    )
-                    upload_source = BytesIO(tagged)
-                    upload_filename = Path(filename).stem + ".jpg"
-                    effective_resource_type = "image"
-                    stitch_meta = {
-                        "projection": "equirectangular",
-                        "cameraModel": "embedded-preview",
-                        "stitchWidth": width,
-                        "stitchHeight": height,
-                        "source": "insp_preview",
-                    }
-                    logger.info(
-                        f"[capture-pipeline] using embedded INSP preview for {filename} "
-                        f"output={width}x{height} aspect={width / max(height, 1):.3f}"
-                    )
-                else:
-                    dims = measure_image(raw)
-                    dim_text = f"{dims[0]}x{dims[1]}" if dims else "unknown"
-                    logger.warning(
-                        f"[capture-pipeline] stitch_failed_fallback_raw_insp file={filename} "
-                        f"reason=no_usable_calibration_or_preview projection=dualfisheye "
-                        f"dims={dim_text}"
-                    )
-                    upload_source = BytesIO(raw)
-                    upload_filename = filename
-                    effective_resource_type = "image"
-            else:
-                raise ValidationException(
-                    f"Could not stitch {filename}. The file may be corrupt, missing "
-                    f"embedded Insta360 calibration, or unsupported. Export an "
-                    f"equirectangular JPEG from Insta360 Studio and upload that instead."
-                )
+            # NOTE: this used to fall back to _extract_insp_preview, which
+            # classified the RAW (un-rectified) dual-fisheye bytes with the
+            # same corner-darkness heuristic as classify_projection_bgr and,
+            # on a false positive (e.g. bright ceiling light in the corners
+            # instead of the expected dark lens vignette), uploaded the raw
+            # side-by-side fisheye pair completely unprocessed, mislabeled as
+            # a finished panorama — confirmed on-device as the cause of a
+            # "doubled"/wavy image bug. Now that fisheye_stitch.py can build a
+            # synthetic profile-based calibration when no embedded calibration
+            # exists (see parse_embedded_calibration's "profile" source), a
+            # genuine stitch failure here means the file truly can't be
+            # stitched (e.g. corrupt, unrecognised layout) — fail clearly
+            # rather than guess.
+            raise ValidationException(
+                f"Could not stitch {filename}. The file may be corrupt, missing "
+                f"embedded Insta360 calibration, or unsupported. Export an "
+                f"equirectangular JPEG from Insta360 Studio and upload that instead."
+            )
         else:
             try:
                 validate_stitched_output(result.width, result.height, filename=filename)

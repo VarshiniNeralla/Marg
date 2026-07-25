@@ -1413,7 +1413,12 @@ def _optimize_seam_mask(front, back, w1, out_w, out_h, flow_unreliability=None, 
     edge_mag = cv2.GaussianBlur(edge_mag, (0, 0), 16.0)
     
     cost = diff + ((w1 - 0.5) ** 2).astype(np.float32) * max(scale * 0.1, 1.0)
-    cost = cost + edge_mag * (1.0 / max(np.percentile(edge_mag[corridor], 95), 1.0)) * max(scale * 0.5, 8.0)
+    # corridor can be empty (no pixels with 0.10 <= w1 <= 0.90) when the two
+    # hemispheres' clean-FOV overlap is very narrow/degenerate — percentile of
+    # an empty array raises, so fall back to the same "no corridor" sentinel
+    # already used for `scale` above rather than crashing the whole stitch.
+    edge_p95 = float(np.percentile(edge_mag[corridor], 95)) if corridor.any() else 1.0
+    cost = cost + edge_mag * (1.0 / max(edge_p95, 1.0)) * max(scale * 0.5, 8.0)
     
     if flow_mag is not None:
         mag_penalty = cv2.GaussianBlur(np.abs(flow_mag).astype(np.float32), (0, 0), 16.0)
@@ -1807,6 +1812,43 @@ def save_stitch_debug_pngs(artifacts: StitchArtifacts, out_dir: Path) -> dict[st
     return written
 
 
+def _detect_fisheye_circle(lens_region) -> Optional[tuple[float, float, float]]:
+    """
+    Locates the true fisheye circle (cx, cy, radius) within a single lens's
+    image region by thresholding the bright content against the black lens
+    vignette/background and fitting the minimum enclosing circle of the
+    largest bright contour.
+
+    Used when there's no embedded Insta360 calibration (see its caller in
+    _stitch_arrays): a naive "assume the circle exactly fills the region"
+    guess left the true circle's radius short by ~140px on a real capture
+    (measured: true r=3134 vs a naive half-width guess of r=2992), which
+    left the two lenses' combined FOV just short of the full 360° wrap,
+    visible as a black wedge at the panorama's left/right edges.
+    """
+    import cv2
+    import numpy as np
+
+    gray = cv2.cvtColor(lens_region, cv2.COLOR_BGR2GRAY) if lens_region.ndim == 3 else lens_region
+    # Same corner-darkness intuition as classify_projection_bgr, but applied
+    # as a per-pixel threshold rather than a coarse 4-corner sample: the lens
+    # vignette is essentially black (see classify_projection_bgr's < 18.0
+    # corner threshold), real scene content is not.
+    _, mask = cv2.threshold(gray, 12, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    largest = max(contours, key=cv2.contourArea)
+    h, w = gray.shape[:2]
+    # Guard against a spurious detection (e.g. a single bright pixel/artifact
+    # rather than the actual lens circle) — the real fisheye circle should
+    # cover a large majority of the lens region's area.
+    if cv2.contourArea(largest) < 0.25 * w * h:
+        return None
+    (cx, cy), radius = cv2.minEnclosingCircle(largest)
+    return float(cx), float(cy), float(radius)
+
+
 def _stitch_arrays(
     data: bytes,
     filename: str,
@@ -1873,8 +1915,52 @@ def _stitch_arrays(
         )
 
     if not (calib and calib.source in ("embedded", "embedded_trailer")):
-        logger.warning(f"No embedded calibration for {filename}; cannot stitch reliably")
-        return None
+        # Insta360 X3 OSC HTTP captures (camera.takePicture over the WiFi API)
+        # carry NO embedded INSTA360 calibration blob, trailer record, or EXIF
+        # Parameters field at all — confirmed by direct inspection of a live
+        # capture (parse_embedded_calibration finds nothing on every strategy).
+        # That's unlike Studio-exported .insp/.dng files, which always embed
+        # one. Without this fallback, every OSC capture either hard-fails here
+        # or (the removed cloudinary_service.py preview path) got misidentified
+        # as an already-finished panorama by a corner-brightness heuristic and
+        # uploaded completely unprocessed — two real bugs from the same root
+        # gap. When the decoded frame is a clean side-by-side pair of SQUARE
+        # lens regions (W == 2*H, the shape every OSC capture from this camera
+        # has shown), build a calibration from the frame geometry: prefer
+        # DETECTING the true fisheye circle from image content (the naive
+        # half-width/half-height guess left a real gap — measured on a real
+        # capture: true circle cx=2957 cy=2839 r=3134 vs guessed cx=cy=r=2992,
+        # a ~140px radius shortfall that left the two lenses just short of
+        # covering the full 360° wrap-around seam behind the camera), falling
+        # back to the naive centered-square guess only if detection fails.
+        if calib is None and W == 2 * H and H > 0:
+            lens_region = img[:, 0:W // 2]
+            detected = _detect_fisheye_circle(lens_region)
+            if detected is not None:
+                cx, cy, radius = detected
+                source = "detected"
+            else:
+                half = float(H)
+                cx = prof.default_center_frac[0] * half
+                cy = prof.default_center_frac[1] * half
+                radius = prof.default_radius_frac * half
+                source = "profile"
+            calib = DualFisheyeCalibration(
+                lens1=LensCalibration(cx, cy, radius, (0.0, 0.0, 0.0)),
+                lens2=LensCalibration(cx, cy, radius, (0.0, 0.0, 0.0)),
+                width=W,
+                height=H,
+                layout="side-by-side",
+                source=source,
+            )
+            logger.info(
+                f"[calibration] no embedded calibration for {filename}; using "
+                f"{source} calibration: layout=side-by-side lens_region={H}x{H} "
+                f"cx={cx:.1f} cy={cy:.1f} radius={radius:.1f} model={model or prof.model}"
+            )
+        if not (calib and calib.source in ("embedded", "embedded_trailer", "detected", "profile")):
+            logger.warning(f"No usable calibration for {filename}; cannot stitch reliably")
+            return None
 
     fov = prof.fisheye_fov_deg
     sx_full = W / calib.width if calib.width else 1.0
