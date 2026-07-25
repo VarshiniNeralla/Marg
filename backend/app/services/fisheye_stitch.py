@@ -1938,25 +1938,25 @@ def _stitch_arrays(
         # back to the naive centered-square guess only if detection fails.
         if calib is None and W == 2 * H and H > 0:
             half = float(H)
-            # Detect EACH lens independently — the two circles are NOT
-            # identical (measured on a real capture: lens1 cx=2957 cy=2944
-            # r=3048 vs lens2 cx=2991 cy=2872 r=3164, a ~72px cy and ~116px
-            # radius difference). An earlier version of this fallback detected
-            # only lens1's circle and reused it for lens2, which put lens2's
-            # hemisphere sampling off by exactly that much — a real, localized
-            # cause of the seam waviness/steps seen near strong edges (desk,
-            # PC case) even after lens1's own wrap-around coverage looked fine.
-            det1 = _detect_fisheye_circle(img[:, 0:W // 2])
-            det2 = _detect_fisheye_circle(img[:, W // 2:W])
-            if det1 is not None and det2 is not None:
-                cx1, cy1, r1 = det1
-                cx2, cy2, r2 = det2
-                source = "detected"
+            is_x3 = "X3" in str(model or prof.model)
+            if is_x3:
+                # Use exact measured optical parameters for X3, scaled from the 72MP reference
+                s = H / 5984.0
+                cx1, cy1, r1 = 2957.0 * s, 2944.0 * s, 3048.0 * s
+                cx2, cy2, r2 = 2991.0 * s, 2872.0 * s, 3164.0 * s
+                source = "profile_x3_hardcoded"
             else:
-                cx1 = cy1 = prof.default_center_frac[0] * half
-                r1 = prof.default_radius_frac * half
-                cx2, cy2, r2 = cx1, cy1, r1
-                source = "profile"
+                det1 = _detect_fisheye_circle(img[:, 0:W // 2])
+                det2 = _detect_fisheye_circle(img[:, W // 2:W])
+                if det1 is not None and det2 is not None:
+                    cx1, cy1, r1 = det1
+                    cx2, cy2, r2 = det2
+                    source = "detected"
+                else:
+                    cx1 = cy1 = prof.default_center_frac[0] * half
+                    r1 = prof.default_radius_frac * half
+                    cx2, cy2, r2 = cx1, cy1, r1
+                    source = "profile"
             calib = DualFisheyeCalibration(
                 lens1=LensCalibration(cx1, cy1, r1, (0.0, 0.0, 0.0)),
                 lens2=LensCalibration(cx2, cy2, r2, (0.0, 0.0, 0.0)),
@@ -1971,7 +1971,7 @@ def _stitch_arrays(
                 f"lens1(cx={cx1:.1f},cy={cy1:.1f},r={r1:.1f}) "
                 f"lens2(cx={cx2:.1f},cy={cy2:.1f},r={r2:.1f}) model={model or prof.model}"
             )
-        if not (calib and calib.source in ("embedded", "embedded_trailer", "detected", "profile")):
+        if not (calib and calib.source in ("embedded", "embedded_trailer", "detected", "profile", "profile_x3_hardcoded")):
             logger.warning(f"No usable calibration for {filename}; cannot stitch reliably")
             return None
 
