@@ -9,6 +9,18 @@ import { restoreSessionFromCookie } from '@/services/sessionRefresh';
 export const apiClient = axios.create({
   baseURL: API_V1_URL,
   withCredentials: true,   // sends the httpOnly refresh-token cookie
+  // A raw Insta360 capture upload (~12-15MB multipart body) over a slow
+  // mobile connection or a free trycloudflare.com quick tunnel can stall
+  // indefinitely with NO axios default timeout — the request neither
+  // succeeds nor fails, it just hangs, so fileUploadQueue.ts's entry sits at
+  // 'uploading' forever with no error to react/retry on (confirmed: backend
+  // logs show the CORS preflight OPTIONS succeeding but the actual POST body
+  // never arriving at all). A generous but finite timeout turns that silent
+  // hang into a real, retryable failure (axios reports it as `ECONNABORTED`,
+  // which normaliseError below maps to status 0 — the same "unreachable"
+  // class fileUploadQueue.ts already retries indefinitely without burning
+  // MAX_ATTEMPTS).
+  timeout: 180_000,
   headers: {
     'Content-Type': 'application/json',
     // Only relevant when API_V1_URL points at a free-tier ngrok tunnel (mobile

@@ -4,6 +4,7 @@ import { useAuthStore } from './authStore';
 import { useWorkflowStore } from './workflowStore';
 import type { WorkflowDataState } from './workflowStore';
 import { flushWriteQueue } from './writeQueue';
+import { flushFileUploadQueue } from './fileUploadQueue';
 
 /**
  * Scopes captures / pins / floor plans to an engineer's assigned projects for
@@ -67,7 +68,16 @@ export default function WorkflowApiBootstrap() {
 
     // Replay any writes queued before this session was authenticated (e.g. a pin
     // placed while briefly offline, or just after login before the token landed).
+    // Also replay any queued PHOTO uploads for the same reason: fileUploadQueue's
+    // own flush() silently no-ops (and never starts its retry poll timer) if
+    // isAuthenticated was false the instant it ran — e.g. a capture taken right
+    // as an access token expired, mid-refresh. Without a flush retriggered here,
+    // that photo would sit at 'queued' forever with nothing to wake it back up
+    // except an unrelated online/focus/network event (reproduced: server logs
+    // showed a capture's pin/room/audit-log writes all landing normally around
+    // an auth/refresh, but its /uploads/captures POST never being sent at all).
     flushWriteQueue();
+    flushFileUploadQueue();
 
     workflowApiService
       .snapshot()
@@ -79,6 +89,7 @@ export default function WorkflowApiBootstrap() {
         // captures in the shared localStorage-backed store.
         hydrateFromApi(payload, { replace: true });
         flushWriteQueue();
+        flushFileUploadQueue();
       })
       .catch(error => {
         loadedRef.current = false;

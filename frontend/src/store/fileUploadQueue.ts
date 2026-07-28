@@ -134,11 +134,23 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-function base64ToFile(base64: string, fileName: string, mimeType: string): File {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new File([bytes], fileName, { type: mimeType });
+/**
+ * atob() + a manual charCodeAt() copy loop over a large (~16MB+) base64
+ * string runs entirely synchronously on the WebView's single JS thread —
+ * confirmed on-device via logcat: after a ~12MB raw Insta360 capture's
+ * Filesystem.readFile resolved, the app produced ZERO further JS activity
+ * (no console output, no Capacitor plugin calls) for 44+ seconds before the
+ * next event, with no crash and no exception — it was just this loop running
+ * far slower than expected, silently starving the upload call that should
+ * have followed it. The data: URL + fetch() decode below hands the same
+ * base64->binary conversion to the browser's native (non-JS-loop, often
+ * off-main-thread) decoder instead, avoiding that multi-second main-thread
+ * stall for the exact same input.
+ */
+async function base64ToFile(base64: string, fileName: string, mimeType: string): Promise<File> {
+  const dataUrl = `data:${mimeType};base64,${base64}`;
+  const blob = await (await fetch(dataUrl)).blob();
+  return new File([blob], fileName, { type: mimeType });
 }
 
 // ── Backoff (identical formula to writeQueue.ts) ─────────────────────────────
@@ -185,13 +197,44 @@ async function uploadEntry(entry: PendingFileUpload): Promise<void> {
     path: entry.fileUri,
     directory: Directory.Data,
   });
-  const file = base64ToFile(data as string, entry.fileName, entry.mimeType);
+  const file = await base64ToFile(data as string, entry.fileName, entry.mimeType);
   const result = await uploadCaptureFiles([file]);
   const fileCount = result.count || 1;
   useWorkflowStore.getState().attachCaptureToPin(entry.pinId, fileCount, result.files);
   await Filesystem.deleteFile({ path: entry.fileUri, directory: Directory.Data }).catch(() => {
     /* stray file on disk is harmless; never fail the upload over cleanup */
   });
+}
+
+/**
+ * Upload a freshly-captured file straight from memory — no Filesystem
+ * write/read round-trip at all — for the common case where the device is
+ * online right now. This is strictly an optimization over the durable queue
+ * below (which remains the source of truth for offline/interrupted
+ * uploads): skipping the base64 write+read+decode entirely avoids the
+ * multi-second-plus main-thread stall confirmed on-device for large (~12MB)
+ * captures, and lets a normal, immediate capture upload at the speed a plain
+ * `File` object allows.
+ *
+ * Returns true if the direct upload succeeded (caller does nothing further —
+ * `attachCaptureToPin` has already run). Returns false for ANY failure
+ * (including "we're offline") so the caller can fall back to
+ * `enqueueFileUpload`'s durable, retryable queue — this function never
+ * throws.
+ */
+export async function tryDirectUpload(pinId: string, file: File): Promise<boolean> {
+  try {
+    const status = await Network.getStatus();
+    if (!status.connected) return false;
+    const result = await uploadCaptureFiles([file]);
+    const fileCount = result.count || 1;
+    useWorkflowStore.getState().attachCaptureToPin(pinId, fileCount, result.files);
+    return true;
+  } catch {
+    // Any failure (network, timeout, server error, auth) — the durable queue
+    // is the fallback path and already knows how to retry/classify errors.
+    return false;
+  }
 }
 
 // ── Per-pin serial, cross-pin concurrent flush ───────────────────────────────
@@ -218,7 +261,21 @@ function nextRetryDelay(): number | null {
 async function flush(): Promise<void> {
   await load();
   if (!queue.length) return;
-  if (!useAuthStore.getState().isAuthenticated) return;
+  if (!useAuthStore.getState().isAuthenticated) {
+    // Not signed in YET (e.g. this flush ran mid-token-refresh, or before
+    // WorkflowApiBootstrap's post-login flush had a chance to fire). Unlike
+    // the rest of this function, this early return must still arm the poll
+    // timer — otherwise a queued photo that hits this exact branch on its
+    // very first flush attempt has no mechanism left to ever retry itself:
+    // startPolling() below only runs once flush() gets PAST this check, so a
+    // queue that never gets past it never polls, and sits at 'queued'
+    // forever until an unrelated online/focus/network event happens to fire
+    // (reproduced: a capture taken right as the access token expired had its
+    // pin/room/audit-log writes all land normally, but its own
+    // /uploads/captures request was never even sent).
+    startPolling();
+    return;
+  }
 
   const byPin = new Map<string, PendingFileUpload[]>();
   for (const entry of queue) {

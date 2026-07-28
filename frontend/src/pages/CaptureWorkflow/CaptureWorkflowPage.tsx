@@ -14,7 +14,7 @@ import { useWorkflowStore } from '@store/workflowStore';
 import { getFloorPlanByFloor, getFloorsWithPlanByTower, countFloorsWithPlanByTower } from '@store/workflowSelectors';
 import { uploadCaptureFiles } from '@/services/uploadService';
 import {
-  enqueueFileUpload, discardFileUpload, retryFileUpload,
+  enqueueFileUpload, discardFileUpload, retryFileUpload, tryDirectUpload,
   fileUploadStatusForPin, allQueuedPinStatuses, FILE_QUEUE_CHANGED_EVENT, FILE_UPLOAD_SUCCEEDED_EVENT,
 } from '@store/fileUploadQueue';
 import { useDeviceType, usesCameraCapture } from '@/hooks/useDeviceType';
@@ -1079,6 +1079,48 @@ export default function CaptureWorkflowPage() {
     uploadingPinsRef.current.add(pinId);            // synchronous — blocks double-fire
     setPinStatus(s => ({ ...s, [pinId]: 'queued' }));
     try {
+      // Single-file capture (the normal case — one Insta360/phone photo per
+      // pin): try uploading the in-memory File directly first, skipping the
+      // durable queue's Filesystem write+read+base64-decode round-trip
+      // entirely. Confirmed on-device: for a ~12MB raw capture that round-trip
+      // stalled the WebView's JS thread for 44+ seconds with no error — pure
+      // main-thread cost, not a network problem — so avoiding it when we're
+      // already online (the common case) makes a normal capture upload at
+      // ordinary speed instead of paying that cost every time. Only fall back
+      // to the durable, retryable queue if the direct attempt fails for any
+      // reason (offline, timeout, server error) — that path is unchanged and
+      // still the source of truth for offline/interrupted captures.
+      if (files.length === 1) {
+        // Show 'uploading' (not 'queued') for the direct-upload attempt —
+        // this path bypasses fileUploadQueue.ts entirely (see below), so
+        // there's no queue-driven status to sync from, and a raw 360 capture
+        // can take 20-30+ seconds server-side (fisheye stitch + Cloudinary
+        // upload) before this resolves. Left at 'queued' the whole time, the
+        // pin looked stuck/idle for that entire window with no visible
+        // progress indicator, even though the upload was genuinely in
+        // flight and succeeding.
+        setPinStatus(s => ({ ...s, [pinId]: 'uploading' }));
+        const uploaded = await tryDirectUpload(pinId, files[0]);
+        if (uploaded) {
+          failedFilesRef.current.delete(pinId);
+          setPinStatus(s => {
+            const next = { ...s };
+            delete next[pinId];
+            return next;
+          });
+          // tryDirectUpload bypasses fileUploadQueue.ts entirely, so its
+          // FILE_UPLOAD_SUCCEEDED_EVENT never fires — show the same success
+          // toast directly here to match the queued-upload path's behavior.
+          const seq = useWorkflowStore.getState().capturePins.find(p => p.id === pinId)?.sequenceNumber;
+          setToast(`Capture uploaded for Pin ${seq ?? ''} · sent for review`);
+          return;
+        }
+        // Direct attempt failed (offline, timeout, server error) — falling
+        // through to the durable queue below. Reset to 'queued' so the UI
+        // reads as "handed off, will retry" rather than staying on
+        // 'uploading' for a request that's no longer in flight.
+        setPinStatus(s => ({ ...s, [pinId]: 'queued' }));
+      }
       // Multiple files from one capture (e.g. a multi-select desktop upload)
       // enqueue as separate entries; fileUploadQueue.ts uploads them for the
       // same pin strictly in order, so this doesn't reorder captures.

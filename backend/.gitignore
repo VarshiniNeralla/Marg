@@ -9,5 +9,6 @@ wheels/
 # Virtual environments
 .venv
 
-Debug files
+uploads/
 
+Debug files/
