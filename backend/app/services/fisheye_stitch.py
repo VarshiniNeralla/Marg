@@ -1536,10 +1536,11 @@ def _multiband_blend(front, back, mask, clean1, clean2):
     import numpy as np
 
     h, w = mask.shape
-    # Increase the base scale divisor from 16.0 to 8.0 to add one extra pyramid 
-    # level. This widens the maximum blending region, helping to hide sharp 
-    # global exposure/lighting differences between the two lenses.
-    levels = max(2, int(np.floor(np.log2(max(16, min(h, w)) / 8.0))))
+    # Use the original base scale divisor of 16.0. 
+    # Increasing this (e.g. to 8.0) causes chromatic aberration and lens flares 
+    # at the seam to be scattered/smeared across a massive portion of the image, 
+    # creating unnatural multi-colored clouds.
+    levels = max(2, int(np.floor(np.log2(max(16, min(h, w)) / 16.0))))
 
     mask = mask.astype(np.float32)
     f = np.where(clean1[..., None], front, back).astype(np.float32)

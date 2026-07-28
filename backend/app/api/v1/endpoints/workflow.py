@@ -16,7 +16,7 @@ from app.core.permissions import require_permission
 from loguru import logger
 
 settings = get_settings()
-from app.services.cloudinary_service import cloudinary_folder, signed_upload_params, upload_media
+from app.services.cloudinary_service import cloudinary_folder, signed_upload_params, upload_media, delete_media_assets
 from app.services.room_map_service import RoomMapService
 from app.services.ai_progress_service import AIProgressService
 from app.utils.pagination import success_response
@@ -439,7 +439,10 @@ async def update_room(room_id: str, payload: dict[str, Any], ctx: CallerContext,
 @router.delete("/rooms/{room_id}", summary="Delete room")
 async def delete_room(room_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("rooms", "delete"))):
     # Drop captures that lived only on this room so Media Library can't resurface them.
+    room_captures = await db["captures"].find({"orgId": ctx.org_id, "roomId": room_id}).to_list(length=None)
     await db["captures"].delete_many({"orgId": ctx.org_id, "roomId": room_id})
+    for cap in room_captures:
+        await delete_media_assets(cap.get("mediaAssets") or cap.get("media_assets") or [])
     await _delete(db, "rooms", room_id, ctx)
     return success_response(message="Room deleted")
 
@@ -489,7 +492,14 @@ async def publish_capture(capture_id: str, payload: dict[str, Any], ctx: CallerC
 
 @router.delete("/captures/{capture_id}", summary="Delete capture")
 async def delete_capture(capture_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "delete"))):
+    # Fetch first so we still have its mediaAssets (Cloudinary public_id/
+    # resource_type) after the Mongo document is gone — deleting the doc
+    # without this left the actual image orphaned on Cloudinary forever.
+    capture = await db["captures"].find_one({"_id": _id_filter(capture_id), "orgId": ctx.org_id})
     await _delete(db, "captures", capture_id, ctx)
+    if capture:
+        assets = capture.get("mediaAssets") or capture.get("media_assets") or []
+        await delete_media_assets(assets)
     # Drop progress analyses that compared this capture so saved-report history
     # cannot resurface deleted panorama images in the tour compare UI.
     try:
@@ -643,7 +653,11 @@ async def delete_floor_plan(floor_plan_id: str, ctx: CallerContext, db: DB, _=De
     # Re-uploading a floor plan supersedes the previous record. The client
     # re-points pins onto the new plan and then deletes the stale record here so
     # the snapshot stops returning duplicate (empty) plans for the same floor.
+    plan = await db["floor_plans"].find_one({"_id": _id_filter(floor_plan_id), "orgId": ctx.org_id})
     await _delete(db, "floor_plans", floor_plan_id, ctx)
+    if plan:
+        assets = plan.get("mediaAssets") or plan.get("media_assets") or []
+        await delete_media_assets(assets)
     return success_response(message="Floor plan deleted")
 
 
@@ -683,7 +697,10 @@ async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(
     ]
     room_id = pin.get("roomId") or pin.get("room_id")
     for cid in capture_ids:
+        cap = await db["captures"].find_one({"_id": _id_filter(cid), "orgId": ctx.org_id})
         await db["captures"].delete_one({"_id": _id_filter(cid), "orgId": ctx.org_id})
+        if cap:
+            await delete_media_assets(cap.get("mediaAssets") or cap.get("media_assets") or [])
         try:
             purged = await AIProgressService(db).purge_for_timeline(ctx.org_id, cid)
             if purged:
@@ -691,7 +708,10 @@ async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(
         except Exception:
             logger.exception("Failed to purge progress analyses for capture {} during pin delete {}", cid, pin_id)
     if room_id:
+        room_captures = await db["captures"].find({"orgId": ctx.org_id, "roomId": str(room_id)}).to_list(length=None)
         await db["captures"].delete_many({"orgId": ctx.org_id, "roomId": str(room_id)})
+        for cap in room_captures:
+            await delete_media_assets(cap.get("mediaAssets") or cap.get("media_assets") or [])
         await db["rooms"].delete_one({"_id": _id_filter(str(room_id)), "orgId": ctx.org_id})
     await _delete(db, "capture_pins", pin_id, ctx)
     return success_response(message="Capture pin deleted")

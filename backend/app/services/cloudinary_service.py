@@ -327,3 +327,43 @@ async def upload_media(
         # Present when a raw dual-fisheye was stitched to equirectangular server-side.
         "stitch": stitch_meta,
     }
+
+
+async def delete_media_assets(media_assets: list[dict]) -> None:
+    """
+    Best-effort Cloudinary cleanup for one or more previously-uploaded assets.
+
+    Deleting a capture/floor-plan/etc. in Mongo used to leave its Cloudinary
+    file behind forever — the API only ever called `upload`, never `destroy`,
+    so every deleted record left an orphaned image on Cloudinary indefinitely.
+    Call this alongside the Mongo delete for any document that stores
+    `mediaAssets`/`media_assets` (each item's `public_id`/`resource_type`,
+    as returned by `upload_media` above).
+
+    Never raises: a missing/already-deleted asset or a transient Cloudinary
+    error must not block the (already-decided) Mongo delete — this is cleanup,
+    not the source of truth for whether the delete succeeded.
+    """
+    from loguru import logger
+
+    if not media_assets:
+        return
+
+    try:
+        configure_cloudinary()
+    except Exception as exc:
+        logger.warning(f"[cloudinary] skipping cleanup, not configured: {exc!r}")
+        return
+
+    for asset in media_assets:
+        public_id = (asset or {}).get("public_id")
+        if not public_id:
+            continue
+        resource_type = (asset or {}).get("resource_type") or "image"
+        try:
+            result = await to_thread.run_sync(
+                lambda: cloudinary.uploader.destroy(public_id, resource_type=resource_type)
+            )
+            logger.info(f"[cloudinary] destroyed public_id={public_id} resource_type={resource_type} result={result.get('result')}")
+        except Exception as exc:
+            logger.warning(f"[cloudinary] failed to destroy public_id={public_id}: {exc!r}")
