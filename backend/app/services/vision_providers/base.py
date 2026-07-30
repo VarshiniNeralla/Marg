@@ -51,7 +51,9 @@ class VisionProvider(ABC):
         LLM vision can't reliably LOCATE tiny labels in a full dense plan, but reads them well in a
         focused crop — so the caller tiles the plan and calls this per tile.
 
-        ``content`` must be ``{"flats": ["01", "03"]}`` (the two-digit flat numbers, empty if none).
+        ``content`` must be ``{"flats": [{"number": "01", "x": 0.3, "y": 0.7}, ...]}`` — the
+        two-digit flat number plus its own position within THIS crop as a 0-1 fraction (used by the
+        caller to tell same-numbered flats in different parts of the plan apart), empty list if none.
         """
 
     @abstractmethod
@@ -62,6 +64,7 @@ class VisionProvider(ABC):
         mime: str,
         cols: int,
         rows: int,
+        target_flat_number: str | None = None,
     ) -> VisionAnalysisResult:
         """
         Given a cropped image of ONE flat with a labelled ``cols`` x ``rows`` grid overlaid on it
@@ -70,6 +73,10 @@ class VisionProvider(ABC):
 
         LLM vision can't read pixel-precise polygons off CAD drawings, so we constrain it to naming
         grid cells — the caller converts cells (relative to the crop) back to full-image geometry.
+
+        ``target_flat_number``, when given, tells the model exactly which flat-number label to
+        extract when the crop shows more than one (a tight crop can still catch the edge of a
+        neighbouring flat) — without it the model may anchor on the wrong flat's rooms.
 
         ``content`` must be ``{"rooms": [{"name": str, "cells": ["C4", ...], "confidence": int,
         "reason": str}]}``.

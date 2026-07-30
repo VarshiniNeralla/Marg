@@ -9,7 +9,7 @@ import {
   LogoutRounded, PersonRounded, MenuRounded,
   CloudUploadRounded, StorageRounded, RateReviewRounded,
   PhotoCameraRounded, ChevronLeftRounded, ChevronRightRounded, HistoryRounded,
-  AutoAwesomeRounded,
+  AutoAwesomeRounded, InsightsRounded,
 } from '@mui/icons-material';
 import { useTheme } from '@mui/material/styles';
 import { colors, motion, zIndex } from '@theme/tokens';
@@ -17,7 +17,7 @@ import { useAuthStore, isAdmin, isManager, isFieldEngineer, getRoleLabel } from 
 import { authService } from '@features/auth/services/authService';
 import NotificationCenter from '@/shared/components/NotificationCenter/NotificationCenter';
 
-const SIDEBAR_W = 224;
+const SIDEBAR_W = 248;
 const SIDEBAR_W_COLLAPSED = 60;
 const NAV_H = 56;
 
@@ -41,6 +41,7 @@ const ADMIN_NAV: NavSection[] = [
       { label: 'Captures',   path: '/captures',    icon: <CameraAltRounded /> },
       { label: 'Tours',       path: '/tours',       icon: <ViewInArRounded /> },
       { label: 'Progress Reports', path: '/progress-reports', icon: <AutoAwesomeRounded /> },
+      { label: 'Construction Progress', path: '/construction-progress', icon: <InsightsRounded /> },
       { label: 'Analytics',   path: '/analytics',   icon: <BarChartRounded /> },
     ],
   },
@@ -69,6 +70,7 @@ const MANAGER_NAV: NavSection[] = [
       { label: 'Captures',   path: '/captures',  icon: <CameraAltRounded /> },
       { label: 'Virtual Tours', path: '/tours',  icon: <ViewInArRounded /> },
       { label: 'Progress Reports', path: '/progress-reports', icon: <AutoAwesomeRounded /> },
+      { label: 'Construction Progress', path: '/construction-progress', icon: <InsightsRounded /> },
     ],
   },
   {
@@ -77,6 +79,12 @@ const MANAGER_NAV: NavSection[] = [
       { label: 'Projects',    path: '/projects',    icon: <FolderOpenRounded /> },
       { label: 'Floor Plans', path: '/floor-plans', icon: <MapRounded /> },
       { label: 'Analytics',   path: '/analytics',   icon: <BarChartRounded /> },
+    ],
+  },
+  {
+    heading: 'Team',
+    items: [
+      { label: 'Field Engineers', path: '/users', icon: <PeopleRounded /> },
     ],
   },
 ];
@@ -184,7 +192,7 @@ export default function DashboardLayout() {
           {item.icon}
         </Box>
         {!collapsed && (
-          <Typography sx={{ fontSize: '0.8125rem', fontWeight: on ? 600 : 400, letterSpacing: on ? '-0.01em' : 0, lineHeight: 1, color: 'inherit' }}>
+          <Typography noWrap sx={{ fontSize: '0.8125rem', fontWeight: on ? 600 : 400, letterSpacing: on ? '-0.01em' : 0, lineHeight: 1, color: 'inherit', minWidth: 0, flex: 1 }}>
             {item.label}
           </Typography>
         )}

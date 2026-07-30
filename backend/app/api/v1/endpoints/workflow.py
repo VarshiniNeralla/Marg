@@ -1,9 +1,11 @@
+import hashlib
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, File, Query, UploadFile, status
+from fastapi import APIRouter, File, Query, Response, UploadFile, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
@@ -16,6 +18,7 @@ from app.core.permissions import require_permission
 from loguru import logger
 
 settings = get_settings()
+from app.services.capture_stitch_service import CaptureStitchService
 from app.services.cloudinary_service import cloudinary_folder, signed_upload_params, upload_media, delete_media_assets
 from app.services.room_map_service import RoomMapService
 from app.services.ai_progress_service import AIProgressService
@@ -156,6 +159,63 @@ def _asset_payload(asset: dict[str, Any], *, kind: str, entity_id: Optional[str]
     }
 
 
+def _pending_asset_payload(
+    *,
+    job_id: str,
+    kind: str,
+    entity_id: Optional[str],
+    ext: str,
+    filename: str,
+    size: int,
+) -> dict[str, Any]:
+    """
+    Placeholder asset for a capture whose stitch is still running in the
+    background. Deliberately mirrors _asset_payload's key shape (with null URLs)
+    so the client stores one consistent asset structure and simply swaps it for
+    the real one when the job reports completed.
+    """
+    return {
+        "stitchJobId": job_id,
+        "original_url": None,
+        "originalUrl": None,
+        "thumbnail_url": None,
+        "thumbnailUrl": None,
+        "original_file_url": None,
+        "processed_panorama_url": None,
+        "processedPanoramaUrl": None,
+        "preview_url": None,
+        "previewUrl": None,
+        "public_id": None,
+        "format": None,
+        "size": size,
+        "resource_type": "image",
+        "original_filename": filename,
+        "uploaded_at": _now(),
+        "file_type": ext.lstrip("."),
+        "fileType": ext.lstrip("."),
+        "processing_status": "processing",
+        "processingStatus": "processing",
+        "projection": None,
+        "cameraModel": None,
+        "capture_id": entity_id if kind == "captures" else None,
+        "captureId": entity_id if kind == "captures" else None,
+    }
+
+
+# Raw capture bytes outlive the request only if written to disk: the background
+# stitch job runs after the response is sent, by which point UploadFile is
+# closed. Keyed by dedup hash so a duplicate upload reuses the same spool file
+# rather than writing a second copy of a ~13MB payload.
+def _spool_raw_upload(dedup_key: str, raw_bytes: bytes, ext: str) -> Path:
+    spool_dir = Path(tempfile.gettempdir()) / "sitevision-stitch-spool"
+    spool_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = dedup_key.rsplit(":", 1)[-1]
+    path = spool_dir / f"{safe_name}{ext or '.bin'}"
+    if not path.exists():
+        path.write_bytes(raw_bytes)
+    return path
+
+
 # Content-type prefixes accepted per upload kind (defense-in-depth alongside the
 # extension allowlist — neither alone is sufficient, but together they reject the
 # obvious renamed-executable / wrong-type cases before bytes hit Cloudinary).
@@ -203,17 +263,49 @@ def _validate_upload_size(file: UploadFile, *, will_be_reprocessed: bool = False
     return size
 
 
+_UPLOAD_DEDUP_COLLECTION = "capture_upload_dedup"
+
+
+async def _dedup_lookup(db: Optional[AsyncIOMotorDatabase], key: str) -> Optional[dict[str, Any]]:
+    """Previously-completed result for these exact bytes, if any."""
+    if db is None:
+        return None
+    try:
+        doc = await db[_UPLOAD_DEDUP_COLLECTION].find_one({"_id": key})
+    except Exception as exc:  # cache must never break an upload
+        logger.warning(f"[capture-upload] dedup lookup failed: {exc!r}")
+        return None
+    return (doc or {}).get("asset")
+
+
+async def _dedup_store(db: Optional[AsyncIOMotorDatabase], key: str, asset: dict[str, Any]) -> None:
+    if db is None:
+        return
+    try:
+        await db[_UPLOAD_DEDUP_COLLECTION].replace_one(
+            {"_id": key},
+            {"_id": key, "asset": asset, "created_at": datetime.now(timezone.utc)},
+            upsert=True,
+        )
+    except Exception as exc:
+        logger.warning(f"[capture-upload] dedup store failed: {exc!r}")
+
+
 async def _upload_files(
     *,
     ctx: CallerContext,
     kind: str,
     files: list[UploadFile],
     entity_id: Optional[str] = None,
-) -> list[dict[str, Any]]:
+    db: Optional[AsyncIOMotorDatabase] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Returns (finished_assets, pending_assets). Pending entries carry a
+    stitchJobId the client polls; they have no URLs yet."""
     allowed = MEDIA_EXTENSIONS[kind]
     allowed_types = _ALLOWED_CONTENT_TYPES.get(kind, ("image/",))
     folder = cloudinary_folder(kind, ctx.org_id, entity_id)
     uploaded: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
     for file in files:
         ext = _extension(file.filename or "")
         if ext not in allowed:
@@ -230,11 +322,69 @@ async def _upload_files(
         # actually need to fit under Cloudinary's limit.
         will_be_reprocessed = kind == "captures" and (is_raw_360 or ext in {".jpg", ".jpeg"})
         from loguru import logger
+        if kind == "captures":
+            logger.info(f"📸 IMAGE RECEIVED — {file.filename} ({ext}) — reached the server, starting to process")
         logger.info(
             f"[capture-upload] file={file.filename} ext={ext} kind={kind} "
             f"is_raw_360={is_raw_360} entity_id={entity_id}"
         )
         _validate_upload_size(file, will_be_reprocessed=will_be_reprocessed)
+
+        # Stitching a raw 360 capture costs ~25-35s of CPU, and the client's
+        # durable upload queue legitimately re-sends the same bytes whenever a
+        # response never arrives (dropped tunnel, app restart mid-upload). With
+        # no dedup those retries each redo the full stitch AND create another
+        # Cloudinary asset — observed in production as 28 duplicate assets for
+        # 2 real captures. Keying completed results on a hash of the exact bytes
+        # makes a retry idempotent and near-instant instead.
+        dedup_key: Optional[str] = None
+        if kind == "captures":
+            raw_bytes = await file.read()
+            await file.seek(0)
+            dedup_key = f"{ctx.org_id}:{hashlib.sha256(raw_bytes).hexdigest()}"
+            cached = await _dedup_lookup(db, dedup_key)
+            if cached is not None:
+                logger.info(
+                    f"[capture-upload] dedup HIT file={file.filename} "
+                    f"key={dedup_key[-12:]} — skipping stitch + Cloudinary upload"
+                )
+                uploaded.append(_asset_payload(cached, kind=kind, entity_id=entity_id, ext=ext))
+                continue
+
+        # Raw 360 files are the only ones that pay the ~23s stitch, so they are
+        # the only ones moved off the request path. A plain .jpg capture just
+        # gets GPano metadata injected (see cloudinary_service.upload_media's
+        # non-raw branch) and finishes in about a second — making that async too
+        # would add a pointless poll round-trip and force every display surface
+        # to handle a null-URL state for the common case.
+        if is_raw_360 and dedup_key is not None:
+            spool_path = _spool_raw_upload(dedup_key, raw_bytes, ext)
+            logger.info(f"🧵 STITCHING NOW — {file.filename} — dispatching to background, this takes ~25-35s")
+            job = await CaptureStitchService(db).start_stitch(
+                org_id=ctx.org_id,
+                dedup_key=dedup_key,
+                cached_asset=None,  # cache was already checked above
+                raw_path=str(spool_path),
+                filename=file.filename or f"upload{ext}",
+                ext=ext,
+                folder=folder,
+                entity_id=entity_id,
+            )
+            if job.get("status") == "completed" and job.get("asset"):
+                uploaded.append(_asset_payload(job["asset"], kind=kind, entity_id=entity_id, ext=ext))
+            else:
+                pending.append(
+                    _pending_asset_payload(
+                        job_id=str(job.get("jobId") or ""),
+                        kind=kind,
+                        entity_id=entity_id,
+                        ext=ext,
+                        filename=file.filename or f"upload{ext}",
+                        size=len(raw_bytes),
+                    )
+                )
+            continue
+
         asset = await upload_media(
             file_obj=file.file,
             filename=file.filename or f"upload{ext}",
@@ -247,6 +397,8 @@ async def _upload_files(
             # succeed so field captures are never lost.
             tag_if_panorama=(kind == "captures"),
         )
+        if dedup_key is not None:
+            await _dedup_store(db, dedup_key, asset)
         payload = _asset_payload(asset, kind=kind, entity_id=entity_id, ext=ext)
         logger.info(
             f"[capture-upload] completed file={file.filename} "
@@ -256,7 +408,7 @@ async def _upload_files(
             f"original_url={payload.get('original_url')}"
         )
         uploaded.append(payload)
-    return uploaded
+    return uploaded, pending
 
 
 async def _list(
@@ -293,6 +445,41 @@ async def _upsert(
     doc = _with_tenant(payload, ctx, id)
     await db[collection].replace_one({"_id": doc["_id"], "orgId": ctx.org_id}, doc, upsert=True)
     return _serialise(doc)
+
+
+async def _upsert_preserving(
+    db: AsyncIOMotorDatabase,
+    collection: str,
+    payload: dict[str, Any],
+    ctx: CallerContext,
+    *,
+    insert_only_fields: set[str],
+) -> dict[str, Any]:
+    """
+    Like _upsert, but fields in `insert_only_fields` are written ONLY when the
+    document is first created — never on a later replay.
+
+    _upsert uses replace_one, which overwrites the whole document. That is wrong
+    for captures in the async-stitch design: the client builds its capture object
+    while the panorama URL is still null, and writeQueue.ts may flush that stale
+    object seconds or minutes later (POLL_MS is 20s, and it can be delayed by an
+    app restart or an expired token). A full replace at that point would wipe the
+    panorama the background stitch job had already written. Putting the
+    server-owned media fields in $setOnInsert makes that overwrite structurally
+    impossible rather than merely unlikely.
+    """
+    doc = _with_tenant(payload, ctx)
+    doc_id = doc["_id"]
+    set_fields = {k: v for k, v in doc.items() if k not in insert_only_fields and k != "_id"}
+    insert_fields = {k: v for k, v in doc.items() if k in insert_only_fields}
+
+    update: dict[str, Any] = {"$set": set_fields}
+    if insert_fields:
+        update["$setOnInsert"] = insert_fields
+
+    await db[collection].update_one({"_id": doc_id, "orgId": ctx.org_id}, update, upsert=True)
+    stored = await db[collection].find_one({"_id": doc_id, "orgId": ctx.org_id})
+    return _serialise(stored or doc)
 
 
 async def _patch(
@@ -457,6 +644,19 @@ async def list_captures(ctx: CallerContext, db: DB, project_id: Optional[str] = 
 async def create_capture(payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "create"))):
     assets = payload.get("mediaAssets") or payload.get("media_assets") or []
     first_asset = assets[0] if assets else None
+
+    # If this capture's stitch already finished, prefer the job's real asset over
+    # the client's placeholder. Covers the ordering where the background job
+    # completes BEFORE the client's capture-create request arrives (writeQueue can
+    # flush well after the upload).
+    stitch_job_id = payload.get("stitchJobId") or (first_asset or {}).get("stitchJobId")
+    if stitch_job_id:
+        payload["stitchJobId"] = stitch_job_id
+        job = await CaptureStitchService(db).get_job(org_id=ctx.org_id, job_id=str(stitch_job_id))
+        if job and job.get("status") == "completed" and job.get("asset"):
+            first_asset = job["asset"]
+            assets = [first_asset]
+
     payload["mediaAssets"] = assets
     payload["media_assets"] = assets
     payload["processingStatus"] = first_asset.get("processingStatus", "uploaded") if first_asset else payload.get("processingStatus", "uploaded")
@@ -472,7 +672,24 @@ async def create_capture(payload: dict[str, Any], ctx: CallerContext, db: DB, _=
         payload["processedPanoramaUrl"] = first_asset.get("processed_panorama_url")
         payload["thumbnailUrl"] = first_asset.get("thumbnail_url")
         payload["previewUrl"] = first_asset.get("preview_url")
-    return success_response(data=await _upsert(db, "captures", payload, ctx), message="Capture uploaded")
+
+    # Media fields are server-owned once written: a late client replay carrying
+    # nulls must never clobber a panorama the stitch job produced.
+    stored = await _upsert_preserving(
+        db,
+        "captures",
+        payload,
+        ctx,
+        insert_only_fields={
+            "mediaAssets", "media_assets",
+            "processingStatus", "processing_status",
+            "original_url", "originalFileUrl",
+            "processedPanoramaUrl", "processed_panorama_url",
+            "thumbnail_url", "thumbnailUrl", "previewUrl",
+            "public_id", "format", "size", "uploaded_at",
+        },
+    )
+    return success_response(data=stored, message="Capture uploaded")
 
 
 @router.get("/captures/{capture_id}", summary="Get capture")
@@ -519,33 +736,52 @@ async def get_upload_signature(payload: dict[str, Any], ctx: CallerContext):
 
 
 @router.post("/uploads/captures", status_code=status.HTTP_201_CREATED, summary="Upload capture files")
-async def upload_capture_files(ctx: CallerContext, files: list[UploadFile] = File(...), capture_id: Optional[str] = None, _=Depends(require_permission("captures", "upload"))):
-    uploaded = await _upload_files(ctx=ctx, kind="captures", files=files, entity_id=capture_id)
-    return success_response(data={"files": uploaded, "count": len(uploaded)}, message="Capture files uploaded")
+async def upload_capture_files(response: Response, ctx: CallerContext, db: DB, files: list[UploadFile] = File(...), capture_id: Optional[str] = None, _=Depends(require_permission("captures", "upload"))):
+    uploaded, pending = await _upload_files(ctx=ctx, kind="captures", files=files, entity_id=capture_id, db=db)
+    files_payload = uploaded + pending
+    if pending:
+        # 202: the bytes are safely on the server but the panorama isn't ready.
+        # Each pending entry carries a stitchJobId the client polls.
+        response.status_code = status.HTTP_202_ACCEPTED
+        message = "Capture received — stitching in progress"
+    else:
+        message = "Capture files uploaded"
+    return success_response(
+        data={"files": files_payload, "count": len(files_payload), "pendingCount": len(pending)},
+        message=message,
+    )
+
+
+@router.get("/uploads/captures/jobs/{job_id}", summary="Poll a background stitch job")
+async def get_capture_stitch_job(job_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "upload"))):
+    job = await CaptureStitchService(db).get_job(org_id=ctx.org_id, job_id=job_id)
+    if not job:
+        raise NotFoundException("stitch job", job_id)
+    return success_response(data=job)
 
 
 @router.post("/uploads/floorplans", status_code=status.HTTP_201_CREATED, summary="Upload floor plan file")
 async def upload_floor_plan_files(ctx: CallerContext, files: list[UploadFile] = File(...), floor_plan_id: Optional[str] = None, _=Depends(require_permission("floorPlans", "upload"))):
-    uploaded = await _upload_files(ctx=ctx, kind="floorplans", files=files, entity_id=floor_plan_id)
+    uploaded, _pending = await _upload_files(ctx=ctx, kind="floorplans", files=files, entity_id=floor_plan_id)
     return success_response(data={"files": uploaded, "count": len(uploaded)}, message="Floor plan uploaded")
 
 
 @router.post("/uploads/avatars", status_code=status.HTTP_201_CREATED, summary="Upload avatar")
 async def upload_avatar_files(ctx: CallerContext, files: list[UploadFile] = File(...)):
     # Avatar upload is self-service for any authenticated user (own profile only).
-    uploaded = await _upload_files(ctx=ctx, kind="avatars", files=files, entity_id=ctx.user_id)
+    uploaded, _pending = await _upload_files(ctx=ctx, kind="avatars", files=files, entity_id=ctx.user_id)
     return success_response(data={"files": uploaded, "count": len(uploaded)}, message="Avatar uploaded")
 
 
 @router.post("/uploads/projects", status_code=status.HTTP_201_CREATED, summary="Upload project media")
 async def upload_project_files(ctx: CallerContext, files: list[UploadFile] = File(...), project_id: Optional[str] = None, _=Depends(require_permission("projects", "edit"))):
-    uploaded = await _upload_files(ctx=ctx, kind="projects", files=files, entity_id=project_id)
+    uploaded, _pending = await _upload_files(ctx=ctx, kind="projects", files=files, entity_id=project_id)
     return success_response(data={"files": uploaded, "count": len(uploaded)}, message="Project media uploaded")
 
 
 @router.post("/uploads/tours", status_code=status.HTTP_201_CREATED, summary="Upload tour panorama media")
 async def upload_tour_files(ctx: CallerContext, files: list[UploadFile] = File(...), tour_id: Optional[str] = None, _=Depends(require_permission("tours", "create"))):
-    uploaded = await _upload_files(ctx=ctx, kind="tours", files=files, entity_id=tour_id)
+    uploaded, _pending = await _upload_files(ctx=ctx, kind="tours", files=files, entity_id=tour_id)
     return success_response(data={"files": uploaded, "count": len(uploaded)}, message="Tour media uploaded")
 
 

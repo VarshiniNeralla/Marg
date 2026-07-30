@@ -44,6 +44,17 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error(f"Index creation failed at startup (continuing): {exc}")
 
+    # Background stitch jobs run as asyncio tasks, which die with the process. Any
+    # job still marked pending/processing is therefore orphaned by a restart and
+    # must be re-dispatched (or failed) so it neither hangs forever nor blocks
+    # retries of the same capture. Best-effort, same as index creation.
+    try:
+        from app.services.capture_stitch_service import CaptureStitchService
+
+        await CaptureStitchService(get_database()).recover_orphaned_jobs()
+    except Exception as exc:
+        logger.error(f"Stitch job recovery failed at startup (continuing): {exc}")
+
     logger.info("Application startup complete.")
     yield
 

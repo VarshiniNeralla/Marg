@@ -26,6 +26,7 @@
     "@types/react-dom": "^19.1.4",
     "axios": "^1.17.0",
     "dayjs": "^1.11.21",
+    "exceljs": "^4.4.0",
     "framer-motion": "^12.42.0",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",

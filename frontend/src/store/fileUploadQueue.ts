@@ -36,7 +36,8 @@ import { Preferences } from '@capacitor/preferences';
 import { Network } from '@capacitor/network';
 import { useAuthStore } from './authStore';
 import { useWorkflowStore } from './workflowStore';
-import { uploadCaptureFiles } from '@/services/uploadService';
+import { uploadCaptureFiles, getCaptureStitchJob } from '@/services/uploadService';
+import { setPendingUploadPins } from './pendingUploadRegistry';
 
 const QUEUE_KEY = 'sitesurelabs-file-upload-queue-v1';
 const FILE_DIR = 'pending-uploads';
@@ -44,6 +45,10 @@ const MAX_ATTEMPTS = 10;
 const BASE_BACKOFF_MS = 2_000;
 const MAX_BACKOFF_MS = 60_000;
 const POLL_MS = 20_000;
+// While a stitch is running server-side we poll far more often than POLL_MS: a
+// stitch takes ~25s, so a 20s cadence would routinely add most of another cycle
+// of dead waiting after the panorama was already finished.
+const STITCH_POLL_MS = 4_000;
 
 /** Emitted whenever a queued upload's status changes, so the UI can reflect
  *  'queued' | 'uploading' | 'failed' without polling the queue directly. */
@@ -56,7 +61,7 @@ export const FILE_UPLOAD_SUCCEEDED_EVENT = 'workflow:file-upload-succeeded';
 /** Same toast channel writeQueue.ts uses, so both surfaces share one UI. */
 export const SYNC_ERROR_EVENT = 'workflow:sync-error';
 
-export type FileUploadStatus = 'queued' | 'uploading' | 'failed';
+export type FileUploadStatus = 'queued' | 'uploading' | 'processing' | 'failed';
 
 export interface PendingFileUpload {
   id: string;              // `fq${Date.now()}_${seq++}`
@@ -67,6 +72,13 @@ export interface PendingFileUpload {
   attempts: number;
   createdAt: number;
   status: FileUploadStatus;
+  /**
+   * Set once the server has the bytes but is still stitching (HTTP 202). The
+   * entry deliberately STAYS in the queue with the on-device file intact until
+   * the job completes, so a mid-stitch app kill or server restart can still be
+   * recovered by re-uploading.
+   */
+  stitchJobId?: string;
 }
 
 // ── Persistence (Preferences instead of localStorage: idiomatic Capacitor
@@ -88,10 +100,21 @@ async function load(): Promise<PendingFileUpload[]> {
     queue = [];
   }
   loaded = true;
+  syncPendingRegistry();
   return queue;
 }
 
+/**
+ * Mirror the queue's pin ids into the shared registry the workflow store reads
+ * during its snapshot merge, so a pin with unfinished bytes is never mistaken
+ * for one whose capture was deleted elsewhere.
+ */
+function syncPendingRegistry(): void {
+  setPendingUploadPins(queue.map(e => e.pinId));
+}
+
 async function persist(): Promise<void> {
+  syncPendingRegistry();
   try {
     await Preferences.set({ key: QUEUE_KEY, value: JSON.stringify(queue) });
   } catch {
@@ -192,7 +215,23 @@ function messageFor(status: number): string {
 
 // ── Upload one entry ──────────────────────────────────────────────────────────
 
-async function uploadEntry(entry: PendingFileUpload): Promise<void> {
+/** The stitchJobId of a still-processing upload response, if there is one. */
+function pendingJobIdOf(result: { files: { stitchJobId?: string; processing_status?: string }[] }): string | undefined {
+  const pendingFile = result.files.find(f => f.stitchJobId && f.processing_status === 'processing');
+  return pendingFile?.stitchJobId;
+}
+
+async function deleteLocalFile(entry: PendingFileUpload): Promise<void> {
+  await Filesystem.deleteFile({ path: entry.fileUri, directory: Directory.Data }).catch(() => {
+    /* stray file on disk is harmless; never fail the upload over cleanup */
+  });
+}
+
+/**
+ * Returns true when the upload finished outright, false when the server accepted
+ * the bytes but is still stitching (entry stays queued as 'processing').
+ */
+async function uploadEntry(entry: PendingFileUpload): Promise<boolean> {
   const { data } = await Filesystem.readFile({
     path: entry.fileUri,
     directory: Directory.Data,
@@ -200,10 +239,44 @@ async function uploadEntry(entry: PendingFileUpload): Promise<void> {
   const file = await base64ToFile(data as string, entry.fileName, entry.mimeType);
   const result = await uploadCaptureFiles([file]);
   const fileCount = result.count || 1;
+
+  // Attach immediately either way, so the pin registers the capture the moment
+  // the bytes are safe rather than ~25s later when stitching ends. For a pending
+  // asset the panorama URL is null and processingStatus is 'processing'; the
+  // real asset replaces it once the job completes.
   useWorkflowStore.getState().attachCaptureToPin(entry.pinId, fileCount, result.files);
-  await Filesystem.deleteFile({ path: entry.fileUri, directory: Directory.Data }).catch(() => {
-    /* stray file on disk is harmless; never fail the upload over cleanup */
-  });
+
+  const jobId = pendingJobIdOf(result);
+  if (jobId) {
+    entry.stitchJobId = jobId;
+    entry.status = 'processing';
+    await persist();
+    return false;
+  }
+
+  await deleteLocalFile(entry);
+  return true;
+}
+
+/**
+ * Poll a stitch job once. Returns 'done' (asset attached, entry finishable),
+ * 'pending' (still stitching), or 'failed' (re-upload needed).
+ */
+async function pollStitchEntry(entry: PendingFileUpload): Promise<'done' | 'pending' | 'failed'> {
+  const jobId = entry.stitchJobId as string;
+  const job = await getCaptureStitchJob(jobId);
+  if (job.status === 'completed' && job.asset) {
+    // Force the job id onto the finished asset. attachCaptureToPin matches on it
+    // to UPDATE the capture created when the upload was accepted; if it were
+    // missing the same photo would be stored twice. We know the id locally, so
+    // never rely solely on the server echoing it back.
+    const asset = { ...job.asset, stitchJobId: job.asset.stitchJobId ?? jobId };
+    useWorkflowStore.getState().attachCaptureToPin(entry.pinId, 1, [asset]);
+    await deleteLocalFile(entry);
+    return 'done';
+  }
+  if (job.status === 'failed') return 'failed';
+  return 'pending';
 }
 
 /**
@@ -221,14 +294,24 @@ async function uploadEntry(entry: PendingFileUpload): Promise<void> {
  * (including "we're offline") so the caller can fall back to
  * `enqueueFileUpload`'s durable, retryable queue — this function never
  * throws.
+ *
+ * A raw 360 accepted for background stitching returns FALSE on purpose: the
+ * capture is attached right away for instant UI feedback, but the durable queue
+ * must still own the job so polling survives an app restart. `enqueueFileUpload`
+ * is given the jobId so it resumes polling instead of re-uploading the bytes.
  */
-export async function tryDirectUpload(pinId: string, file: File): Promise<boolean> {
+export async function tryDirectUpload(
+  pinId: string,
+  file: File,
+): Promise<boolean | { pendingJobId: string }> {
   try {
     const status = await Network.getStatus();
     if (!status.connected) return false;
     const result = await uploadCaptureFiles([file]);
     const fileCount = result.count || 1;
     useWorkflowStore.getState().attachCaptureToPin(pinId, fileCount, result.files);
+    const jobId = pendingJobIdOf(result);
+    if (jobId) return { pendingJobId: jobId };
     return true;
   } catch {
     // Any failure (network, timeout, server error, auth) — the durable queue
@@ -244,6 +327,7 @@ export async function tryDirectUpload(pinId: string, file: File): Promise<boolea
 
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let activePollMs: number | null = null;
 let hadBacklog = false;
 
 function nextRetryDelay(): number | null {
@@ -297,10 +381,56 @@ async function flush(): Promise<void> {
       try {
         // Oldest first — preserves re-capture ordering for this pin.
         for (const entry of entries.sort((a, b) => a.createdAt - b.createdAt)) {
+          // Already on the server and stitching: poll the job instead of
+          // re-uploading. Re-sending the bytes would be wasteful (the backend
+          // dedups it anyway) and would restart this pin's chain needlessly.
+          if (entry.stitchJobId) {
+            try {
+              const outcome = await pollStitchEntry(entry);
+              if (outcome === 'done') {
+                queue = queue.filter(e => e.id !== entry.id);
+                await persist();
+                emitUploadSucceeded(entry.pinId);
+                continue;
+              }
+              if (outcome === 'failed') {
+                // Server could not finish the stitch (e.g. restart lost the
+                // spooled bytes). Drop the jobId and let normal upload retry
+                // re-send from the on-device copy we deliberately kept.
+                delete entry.stitchJobId;
+                entry.status = 'queued';
+                await persist();
+                break;
+              }
+              hadBacklog = true;
+              entry.status = 'processing';
+              await persist();
+              break; // still stitching — check again on the next poll tick
+            } catch (error) {
+              const pollStatus = statusOf(error);
+              if (pollStatus === 404) {
+                // Job record is gone (e.g. wiped DB) — fall back to re-uploading.
+                delete entry.stitchJobId;
+                entry.status = 'queued';
+              } else {
+                entry.status = 'processing';
+              }
+              hadBacklog = true;
+              await persist();
+              break;
+            }
+          }
+
           entry.status = 'uploading';
           await persist();
           try {
-            await uploadEntry(entry);
+            const finished = await uploadEntry(entry);
+            if (!finished) {
+              // Accepted for background stitching; entry stays queued as
+              // 'processing' and the poll branch above takes over next tick.
+              hadBacklog = true;
+              break;
+            }
             queue = queue.filter(e => e.id !== entry.id);
             await persist();
             emitUploadSucceeded(entry.pinId);
@@ -379,8 +509,17 @@ function scheduleNextAttempt(): void {
 }
 
 function startPolling(): void {
-  if (pollTimer || typeof window === 'undefined') return;
-  pollTimer = setInterval(() => void flush(), POLL_MS);
+  if (typeof window === 'undefined') return;
+  // A stitching entry needs a much tighter cadence than an offline-waiting one,
+  // so the interval is re-armed whenever the queue's mix changes.
+  const desired = queue.some(e => e.stitchJobId) ? STITCH_POLL_MS : POLL_MS;
+  if (pollTimer) {
+    if (desired === activePollMs) return;
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  activePollMs = desired;
+  pollTimer = setInterval(() => void flush(), desired);
 }
 
 function stopPolling(): void {
@@ -388,6 +527,7 @@ function stopPolling(): void {
     clearInterval(pollTimer);
     pollTimer = null;
   }
+  activePollMs = null;
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -397,7 +537,11 @@ function stopPolling(): void {
  * Returns immediately (the write to disk is the only awaited step) — the
  * actual network upload happens in the background via `flush()`.
  */
-export async function enqueueFileUpload(pinId: string, file: File): Promise<void> {
+export async function enqueueFileUpload(
+  pinId: string,
+  file: File,
+  opts?: { stitchJobId?: string },
+): Promise<void> {
   await load();
   const base64 = await fileToBase64(file);
   const fileUri = `${FILE_DIR}/${Date.now()}_${seq++}_${file.name}`;
@@ -415,7 +559,11 @@ export async function enqueueFileUpload(pinId: string, file: File): Promise<void
     mimeType: file.type || 'image/jpeg',
     attempts: 0,
     createdAt: Date.now(),
-    status: 'queued',
+    // With a stitchJobId the bytes are ALREADY on the server (a direct upload
+    // returned 202); this entry exists purely so polling is durable across an
+    // app restart. Without one it's an ordinary pending upload.
+    status: opts?.stitchJobId ? 'processing' : 'queued',
+    ...(opts?.stitchJobId ? { stitchJobId: opts.stitchJobId } : {}),
   });
   await persist();
   void flush();

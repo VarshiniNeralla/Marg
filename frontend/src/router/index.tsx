@@ -71,6 +71,8 @@ const AuditPage          = lazy(() => import('@/pages/Admin/AuditPage'));
 // ── Manager-only ──────────────────────────────────────────────────────────────
 const ReviewsPage = lazy(() => import('@/pages/Reviews/ReviewsPage'));
 const ProgressReportsPage = lazy(() => import('@/pages/ProgressReports/ProgressReportsPage'));
+const ConstructionProgressOverviewPage = lazy(() => import('@/pages/ConstructionProgress/ConstructionProgressOverviewPage'));
+const ConstructionProgressDashboardPage = lazy(() => import('@/pages/ConstructionProgress/ConstructionProgressDashboardPage'));
 
 // ── Field Engineer-only ───────────────────────────────────────────────────────
 const CaptureWorkflowPage = lazy(() => import('@/pages/CaptureWorkflow/CaptureWorkflowPage'));
@@ -161,6 +163,11 @@ const router = createBrowserRouter([
           { path: '/defects',   element: <PageSuspense><DefectsPage /></PageSuspense> },
           { path: '/captures',                element: <PageSuspense><CapturesPage /></PageSuspense> },
           { path: '/progress-reports',        element: <PageSuspense><ProgressReportsPage /></PageSuspense> },
+          { path: '/construction-progress',           element: <PageSuspense><ConstructionProgressOverviewPage /></PageSuspense> },
+          { path: '/construction-progress/:floorId',  element: <PageSuspense><ConstructionProgressDashboardPage /></PageSuspense> },
+          // Managers see/edit field engineers only — the page and backend both scope this;
+          // it's not moved to the Admin-only block below since Admins need the full view too.
+          { path: '/users',                             element: <PageSuspense><UserManagementPage /></PageSuspense> },
         ],
       },
 
@@ -175,7 +182,6 @@ const router = createBrowserRouter([
           { path: '/projects/:projectId/towers/:towerId/floors/:floorId',       element: <PageSuspense><RoomListPage /></PageSuspense> },
           { path: '/floor-plans/:projectId/:towerId/:floorId/upload', element: <PageSuspense><FloorPlanUploadPage /></PageSuspense> },
           { path: '/workflow',                          element: <PageSuspense><WorkflowPage /></PageSuspense> },
-          { path: '/users',                             element: <PageSuspense><UserManagementPage /></PageSuspense> },
           { path: '/organizations',                     element: <PageSuspense><OrganizationsPage /></PageSuspense> },
           { path: '/admin/media',                       element: <PageSuspense><MediaPage /></PageSuspense> },
           { path: '/admin/audit',                       element: <PageSuspense><AuditPage /></PageSuspense> },

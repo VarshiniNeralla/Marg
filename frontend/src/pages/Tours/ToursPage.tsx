@@ -153,7 +153,9 @@ function TourCard({
               : <StarBorderRounded sx={{ color: '#fff', fontSize: 16 }} />}
           </Box>
         </Box>
-        <Box className="tour-delete" sx={{ position: 'absolute', bottom: 8, right: 8, zIndex: 10, opacity: 0, display: { xs: 'none', sm: 'block' }, transition: `opacity ${motion.durationNormal} ${motion.easeOut}` }}>
+        {/* Always visible on touch devices (xs/sm) — hover-to-reveal only applies
+            where a real hover exists, otherwise the button is unreachable. */}
+        <Box className="tour-delete" sx={{ position: 'absolute', bottom: 8, right: 8, zIndex: 10, opacity: { xs: 1, sm: 1, md: 0 }, transition: `opacity ${motion.durationNormal} ${motion.easeOut}` }}>
           <Box
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(); }}
             sx={{ width: 32, height: 32, borderRadius: '8px', backgroundColor: 'rgba(239,68,68,0.9)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'background-color 150ms ease, transform 150ms ease', '&:hover': { backgroundColor: 'rgba(220,38,38,1)', transform: 'scale(1.05)' } }}

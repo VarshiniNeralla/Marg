@@ -26,8 +26,16 @@ function demoThumbForId(id: string): string {
   return DEMO_THUMBNAIL_URLS[idx];
 }
 
-/** Best available preview image for a capture card or tour tile. */
-export function resolveCaptureThumbnailUrl(capture: CaptureRecord): string {
+/**
+ * Best available preview image for a capture card, or null when the capture has
+ * no real image yet.
+ *
+ * Returns null rather than a stock demo sphere on purpose: with background
+ * stitching a capture legitimately has no panorama for ~25s after upload, and
+ * substituting an unrelated demo photo would present someone else's image as if
+ * it were this site's. Callers must render a placeholder for null.
+ */
+export function resolveCaptureThumbnailUrl(capture: CaptureRecord): string | null {
   const mediaAssets = capture.mediaAssets as MediaAsset[] | undefined;
   const first = mediaAssets?.[0];
 
@@ -45,7 +53,7 @@ export function resolveCaptureThumbnailUrl(capture: CaptureRecord): string {
     first?.secure_url ??
     (capture.original_url as string | undefined) ??
     (capture.originalFileUrl as string | undefined) ??
-    demoThumbForId(capture.id)
+    null
   );
 }
 
@@ -61,7 +69,10 @@ export function resolveTourThumbnailUrl(tour: TourRecord, captures: MockCapture[
   if (tourThumb) return tourThumb;
 
   const linked = captures.find(c => c.id === tour.captureId);
-  if (linked) return resolveCaptureThumbnailUrl(linked as CaptureRecord);
+  if (linked) {
+    const linkedThumb = resolveCaptureThumbnailUrl(linked as CaptureRecord);
+    if (linkedThumb) return linkedThumb;
+  }
 
   return demoThumbForId(tour.id);
 }

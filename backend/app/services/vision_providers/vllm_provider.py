@@ -118,11 +118,12 @@ class VllmVisionProvider(VisionProvider):
         mime: str,
         cols: int,
         rows: int,
+        target_flat_number: str | None = None,
     ) -> VisionAnalysisResult:
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": _rooms_in_crop_prompt(cols, rows)},
+                {"role": "system", "content": _rooms_in_crop_prompt(cols, rows, target_flat_number)},
                 {
                     "role": "user",
                     "content": [

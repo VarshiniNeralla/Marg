@@ -118,6 +118,8 @@ class UserService:
         Updates a user. Permission rules:
         - Any authenticated user can update their own name/avatar_url.
         - Only admins can change role or is_active.
+        - Managers may update a field engineer's profile (name/designation) —
+          but never role/is_active, and never another admin/manager's account.
         - An admin cannot demote their own role (self-demotion prevention).
         """
         payload.validate_role()
@@ -129,12 +131,16 @@ class UserService:
 
         is_self = caller_id == target_user_id
         is_admin = caller_role in ("admin", "super_admin")
+        is_manager_editing_engineer = (
+            caller_role == "manager" and target.role == "field_engineer"
+        )
 
-        # Non-admins can only update their own profile
-        if not is_admin and not is_self:
+        # Non-admins can only update their own profile, or (managers only) a field engineer's
+        if not is_admin and not is_self and not is_manager_editing_engineer:
             raise ForbiddenException("You can only update your own profile")
 
-        # Non-admins cannot set role or is_active
+        # Only admins can set role or is_active — even a manager editing a field engineer
+        # cannot promote/demote or reactivate/deactivate.
         if payload.has_admin_fields() and not is_admin:
             raise ForbiddenException("Only administrators can change role or active status")
 

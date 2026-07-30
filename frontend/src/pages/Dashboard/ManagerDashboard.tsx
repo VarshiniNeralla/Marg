@@ -8,16 +8,32 @@ import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
+import { computeDashboardStats } from '@store/workflowSelectors';
 import DashboardHero from '@shared/components/DashboardHero/DashboardHero';
 
 const TOURS_PAGE_SIZE = 5;
 
 export default function ManagerDashboard() {
   const user      = useAuthStore((s) => s.user);
+  const projects  = useWorkflowStore(s => s.projects);
+  const towers    = useWorkflowStore(s => s.towers);
+  const floors    = useWorkflowStore(s => s.floors);
+  const flats     = useWorkflowStore(s => s.flats);
+  const rooms     = useWorkflowStore(s => s.rooms);
   const captures  = useWorkflowStore(s => s.captures);
   const tours     = useWorkflowStore(s => s.tours);
+  const floorPlans = useWorkflowStore(s => s.floorPlans);
+  const defects    = useWorkflowStore(s => s.defects);
+  const notifications = useWorkflowStore(s => s.notifications);
+  const auditLogs  = useWorkflowStore(s => s.auditLogs);
   const [toursPage, setToursPage] = useState(1);
 
+  // Same shared aggregation Admin's dashboard uses, so "Total Captures" /
+  // "Published Tours" can never drift between the two roles' views of the
+  // identical underlying data.
+  const stats = computeDashboardStats({ projects, towers, floors, flats, rooms, captures, tours, floorPlans, defects, notifications, auditLogs, users: [] });
+
+  // Manager-only breakdown of the published set — no Admin-side equivalent to unify with.
   const pendingReviews = tours.filter(t => t.status === 'published' && !t.managerReviewed).length;
   const reviewedCount  = tours.filter(t => t.status === 'published' && t.managerReviewed).length;
   const publishedTours = tours.filter(t => t.status === 'published');
@@ -51,7 +67,7 @@ export default function ManagerDashboard() {
     },
     {
       label: 'Published Tours',
-      value: publishedTours.length,
+      value: stats.publishedTourCount,
       sub: 'live for clients',
       color: '#2563eb',
       bg: 'rgba(37,99,235,0.08)',
@@ -60,7 +76,7 @@ export default function ManagerDashboard() {
     },
     {
       label: 'Total Captures',
-      value: captures.length,
+      value: stats.captureCount,
       sub: 'across all projects',
       color: '#7c3aed',
       bg: 'rgba(124,58,237,0.08)',

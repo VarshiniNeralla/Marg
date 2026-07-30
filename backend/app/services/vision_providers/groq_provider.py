@@ -378,8 +378,14 @@ STRICT RULES:
 - If a label is blurry, cut off at the crop edge, or you are not sure, DO NOT include it.
 - Do NOT assume how many flats exist. Zero is a valid answer.
 - Missing a flat is acceptable. Inventing a flat is NOT.
+- For each label, also report where it sits WITHIN this crop as fractions of this crop's own
+  width/height (0.0 = left/top edge of THIS crop, 1.0 = right/bottom edge of THIS crop) — this is
+  used only to tell two same-numbered flats in different parts of the full plan apart, so estimate
+  the label's own center position honestly, not the flat's full extent.
 
-Return ONLY valid JSON, no markdown: {"flats": ["01", "03"]}  (empty list if none clearly readable)."""
+Return ONLY valid JSON, no markdown:
+{"flats": [{"number": "01", "x": 0.3, "y": 0.7}, {"number": "03", "x": 0.8, "y": 0.2}]}
+(empty list if none clearly readable)."""
 
 
 # Common-area / building-core labels that must NEVER be returned as apartment rooms.
@@ -391,7 +397,16 @@ _COMMON_AREA_TERMS = (
 )
 
 
-def _rooms_in_crop_prompt(cols: int, rows: int) -> str:
+def _rooms_in_crop_prompt(cols: int, rows: int, target_flat_number: str | None = None) -> str:
+    target_line = (
+        f"""STEP 1 — Find the label reading exactly "{target_flat_number} FLAT" (or "{target_flat_number}"
+  next to the word FLAT) inside this crop. This crop may show MULTIPLE flat-number labels if two
+  apartments are both partly visible — you must target ONLY the "{target_flat_number}" one and
+  completely ignore any other flat number's rooms, even if they look closer to the crop centre."""
+        if target_flat_number
+        else """STEP 1 — Locate the FLAT number label ("01 FLAT" etc.) inside this crop. That identifies the
+  ONE apartment you are extracting."""
+    )
     return f"""You are an architectural CAD reader. Treat this image as a CAD DRAWING, never a
 photograph. Do NOT summarize, do NOT describe, do NOT assume a "typical apartment". Extract ONLY
 what is physically drawn. A WRONG room is worse than a MISSING room — when in doubt, omit.
@@ -402,8 +417,7 @@ A RED GRID is overlaid: {cols} columns A-{_last_col_label(cols)} (left→right),
 =========================
 FOLLOW THIS EXACT ORDER (reason silently, output only JSON at the end)
 =========================
-STEP 1 — Locate the FLAT number label ("01 FLAT" etc.) inside this crop. That identifies the ONE
-  apartment you are extracting.
+{target_line}
 STEP 2 — Determine that apartment's BOUNDARY: trace the outer walls enclosing the flat whose label
   you found. This crop may also show PARTS of neighbouring flats and the building core — you must
   IGNORE everything outside the one flat's boundary.
@@ -593,6 +607,7 @@ class GroqVisionProvider(VisionProvider):
         mime: str,
         cols: int,
         rows: int,
+        target_flat_number: str | None = None,
     ) -> VisionAnalysisResult:
         if not self._api_key:
             raise RuntimeError("GROQ_API_KEY is not configured")
@@ -600,7 +615,7 @@ class GroqVisionProvider(VisionProvider):
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": _rooms_in_crop_prompt(cols, rows)},
+                {"role": "system", "content": _rooms_in_crop_prompt(cols, rows, target_flat_number)},
                 {
                     "role": "user",
                     "content": [

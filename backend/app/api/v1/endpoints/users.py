@@ -9,7 +9,9 @@ from app.core.dependencies import (
     get_db,
     get_org_context,
     require_admin,
+    require_manager_or_admin,
 )
+from app.core.exceptions import ForbiddenException
 from pydantic import BaseModel, Field
 
 from app.models.user import UserDocument
@@ -28,22 +30,27 @@ class SetUserProjectsRequest(BaseModel):
 @router.get(
     "",
     response_model=ApiResponse[dict],
-    summary="List users in the caller's organization (admin only)",
+    summary="List users in the caller's organization (admin sees all; manager sees field engineers only)",
 )
 async def list_users(
-    caller: UserDocument = Depends(require_admin),
+    caller: UserDocument = Depends(require_manager_or_admin),
     db: AsyncIOMotorDatabase = Depends(get_db),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     role: Optional[str] = Query(default=None, description="Filter by system role"),
     is_active: Optional[bool] = Query(default=None),
 ) -> ApiResponse[dict]:
+    is_admin = caller.role in ("admin", "super_admin")
+    # Managers can only ever see field engineers — force the filter regardless
+    # of what the caller requested, so a manager can't page through admin/manager
+    # accounts by omitting or changing the `role` query param.
+    effective_role = role if is_admin else "field_engineer"
     service = UserService(db)
     users, total = await service.list_users(
         org_id=str(caller.org_id),
         skip=skip,
         limit=limit,
-        role=role,
+        role=effective_role,
         is_active=is_active,
     )
     return ApiResponse(
@@ -78,11 +85,11 @@ async def get_me(
 @router.get(
     "/{user_id}",
     response_model=ApiResponse[UserDetailResponse],
-    summary="Get a specific user by ID (admin only)",
+    summary="Get a specific user by ID (admin sees all; manager only field engineers)",
 )
 async def get_user(
     user_id: str,
-    caller: UserDocument = Depends(require_admin),
+    caller: UserDocument = Depends(require_manager_or_admin),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ) -> ApiResponse[UserDetailResponse]:
     service = UserService(db)
@@ -91,6 +98,9 @@ async def get_user(
         org_id=str(caller.org_id),
         include_projects=True,
     )
+    is_admin = caller.role in ("admin", "super_admin")
+    if not is_admin and user.role != "field_engineer":
+        raise ForbiddenException("Managers can only view field engineer accounts")
     return ApiResponse(success=True, data=user)
 
 
@@ -119,18 +129,25 @@ async def update_user(
 @router.put(
     "/{user_id}/projects",
     response_model=ApiResponse[dict],
-    summary="Set a user's project assignments (admin only)",
+    summary="Set a user's project assignments (admin all; manager for field engineers only)",
 )
 async def set_user_projects(
     user_id: str,
     payload: SetUserProjectsRequest,
-    caller: UserDocument = Depends(require_admin),
+    caller: UserDocument = Depends(require_manager_or_admin),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ) -> ApiResponse[dict]:
     """
     Replaces the user's active project assignments with the provided set.
     Assignments not in the new set are revoked; new ones are created.
     """
+    is_admin = caller.role in ("admin", "super_admin")
+    if not is_admin:
+        user_service = UserService(db)
+        target = await user_service.get_user(user_id=user_id, org_id=str(caller.org_id), include_projects=False)
+        if target.role != "field_engineer":
+            raise ForbiddenException("Managers can only assign projects to field engineers")
+
     service = AuthService(db)
     assigned = await service.set_user_project_assignments(
         user_id=user_id,

@@ -3,10 +3,12 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { Box, Typography } from '@mui/material';
 import {
   ArrowBackRounded, CameraAltRounded, LayersRounded, EventRounded, AccessTimeRounded,
+  DeleteOutlineRounded,
 } from '@mui/icons-material';
 import { getCaptureById, getPinForCapture, getPinCaptureTimeline } from '@store/workflowSelectors';
 import type { MockCapture } from '@/data/mockData';
 import { useWorkflowStore } from '@store/workflowStore';
+import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 
 const P = {
   border: '#e4e7ec', muted: '#6b7280', subtle: '#9ca3af', strong: '#111827',
@@ -47,6 +49,8 @@ export default function CaptureDetailPage() {
   const { captureId } = useParams<{ captureId: string }>();
   const captures = useWorkflowStore(s => s.captures);
   const pins = useWorkflowStore(s => s.capturePins);
+  const deleteCapture = useWorkflowStore(s => s.deleteCapture);
+  const [deleteTarget, setDeleteTarget] = useState<MockCapture | null>(null);
 
   const capture = getCaptureById(captures, captureId ?? '');
 
@@ -77,15 +81,26 @@ export default function CaptureDetailPage() {
 
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
-      {/* Back */}
+      {/* Back + Delete */}
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
       <Box onClick={() => navigate(-1)} sx={{
-        cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 0.75, mb: 3,
+        cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 0.75,
         px: 1.25, py: 0.625, borderRadius: '8px',
         border: `1.5px solid ${P.border}`, color: P.muted,
         fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none',
         transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft },
       }}>
         <ArrowBackRounded sx={{ fontSize: 15 }} /> Back
+      </Box>
+      <Box onClick={() => setDeleteTarget(active)} sx={{
+        cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 0.75,
+        px: 1.25, py: 0.625, borderRadius: '8px',
+        border: `1.5px solid ${P.border}`, color: P.muted,
+        fontSize: '0.8125rem', fontWeight: 600,
+        transition: T, '&:hover': { borderColor: '#ef4444', color: '#ef4444', backgroundColor: 'rgba(239,68,68,0.05)' },
+      }}>
+        <DeleteOutlineRounded sx={{ fontSize: 15 }} /> Delete Capture
+      </Box>
       </Box>
 
       {/* Heading */}
@@ -173,6 +188,28 @@ export default function CaptureDetailPage() {
           })}
         </Box>
       </Box>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Delete this capture?"
+        description="This photo capture will be permanently removed. This cannot be undone."
+        confirmLabel="Delete capture"
+        destructive
+        onConfirm={() => {
+          if (deleteTarget) {
+            const remaining = timeline.filter(c => c.id !== deleteTarget.id);
+            deleteCapture(deleteTarget.id);
+            if (remaining.length > 0) {
+              // Show the next-most-recent remaining capture instead of a dead id.
+              setActiveId(remaining[remaining.length - 1].id);
+            } else {
+              navigate(-1);
+            }
+          }
+          setDeleteTarget(null);
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </Box>
   );
 }

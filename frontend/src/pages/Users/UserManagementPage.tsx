@@ -106,11 +106,13 @@ function ErrorBanner({ msg }: { msg: string }) {
 function UserCard({
   user,
   isSelf,
+  canDelete,
   onEdit,
   onDelete,
 }: {
   user: ApiUser;
   isSelf: boolean;
+  canDelete: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -210,6 +212,7 @@ function UserCard({
         >
           <EditRounded sx={{ fontSize: 14 }} /> Edit
         </Box>
+        {canDelete && (
         <Tooltip title={isSelf ? "Can't delete your own account" : ''}>
           <Box
             onClick={isSelf ? undefined : onDelete}
@@ -227,6 +230,7 @@ function UserCard({
             <DeleteRounded sx={{ fontSize: 14 }} /> Delete
           </Box>
         </Tooltip>
+        )}
       </Box>
     </Box>
   );
@@ -234,6 +238,7 @@ function UserCard({
 
 export default function UserManagementPage() {
   const currentUser = useAuthStore(s => s.user);
+  const isManagerCaller = currentUser?.role === 'manager';
 
   const [users, setUsers] = useState<ApiUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -360,7 +365,10 @@ export default function UserManagementPage() {
       await userService.updateUser(editTarget.id, {
         name: editForm.name.trim() || undefined,
         designation: editForm.designation.trim() || undefined,
-        role: editForm.role,
+        // Managers can't change role — omit it entirely so the backend's
+        // admin-only-field check (which triggers on mere presence, not just
+        // a changed value) doesn't reject an otherwise-valid manager edit.
+        role: isManagerCaller ? undefined : editForm.role,
       } as any);
       if (editForm.newPassword.trim()) {
         await apiClient.put(`/users/${editTarget.id}/password`, { new_password: editForm.newPassword.trim() });
@@ -418,10 +426,10 @@ export default function UserManagementPage() {
             fontSize: { xs: '1.75rem', md: '2.25rem' }, fontWeight: 800,
             color: colors.textStrong, letterSpacing: '-0.05em', lineHeight: 1.05, mb: 0.5,
           }}>
-            User Management
+            {isManagerCaller ? 'Field Engineers' : 'User Management'}
           </Typography>
           <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>
-            {users.length} members · {activeCount} active
+            {users.length} {isManagerCaller ? 'engineers' : 'members'} · {activeCount} active
           </Typography>
         </Box>
         <Box sx={{ display: 'flex', gap: 1 }}>
@@ -430,9 +438,11 @@ export default function UserManagementPage() {
               <RefreshRounded sx={{ fontSize: 18 }} />
             </IconButton>
           </Tooltip>
+          {!isManagerCaller && (
           <Button variant="primary" onClick={() => { setCreateForm(EMPTY_CREATE); setCreateErr(''); setCreateOpen(true); loadProjects(); }} sx={{ gap: 0.75, height: 38, fontSize: '0.875rem' }}>
             <AddRounded sx={{ fontSize: 18 }} /> Create User
           </Button>
+          )}
         </Box>
       </Box>
 
@@ -456,6 +466,7 @@ export default function UserManagementPage() {
       )}
 
       {/* Summary cards */}
+      {!isManagerCaller && (
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2,1fr)', sm: 'repeat(4,1fr)' }, gap: { xs: 1, sm: 1.5 }, mb: 3 }}>
         {[
           { label: 'Admins',          value: adminCount,   color: '#2563eb', icon: <AdminPanelSettingsRounded /> },
@@ -482,6 +493,7 @@ export default function UserManagementPage() {
           </Box>
         ))}
       </Box>
+      )}
 
       {/* Search + filter */}
       <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
@@ -489,12 +501,14 @@ export default function UserManagementPage() {
           <SearchRounded sx={{ fontSize: 18, color: colors.textMuted }} />
           <Box component="input" value={search} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)} placeholder="Search by name or email…" sx={{ border: 'none', outline: 'none', background: 'transparent', fontSize: '0.875rem', color: colors.textStrong, flex: 1, minWidth: 0, fontFamily: 'inherit', '&::placeholder': { color: colors.textSubdued } }} />
         </Box>
+        {!isManagerCaller && (
         <Select value={roleFilter} onChange={e => setRoleFilter(e.target.value)} size="small" sx={{ borderRadius: '10px', fontSize: '0.875rem', minWidth: { xs: '100%', sm: 160 }, '.MuiOutlinedInput-notchedOutline': { borderColor: colors.border } }}>
           <MenuItem value="all">All roles</MenuItem>
           <MenuItem value="admin">Admin</MenuItem>
           <MenuItem value="manager">Manager</MenuItem>
           <MenuItem value="field_engineer">Field Engineer</MenuItem>
         </Select>
+        )}
       </Box>
 
       {/* User cards */}
@@ -513,6 +527,7 @@ export default function UserManagementPage() {
                 key={u.id}
                 user={u}
                 isSelf={u.id === currentUser?.id}
+                canDelete={!isManagerCaller}
                 onEdit={() => openEdit(u)}
                 onDelete={() => setDeleteTarget(u)}
               />
@@ -675,7 +690,8 @@ export default function UserManagementPage() {
               </Select>
             </Box>
 
-            {/* Role */}
+            {/* Role — managers can't change a field engineer's role */}
+            {!isManagerCaller && (
             <Box>
               <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Role</Typography>
               <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1 }}>
@@ -686,6 +702,7 @@ export default function UserManagementPage() {
                 ))}
               </Box>
             </Box>
+            )}
 
             {/* Project assignment — only for field_engineer */}
             {editForm.role === 'field_engineer' && (

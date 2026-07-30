@@ -959,16 +959,19 @@ export default function TourViewerPage() {
   const clampedStep = Math.min(stepIdx, Math.max(0, steps.length - 1));
   const currentStep = steps[clampedStep];
 
+  // Real URLs only. This chain previously ended in DEMO_PANORAMAS/PANORAMA_MAP/
+  // FALLBACK_PANORAMA, which meant a capture with no panorama yet (e.g. one
+  // still stitching in the background) displayed an unrelated stock panorama as
+  // though it were this site — the most misleading possible failure mode. A null
+  // here renders an honest "not ready" state instead.
   const latestPanoramaUrl =
     currentStep?.panoramaUrl ||
     tourMedia?.panoramaUrls?.[clampedStep] ||
-    (isWalkthrough ? DEMO_PANORAMAS[clampedStep % DEMO_PANORAMAS.length] : null) ||
     tourMedia?.processedPanoramaUrl ||
     tourMedia?.processed_panorama_url ||
     tourMedia?.panoramaUrls?.[0] ||
     tourMedia?.panorama_urls?.[0] ||
-    PANORAMA_MAP[tourId ?? ''] ||
-    FALLBACK_PANORAMA;
+    null;
 
   // Use the history-selected panorama override when the user has picked a past snapshot.
   const panoramaUrl = panoramaOverride ?? latestPanoramaUrl;
@@ -1395,15 +1398,27 @@ export default function TourViewerPage() {
       backgroundColor: '#0f1929',
       '& .psv-container': { borderRadius: fullscreen ? 0 : { xs: '16px', md: '20px' } },
     }}>
-      <PanoramaViewer
-        panoramaUrl={panoramaUrl}
-        tourId={tourId ?? ''}
-        autoRotate={autoRotate}
-        onAutoRotateChange={setAutoRotate}
-        hotspots={hotspots}
-        onHotspotClick={handleHotspotClick}
-        panoOrientation={panoOrientation}
-      />
+      {panoramaUrl ? (
+        <PanoramaViewer
+          panoramaUrl={panoramaUrl}
+          tourId={tourId ?? ''}
+          autoRotate={autoRotate}
+          onAutoRotateChange={setAutoRotate}
+          hotspots={hotspots}
+          onHotspotClick={handleHotspotClick}
+          panoOrientation={panoOrientation}
+        />
+      ) : (
+        <Box sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1.25, px: 3, textAlign: 'center' }}>
+          <ViewInArRounded sx={{ fontSize: 40, color: 'rgba(255,255,255,0.35)' }} />
+          <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600, color: 'rgba(255,255,255,0.85)' }}>
+            Panorama not ready yet
+          </Typography>
+          <Typography sx={{ fontSize: '0.8125rem', color: 'rgba(255,255,255,0.55)', maxWidth: 320 }}>
+            This capture is still being stitched. It will appear here automatically once processing finishes.
+          </Typography>
+        </Box>
+      )}
 
       {analysisLoading && (
         <Box

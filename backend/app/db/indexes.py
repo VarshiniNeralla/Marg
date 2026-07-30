@@ -253,4 +253,32 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         name="progress_job_timeline_pair",
     )
 
+    # ── construction_progress_snapshots (AI floor-progress cache) ────────────
+    await db.construction_progress_snapshots.create_index(
+        [("orgId", ASCENDING), ("floorId", ASCENDING), ("snapshotDate", DESCENDING)],
+        name="construction_progress_floor_date",
+    )
+    await db.construction_progress_snapshots.create_index(
+        [("orgId", ASCENDING), ("projectId", ASCENDING), ("snapshotDate", DESCENDING)],
+        name="construction_progress_project_date",
+    )
+
+    # ── capture_stitch_jobs (background 360 stitching) ───────────────────────
+    # The dedupKey lookup is the in-flight guard that stops a retried upload from
+    # starting a second stitch of the same bytes, so it runs on every raw upload.
+    await db.capture_stitch_jobs.create_index(
+        [("orgId", ASCENDING), ("dedupKey", ASCENDING), ("status", ASCENDING)],
+        name="stitch_jobs_dedup_status",
+    )
+    await db.capture_stitch_jobs.create_index(
+        [("status", ASCENDING), ("heartbeatAt", ASCENDING)],
+        name="stitch_jobs_status_heartbeat",
+    )
+    # Lets a finished job find its capture document to patch the panorama onto.
+    await db.captures.create_index(
+        [("stitchJobId", ASCENDING), ("orgId", ASCENDING)],
+        name="captures_stitch_job",
+        sparse=True,
+    )
+
     logger.info("All MongoDB indexes created successfully.")

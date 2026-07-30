@@ -11,6 +11,7 @@ import type { UploadedFileResponse } from '@/services/uploadService';
 import { STORE_VERSION, WORKFLOW_STORE_KEY } from './persistence';
 import { createSafeStorage } from './safeStorage';
 import { addTombstones, tombstoneSet, clearTombstones } from './tombstones';
+import { pendingUploadPins } from './pendingUploadRegistry';
 import { enqueueWrite, isCreatePending, SYNC_ERROR_EVENT as WRITE_QUEUE_SYNC_ERROR_EVENT, type WriteOpName } from './writeQueue';
 import { isLiveUploadedTour } from './tourFilters';
 
@@ -240,6 +241,8 @@ interface WorkflowState {
 
   // ── Captures ──
   uploadCapture: (roomId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => string;
+  /** Replace an existing capture's placeholder media with the finished stitched asset. */
+  finalizeCaptureMedia: (captureId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => void;
   deleteCapture: (id: string) => void;
   replaceCapture: (id: string, fileCount: number) => void;
 
@@ -546,13 +549,30 @@ export const useWorkflowStore = create<WorkflowState>()(
             ? (migrated.captures ?? []).map(c => c.id)
             : [...(migrated.captures ?? []), ...get().captures].map(c => c.id)
         );
+        // Pins whose photo bytes are still in this device's durable upload queue
+        // (offline, retrying, or awaiting a background stitch). Read from a leaf
+        // module rather than fileUploadQueue directly, which imports this store.
+        const pinsWithPendingUploads = pendingUploadPins();
         const cleanPins = deduped
           .map(p => ({ ...p, captureIds: p.captureIds.filter(id => mergedCaptureIds.has(id)) }))
           .filter(p => {
             // Keep pins that still have captures OR have never had any (freshly placed, not yet captured).
             // Remove only those that had captures but all of them are now dangling.
             const hadCaptures = basePins.find(bp => bp.id === p.id)!.captureIds.length > 0;
-            return !hadCaptures || p.captureIds.length > 0;
+            if (!hadCaptures || p.captureIds.length > 0) return true;
+            // Every captureId resolved to nothing — but that is only a deletion if
+            // the work actually FINISHED. A pin whose photo bytes are still sitting
+            // in this device's durable upload queue (offline, retrying, or being
+            // stitched in the background) is mid-flight, not deleted: dropping it
+            // would destroy the only copy of a capture the engineer has taken.
+            //
+            // This is why pins vanished on refresh right after a capture — the
+            // createCapture write had already flushed (so isCreatePending was
+            // false) while the server snapshot still lagged, so every captureId
+            // looked dangling and the pin was deleted.
+            if (pinsWithPendingUploads.has(p.id)) return true;
+            const original = basePins.find(bp => bp.id === p.id)!;
+            return original.captureIds.some(id => isCreatePending('createCapture', id));
           });
 
         set(s => {
@@ -561,6 +581,28 @@ export const useWorkflowStore = create<WorkflowState>()(
               ? (migrated.captures ?? [])
               : mergeById(migrated.captures, s.captures, 'createCapture')
           ).filter(c => !tombstones.has(c.id));
+
+          // Captures belonging to a pin whose upload is still pending on THIS
+          // device must survive the merge even when the snapshot omits them: with
+          // background stitching the capture doc's own create request can land
+          // well after the photo bytes were accepted, so "absent from snapshot"
+          // does not mean "deleted elsewhere" for these.
+          //
+          // Scoped strictly to pins with a live queue entry, so a genuine remote
+          // delete of a finished capture still converges normally.
+          if (!replace && pinsWithPendingUploads.size) {
+            const pendingCaptureIds = new Set(
+              cleanPins
+                .filter(p => pinsWithPendingUploads.has(p.id))
+                .flatMap(p => p.captureIds),
+            );
+            for (const local of s.captures) {
+              if (tombstones.has(local.id)) continue;
+              if (!pendingCaptureIds.has(local.id)) continue;
+              if (mergedCaptures.some(c => c.id === local.id)) continue;
+              mergedCaptures.push(local);
+            }
+          }
 
           // Captures that still live under a pin timeline.
           const linkedCaptureIds = new Set(cleanPins.flatMap(p => p.captureIds));
@@ -969,6 +1011,10 @@ export const useWorkflowStore = create<WorkflowState>()(
       processedPanoramaUrl: firstMediaUrl(mediaAssets),
       thumbnailUrl: firstAsset?.thumbnail_url,
       previewUrl: firstAsset?.preview_url ?? firstAsset?.thumbnail_url,
+      // Carried so the completion callback can find and update THIS capture
+      // instead of creating a second one for the same photo. Also lets the
+      // backend reconcile the finished asset onto the right document.
+      ...(firstAsset?.stitchJobId ? { stitchJobId: firstAsset.stitchJobId } : {}),
     } as MockCapture & Record<string, unknown>;
     set(s => ({
       // Deduplicate by id so a double-call (camera double-fire, double-tap race) never
@@ -981,6 +1027,39 @@ export const useWorkflowStore = create<WorkflowState>()(
     pushNotif(set, 'capture_uploaded', 'New capture uploaded', `Uploaded ${fileCount} files for ${flat?.number ?? 'Flat A'} · ${room.name}`, `/captures/${id}`);
     pushAudit(set, 'capture_uploaded', 'capture', id, capture.roomName, room.projectId, `Uploaded ${fileCount} images for ${flat?.number ?? 'Flat A'} · ${capture.roomName}`);
     return id;
+  },
+  finalizeCaptureMedia(captureId, fileCount, mediaAssets = []) {
+    // Swap a pending capture's placeholder media for the finished, stitched asset.
+    // Used when a background stitch job completes: the capture record already
+    // exists (created when the upload was accepted), so this must UPDATE it —
+    // creating a second record is what produced duplicate "2 captures" badges.
+    const firstAsset = mediaAssets[0];
+    if (!firstAsset) return;
+    set(s => ({
+      captures: s.captures.map(c => c.id !== captureId ? c : ({
+        ...c,
+        fileCount,
+        mediaAssets,
+        media_assets: mediaAssets,
+        processingStatus: firstAsset.processing_status ?? 'converted',
+        processing_status: firstAsset.processing_status ?? 'converted',
+        original_url: firstAsset.original_url,
+        thumbnail_url: firstAsset.thumbnail_url,
+        public_id: firstAsset.public_id,
+        format: firstAsset.format,
+        size: firstAsset.size,
+        sizeMb: +(((firstAsset.size ?? 0) / 1024 / 1024) || 0).toFixed(1) || c.sizeMb,
+        originalFileUrl: firstAsset.original_file_url ?? firstAsset.original_url,
+        processedPanoramaUrl: firstMediaUrl(mediaAssets),
+        thumbnailUrl: firstAsset.thumbnail_url,
+        previewUrl: firstAsset.preview_url ?? firstAsset.thumbnail_url,
+      } as MockCapture & Record<string, unknown>)),
+    }));
+    const updated = get().captures.find(c => c.id === captureId);
+    // Re-send the whole capture so the server's copy gains the real panorama too.
+    // create_capture is an idempotent upsert keyed on this id, so this converges
+    // rather than inserting a duplicate.
+    if (updated) mirrorApi('createCapture', [updated as MockCapture]);
   },
   deleteCapture(id) {
     const cap = get().captures.find(c => c.id === id);
@@ -1206,6 +1285,24 @@ export const useWorkflowStore = create<WorkflowState>()(
   attachCaptureToPin(pinId, fileCount, mediaAssets = []) {
     const pin = get().capturePins.find(p => p.id === pinId);
     if (!pin) return '';
+
+    // Background stitching means this runs TWICE for one photo: once when the
+    // server accepts the bytes (202, panorama not ready) and again when the
+    // stitch job finishes with the real asset. Both calls carry the same
+    // stitchJobId, so the second must UPDATE the existing capture rather than
+    // create another one — otherwise a single photo produces two capture records
+    // and the pin shows a bogus "2 captures" badge (observed: 5 pins each with
+    // two records pointing at the identical Cloudinary URL).
+    const incomingJobId = (mediaAssets[0] as { stitchJobId?: string } | undefined)?.stitchJobId;
+    const existingId = pin.captureIds.find(id => {
+      const c = get().captures.find(x => x.id === id) as (MockCapture & { stitchJobId?: string }) | undefined;
+      return !!c && !!incomingJobId && c.stitchJobId === incomingJobId;
+    });
+    if (existingId) {
+      get().finalizeCaptureMedia(existingId, fileCount, mediaAssets);
+      return existingId;
+    }
+
     // Reuse the existing capture pipeline entirely — upload, review, publish all
     // operate on this capture exactly as before. We only record its id on the pin.
     const captureId = get().uploadCapture(pin.roomId, fileCount, mediaAssets);

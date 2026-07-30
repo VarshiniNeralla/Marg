@@ -123,8 +123,11 @@ export default function MediaPage() {
         rec.originalFileUrl,
         rec.original_url,
       );
-      // Seed / placeholder records with no uploaded file stay out of the library.
-      if (!thumb) continue;
+      const status = (first.processing_status ?? rec.processingStatus ?? rec.processing_status ?? 'uploaded') as string;
+      // Seed / placeholder records with no uploaded file stay out of the library —
+      // but a capture that is genuinely mid-stitch has no thumbnail YET and must
+      // still be listed, otherwise it silently disappears for ~25s after upload.
+      if (!thumb && status !== 'processing') continue;
       const fmt = (first.format ?? rec.format ?? 'jpg') as string;
       const size = (first.size ?? (typeof rec.size === 'number' ? rec.size : 0) ?? 0) as number;
       out.push({
@@ -134,7 +137,7 @@ export default function MediaPage() {
         thumbnail: thumb,
         format: fmt,
         sizeBytes: size || (c.sizeMb ? c.sizeMb * 1024 * 1024 : 0),
-        status: (first.processing_status ?? rec.processingStatus ?? rec.processing_status ?? 'uploaded') as string,
+        status,
         context: [c.projectName, c.towerName, c.floorLabel].filter(Boolean).join(' · '),
         uploadedAt: c.uploadedAt,
         sortKey: String(rec.capturedAt ?? c.uploadedAt ?? ''),

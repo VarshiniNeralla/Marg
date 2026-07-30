@@ -61,13 +61,24 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
           transition: `box-shadow ${motion.durationNormal} ${motion.easeOut}`,
         }}
       >
-        <Box
-          component="img"
-          src={thumbUrl}
-          alt=""
-          loading="lazy"
-          sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-        />
+        {thumbUrl ? (
+          <Box
+            component="img"
+            src={thumbUrl}
+            alt=""
+            loading="lazy"
+            sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          />
+        ) : (
+          // No image yet — a raw 360 still stitching in the background. The
+          // card's gradient shows through as the backdrop.
+          <Box sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 0.75 }}>
+            <ViewInArRounded sx={{ color: 'rgba(255,255,255,0.55)', fontSize: 26 }} />
+            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: 'rgba(255,255,255,0.75)' }}>
+              Processing 360°…
+            </Typography>
+          </Box>
+        )}
 
         {/* hover: single open hint */}
         <Box className="cap-open" sx={{ position: 'absolute', bottom: 8, left: 8, display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1, py: 0.5, borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', opacity: 0, transition: `opacity ${motion.durationFast}` }}>

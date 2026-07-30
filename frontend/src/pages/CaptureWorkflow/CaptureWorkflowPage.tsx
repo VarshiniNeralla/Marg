@@ -315,7 +315,7 @@ function FloorCard({ label, number, onClick }: { label: string; number: number; 
 // 'queued' = written to on-device storage, waiting for connectivity to
 // actually upload (see fileUploadQueue.ts) — distinct from 'uploading' so the
 // UI can tell "captured, will send later" apart from "sending right now".
-type PinUploadStatus = 'queued' | 'uploading' | 'failed';
+type PinUploadStatus = 'queued' | 'uploading' | 'processing' | 'failed';
 
 interface RenderPin {
   id: string;
@@ -526,7 +526,6 @@ function FloorPlanWithPin({
     touchesRef.current = Array.from(e.touches) as unknown as React.Touch[];
 
     if (e.touches.length === 2) {
-      e.preventDefault();
       cancelLongPress(); // a second finger means pinch-zoom, never a long-press
       const [t1, t2] = [e.touches[0], e.touches[1]] as unknown as [React.Touch, React.Touch];
       pinchStartRef.current = { dist: getTouchDist(t1, t2), scale, midX: getTouchMid(t1, t2).x, midY: getTouchMid(t1, t2).y };
@@ -542,7 +541,6 @@ function FloorPlanWithPin({
     touchMovedRef.current = true;
 
     if (e.touches.length === 2 && pinchStartRef.current) {
-      e.preventDefault();
       cancelLongPress();
       const [t1, t2] = [e.touches[0], e.touches[1]] as unknown as [React.Touch, React.Touch];
       const newDist = getTouchDist(t1, t2);
@@ -704,7 +702,15 @@ function FloorPlanWithPin({
 
               {/* Persisted, numbered pins */}
               {pins.map(p => {
-                const color = p.status === 'failed' ? '#dc2626' : p.hasCapture ? '#16a34a' : '#d97706';
+                // 'processing' must outrank hasCapture: the capture IS attached
+                // while the panorama is still stitching server-side, so keying
+                // purely off hasCapture would show a finished-looking green pin
+                // for a capture that isn't viewable yet.
+                const color = p.status === 'failed'
+                  ? '#dc2626'
+                  : p.status === 'processing' || p.status === 'uploading'
+                    ? '#d97706'
+                    : p.hasCapture ? '#16a34a' : '#d97706';
                 return (
                   <Box
                     key={p.id}
@@ -728,13 +734,13 @@ function FloorPlanWithPin({
                       }}
                       sx={{ transform: `scale(${1 / scale})`, transformOrigin: 'bottom center', cursor: 'pointer', pointerEvents: 'auto', touchAction: 'none' }}
                     >
-                      <Box sx={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.5))', transition: T, opacity: p.status === 'uploading' ? 0.85 : 1, '&:hover': { transform: 'scale(1.08)' } }}>
+                      <Box sx={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.5))', transition: T, opacity: p.status === 'uploading' || p.status === 'processing' ? 0.85 : 1, '&:hover': { transform: 'scale(1.08)' } }}>
                         <Box sx={{ width: { xs: 20, sm: 30 }, height: { xs: 20, sm: 30 }, borderRadius: '50% 50% 50% 0', backgroundColor: color, border: { xs: '2px solid #fff', sm: '3px solid #fff' }, transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                           <Typography sx={{ fontSize: { xs: '0.625rem', sm: '0.8125rem' }, fontWeight: 800, color: '#fff', transform: 'rotate(45deg)', lineHeight: 1 }}>{p.sequenceNumber}</Typography>
                         </Box>
                         <Box sx={{ width: 2, height: { xs: 4, sm: 6 }, backgroundColor: color, mt: '-1px' }} />
-                        {/* Upload-in-progress spinner badge */}
-                        {p.status === 'uploading' && (
+                        {/* Upload-in-progress / background-stitch spinner badge */}
+                        {(p.status === 'uploading' || p.status === 'processing') && (
                           <Box sx={{
                             position: 'absolute', top: -5, right: -7,
                             width: 13, height: 13, borderRadius: '50%',
@@ -1101,6 +1107,18 @@ export default function CaptureWorkflowPage() {
         // flight and succeeding.
         setPinStatus(s => ({ ...s, [pinId]: 'uploading' }));
         const uploaded = await tryDirectUpload(pinId, files[0]);
+        // Raw 360 accepted for background stitching: the capture is already
+        // attached to the pin, but the panorama isn't ready. Hand the job to the
+        // durable queue so polling survives an app restart, and keep the pin on
+        // 'processing' rather than clearing it to green.
+        if (typeof uploaded === 'object' && uploaded.pendingJobId) {
+          failedFilesRef.current.delete(pinId);
+          setPinStatus(s => ({ ...s, [pinId]: 'processing' }));
+          await enqueueFileUpload(pinId, files[0], { stitchJobId: uploaded.pendingJobId });
+          const pendingSeq = useWorkflowStore.getState().capturePins.find(p => p.id === pinId)?.sequenceNumber;
+          setToast(`Capture received for Pin ${pendingSeq ?? ''} · stitching in background`);
+          return;
+        }
         if (uploaded) {
           failedFilesRef.current.delete(pinId);
           setPinStatus(s => {
@@ -1504,27 +1522,32 @@ export default function CaptureWorkflowPage() {
             const selStatus = pinStatus[selectedPinObj.id];
             const badgeColor = selStatus === 'failed' ? '#dc2626' : selectedPinObj.captureIds.length > 0 ? '#16a34a' : '#d97706';
             return (
-            <Box sx={{ mb: 2.5, p: 2, borderRadius: '14px', border: `1.5px solid ${selStatus === 'failed' ? '#fca5a5' : P.border}`, backgroundColor: P.white, display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
-              {/* Pin badge */}
-              <Box sx={{ width: 32, height: 32, borderRadius: '50%', backgroundColor: selStatus === 'failed' ? '#dc2626' : selectedPinObj.captureIds.length > 0 ? '#16a34a' : 'transparent', border: `2px ${selStatus === 'failed' ? 'solid #b91c1c' : selectedPinObj.captureIds.length > 0 ? 'solid #15803d' : 'dashed #d97706'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: selStatus === 'failed' || selectedPinObj.captureIds.length > 0 ? '#fff' : '#d97706' }}>{selectedPinObj.sequenceNumber}</Typography>
+            <Box sx={{ mb: 2.5, p: 2, borderRadius: '14px', border: `1.5px solid ${selStatus === 'failed' ? '#fca5a5' : P.border}`, backgroundColor: P.white, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0 }}>
+                {/* Pin badge */}
+                <Box sx={{ width: 32, height: 32, borderRadius: '50%', backgroundColor: selStatus === 'failed' ? '#dc2626' : selectedPinObj.captureIds.length > 0 ? '#16a34a' : 'transparent', border: `2px ${selStatus === 'failed' ? 'solid #b91c1c' : selectedPinObj.captureIds.length > 0 ? 'solid #15803d' : 'dashed #d97706'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: selStatus === 'failed' || selectedPinObj.captureIds.length > 0 ? '#fff' : '#d97706' }}>{selectedPinObj.sequenceNumber}</Typography>
+                </Box>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong }}>Pin {selectedPinObj.sequenceNumber}</Typography>
+                  <Typography sx={{ fontSize: '0.75rem', color: selStatus === 'failed' ? '#dc2626' : P.muted, fontWeight: selStatus ? 600 : 400 }} noWrap>
+                    {selStatus === 'uploading'
+                      ? 'Uploading capture…'
+                      : selStatus === 'processing'
+                        ? 'Uploaded — stitching 360° in background'
+                        : selStatus === 'queued'
+                          ? 'Saved on device — will upload once online'
+                          : selStatus === 'failed'
+                            ? 'Upload failed — retry or delete this pin'
+                            : selectedPinObj.captureIds.length > 0
+                              ? `${selectedPinObj.captureIds.length} capture${selectedPinObj.captureIds.length !== 1 ? 's' : ''} attached`
+                              : 'No capture yet'}
+                  </Typography>
+                </Box>
               </Box>
-              <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong }}>Pin {selectedPinObj.sequenceNumber}</Typography>
-                <Typography sx={{ fontSize: '0.75rem', color: selStatus === 'failed' ? '#dc2626' : P.muted, fontWeight: selStatus ? 600 : 400 }}>
-                  {selStatus === 'uploading'
-                    ? 'Uploading capture…'
-                    : selStatus === 'queued'
-                      ? 'Saved on device — will upload once online'
-                      : selStatus === 'failed'
-                        ? 'Upload failed — retry or delete this pin'
-                        : selectedPinObj.captureIds.length > 0
-                          ? `${selectedPinObj.captureIds.length} capture${selectedPinObj.captureIds.length !== 1 ? 's' : ''} attached`
-                          : 'No capture yet'}
-                </Typography>
-              </Box>
-              {/* Actions */}
-              <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', flexShrink: 0 }}>
+              {/* Actions — always their own row, so they never compete for
+                  horizontal space with the badge/label and wrap unpredictably. */}
+              <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
                 {selStatus === 'failed' && (
                   <Box
                     onClick={() => { retryPinUpload(selectedPinObj.id); }}
@@ -1533,10 +1556,10 @@ export default function CaptureWorkflowPage() {
                     <CloudUploadRounded sx={{ fontSize: 15 }} /> Retry Upload
                   </Box>
                 )}
-                {selStatus === 'uploading' && (
+                {(selStatus === 'uploading' || selStatus === 'processing') && (
                   <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600 }}>
                     <Box sx={{ width: 12, height: 12, borderRadius: '50%', border: `2px solid ${P.blue}`, borderTopColor: 'transparent', animation: 'pinspin 0.8s linear infinite', '@keyframes pinspin': { to: { transform: 'rotate(360deg)' } } }} />
-                    Uploading…
+                    {selStatus === 'processing' ? 'Stitching…' : 'Uploading…'}
                   </Box>
                 )}
                 {selStatus === 'queued' && (

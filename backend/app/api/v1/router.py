@@ -6,6 +6,7 @@ from app.api.v1.endpoints.uploads import router as uploads_router
 from app.api.v1.endpoints.user_projects import router as user_projects_router
 from app.api.v1.endpoints.users import router as users_router
 from app.api.v1.endpoints.progress_analysis import router as progress_analysis_router
+from app.api.v1.endpoints.construction_progress import router as construction_progress_router
 from app.api.v1.endpoints.workflow import router as workflow_router
 
 # ── v1 root router ────────────────────────────────────────────────────────────
@@ -23,6 +24,7 @@ api_router.include_router(user_projects_router)
 api_router.include_router(workflow_router)
 api_router.include_router(uploads_router)
 api_router.include_router(progress_analysis_router)
+api_router.include_router(construction_progress_router)
 
 # Phase 3 — (uncomment as implemented)
 # from app.api.v1.endpoints.projects import router as projects_router

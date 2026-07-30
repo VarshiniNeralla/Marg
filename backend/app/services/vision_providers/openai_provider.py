@@ -32,6 +32,7 @@ class OpenAIVisionProvider(VisionProvider):
         mime: str,
         cols: int,
         rows: int,
+        target_flat_number: str | None = None,
     ) -> VisionAnalysisResult:
         raise NotImplementedError("OpenAI vision provider is not yet implemented")
 
