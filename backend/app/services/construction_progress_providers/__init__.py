@@ -12,6 +12,7 @@ from app.services.construction_progress_providers.base import (
     FloorProgressResult,
 )
 from app.services.construction_progress_providers.vllm_provider import (
+    COMPLETE_THRESHOLD,
     VllmConstructionProgressProvider,
 )
 
@@ -23,6 +24,7 @@ __all__ = [
     "activities_as_dicts",
     "ActivityAssessment",
     "CaptureRef",
+    "COMPLETE_THRESHOLD",
     "ConstructionProgressProvider",
     "FloorProgressResult",
     "VllmConstructionProgressProvider",

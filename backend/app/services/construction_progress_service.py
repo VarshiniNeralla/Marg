@@ -15,6 +15,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.services.construction_progress_providers import (
     ALL_ACTIVITIES,
+    COMPLETE_THRESHOLD,
     CaptureRef,
     ConstructionProgressProvider,
     VllmConstructionProgressProvider,
@@ -198,8 +199,17 @@ class ConstructionProgressService:
                 elif not pcts:
                     state = "uploaded"
                 else:
+                    # "Completed" requires EVERY confirmed activity in this
+                    # room to individually clear the threshold — not just an
+                    # average across them. An average let a room with e.g.
+                    # six activities at 100% and one at 60% still read
+                    # "Completed" (avg ~94%) here while the same room
+                    # correctly failed the stricter per-activity rule on the
+                    # Flat Finishing Works page, which is confusing since a
+                    # room is either genuinely fully done or it isn't — the
+                    # two views must never disagree on that.
                     avg_pct = sum(pcts) / len(pcts)
-                    if avg_pct >= 90:
+                    if all(p >= COMPLETE_THRESHOLD for p in pcts):
                         state = "completed"
                     elif avg_pct > 2:
                         state = "in_progress"

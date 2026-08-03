@@ -48,7 +48,7 @@ _MIN_EVIDENCE_CONFIDENCE = 50.0
 
 # The completion_pct an activity/unit must reach to read as genuinely "done" — shared between
 # _status_for_pct and the MEP/door-shutter gate below so both use the same bar for "finished".
-_COMPLETE_THRESHOLD = 92.0
+COMPLETE_THRESHOLD = 92.0
 
 # MEP Ceiling Services cannot be reported complete in a flat whose own door shutters aren't
 # confirmed installed — see the gate in assess_floor_progress for why.
@@ -304,7 +304,7 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
             ]
             for unit in list(mep_pcts):
                 doors_confirmed = any(
-                    door_pcts.get(unit, 0.0) >= _COMPLETE_THRESHOLD for door_pcts in door_pcts_by_id
+                    door_pcts.get(unit, 0.0) >= COMPLETE_THRESHOLD for door_pcts in door_pcts_by_id
                 )
                 if not doors_confirmed:
                     mep_pcts[unit] = 0.0
@@ -590,7 +590,7 @@ def _build_flat_progress(
                 )
             room_activities.sort(key=lambda a: activities_by_id[a.activity_id].sequence_index)
             is_complete = bool(room_activities) and all(
-                a.completion_pct >= _COMPLETE_THRESHOLD for a in room_activities
+                a.completion_pct >= COMPLETE_THRESHOLD for a in room_activities
             )
             if is_complete:
                 rooms_complete += 1
@@ -616,7 +616,7 @@ def _status_for_pct(pct: float) -> ActivityStatus:
     # visible confirmation across every unit; anything short of that is
     # "in_progress" — a wrong "completed" is worse than an honest "still in
     # progress", so the bar stays high.
-    if pct >= _COMPLETE_THRESHOLD:
+    if pct >= COMPLETE_THRESHOLD:
         return "completed"
     return "in_progress"
 
