@@ -1,17 +1,14 @@
 import type { ActivityAssessment, ActivityStatus, FloorProgressSnapshot, RoomHeatmapEntry, RoomHeatmapState } from '@/services/constructionProgressService';
 import { ACTIVITY_STATUS_LABELS } from '@/services/constructionProgressService';
 import { exportHtmlToPdf } from '@/utils/htmlToPdf';
-import { resolveCaptureImageUrls } from '@/utils/evidenceImages';
 
 const BRAND_NAME = 'SiteVision';
 const BRAND_TAGLINE = 'AI Construction Intelligence';
 
 const STATUS_COLOR: Record<ActivityStatus, string> = {
-  not_started: '#94a3b8',
+  no_evidence: '#94a3b8',
   in_progress: '#d97706',
-  mostly_complete: '#2563eb',
   completed: '#16a34a',
-  unable_to_determine: '#cbd5e1',
 };
 
 const HEATMAP_COLOR: Record<RoomHeatmapState, string> = {
@@ -23,7 +20,7 @@ const HEATMAP_COLOR: Record<RoomHeatmapState, string> = {
 
 const HEATMAP_LABEL: Record<RoomHeatmapState, string> = {
   no_images: 'No Photos Yet',
-  uploaded: 'Photos Uploaded',
+  uploaded: 'Photographed — Not Started',
   in_progress: 'Work In Progress',
   completed: 'Completed',
 };
@@ -91,11 +88,11 @@ function buildCoverPage(snapshot: FloorProgressSnapshot, generatedAt: string): s
     <div class="findings-grid">
       <div class="finding-card">
         <h3>Rooms</h3>
-        <p>${snapshot.summaryCards.roomsCompleted} completed / ${snapshot.summaryCards.roomsPending} pending</p>
+        <p>${snapshot.summaryCards.roomsCompleted} completed / ${snapshot.summaryCards.roomsInProgress} in progress / ${snapshot.summaryCards.roomsNotStarted} not started</p>
       </div>
       <div class="finding-card">
         <h3>Activities</h3>
-        <p>${snapshot.summaryCards.activitiesCompleted} completed / ${snapshot.summaryCards.activitiesPending} pending</p>
+        <p>${snapshot.summaryCards.activitiesCompleted} completed / ${snapshot.summaryCards.activitiesInProgress} in progress / ${snapshot.summaryCards.activitiesNotStarted} not started</p>
       </div>
       <div class="finding-card">
         <h3>Images Analyzed</h3>
@@ -118,19 +115,19 @@ function polygonToPoints(polygon: RoomHeatmapEntry['polygon']): string {
 function buildHeatmapPage(snapshot: FloorProgressSnapshot): string | null {
   if (!snapshot.floorPlanImageUrl || snapshot.roomHeatmap.length === 0) return null;
 
-  const polygons = snapshot.roomHeatmap
+  // Only rooms with real capture evidence get drawn — a grey box for every
+  // uncaptured room makes the overlay unreadable and adds no information the
+  // plain floor plan underneath doesn't already show (matches the live
+  // FloorPlanHeatmapOverlay.tsx behavior).
+  const coloredRooms = snapshot.roomHeatmap.filter(r => r.state !== 'no_images');
+  const polygons = coloredRooms
     .map(r => `<polygon points="${polygonToPoints(r.polygon)}" fill="${HEATMAP_COLOR[r.state]}" fill-opacity="0.38" stroke="${HEATMAP_COLOR[r.state]}" stroke-width="0.3" />`)
     .join('');
-
-  const noImageCount = snapshot.roomHeatmap.filter(r => r.state === 'no_images').length;
-  const coverageNote = noImageCount > 0
-    ? `<p class="coverage-note"><strong>${noImageCount} of ${snapshot.roomHeatmap.length} rooms</strong> have no photos uploaded yet — grey areas are a coverage gap, not an analysis failure.</p>`
-    : '';
 
   return `
     <h2 class="section-title page-intro">Floor Plan Heatmap</h2>
     <div class="heatmap-legend">
-      ${(Object.keys(HEATMAP_COLOR) as RoomHeatmapState[]).map(state => `
+      ${(Object.keys(HEATMAP_COLOR) as RoomHeatmapState[]).filter(state => state !== 'no_images').map(state => `
         <div class="legend-item"><span class="legend-dot" style="background:${HEATMAP_COLOR[state]}"></span>${escapeHtml(HEATMAP_LABEL[state])}</div>
       `).join('')}
     </div>
@@ -138,7 +135,6 @@ function buildHeatmapPage(snapshot: FloorProgressSnapshot): string | null {
       <img src="${escapeHtml(snapshot.floorPlanImageUrl)}" alt="Floor plan" class="heatmap-img" />
       <svg class="heatmap-svg" viewBox="0 0 100 100" preserveAspectRatio="none">${polygons}</svg>
     </div>
-    ${coverageNote}
   `;
 }
 
@@ -182,9 +178,10 @@ function buildActivitiesPage(title: string, activities: ActivityAssessment[], se
 // ── Room-by-room status page (per flat) ───────────────────────────────────────
 
 function buildRoomStatusPage(snapshot: FloorProgressSnapshot): string | null {
-  if (snapshot.roomHeatmap.length === 0) return null;
+  const coloredRooms = snapshot.roomHeatmap.filter(r => r.state !== 'no_images');
+  if (coloredRooms.length === 0) return null;
   const byFlat = new Map<string, RoomHeatmapEntry[]>();
-  snapshot.roomHeatmap.forEach(r => {
+  coloredRooms.forEach(r => {
     const list = byFlat.get(r.flatName) ?? [];
     list.push(r);
     byFlat.set(r.flatName, list);
@@ -220,64 +217,12 @@ function buildRoomStatusPage(snapshot: FloorProgressSnapshot): string | null {
   `;
 }
 
-// ── Evidence appendix (real photos) ───────────────────────────────────────────
-
-function buildEvidencePages(
-  activities: ActivityAssessment[],
-  imageUrls: Map<string, string>,
-): string[] {
-  const withEvidence = activities.filter(a => a.evidenceCaptureIds.some(id => imageUrls.has(id)));
-  if (withEvidence.length === 0) return [];
-
-  // Chunk activities across pages, roughly 4 per page (each with up to 3 photos).
-  const CHUNK = 4;
-  const pages: string[] = [];
-  for (let i = 0; i < withEvidence.length; i += CHUNK) {
-    const chunk = withEvidence.slice(i, i + CHUNK);
-    const blocks = chunk.map(a => {
-      const photos = a.evidenceCaptureIds
-        .map(id => imageUrls.get(id))
-        .filter((u): u is string => !!u)
-        .slice(0, 3)
-        .map(url => `<img src="${escapeHtml(url)}" class="evidence-photo" />`)
-        .join('');
-      return `
-        <div class="evidence-block avoid-break">
-          <div class="evidence-header">
-            <span class="status-pill" style="background:${STATUS_COLOR[a.status]}22; color:${STATUS_COLOR[a.status]}">${escapeHtml(ACTIVITY_STATUS_LABELS[a.status])}</span>
-            <h3>${escapeHtml(a.name)}</h3>
-          </div>
-          <div class="evidence-photos">${photos}</div>
-        </div>
-      `;
-    }).join('');
-
-    pages.push(`
-      <style>
-        .evidence-block { margin-bottom: 18px; }
-        .evidence-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-        .evidence-header h3 { font-size: 10px; font-weight: 700; color: #1a2332; margin: 0; }
-        .evidence-photos { display: flex; gap: 6px; }
-        .evidence-photo { width: 31%; aspect-ratio: 16/9; object-fit: cover; border-radius: 5px; border: 1px solid #e4e8ee; }
-      </style>
-      <h2 class="section-title page-intro">Photo Evidence${i === 0 ? '' : ' (continued)'}</h2>
-      ${blocks}
-    `);
-  }
-  return pages;
-}
-
 // ── Assembly ───────────────────────────────────────────────────────────────────
 
 export async function buildConstructionProgressPdfHtml(snapshot: FloorProgressSnapshot): Promise<string> {
   const generatedAt = new Date().toLocaleString(undefined, {
     day: 'numeric', month: 'long', year: 'numeric', hour: 'numeric', minute: '2-digit',
   });
-
-  const allEvidenceIds = snapshot.activities.flatMap(a => a.evidenceCaptureIds);
-  const imageUrls = allEvidenceIds.length > 0
-    ? await resolveCaptureImageUrls(allEvidenceIds).catch(() => new Map<string, string>())
-    : new Map<string, string>();
 
   const pages: string[] = [buildCoverPage(snapshot, generatedAt)];
 
@@ -290,14 +235,12 @@ export async function buildConstructionProgressPdfHtml(snapshot: FloorProgressSn
   pages.push(buildActivitiesPage('Flat Finishing Works', snapshot.activities, 'flat'));
   pages.push(buildActivitiesPage('Common Area Finishing Works', snapshot.activities, 'common'));
 
-  pages.push(...buildEvidencePages(snapshot.activities, imageUrls));
-
   const disclaimerPage = `
     <h2 class="section-title page-intro">Notes</h2>
     <div class="disclaimer avoid-break">
       <p>This report was generated automatically using AI-assisted construction image analysis under the ${escapeHtml(BRAND_NAME)} platform.</p>
       <p>Completion percentages are estimates derived from uploaded 360° photo evidence; verify critical milestones on-site before commercial or safety decisions.</p>
-      <p>Rooms shown in grey on the heatmap have no photos uploaded yet — this reflects a photo-coverage gap, not a failed or incomplete analysis.</p>
+      <p>Only rooms with at least one uploaded photo appear on the heatmap and room-status pages; rooms with no photos yet are omitted rather than shown as an unscored gap.</p>
     </div>
   `;
   pages.push(disclaimerPage);
@@ -365,7 +308,6 @@ export async function buildConstructionProgressPdfHtml(snapshot: FloorProgressSn
     .heatmap-frame { position: relative; width: 100%; border: 1px solid #e4e8ee; border-radius: 6px; overflow: hidden; }
     .heatmap-img { width: 100%; display: block; }
     .heatmap-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-    .coverage-note { margin-top: 10px; font-size: 8.5px; color: #4a5568; background: #f1f4f8; padding: 8px 10px; border-radius: 6px; line-height: 1.5; }
   </style>
 </head>
 <body>${body}</body>

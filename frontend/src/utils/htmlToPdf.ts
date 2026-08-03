@@ -106,23 +106,58 @@ async function exportHtmlToPdfNative(html: string, fileTitle: string): Promise<v
   }
 }
 
-function exportHtmlToPdfWeb(html: string): void {
-  const win = window.open('', '_blank');
-  if (!win) return;
-  win.document.write(html);
-  win.document.close();
-  win.focus();
+/**
+ * Renders the report to a real PDF in-browser (same html2canvas + jsPDF
+ * pipeline as the native path) and triggers a direct file download — no
+ * window.print() dialog, no print-preview tab. A field/office user clicking
+ * "PDF Report" wants the file, not another dialog to click through.
+ */
+async function exportHtmlToPdfWeb(html: string, fileTitle: string): Promise<void> {
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/);
+  const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/);
+  const bodyContent = (bodyMatch?.[1] ?? '').replace(/<script[\s\S]*?<\/script>/, '');
 
-  waitForImages(win.document).then(() => {
-    setTimeout(() => win.print(), 400);
-  });
+  const container = document.createElement('div');
+  container.style.cssText = 'position:fixed; top:0; left:-99999px; z-index:-1;';
+  const styleEl = document.createElement('style');
+  styleEl.textContent = styleMatch?.[1] ?? '';
+  container.appendChild(styleEl);
+  const contentWrap = document.createElement('div');
+  contentWrap.innerHTML = bodyContent;
+  container.appendChild(contentWrap);
+  document.body.appendChild(container);
+
+  try {
+    await waitForImages(container);
+
+    const { default: html2canvas } = await import('html2canvas');
+    const { jsPDF } = await import('jspdf');
+
+    const pages = Array.from(contentWrap.querySelectorAll('.print-page')) as HTMLElement[];
+    const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+    const pageWidthMm = 210;
+    const pageHeightMm = 297;
+
+    for (let i = 0; i < pages.length; i++) {
+      const canvas = await html2canvas(pages[i], { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
+      if (i > 0) pdf.addPage();
+      pdf.addImage(imgData, 'JPEG', 0, 0, pageWidthMm, pageHeightMm);
+    }
+
+    const fileName = `${fileTitle.replace(/[^a-z0-9]+/gi, '-')}-${Date.now()}.pdf`;
+    pdf.save(fileName);
+  } finally {
+    document.body.removeChild(container);
+  }
 }
 
-/** Dispatches to the native (Capacitor) or web print flow, matching
- *  reportPdf.ts's exportReportToPdf branching convention exactly. */
+/** Dispatches to the native (Capacitor) or web download flow. Both paths now
+ *  render the same client-side PDF and hand it straight to the OS (native
+ *  Share sheet / browser download) — neither shows a preview first. */
 export function exportHtmlToPdf(html: string, fileTitle: string): void | Promise<void> {
   if (Capacitor.isNativePlatform()) {
     return exportHtmlToPdfNative(html, fileTitle);
   }
-  exportHtmlToPdfWeb(html);
+  return exportHtmlToPdfWeb(html, fileTitle);
 }

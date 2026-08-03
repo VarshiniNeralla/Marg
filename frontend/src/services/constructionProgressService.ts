@@ -10,12 +10,12 @@ export interface ActivityDefinition {
   sequenceIndex: number;
 }
 
-export type ActivityStatus =
-  | 'not_started'
-  | 'in_progress'
-  | 'mostly_complete'
-  | 'completed'
-  | 'unable_to_determine';
+// A construction manager wants "is this done or not", not five shades of
+// maybe — "completed" requires near-total, visible confirmation, everything
+// short of that (but genuinely observed) is "in_progress". An activity
+// nobody has photographed anywhere gets its own "no_evidence" state — it is
+// NOT "in_progress", since that would falsely claim observed work.
+export type ActivityStatus = 'no_evidence' | 'in_progress' | 'completed';
 
 export interface ActivityAssessment {
   activityId: string;
@@ -40,11 +40,41 @@ export interface RoomHeatmapEntry {
   capturesCount: number;
 }
 
+export interface RoomActivityAssessment {
+  activityId: string;
+  activityName: string;
+  completionPct: number;
+  confidencePct: number;
+  evidenceCaptureIds: string[];
+}
+
+export interface RoomProgress {
+  roomName: string;
+  // True only when EVERY activity confirmed in this room individually
+  // reached the completion threshold — a room with zero confirmed
+  // activities is never "complete".
+  isComplete: boolean;
+  activities: RoomActivityAssessment[];
+}
+
+export interface FlatProgress {
+  flatName: string;
+  // (rooms complete) / (rooms total in this flat's room-map roster) — a
+  // flat only reaches 100% once every one of its rooms is independently
+  // complete, not once any single room is photographed.
+  completionPct: number;
+  roomsComplete: number;
+  roomsTotal: number;
+  rooms: RoomProgress[];
+}
+
 export interface SummaryCards {
   roomsCompleted: number;
-  roomsPending: number;
+  roomsInProgress: number;
+  roomsNotStarted: number;
   activitiesCompleted: number;
-  activitiesPending: number;
+  activitiesInProgress: number;
+  activitiesNotStarted: number;
   imagesAnalyzed: number;
   lastInspection: string | null;
   avgConfidencePct: number;
@@ -63,9 +93,11 @@ export interface FloorProgressSnapshot {
   snapshotDate: string;
   overallProgressPct: number;
   overallConfidencePct: number;
+  overallStatus: ActivityStatus;
   imagesAnalyzedCount: number;
   activities: ActivityAssessment[];
   roomHeatmap: RoomHeatmapEntry[];
+  flatProgress: FlatProgress[];
   summaryCards: SummaryCards;
   executiveSummary: string;
   model: string;
@@ -80,6 +112,7 @@ export interface FloorSummary {
   towerName: string;
   floorName: string;
   overallProgressPct: number | null;
+  overallStatus: ActivityStatus | null;
   lastInspection: string | null;
   analyzed: boolean;
 }
@@ -141,9 +174,7 @@ export const constructionProgressService = {
 };
 
 export const ACTIVITY_STATUS_LABELS: Record<ActivityStatus, string> = {
-  not_started: 'Not Started',
-  in_progress: 'In Progress',
-  mostly_complete: 'Mostly Complete',
+  no_evidence: 'No Photos Yet',
+  in_progress: 'Work in Progress',
   completed: 'Completed',
-  unable_to_determine: 'Unable to Determine',
 };

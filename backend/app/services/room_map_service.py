@@ -209,9 +209,32 @@ def _parse_rooms(
     if not isinstance(raw_rooms, list):
         return []
     cx0, cy0, cx1, cy1 = crop_box
+
+    # Defence-in-depth against the model assigning the same grid cell to more
+    # than one room (confirmed on real floor plans: whole cell blocks shared
+    # between two room names, e.g. "Maid-01" and "Toilet" ending up with the
+    # literal identical rectangle) — the prompt now explicitly forbids this,
+    # but a wrong room is worse than a missing one, so cell ownership is also
+    # resolved here rather than trusting the model's output blindly. Ties go
+    # to whichever room has higher confidence; a genuine tie keeps whichever
+    # room was listed first (the model's own primary read).
+    cell_owner: dict[str, tuple[int, int]] = {}  # cell label -> (confidence, room index)
+    for idx, room in enumerate(raw_rooms):
+        if not isinstance(room, dict):
+            continue
+        cells = room.get("cells")
+        if not isinstance(cells, list):
+            continue
+        confidence = _coerce_confidence(room.get("confidence"))
+        for cell in cells:
+            cell_key = str(cell).strip().upper()
+            current = cell_owner.get(cell_key)
+            if current is None or confidence > current[0]:
+                cell_owner[cell_key] = (confidence, idx)
+
     rooms: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for room in raw_rooms:
+    for idx, room in enumerate(raw_rooms):
         if not isinstance(room, dict):
             continue
         rname = str(room.get("name") or "").strip()
@@ -227,8 +250,20 @@ def _parse_rooms(
         if exclude_common and _is_common_area_name(rname):
             logger.debug("Room dropped (common area in flat) {} name={!r}", label, rname)
             continue
+        # Only cells this room actually WON the ownership tie-break for —
+        # cells another (equal-or-higher confidence) room also claimed are
+        # dropped from this room rather than left to produce an overlapping
+        # rectangle.
+        owned_cells = [c for c in cells if cell_owner.get(str(c).strip().upper()) == (confidence, idx)]
+        if len(owned_cells) < len(cells):
+            logger.debug(
+                "Room {} name={!r} lost {} cell(s) to a higher/equal-confidence room sharing them",
+                label, rname, len(cells) - len(owned_cells),
+            )
+        if not owned_cells:
+            continue
         polygon = _cells_to_full_polygon(
-            cells, crop_x0=cx0, crop_y0=cy0, crop_w=(cx1 - cx0), crop_h=(cy1 - cy0)
+            owned_cells, crop_x0=cx0, crop_y0=cy0, crop_w=(cx1 - cx0), crop_h=(cy1 - cy0)
         )
         if not polygon:
             continue
@@ -237,8 +272,18 @@ def _parse_rooms(
         # Reject rooms whose centre is outside the owned region (neighbour bleed across the core).
         if not (own_x[0] <= ccx <= own_x[1] and own_y[0] <= ccy <= own_y[1]):
             continue
-        # For flats, also drop rooms in the central core cross-band (that's common-area territory).
-        if exclude_common and (abs(ccx - 50.0) < _CORE_BAND or abs(ccy - 50.0) < _CORE_BAND):
+        # For flats, also drop rooms in the central core cross-band (that's common-area
+        # territory) — EXCEPT a room explicitly named "Lobby": a flat's own entry lobby
+        # legitimately sits right next to the shared central corridor it opens onto, so
+        # this exact geometry is expected for it, not a sign of neighbour bleed (confirmed
+        # on a real plan: a flat's genuine Lobby sat well inside this band and was wrongly
+        # dropped). Qualified names ("Lift Lobby", "Service Lobby") never reach this branch
+        # at all — they're already rejected by _is_common_area_name above.
+        if (
+            exclude_common
+            and rname.strip().lower() != "lobby"
+            and (abs(ccx - 50.0) < _CORE_BAND or abs(ccy - 50.0) < _CORE_BAND)
+        ):
             continue
         key = rname.lower()
         if key in seen:
@@ -250,7 +295,61 @@ def _parse_rooms(
             "confidence": confidence,
             "reason": str(room.get("reason") or "")[:200],
         })
+    _trim_overlapping_rectangles(rooms, label=label)
     return rooms
+
+
+def _trim_overlapping_rectangles(rooms: list[dict[str, Any]], *, label: str) -> None:
+    """
+    Second, complementary defence against overlapping rectangles (mutates
+    ``rooms`` in place). The cell-ownership dedup above resolves the SAME
+    cell being claimed by two rooms; this handles the smaller residual case
+    where two genuinely ADJACENT rooms each read their own wall boundary
+    slightly imprecisely, leaving a thin overlap that isn't a shared cell at
+    all (confirmed on a real floor plan: two rooms with distinct, only
+    partially-overlapping cell sets, overlapping by roughly half a grid
+    cell's width). Real rooms share a flat wall, not a shared floor area, so
+    each overlapping pair is trimmed back to meet exactly at the midpoint of
+    the overlap, on whichever axis the overlap is thinner (the wall is more
+    likely the axis with the smaller gap).
+    """
+    for i in range(len(rooms)):
+        for j in range(i + 1, len(rooms)):
+            b1 = _rect_bounds(rooms[i]["polygon"])
+            b2 = _rect_bounds(rooms[j]["polygon"])
+            ox0, ox1 = max(b1[0], b2[0]), min(b1[1], b2[1])
+            oy0, oy1 = max(b1[2], b2[2]), min(b1[3], b2[3])
+            ox, oy = ox1 - ox0, oy1 - oy0
+            if ox <= 0 or oy <= 0:
+                continue  # no overlap
+            logger.debug(
+                "Trimming overlap between {} and {} rooms {!r}/{!r}: {:.2f}x{:.2f} units",
+                label, label, rooms[i]["name"], rooms[j]["name"], ox, oy,
+            )
+            if ox <= oy:
+                # Thinner along x — the shared wall is vertical. Whichever
+                # room is to the left gets pulled back to the midpoint;
+                # whichever is to the right advances to meet it.
+                mid = (ox0 + ox1) / 2
+                for r, b in ((rooms[i], b1), (rooms[j], b2)):
+                    is_left = b[0] < b[1] and (b[0] + b[1]) / 2 < mid
+                    _set_rect_edge(r, "x1" if is_left else "x0", mid)
+            else:
+                # Thinner along y — the shared wall is horizontal.
+                mid = (oy0 + oy1) / 2
+                for r, b in ((rooms[i], b1), (rooms[j], b2)):
+                    is_top = (b[2] + b[3]) / 2 < mid
+                    _set_rect_edge(r, "y1" if is_top else "y0", mid)
+
+
+def _set_rect_edge(room: dict[str, Any], edge: str, value: float) -> None:
+    """Move one edge (x0/x1/y0/y1) of a room's axis-aligned rectangle polygon to ``value``."""
+    axis = "x" if edge[0] == "x" else "y"
+    bounds = _rect_bounds(room["polygon"])
+    old_value = bounds[0] if edge == "x0" else bounds[1] if edge == "x1" else bounds[2] if edge == "y0" else bounds[3]
+    for point in room["polygon"]:
+        if point[axis] == old_value:
+            point[axis] = value
 
 
 # Full-image-percent distance a pin may sit outside every room polygon and still

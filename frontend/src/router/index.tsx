@@ -73,6 +73,7 @@ const ReviewsPage = lazy(() => import('@/pages/Reviews/ReviewsPage'));
 const ProgressReportsPage = lazy(() => import('@/pages/ProgressReports/ProgressReportsPage'));
 const ConstructionProgressOverviewPage = lazy(() => import('@/pages/ConstructionProgress/ConstructionProgressOverviewPage'));
 const ConstructionProgressDashboardPage = lazy(() => import('@/pages/ConstructionProgress/ConstructionProgressDashboardPage'));
+const FlatFinishingWorksPage = lazy(() => import('@/pages/ConstructionProgress/FlatFinishingWorksPage'));
 
 // ── Field Engineer-only ───────────────────────────────────────────────────────
 const CaptureWorkflowPage = lazy(() => import('@/pages/CaptureWorkflow/CaptureWorkflowPage'));
@@ -165,6 +166,7 @@ const router = createBrowserRouter([
           { path: '/progress-reports',        element: <PageSuspense><ProgressReportsPage /></PageSuspense> },
           { path: '/construction-progress',           element: <PageSuspense><ConstructionProgressOverviewPage /></PageSuspense> },
           { path: '/construction-progress/:floorId',  element: <PageSuspense><ConstructionProgressDashboardPage /></PageSuspense> },
+          { path: '/construction-progress/:floorId/flats', element: <PageSuspense><FlatFinishingWorksPage /></PageSuspense> },
           // Managers see/edit field engineers only — the page and backend both scope this;
           // it's not moved to the Admin-only block below since Admins need the full view too.
           { path: '/users',                             element: <PageSuspense><UserManagementPage /></PageSuspense> },

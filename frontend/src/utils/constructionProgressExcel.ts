@@ -30,9 +30,11 @@ export async function exportConstructionProgressExcel(
     ['AI Confidence', `${Math.round(snapshot.overallConfidencePct)}%`],
     ['Images Analyzed', snapshot.imagesAnalyzedCount],
     ['Rooms Completed', snapshot.summaryCards.roomsCompleted],
-    ['Rooms Pending', snapshot.summaryCards.roomsPending],
+    ['Rooms In Progress', snapshot.summaryCards.roomsInProgress],
+    ['Rooms Not Started', snapshot.summaryCards.roomsNotStarted],
     ['Activities Completed', snapshot.summaryCards.activitiesCompleted],
-    ['Activities Pending', snapshot.summaryCards.activitiesPending],
+    ['Activities In Progress', snapshot.summaryCards.activitiesInProgress],
+    ['Activities Not Started', snapshot.summaryCards.activitiesNotStarted],
     ['Last Inspection', formatDate(snapshot.summaryCards.lastInspection)],
     ['AI Summary', snapshot.executiveSummary],
   ];
@@ -50,7 +52,6 @@ export async function exportConstructionProgressExcel(
     { header: 'Status', key: 'status', width: 18 },
     { header: 'Completion %', key: 'completion', width: 14 },
     { header: 'Confidence %', key: 'confidence', width: 14 },
-    { header: 'Evidence Captures', key: 'evidence', width: 30 },
   ];
   activities.getRow(1).font = { bold: true };
   activities.getRow(1).eachCell(cell => {
@@ -65,7 +66,6 @@ export async function exportConstructionProgressExcel(
         status: ACTIVITY_STATUS_LABELS[a.status],
         completion: Math.round(a.completionPct),
         confidence: a.confidencePct > 0 ? Math.round(a.confidencePct) : '',
-        evidence: a.evidenceCaptureIds.join(', '),
       });
     });
 

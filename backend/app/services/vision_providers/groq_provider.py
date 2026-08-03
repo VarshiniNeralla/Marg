@@ -389,8 +389,17 @@ Return ONLY valid JSON, no markdown:
 
 
 # Common-area / building-core labels that must NEVER be returned as apartment rooms.
+#
+# NOTE: bare "lobby" is deliberately NOT in this list. Many floor plans give each
+# individual flat its own small entry lobby just inside its front door (e.g. "01 FLAT
+# Lobby", confirmed on a real plan) — that is a flat-owned room, not shared circulation,
+# and excluding it here caused it to be silently dropped from the flat's own room list,
+# leaving any capture pin placed there with no matching room and forced into a
+# nearest-neighbour snap onto a wrong, distant room. Only a QUALIFIED lobby name
+# ("lift lobby", "service lobby") is unambiguously shared and stays excluded — see
+# _is_common_area_name for the flat-scoped bare-"lobby" carve-out.
 _COMMON_AREA_TERMS = (
-    "lift lobby", "service lobby", "lobby", "fire lift", "service lift", "lift", "staircase",
+    "lift lobby", "service lobby", "fire lift", "service lift", "lift", "staircase",
     "stair", "fire stair", "refuge", "electrical room", "elec", "pump room", "dg shaft",
     "toilet shaft", "fire shaft", "service shaft", "lift shaft", "shaft", "duct", "ac ledge",
     "ledge", "corridor", "common passage", "passage", "pot wash",
@@ -442,6 +451,12 @@ ROOM RULES
   "Living / Dining". Never merge Living and Drawing.
 - NO duplicates: never two Kitchens / two Drawing Rooms unless the drawing literally shows two.
 - If a room is cut off by the crop edge and you cannot confirm it belongs to THIS flat, omit it.
+- EVERY grid cell belongs to AT MOST ONE room. Two different rooms must NEVER list the same cell —
+  real rooms are separated by a wall, so their cell sets never touch, let alone overlap. Before
+  finalising each room's cell list, check it against every other room you are about to return: if a
+  cell appears in more than one room's list, the boundary between them is wrong — re-examine the
+  wall in the image and assign that cell to whichever ONE room's floor area the cell's centre
+  actually falls inside, then remove it from the other room(s).
 
 =========================
 NEIGHBOUR FILTERING (critical)
@@ -452,9 +467,12 @@ DISCARD it. Never borrow a room (e.g. a Bedroom-3) from a neighbouring apartment
 =========================
 NEVER RETURN THESE (building core / common areas)
 =========================
-Lift Lobby, Lobby, Service Lobby, Fire Lift, Lift, Service Lift, Staircase, Fire Stair, Refuge
+Lift Lobby, Service Lobby, Fire Lift, Lift, Service Lift, Staircase, Fire Stair, Refuge
 Area, Electrical Room, Pump Room, DG Shaft, Toilet Shaft, Fire Shaft, Service Shaft, Lift Shaft,
 Duct, AC Ledge, Corridor, Common Passage. These belong to the building, not any flat — omit them.
+EXCEPTION — a plain "Lobby" (not "Lift Lobby" or "Service Lobby") drawn INSIDE this flat's own
+boundary, just past its front door, is that flat's own entry lobby — a real room belonging to
+THIS flat, not shared circulation. Include it normally like any other room in this flat.
 
 =========================
 SIT-OUT (frequently missed — look carefully)
@@ -471,7 +489,8 @@ If your confidence for a room is below 70, OMIT that room entirely. reason ∈ {
 "fixture recognition"}}.
 
 Before returning, verify: any room outside this flat? any shaft/lift-lobby/staircase/corridor? any
-duplicate? invented Bedroom-4 or Maid room? merged Living+Drawing? missed Sit-Out? Fix before output.
+duplicate? invented Bedroom-4 or Maid room? merged Living+Drawing? missed Sit-Out? does any grid
+cell appear in more than one room's cell list? Fix before output.
 
 For each kept room list ALL grid cells its floor AREA overlaps.
 

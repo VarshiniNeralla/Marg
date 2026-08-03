@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Box, Typography, CircularProgress, Button } from '@mui/material';
-import { ArrowBackRounded, RefreshRounded, PictureAsPdfRounded, TableChartRounded, AutoAwesomeRounded } from '@mui/icons-material';
+import { ArrowBackRounded, RefreshRounded, PictureAsPdfRounded, TableChartRounded, AutoAwesomeRounded, ApartmentRounded } from '@mui/icons-material';
 import { Link, useParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { colors, shadows } from '@theme/tokens';
@@ -53,14 +53,20 @@ export default function ConstructionProgressDashboardPage() {
 
   const handleAnalyze = async () => {
     if (!floorId) return;
+    // Whether this is a first-ever analysis or a re-analysis is decided by
+    // whether a snapshot already existed the moment the button was pressed —
+    // reading `snapshot` again after the call resolves would always say
+    // "existed" and the overlay/toast would say "Re-analyzing" even for a
+    // first-time run.
+    const isReanalysis = !!snapshot;
     setAnalyzing(true);
     try {
       const result = await constructionProgressService.analyzeFloor(floorId);
       setSnapshot(result);
       setNotAnalyzed(false);
-      toast.success('Progress analysis complete');
+      toast.success(isReanalysis ? 'Re-analysis complete' : 'Progress analysis complete');
     } catch {
-      toast.error('Failed to analyze floor');
+      toast.error(isReanalysis ? 'Failed to re-analyze floor' : 'Failed to analyze floor');
     } finally {
       setAnalyzing(false);
     }
@@ -116,7 +122,7 @@ export default function ConstructionProgressDashboardPage() {
               <AutoAwesomeRounded sx={{ position: 'absolute', fontSize: 20, color: colors.primary }} />
             </Box>
             <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong }}>
-              Re-analyzing floor…
+              {snapshot ? 'Re-analyzing floor…' : 'Analyzing floor…'}
             </Typography>
             <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
               The AI is reviewing every uploaded capture against the finishing checklist. This can take a moment.
@@ -193,6 +199,18 @@ export default function ConstructionProgressDashboardPage() {
                 Excel Report
               </Button>
               <Button
+                component={Link}
+                to={`/construction-progress/${floorId}/flats`}
+                startIcon={<ApartmentRounded sx={{ fontSize: 18 }} />}
+                sx={{
+                  border: `1.5px solid ${P.border}`, color: P.strong, px: 2, py: 0.75, borderRadius: '10px',
+                  fontWeight: 600, textTransform: 'none', fontSize: '0.8125rem',
+                  '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+                }}
+              >
+                Flat Finishing Works
+              </Button>
+              <Button
                 onClick={handleAnalyze}
                 disabled={analyzing}
                 startIcon={analyzing ? <CircularProgress size={14} sx={{ color: colors.primary }} /> : <RefreshRounded sx={{ fontSize: 18 }} />}
@@ -215,11 +233,26 @@ export default function ConstructionProgressDashboardPage() {
           >
             <ProgressRing percentage={snapshot.overallProgressPct} label="Complete" />
             <Box sx={{ flex: 1, minWidth: 240 }}>
-              <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: P.muted, textTransform: 'uppercase', letterSpacing: '0.04em', mb: 0.5 }}>
-                Overall Floor Progress
-              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5, flexWrap: 'wrap' }}>
+                <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: P.muted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Overall Floor Progress
+                </Typography>
+                <Box
+                  sx={{
+                    px: 1, py: 0.125, borderRadius: '6px',
+                    backgroundColor: snapshot.overallStatus === 'completed' ? colors.successBg : colors.warningBg,
+                  }}
+                >
+                  <Typography sx={{
+                    fontSize: '0.6875rem', fontWeight: 700,
+                    color: snapshot.overallStatus === 'completed' ? colors.success : colors.warning,
+                  }}>
+                    {snapshot.overallStatus === 'completed' ? 'Completed' : 'Work in Progress'}
+                  </Typography>
+                </Box>
+              </Box>
               <Typography sx={{ fontSize: '1.75rem', fontWeight: 800, color: P.strong, lineHeight: 1.1 }}>
-                {Math.round(snapshot.overallProgressPct)}% Complete
+                {Math.round(snapshot.overallProgressPct)}%
               </Typography>
               <Typography sx={{ fontSize: '0.8125rem', color: P.muted, mt: 1 }}>
                 {snapshot.imagesAnalyzedCount} image{snapshot.imagesAnalyzedCount === 1 ? '' : 's'} analyzed

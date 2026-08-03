@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { Box, Typography, InputBase, Menu, MenuItem, Pagination, useMediaQuery, useTheme } from '@mui/material';
 import { CameraAltRounded, ViewInArRounded, SearchRounded, KeyboardArrowDownRounded, CheckRounded, ArrowBackRounded, LayersRounded, MapRounded, DeleteOutlineRounded, BusinessRounded, SortRounded, ArrowDownwardRounded, ArrowUpwardRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import { statusConfig, getRoomHistory } from '@store/workflowSelectors';
+import { statusConfig, getRoomHistory, getPinForCapture } from '@store/workflowSelectors';
 import type { MockCapture } from '@/data/mockData';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore , getRoleLandingPath } from '@store/authStore';
@@ -29,6 +29,13 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
   const dot = STATUS_DOT[capture.status] ?? colors.textSubdued;
   const thumbUrl = resolveCaptureThumbnailUrl(capture as MockCapture & Record<string, unknown>);
   const projectShort = capture.projectName.replace(/^My Home\s+/i, '');
+  // capture.roomName is frozen at capture-creation time (e.g. "Pin 8") and never
+  // updates when pins are later renumbered/deleted — confirmed on real data where
+  // a capture still read "Pin 8" long after that pin had been renumbered to 6.
+  // The pin's own current sequenceNumber (looked up live) can't go stale.
+  const pins = useWorkflowStore(s => s.capturePins);
+  const pin = getPinForCapture(pins, capture.id);
+  const displayName = pin ? `Pin ${pin.sequenceNumber}` : capture.roomName;
   const locationLabel = compact && showProjectName
     ? `${projectShort} · ${capture.floorLabel}`
     : showProjectName
@@ -108,7 +115,7 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
       {/* Metadata — name + status dot */}
       <Box sx={{ pt: { xs: 0.5, sm: 1.25 }, px: 0, minWidth: 0 }}>
         <Typography noWrap sx={{ fontSize: { xs: '0.6875rem', sm: '0.875rem' }, fontWeight: 600, color: colors.textStrong, letterSpacing: '-0.01em', minWidth: 0 }}>
-          {capture.roomName}
+          {displayName}
         </Typography>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.375, sm: 0.75 }, mt: { xs: 0.25, sm: 0.375 }, minWidth: 0 }}>
           <Box sx={{ width: { xs: 5, sm: 6 }, height: { xs: 5, sm: 6 }, borderRadius: '50%', backgroundColor: dot, flexShrink: 0 }} />
@@ -193,6 +200,13 @@ export default function CapturesPage() {
   }, [allPins]);
   const [deleteTarget, setDeleteTarget] = useState<MockCapture | null>(null);
   const tourCaptureIds = useMemo(() => new Set(tours.map(t => t.captureId)), [tours]);
+  // Same stale-roomName concern as CaptureCard's displayName — resolve the live pin label here too.
+  const deleteTargetLabel = deleteTarget
+    ? (() => {
+        const pin = allPins.find(p => p.captureIds.includes(deleteTarget.id));
+        return pin ? `Pin ${pin.sequenceNumber}` : deleteTarget.roomName;
+      })()
+    : 'this point';
 
   // Gallery shows one card per pin (latest only). Deleting that card must remove the
   // whole pin timeline — otherwise the previous visit becomes the new latest and
@@ -745,7 +759,7 @@ export default function CapturesPage() {
       <ConfirmDialog
         open={!!deleteTarget}
         title="Delete this capture?"
-        description={`The capture for ${deleteTarget?.roomName ?? 'this point'}${deleteTarget ? ` (${deleteTarget.towerName} · ${deleteTarget.floorLabel})` : ''}, any earlier visits at this point, and any tour generated from them will be permanently removed. This cannot be undone.`}
+        description={`The capture for ${deleteTargetLabel}${deleteTarget ? ` (${deleteTarget.towerName} · ${deleteTarget.floorLabel})` : ''}, any earlier visits at this point, and any tour generated from them will be permanently removed. This cannot be undone.`}
         confirmLabel="Delete capture"
         destructive
         onConfirm={confirmDeleteCapture}

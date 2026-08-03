@@ -149,6 +149,7 @@ class ConstructionProgressService:
             refs.append(
                 CaptureRef(
                     capture_id=cap_id,
+                    pin_id=str((pin or {}).get("_id") or (pin or {}).get("id") or ""),
                     room_name=room_name,
                     flat_name=flat_name,
                     captured_at=captured_at,
@@ -224,20 +225,63 @@ class ConstructionProgressService:
         captures = await self._get_capture_refs(org_id, floor_id, context["floorPlanId"])
         capture_lookup = {c.capture_id: c for c in captures}
 
+        # "Flat Finishing Works" must reach 100% only once EVERY ROOM in every
+        # physical flat confirms an activity, not just one photographed room
+        # in that flat — so the provider needs the full roster of rooms per
+        # flat (and per common-area) from the room map, not just the ones
+        # that happen to have a capture yet. A room with zero evidence still
+        # occupies a denominator slot (it contributes 0%), which is what
+        # makes "2 of 40 rooms done" read as 5%, not 100%.
+        flat_units: list[str] = []
+        common_area_units: list[str] = []
+        flat_room_rosters: dict[str, list[str]] = {}
+        floor_plan_id = context.get("floorPlanId")
+        if floor_plan_id:
+            cached_room_map = await self._room_maps.get_cached(floor_plan_id, org_id)
+            for flat_entry in (cached_room_map or {}).get("flats") or []:
+                flat_name = flat_entry.get("flat") or ""
+                if not flat_name:
+                    continue
+                room_names = [r.get("name") or "" for r in flat_entry.get("rooms") or [] if r.get("name")]
+                if flat_name == _COMMON_AREA_FLAT:
+                    common_area_units = room_names
+                else:
+                    flat_units.append(flat_name)
+                    flat_room_rosters[flat_name] = room_names
+
         result = await self._provider.assess_floor_progress(
             floor_id=floor_id,
             activities=ALL_ACTIVITIES,
             captures=captures,
             as_of=as_of,
+            flat_units=flat_units or None,
+            common_area_units=common_area_units or None,
+            flat_room_rosters=flat_room_rosters or None,
         )
 
+        # Built from each capture's OWN raw per-activity results, not from
+        # which capture "won" an activity's flat-level best-evidence
+        # comparison. A room's heatmap status must reflect what its own
+        # photo showed — a sibling room in the same flat scoring higher on
+        # the same activities must never make THIS room look untouched, even
+        # though only one of them can be the flat-level "winner" for the
+        # activity card. Falls back to the old evidence-id-based behaviour
+        # for a provider that doesn't populate per_capture_completion.
         activities_by_room: dict[tuple[str, str], list[float]] = {}
+        if result.per_capture_completion:
+            for cap_id, pcts in result.per_capture_completion.items():
+                cap = capture_lookup.get(cap_id)
+                if cap:
+                    activities_by_room.setdefault((cap.flat_name, cap.room_name), []).extend(pcts)
+        else:
+            for a in result.activities:
+                for cid in a.evidence_capture_ids:
+                    cap = capture_lookup.get(cid)
+                    if cap:
+                        activities_by_room.setdefault((cap.flat_name, cap.room_name), []).append(a.completion_pct)
+
         activity_docs = []
         for a in result.activities:
-            for cid in a.evidence_capture_ids:
-                cap = capture_lookup.get(cid)
-                if cap:
-                    activities_by_room.setdefault((cap.flat_name, cap.room_name), []).append(a.completion_pct)
             activity_docs.append({
                 "activityId": a.activity.activity_id,
                 "name": a.activity.name,
@@ -258,16 +302,61 @@ class ConstructionProgressService:
             org_id, context["floorPlanId"], activities_by_room, captures_by_room
         )
 
+        # Three honest buckets, not two: lumping "actively being worked on,
+        # with real photos" together with "never photographed at all" under
+        # one "pending" number is what made a floor with visible in-progress
+        # rooms still read as "0 completed / 54 pending" — indistinguishable
+        # from a floor nobody has touched yet.
         rooms_completed = sum(1 for r in room_heatmap if r["state"] == "completed")
-        rooms_pending = sum(1 for r in room_heatmap if r["state"] != "completed")
+        rooms_in_progress = sum(1 for r in room_heatmap if r["state"] in ("uploaded", "in_progress"))
+        rooms_not_started = sum(1 for r in room_heatmap if r["state"] == "no_images")
+        # ActivityStatus has its own explicit "no_evidence" state now — an
+        # activity nobody has photographed anywhere is never mislabelled
+        # "in_progress" (which would falsely claim observed work).
         activities_completed = sum(1 for a in activity_docs if a["status"] == "completed")
-        activities_pending = len(activity_docs) - activities_completed
+        activities_not_started = sum(1 for a in activity_docs if a["status"] == "no_evidence")
+        activities_in_progress = sum(1 for a in activity_docs if a["status"] == "in_progress")
         confident_docs = [a for a in activity_docs if a["confidencePct"] > 0]
         avg_confidence = (
             round(sum(a["confidencePct"] for a in confident_docs) / len(confident_docs), 1)
             if confident_docs else 0.0
         )
         last_inspection = max((c.captured_at for c in captures if c.captured_at), default=None)
+
+        # Floor-level status: "Completed" only if EVERY activity that was
+        # genuinely assessed is "completed" — one confirmed in-progress
+        # activity (or one never confirmed at all) keeps the whole floor at
+        # "Work in Progress". An unassessed activity is treated as NOT
+        # complete (never silently excluded), so a floor with almost nothing
+        # photographed yet cannot read as "Completed" by default.
+        overall_status = "completed" if activities_completed == len(activity_docs) and activity_docs else "in_progress"
+
+        flat_progress_docs = [
+            {
+                "flatName": fp.flat_name,
+                "completionPct": fp.completion_pct,
+                "roomsComplete": fp.rooms_complete,
+                "roomsTotal": fp.rooms_total,
+                "rooms": [
+                    {
+                        "roomName": r.room_name,
+                        "isComplete": r.is_complete,
+                        "activities": [
+                            {
+                                "activityId": a.activity_id,
+                                "activityName": a.activity_name,
+                                "completionPct": a.completion_pct,
+                                "confidencePct": a.confidence_pct,
+                                "evidenceCaptureIds": a.evidence_capture_ids,
+                            }
+                            for a in r.activities
+                        ],
+                    }
+                    for r in fp.rooms
+                ],
+            }
+            for fp in result.flat_progress
+        ]
 
         doc = {
             "orgId": org_id,
@@ -282,14 +371,18 @@ class ConstructionProgressService:
             "snapshotDate": as_of,
             "overallProgressPct": result.overall_progress_pct,
             "overallConfidencePct": result.overall_confidence_pct,
+            "overallStatus": overall_status,
             "imagesAnalyzedCount": len(captures),
             "activities": activity_docs,
             "roomHeatmap": room_heatmap,
+            "flatProgress": flat_progress_docs,
             "summaryCards": {
                 "roomsCompleted": rooms_completed,
-                "roomsPending": rooms_pending,
+                "roomsInProgress": rooms_in_progress,
+                "roomsNotStarted": rooms_not_started,
                 "activitiesCompleted": activities_completed,
-                "activitiesPending": activities_pending,
+                "activitiesInProgress": activities_in_progress,
+                "activitiesNotStarted": activities_not_started,
                 "imagesAnalyzed": len(captures),
                 "lastInspection": last_inspection,
                 "avgConfidencePct": avg_confidence,
@@ -407,6 +500,7 @@ class ConstructionProgressService:
                 "towerName": str((tower or {}).get("name") or ""),
                 "floorName": str(floor.get("label") or ""),
                 "overallProgressPct": latest.get("overallProgressPct") if latest else None,
+                "overallStatus": latest.get("overallStatus", "in_progress") if latest else None,
                 "lastInspection": (latest.get("summaryCards") or {}).get("lastInspection") if latest else None,
                 "analyzed": latest is not None,
             })
@@ -476,9 +570,11 @@ def _serialize_snapshot(doc: dict[str, Any] | None) -> dict[str, Any] | None:
         "snapshotDate": doc.get("snapshotDate"),
         "overallProgressPct": doc.get("overallProgressPct", 0.0),
         "overallConfidencePct": doc.get("overallConfidencePct", 0.0),
+        "overallStatus": doc.get("overallStatus", "in_progress"),
         "imagesAnalyzedCount": doc.get("imagesAnalyzedCount", 0),
         "activities": doc.get("activities", []),
         "roomHeatmap": doc.get("roomHeatmap", []),
+        "flatProgress": doc.get("flatProgress", []),
         "summaryCards": doc.get("summaryCards", {}),
         "executiveSummary": doc.get("executiveSummary", ""),
         "model": doc.get("model", ""),

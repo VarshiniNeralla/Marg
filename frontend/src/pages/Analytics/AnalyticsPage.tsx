@@ -170,22 +170,33 @@ function Card({ title, subtitle, right, children }: { title?: string; subtitle?:
 }
 
 function StatTile({ icon, label, value, sub, color, bg }: { icon: React.ReactNode; label: string; value: React.ReactNode; sub?: string; color: string; bg: string }) {
+  // Mirrors the KPI grid's own 480px breakpoint (below MUI's 600px "sm") so
+  // the tile switches from the phone row layout to the card column layout
+  // in lockstep with the grid going 1-column -> 3-column, instead of a
+  // mismatched window where 3 narrow tiles each still render the wide
+  // icon-left/value-right phone layout.
   return (
     <Box sx={{
       borderRadius: '16px', backgroundColor: colors.card, border: `1px solid ${colors.borderLight}`,
-      p: { xs: 2, md: 2.25 }, overflow: 'hidden', position: 'relative',
-      display: 'flex', flexDirection: { xs: 'row', md: 'column' },
-      alignItems: { xs: 'center', md: 'flex-start' },
-      gap: { xs: 1.75, md: 1.25 },
+      p: 2, overflow: 'hidden', position: 'relative',
+      display: 'flex', flexDirection: { xs: 'row' }, alignItems: 'center', gap: 1.75,
+      '@media (min-width: 480px)': { flexDirection: 'column', alignItems: 'flex-start', gap: 1.25, p: 2.25 },
       transition: `box-shadow 150ms, transform 150ms`,
       '&:hover': { boxShadow: `0 4px 16px rgba(0,0,0,0.07)`, transform: 'translateY(-1px)' },
     }}>
-      <Box sx={{ display: { xs: 'none', md: 'block' }, position: 'absolute', top: 0, left: 0, right: 0, height: 3, borderRadius: '16px 16px 0 0', backgroundColor: color, opacity: 0.7 }} />
+      <Box sx={{
+        display: 'none', position: 'absolute', top: 0, left: 0, right: 0, height: 3,
+        borderRadius: '16px 16px 0 0', backgroundColor: color, opacity: 0.7,
+        '@media (min-width: 480px)': { display: 'block' },
+      }} />
       <Box sx={{ width: 36, height: 36, borderRadius: '10px', backgroundColor: bg, display: 'flex', alignItems: 'center', justifyContent: 'center', color, flexShrink: 0, '& svg': { fontSize: 18 } }}>{icon}</Box>
-      <Box sx={{ flex: 1, display: 'flex', flexDirection: { xs: 'row', md: 'column' }, alignItems: { xs: 'center', md: 'flex-start' }, justifyContent: { xs: 'space-between', md: 'flex-start' }, gap: { xs: 0, md: 0.375 }, width: { md: '100%' }, minWidth: 0 }}>
+      <Box sx={{
+        flex: 1, display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 0, minWidth: 0,
+        '@media (min-width: 480px)': { flexDirection: 'column', alignItems: 'flex-start', justifyContent: 'flex-start', gap: 0.375, width: '100%' },
+      }}>
         <Typography noWrap sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textMuted }}>{label}</Typography>
-        <Box sx={{ textAlign: { xs: 'right', md: 'left' } }}>
-          <Typography sx={{ fontSize: { xs: '1.25rem', md: '1.5rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.03em', lineHeight: 1 }}>{value}</Typography>
+        <Box sx={{ textAlign: 'right', '@media (min-width: 480px)': { textAlign: 'left' } }}>
+          <Typography sx={{ fontSize: '1.25rem', '@media (min-width: 480px)': { fontSize: '1.5rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.03em', lineHeight: 1 }}>{value}</Typography>
           {sub && <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, mt: 0.375 }}>{sub}</Typography>}
         </Box>
       </Box>
@@ -366,7 +377,7 @@ export default function AnalyticsPage() {
   ];
 
   return (
-    <Box sx={{ maxWidth: 800, mx: 'auto', p: 1, animation: `fadeIn ${motion.durationNormal} ${motion.easeOut}`, '@keyframes fadeIn': { from: { opacity: 0, transform: 'translateY(10px)' }, to: { opacity: 1, transform: 'translateY(0)' } } }}>
+    <Box sx={{ maxWidth: 1080, mx: 'auto', p: 1, animation: `fadeIn ${motion.durationNormal} ${motion.easeOut}`, '@keyframes fadeIn': { from: { opacity: 0, transform: 'translateY(10px)' }, to: { opacity: 1, transform: 'translateY(0)' } } }}>
       {/* Header */}
       <Box sx={{ mb: { xs: 3.5, md: 5 } }}>
         <Box component={Link} to={overviewPath} sx={{
@@ -383,8 +394,14 @@ export default function AnalyticsPage() {
         <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>Operational trends — review progress, capture volume, and site coverage.</Typography>
       </Box>
 
-      {/* Management KPIs */}
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: { xs: 1.25, md: 1.5 }, mb: 4 }}>
+      {/* Management KPIs — the row layout kicks in at 480px (below MUI's
+          600px "sm" breakpoint) so tablet-width viewports, including a
+          narrower split-view or portrait window, get 3 columns instead of
+          falling back to the stacked phone layout. */}
+      <Box sx={{
+        display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr' }, gap: { xs: 1.25, md: 1.5 }, mb: 4,
+        '@media (min-width: 480px)': { gridTemplateColumns: 'repeat(3, 1fr)' },
+      }}>
         {KPIs.map(({ key, ...k }) => <StatTile key={key} {...k} />)}
       </Box>
 

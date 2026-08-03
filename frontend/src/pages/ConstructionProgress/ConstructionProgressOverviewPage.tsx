@@ -172,9 +172,26 @@ function FloorCard({ floor, onDelete }: { floor: FloorSummary; onDelete: (floor:
         </Box>
 
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong }} noWrap>
-            {floorHeading(floor) || 'Floor'}
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+            <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong }} noWrap>
+              {floorHeading(floor) || 'Floor'}
+            </Typography>
+            {floor.analyzed && (
+              <Box
+                sx={{
+                  px: 0.875, py: 0.0625, borderRadius: '5px', flexShrink: 0,
+                  backgroundColor: floor.overallStatus === 'completed' ? colors.successBg : colors.warningBg,
+                }}
+              >
+                <Typography sx={{
+                  fontSize: '0.625rem', fontWeight: 700,
+                  color: floor.overallStatus === 'completed' ? colors.success : colors.warning,
+                }}>
+                  {floor.overallStatus === 'completed' ? 'Completed' : 'In Progress'}
+                </Typography>
+              </Box>
+            )}
+          </Box>
           <Typography sx={{ fontSize: '0.75rem', color: P.subtle, mt: 0.25 }} noWrap>
             {floor.analyzed ? formatLastInspection(floor.lastInspection) : 'Not analyzed yet'}
           </Typography>

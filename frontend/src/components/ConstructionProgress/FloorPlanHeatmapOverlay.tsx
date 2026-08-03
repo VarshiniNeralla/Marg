@@ -17,7 +17,7 @@ const STATE_COLOR: Record<RoomHeatmapState, string> = {
 
 const STATE_LABEL: Record<RoomHeatmapState, string> = {
   no_images: 'No Photos Uploaded Yet',
-  uploaded: 'Images Uploaded',
+  uploaded: 'Photographed — Not Started',
   in_progress: 'Work In Progress',
   completed: 'Completed',
 };
@@ -53,9 +53,12 @@ function RoomDetailPanel({ room, onClose }: { room: RoomHeatmapEntry; onClose: (
           </Typography>
         </Box>
         <Typography sx={{ fontSize: '0.875rem', color: colors.textBody }}>
-          {room.state === 'no_images'
-            ? 'No 360° capture has been taken in this room yet — ask the field engineer to photograph it so it can be included in the next analysis.'
-            : `${room.capturesCount} capture${room.capturesCount === 1 ? '' : 's'} analyzed for this room.`}
+          {room.state === 'no_images' &&
+            'No 360° capture has been taken in this room yet — ask the field engineer to photograph it so it can be included in the next analysis.'}
+          {room.state === 'uploaded' &&
+            `${room.capturesCount} capture${room.capturesCount === 1 ? '' : 's'} analyzed, but the AI could not confirm any finishing work has started here yet — this could mean the room is genuinely untouched, or the photo doesn't clearly show enough to tell.`}
+          {(room.state === 'in_progress' || room.state === 'completed') &&
+            `${room.capturesCount} capture${room.capturesCount === 1 ? '' : 's'} analyzed for this room.`}
         </Typography>
       </Box>
     </Modal>

@@ -4,6 +4,8 @@ import { CloseRounded, ImageNotSupportedRounded } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
 import apiClient from '@/services/apiClient';
 import type { ApiResponse } from '@/types/dto';
+import { useWorkflowStore } from '@/store/workflowStore';
+import { getPinForCapture } from '@/store/workflowSelectors';
 
 /**
  * GET /captures/{id} returns the raw stored capture document (camelCase
@@ -27,8 +29,24 @@ function captureUrl(cap: RawCapture): string | undefined {
   return cap.processedPanoramaUrl || cap.original_url || cap.originalFileUrl || cap.thumbnailUrl || undefined;
 }
 
+/**
+ * `capture.roomName` is frozen at capture-creation time (e.g. "Pin 8") and never
+ * updates when pins are later renumbered or deleted — confirmed on real data
+ * showing a capture still labelled "Pin 8"/"Pin 9" long after the floor's pins
+ * had been cleaned up to 1-7 and 9. The pin's OWN current sequenceNumber (looked
+ * up live from the store, not the capture doc) is the only label that can't go
+ * stale, so it's used whenever the capture is still attached to a real pin.
+ */
+function pinLabelFor(pins: ReturnType<typeof useWorkflowStore.getState>['capturePins'], captureId: string, fallback?: string): string {
+  const pin = getPinForCapture(pins, captureId);
+  if (pin) return `Pin ${pin.sequenceNumber}`;
+  return fallback || 'Capture';
+}
+
 function FullSizeViewer({ capture, onClose }: { capture: RawCapture; onClose: () => void }) {
   const url = captureUrl(capture);
+  const pins = useWorkflowStore(s => s.capturePins);
+  const label = pinLabelFor(pins, capture.id, capture.roomName);
   return (
     <Modal open onClose={onClose} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', p: 2 }}>
       <Box sx={{ position: 'relative', width: '100%', maxWidth: '96vw', maxHeight: '92vh', outline: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -43,7 +61,7 @@ function FullSizeViewer({ capture, onClose }: { capture: RawCapture; onClose: ()
           <Box
             component="img"
             src={url}
-            alt={capture.roomName ?? ''}
+            alt={label}
             sx={{ maxWidth: '100%', maxHeight: '88vh', objectFit: 'contain', borderRadius: '8px', display: 'block' }}
           />
         ) : (
@@ -51,11 +69,9 @@ function FullSizeViewer({ capture, onClose }: { capture: RawCapture; onClose: ()
             <ImageNotSupportedRounded sx={{ fontSize: 32, color: colors.textSubdued }} />
           </Box>
         )}
-        {capture.roomName && (
-          <Typography sx={{ mt: 1.5, fontSize: '0.875rem', fontWeight: 600, color: '#fff' }}>
-            {capture.roomName}
-          </Typography>
-        )}
+        <Typography sx={{ mt: 1.5, fontSize: '0.875rem', fontWeight: 600, color: '#fff' }}>
+          {label}
+        </Typography>
       </Box>
     </Modal>
   );
@@ -73,6 +89,7 @@ export default function EvidenceLightbox({
   const [loading, setLoading] = useState(true);
   const [captures, setCaptures] = useState<RawCapture[]>([]);
   const [fullSize, setFullSize] = useState<RawCapture | null>(null);
+  const pins = useWorkflowStore(s => s.capturePins);
 
   useEffect(() => {
     let cancelled = false;
@@ -136,7 +153,7 @@ export default function EvidenceLightbox({
                   }}
                 >
                   {url ? (
-                    <Box component="img" src={url} alt={cap.roomName ?? ''} sx={{ width: '100%', aspectRatio: '16/9', objectFit: 'cover', display: 'block' }} />
+                    <Box component="img" src={url} alt={pinLabelFor(pins, cap.id, cap.roomName)} sx={{ width: '100%', aspectRatio: '16/9', objectFit: 'cover', display: 'block' }} />
                   ) : (
                     <Box sx={{ width: '100%', aspectRatio: '16/9', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bgDeep }}>
                       <ImageNotSupportedRounded sx={{ fontSize: 24, color: colors.textSubdued }} />
@@ -144,7 +161,7 @@ export default function EvidenceLightbox({
                   )}
                   <Box sx={{ p: 1 }}>
                     <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.textStrong }} noWrap>
-                      {cap.roomName || 'Capture'}
+                      {pinLabelFor(pins, cap.id, cap.roomName)}
                     </Typography>
                   </Box>
                 </Box>

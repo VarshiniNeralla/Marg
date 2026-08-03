@@ -12,27 +12,21 @@ import EvidenceLightbox from './EvidenceLightbox';
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#ffffff' };
 
 function statusColor(status: ActivityStatus): string {
-  switch (status) {
-    case 'completed': return colors.success;
-    case 'mostly_complete': return colors.primary;
-    case 'in_progress': return colors.warning;
-    case 'not_started': return colors.textSubdued;
-    default: return colors.textMuted;
-  }
+  if (status === 'completed') return colors.success;
+  if (status === 'in_progress') return colors.warning;
+  return colors.textSubdued;
 }
 
 function statusBg(status: ActivityStatus): string {
-  switch (status) {
-    case 'completed': return colors.successBg;
-    case 'mostly_complete': return colors.primarySoft;
-    case 'in_progress': return colors.warningBg;
-    default: return colors.bgDeep;
-  }
+  if (status === 'completed') return colors.successBg;
+  if (status === 'in_progress') return colors.warningBg;
+  return colors.bgDeep;
 }
 
 export default function ActivityCard({ activity }: { activity: ActivityAssessment }) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const hasEvidence = activity.evidenceCaptureIds.length > 0;
+  const noEvidence = activity.status === 'no_evidence';
 
   return (
     <>
@@ -58,30 +52,36 @@ export default function ActivityCard({ activity }: { activity: ActivityAssessmen
           </Box>
         </Box>
 
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: hasEvidence ? 1 : 0 }}>
-          <Box sx={{ flex: 1 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.375 }}>
-              <Typography sx={{ fontSize: '0.6875rem', color: P.muted, fontWeight: 600 }}>Completion</Typography>
-              <Typography sx={{ fontSize: '0.6875rem', color: P.strong, fontWeight: 700 }}>
-                {Math.round(activity.completionPct)}%
+        {noEvidence ? (
+          <Typography sx={{ fontSize: '0.75rem', color: P.muted, mb: 0 }}>
+            No captures cover this activity yet — upload a photo of the relevant area to include it in scoring.
+          </Typography>
+        ) : (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: hasEvidence ? 1 : 0 }}>
+            <Box sx={{ flex: 1 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.375 }}>
+                <Typography sx={{ fontSize: '0.6875rem', color: P.muted, fontWeight: 600 }}>Completion</Typography>
+                <Typography sx={{ fontSize: '0.6875rem', color: P.strong, fontWeight: 700 }}>
+                  {Math.round(activity.completionPct)}%
+                </Typography>
+              </Box>
+              <Box sx={{ height: 5, borderRadius: '999px', backgroundColor: colors.borderLight, overflow: 'hidden' }}>
+                <Box
+                  sx={{
+                    height: '100%', width: `${activity.completionPct}%`,
+                    backgroundColor: statusColor(activity.status), borderRadius: '999px',
+                    transition: `width ${motion.durationSlow} ${motion.easeOut}`,
+                  }}
+                />
+              </Box>
+            </Box>
+            {activity.confidencePct > 0 && (
+              <Typography sx={{ fontSize: '0.6875rem', color: P.muted, whiteSpace: 'nowrap' }}>
+                {Math.round(activity.confidencePct)}% confidence
               </Typography>
-            </Box>
-            <Box sx={{ height: 5, borderRadius: '999px', backgroundColor: colors.borderLight, overflow: 'hidden' }}>
-              <Box
-                sx={{
-                  height: '100%', width: `${activity.completionPct}%`,
-                  backgroundColor: statusColor(activity.status), borderRadius: '999px',
-                  transition: `width ${motion.durationSlow} ${motion.easeOut}`,
-                }}
-              />
-            </Box>
+            )}
           </Box>
-          {activity.confidencePct > 0 && (
-            <Typography sx={{ fontSize: '0.6875rem', color: P.muted, whiteSpace: 'nowrap' }}>
-              {Math.round(activity.confidencePct)}% confidence
-            </Typography>
-          )}
-        </Box>
+        )}
 
         {hasEvidence && (
           <Box
