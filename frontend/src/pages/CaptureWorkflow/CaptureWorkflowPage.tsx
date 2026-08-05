@@ -14,9 +14,12 @@ import { useWorkflowStore } from '@store/workflowStore';
 import { getFloorPlanByFloor, getFloorsWithPlanByTower, countFloorsWithPlanByTower } from '@store/workflowSelectors';
 import { uploadCaptureFiles } from '@/services/uploadService';
 import {
-  enqueueFileUpload, discardFileUpload, retryFileUpload, tryDirectUpload,
-  fileUploadStatusForPin, allQueuedPinStatuses, FILE_QUEUE_CHANGED_EVENT, FILE_UPLOAD_SUCCEEDED_EVENT,
+  enqueueFileUpload, discardFileUpload, retryFileUpload,
+  fileUploadStatusForPin, allQueuedPinStatuses, queuedPinStatuses,
+  fileUploadErrorForPin, fileUploadFailKindForPin,
+  FILE_QUEUE_CHANGED_EVENT, FILE_UPLOAD_SUCCEEDED_EVENT,
 } from '@store/fileUploadQueue';
+import { pendingUploadPins } from '@store/pendingUploadRegistry';
 import { useDeviceType, usesCameraCapture } from '@/hooks/useDeviceType';
 import CameraCaptureDialog from '@/features/capturePins/CameraCaptureDialog';
 import { Insta360Camera } from '@/plugins/insta360Camera';
@@ -909,11 +912,14 @@ export default function CaptureWorkflowPage() {
 
   /** True while this pin has an in-flight, queued-on-device, or failed
       upload — such pins must never be pruned as "empty", or the queued
-      file / retry would be orphaned. */
+      file / retry would be orphaned. Also checks the sync pending-upload
+      registry: Preferences load is async, so fileUploadStatusForPin alone
+      can miss a still-queued pin on cold start and prune it mid-upload. */
   const isPinBusy = (id: string) =>
     uploadingPinsRef.current.has(id) ||
     failedFilesRef.current.has(id) ||
-    !!fileUploadStatusForPin(id);
+    !!fileUploadStatusForPin(id) ||
+    pendingUploadPins().has(id);
 
   // Mobile camera state
   const [cameraOpen, setCameraOpen]   = useState(false);
@@ -1072,76 +1078,21 @@ export default function CaptureWorkflowPage() {
 
   /* ── Background upload for one pin (Phase 1: on-device file queue) ──────
      The pin already exists in the store (numbered, rendered, persisted via
-     the writeQueue). The captured file is written to on-device storage and
-     handed to fileUploadQueue.ts, which owns the actual network upload +
-     attachCaptureToPin call from here on — this function's only job is to
-     get the bytes safely onto disk and mark the pin 'queued' so it survives
-     the app being closed before connectivity returns. The queue's own status
-     changes (queued → uploading → gone/failed) are picked up by the
-     `FILE_QUEUE_CHANGED_EVENT` listener below, which re-derives `pinStatus`
-     for every pin — this function never sets 'uploading' or clears the
-     status itself. */
+     the writeQueue). The captured file is registered with enqueueFileUpload
+     (memory-first POST + background disk durability). That keeps captures
+     alive across camera-WiFi hangs and app kills: writeQueue flushes rooms/
+     pins on reconnect, and the photo bytes upload from RAM or disk on the
+     same reconnect flush. fileUploadQueue owns the network upload +
+     attachCaptureToPin from here on. Queue status changes (queued →
+     uploading → gone/failed) are mirrored by the FILE_QUEUE_CHANGED_EVENT
+     listener below. */
   async function runPinUpload(pinId: string, files: File[]) {
     uploadingPinsRef.current.add(pinId);            // synchronous — blocks double-fire
     setPinStatus(s => ({ ...s, [pinId]: 'queued' }));
     try {
-      // Single-file capture (the normal case — one Insta360/phone photo per
-      // pin): try uploading the in-memory File directly first, skipping the
-      // durable queue's Filesystem write+read+base64-decode round-trip
-      // entirely. Confirmed on-device: for a ~12MB raw capture that round-trip
-      // stalled the WebView's JS thread for 44+ seconds with no error — pure
-      // main-thread cost, not a network problem — so avoiding it when we're
-      // already online (the common case) makes a normal capture upload at
-      // ordinary speed instead of paying that cost every time. Only fall back
-      // to the durable, retryable queue if the direct attempt fails for any
-      // reason (offline, timeout, server error) — that path is unchanged and
-      // still the source of truth for offline/interrupted captures.
-      if (files.length === 1) {
-        // Show 'uploading' (not 'queued') for the direct-upload attempt —
-        // this path bypasses fileUploadQueue.ts entirely (see below), so
-        // there's no queue-driven status to sync from, and a raw 360 capture
-        // can take 20-30+ seconds server-side (fisheye stitch + Cloudinary
-        // upload) before this resolves. Left at 'queued' the whole time, the
-        // pin looked stuck/idle for that entire window with no visible
-        // progress indicator, even though the upload was genuinely in
-        // flight and succeeding.
-        setPinStatus(s => ({ ...s, [pinId]: 'uploading' }));
-        const uploaded = await tryDirectUpload(pinId, files[0]);
-        // Raw 360 accepted for background stitching: the capture is already
-        // attached to the pin, but the panorama isn't ready. Hand the job to the
-        // durable queue so polling survives an app restart, and keep the pin on
-        // 'processing' rather than clearing it to green.
-        if (typeof uploaded === 'object' && uploaded.pendingJobId) {
-          failedFilesRef.current.delete(pinId);
-          setPinStatus(s => ({ ...s, [pinId]: 'processing' }));
-          await enqueueFileUpload(pinId, files[0], { stitchJobId: uploaded.pendingJobId });
-          const pendingSeq = useWorkflowStore.getState().capturePins.find(p => p.id === pinId)?.sequenceNumber;
-          setToast(`Capture received for Pin ${pendingSeq ?? ''} · stitching in background`);
-          return;
-        }
-        if (uploaded) {
-          failedFilesRef.current.delete(pinId);
-          setPinStatus(s => {
-            const next = { ...s };
-            delete next[pinId];
-            return next;
-          });
-          // tryDirectUpload bypasses fileUploadQueue.ts entirely, so its
-          // FILE_UPLOAD_SUCCEEDED_EVENT never fires — show the same success
-          // toast directly here to match the queued-upload path's behavior.
-          const seq = useWorkflowStore.getState().capturePins.find(p => p.id === pinId)?.sequenceNumber;
-          setToast(`Capture uploaded for Pin ${seq ?? ''} · sent for review`);
-          return;
-        }
-        // Direct attempt failed (offline, timeout, server error) — falling
-        // through to the durable queue below. Reset to 'queued' so the UI
-        // reads as "handed off, will retry" rather than staying on
-        // 'uploading' for a request that's no longer in flight.
-        setPinStatus(s => ({ ...s, [pinId]: 'queued' }));
-      }
-      // Multiple files from one capture (e.g. a multi-select desktop upload)
-      // enqueue as separate entries; fileUploadQueue.ts uploads them for the
-      // same pin strictly in order, so this doesn't reorder captures.
+      // Every file goes through the durable queue. Same-session uploads still
+      // skip the disk→base64 decode via fileUploadQueue's memoryFiles cache —
+      // durability is never traded for that fast path.
       for (const file of files) {
         await enqueueFileUpload(pinId, file);
       }
@@ -1199,13 +1150,24 @@ export default function CaptureWorkflowPage() {
 
     function syncFromQueue() {
       setPinStatus(prev => {
+        // Whole queue in one synchronous read, so a pin that has just GAINED an
+        // entry is picked up too. Iterating only `prev` meant this handler could
+        // update or remove a status but never add one, so pin state only ever
+        // decayed — a pin enqueued after mount could never show a spinner.
+        const fromQueue = queuedPinStatuses();
         const next: Record<string, PinUploadStatus> = {};
         let changed = false;
-        for (const pinId of Object.keys(prev)) {
-          const queued = fileUploadStatusForPin(pinId);
+        for (const pinId of new Set([...Object.keys(prev), ...Object.keys(fromQueue)])) {
+          const queued = fromQueue[pinId];
           if (queued) {
             next[pinId] = queued;
             if (queued !== prev[pinId]) changed = true;
+          } else if (uploadingPinsRef.current.has(pinId)) {
+            // enqueueFileUpload is still writing this pin's file to disk — the
+            // queue entry (and its status) does not exist yet. "Absent from the
+            // queue" must not clear the 'queued' marker for an in-progress save;
+            // this event is global and fires on every other pin's queue write.
+            if (prev[pinId]) next[pinId] = prev[pinId];
           } else if (prev[pinId] !== 'failed' || failedFilesRef.current.has(pinId)) {
             // Queue entry is gone (uploaded, or never queued e.g. legacy
             // in-memory retry) — drop the status unless it's a writeFile-
@@ -1520,7 +1482,14 @@ export default function CaptureWorkflowPage() {
           {/* Pin action panel */}
           {selectedPinObj && (() => {
             const selStatus = pinStatus[selectedPinObj.id];
-            const badgeColor = selStatus === 'failed' ? '#dc2626' : selectedPinObj.captureIds.length > 0 ? '#16a34a' : '#d97706';
+            const failKind = selStatus === 'failed' ? fileUploadFailKindForPin(selectedPinObj.id) : undefined;
+            const failMessage =
+              selStatus === 'failed'
+                ? (fileUploadErrorForPin(selectedPinObj.id)
+                  || (failKind === 'corrupt'
+                    ? 'This capture is corrupted or unsupported — please capture again.'
+                    : 'Upload failed — retry or capture again'))
+                : undefined;
             return (
             <Box sx={{ mb: 2.5, p: 2, borderRadius: '14px', border: `1.5px solid ${selStatus === 'failed' ? '#fca5a5' : P.border}`, backgroundColor: P.white, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0 }}>
@@ -1538,7 +1507,7 @@ export default function CaptureWorkflowPage() {
                         : selStatus === 'queued'
                           ? 'Saved on device — will upload once online'
                           : selStatus === 'failed'
-                            ? 'Upload failed — retry or delete this pin'
+                            ? failMessage
                             : selectedPinObj.captureIds.length > 0
                               ? `${selectedPinObj.captureIds.length} capture${selectedPinObj.captureIds.length !== 1 ? 's' : ''} attached`
                               : 'No capture yet'}
@@ -1549,12 +1518,33 @@ export default function CaptureWorkflowPage() {
                   horizontal space with the badge/label and wrap unpredictably. */}
               <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
                 {selStatus === 'failed' && (
-                  <Box
-                    onClick={() => { retryPinUpload(selectedPinObj.id); }}
-                    sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
-                  >
-                    <CloudUploadRounded sx={{ fontSize: 15 }} /> Retry Upload
-                  </Box>
+                  <>
+                    {/* Primary: always offer a fresh capture on the same pin. */}
+                    {isMobile ? (
+                      <Box
+                        onClick={() => handleTakePicture(selectedPinObj)}
+                        sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
+                      >
+                        <CameraAltRounded sx={{ fontSize: 15 }} /> Capture Again
+                      </Box>
+                    ) : (
+                      <Box
+                        onClick={() => { setActiveCapturePinId(selectedPinObj.id); setPendingPin(null); setSelectedPinId(null); }}
+                        sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
+                      >
+                        <AddAPhotoRounded sx={{ fontSize: 15 }} /> Capture Again
+                      </Box>
+                    )}
+                    {/* Retry only when re-sending the same bytes could help. */}
+                    {failKind !== 'corrupt' && (
+                      <Box
+                        onClick={() => { retryPinUpload(selectedPinObj.id); }}
+                        sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue } }}
+                      >
+                        <CloudUploadRounded sx={{ fontSize: 15 }} /> Retry Upload
+                      </Box>
+                    )}
+                  </>
                 )}
                 {(selStatus === 'uploading' || selStatus === 'processing') && (
                   <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600 }}>
@@ -1758,7 +1748,7 @@ export default function CaptureWorkflowPage() {
       {/* Background upload failure — the pin stays on the plan with a failed badge */}
       <Snackbar open={!!errorToast} autoHideDuration={6000} onClose={() => setErrorToast('')} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
         <Alert severity="error" onClose={() => setErrorToast('')} sx={{ borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.16)', fontWeight: 600 }}>
-          {errorToast} — tap the pin to retry.
+          {errorToast} — tap the red pin to capture again.
         </Alert>
       </Snackbar>
     </Box>

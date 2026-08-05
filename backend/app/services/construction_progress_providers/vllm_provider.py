@@ -41,10 +41,13 @@ from app.services.construction_progress_providers.base import (
 )
 
 # A capture the model itself was unsure about (weak/indirect/partial view) must not surface as
-# "evidence" for an activity or be averaged into its score — see the confidence-floor check in
-# assess_floor_progress for why (an unrelated-room photo landing under an activity as if it were
-# confirming evidence).
+# "evidence" for an activity card or be averaged into its floor-wide score — see the confidence
+# floor check in assess_floor_progress for why.
 _MIN_EVIDENCE_CONFIDENCE = 50.0
+# Room heatmap status is allowed a lower bar: a legitimate finishing activity the model sees
+# but is only moderately sure about should still move the room out of "Photographed — Not
+# Started". Activity cards keep the stricter evidence floor above.
+_MIN_HEATMAP_CONFIDENCE = 30.0
 
 # The completion_pct an activity/unit must reach to read as genuinely "done" — shared between
 # _status_for_pct and the MEP/door-shutter gate below so both use the same bar for "finished".
@@ -60,45 +63,32 @@ _DOOR_SHUTTER_ACTIVITY_IDS = (
 
 _SYSTEM_PROMPT = """
 You are a Chartered Civil Engineer and Construction Quality Auditor with over 20 years of
-experience inspecting high-rise residential construction sites.
+experience inspecting high-rise residential finishing works.
 
 You are looking at ONE photograph from a site inspection. It may be a normal photo or an
-equirectangular (360-degree) panorama showing an interior room or common area under
-construction.
+equirectangular (360-degree) panorama of an interior room or common area.
 
-You will be given a checklist of finishing activities. For EACH activity, determine — using
-ONLY what is directly visible in THIS image — whether there is clear evidence of it, and if
-so, how complete it looks.
+The space may be mid-construction OR already finished / furnished / occupied. BOTH count.
+If finishing work is visibly complete (false ceiling installed, walls painted, flooring laid,
+doors/fixtures fitted, switches installed, room cleaned, etc.), you MUST report those
+checklist activities with high completion_pct and high confidence_pct. Never return an empty
+assessments list merely because the room looks finished, lived-in, or is not a bare shell.
 
-BE A STRICT, EVIDENCE-BASED INSPECTOR, NOT AN OPTIMISTIC ONE. Your job is to report only what
-you can actually verify from this specific photo, not to fill in the rest of the checklist by
-assumption. A wrong or inflated assessment is worse than an honest "cannot tell":
-- Only assess an activity if its own work is visibly present in frame — e.g. only score
-  "Putty 1st Coat" / "Putty 2nd Coat" / "Primer & 1st Coat Paint" / "Final Coat Paint" if you
-  can actually see the relevant wall surface and its finish state; do not mark all four as
-  complete just because ONE of them looks done, and do not infer a wall's paint stage from a
-  different wall, a different room, or general "the place looks finished" impressions.
-- Do not infer upstream/downstream steps in a sequence unless that specific step's own result
-  is visible (e.g. seeing a fitted CP fixture confirms the fixture activity itself, but does
-  NOT by itself confirm a separate plumbing-roughing-in checklist line unless the roughing-in
-  work is also identifiably visible or obviously implied by what's shown, e.g. a working
-  connected fixture with no exposed pipework).
-- If this photo is a distant, partial, poorly-lit, or ambiguous view of an activity's surface,
-  either omit that activity or give it a low confidence_pct — never report high confidence
-  from a weak or indirect view.
-- A bare, unplastered concrete/block wall means every wall-finish activity has not begun.
-- Omit an activity entirely whenever this specific photo does not clearly show that
-  activity's own work — it is normal and expected for most photos to only speak to a handful
-  of checklist items, not most of them. Do not pad the response with inferred activities to
-  seem thorough.
-- Never fabricate evidence for something the photo contradicts or that is truly absent from
-  frame (e.g. do not claim toilet fixtures are installed if the toilet itself is not visible
-  at all in this photo).
-- completion_pct is YOUR estimate of how finished that specific activity looks (0-100), based
-  strictly on what this photo directly shows.
-- confidence_pct (0-100) reflects how certain you are, given image quality, framing, and how
-  directly you observed it — a direct, clear, close view scores high; anything inferred,
-  partial, distant, or ambiguous must score low (well under 50).
+The room/flat label in the user message is approximate pin location only. Score what is
+actually visible even if the label does not match the space (e.g. an office or living area
+photo whose pin label says "Toilet").
+
+BE EVIDENCE-BASED — report only what this photo directly shows:
+- Only assess an activity if its own work is visibly present — e.g. only score paint-stage
+  activities if you can see the wall finish; do not mark every paint stage complete just
+  because one coat looks done.
+- Do not invent upstream/downstream steps that are not visible.
+- Distant, partial, poorly-lit, or ambiguous views → low confidence_pct (well under 50) or omit.
+- A bare unplastered concrete/block wall means wall-finish activities have not begun.
+- Most photos only speak to a handful of checklist items — that is normal. Do not pad.
+- Never claim fixtures/rooms that are not visible at all in this photo.
+- completion_pct (0-100): how finished that activity looks from this photo.
+- confidence_pct (0-100): how certain you are from image quality and framing.
 
 Respond ONLY with a JSON object of this exact shape:
 {
@@ -106,7 +96,7 @@ Respond ONLY with a JSON object of this exact shape:
     {"activity_id": "<id from the checklist>", "completion_pct": 55, "confidence_pct": 70}
   ]
 }
-Omit any activity this photo does not clearly and directly show. Do not include any other text.
+Omit activities this photo does not clearly show. Do not include any other text.
 """
 
 
@@ -156,6 +146,7 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
             )
 
         activities_by_id = {a.activity_id: a for a in activities}
+        activities_by_name = {a.name.strip().lower(): a for a in activities}
         # Each capture is shown ONLY its own section's checklist — a flat
         # interior photo never even sees the common-area activity list (and
         # vice versa). Confirmed necessary on real data: given the full mixed
@@ -262,27 +253,43 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         # same activity.
         per_capture_completion: dict[str, list[float]] = {}
         for capture, per_capture in results:
-            for activity_id, entry in per_capture.items():
-                activity = activities_by_id.get(activity_id)
+            for raw_id, entry in per_capture.items():
+                activity = activities_by_id.get(raw_id) or activities_by_name.get(
+                    str(raw_id).strip().lower()
+                )
+                if activity is None:
+                    # Model sometimes returns a near-slug; try matching on id suffix/name token.
+                    raw_l = str(raw_id).strip().lower().replace(" ", "_").replace("-", "_")
+                    activity = next(
+                        (
+                            a for a in activities
+                            if a.activity_id == raw_l
+                            or a.activity_id.endswith("." + raw_l)
+                            or a.name.strip().lower().replace(" ", "_") == raw_l
+                        ),
+                        None,
+                    )
                 if activity is None:
                     continue
-                # A wrong/weak match is worse than a missing one: a capture the
-                # model itself was unsure about must not surface as "evidence"
-                # for an activity, or be averaged into that activity's score —
-                # this is what let a photo of an unrelated room get shown
-                # alongside genuinely relevant ones under the same activity.
-                if entry["confidence_pct"] < _MIN_EVIDENCE_CONFIDENCE:
+                activity_id = activity.activity_id
+                conf = float(entry["confidence_pct"])
+                pct = float(entry["completion_pct"])
+                # Heatmap room state: accept moderate confidence so visible
+                # finishing work is not stuck on "Photographed — Not Started".
+                if conf >= _MIN_HEATMAP_CONFIDENCE and (pct > 0 or conf >= _MIN_EVIDENCE_CONFIDENCE):
+                    per_capture_completion.setdefault(capture.capture_id, []).append(pct)
+                # Activity cards / flat progress: keep the stricter evidence floor.
+                if conf < _MIN_EVIDENCE_CONFIDENCE:
                     continue
-                per_capture_completion.setdefault(capture.capture_id, []).append(entry["completion_pct"])
                 if not capture.room_name:
                     continue
                 unit = (capture.flat_name, capture.room_name)
                 units_pct = per_activity_unit_pct.setdefault(activity_id, {})
                 units_conf = per_activity_unit_conf.setdefault(activity_id, {})
                 units_evidence = per_activity_unit_evidence.setdefault(activity_id, {})
-                if entry["completion_pct"] > units_pct.get(unit, -1.0):
-                    units_pct[unit] = entry["completion_pct"]
-                    units_conf[unit] = entry["confidence_pct"]
+                if pct > units_pct.get(unit, -1.0):
+                    units_pct[unit] = pct
+                    units_conf[unit] = conf
                     units_evidence[unit] = capture.capture_id
 
         # "MEP Ceiling Services" cannot be reported as finished in a ROOM
@@ -446,7 +453,8 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
 
         if prev_b64 and prev_mime:
             user_text = (
-                f"Room/location shown: {capture.room_name} ({capture.flat_name}).\n\n"
+                f"Approximate pin location label: {capture.room_name} ({capture.flat_name}). "
+                "Score visible finishing work even if this label is wrong.\n\n"
                 "You are given TWO photos of this SAME spot, taken at different times: an EARLIER "
                 "photo first, then the CURRENT (most recent) photo second. The earlier photo is "
                 "for context only — to help you see what has changed — but your assessment must "
@@ -454,7 +462,8 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                 "evidence based on the earlier photo alone.\n\n"
                 f"{checklist_text}\n\n"
                 "Assess the CURRENT (second) photo against the checklist above per the system "
-                "instructions, using the earlier photo only to help judge what has changed."
+                "instructions. If the space is already finished, report the completed finishing "
+                "activities you can see — do not return an empty assessments list."
             )
             content = [
                 {"type": "text", "text": user_text},
@@ -465,9 +474,12 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
             ]
         else:
             user_text = (
-                f"Room/location shown: {capture.room_name} ({capture.flat_name}).\n\n"
+                f"Approximate pin location label: {capture.room_name} ({capture.flat_name}). "
+                "Score visible finishing work in the photo even if this label is wrong.\n\n"
                 f"{checklist_text}\n\n"
-                "Assess this photo against the checklist above per the system instructions."
+                "Assess this photo against the checklist above per the system instructions. "
+                "If the space is already finished, report the completed finishing activities "
+                "you can see — do not return an empty assessments list."
             )
             content = [
                 {"type": "text", "text": user_text},
@@ -490,15 +502,21 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         for item in raw.get("assessments") or []:
             if not isinstance(item, dict):
                 continue
-            activity_id = str(item.get("activity_id") or "").strip()
+            # Accept activity_id or legacy "id" / "name" keys the model sometimes emits.
+            activity_id = str(
+                item.get("activity_id") or item.get("id") or item.get("activity") or item.get("name") or ""
+            ).strip()
             if not activity_id:
                 continue
             try:
-                pct = max(0.0, min(100.0, float(item.get("completion_pct", 0))))
-                conf = max(0.0, min(100.0, float(item.get("confidence_pct", 0))))
+                pct = max(0.0, min(100.0, float(item.get("completion_pct", item.get("completion", 0)))))
+                conf = max(0.0, min(100.0, float(item.get("confidence_pct", item.get("confidence", 0)))))
             except (TypeError, ValueError):
                 continue
-            out[activity_id] = {"completion_pct": pct, "confidence_pct": conf}
+            # Keep the highest-confidence read when the model repeats an activity.
+            prev = out.get(activity_id)
+            if prev is None or conf >= prev["confidence_pct"]:
+                out[activity_id] = {"completion_pct": pct, "confidence_pct": conf}
         return out
 
     def _headers(self) -> dict[str, str]:

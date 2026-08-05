@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { Box, Typography, CircularProgress, Button } from '@mui/material';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Box, Typography, CircularProgress, Button, LinearProgress } from '@mui/material';
 import { ArrowBackRounded, RefreshRounded, PictureAsPdfRounded, TableChartRounded, AutoAwesomeRounded, ApartmentRounded } from '@mui/icons-material';
 import { Link, useParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
@@ -20,12 +20,37 @@ import { exportConstructionProgressExcel } from '@/utils/constructionProgressExc
 
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#ffffff', bg: '#f7f8fa' };
 
+/** Soft stage labels — backend has no live % yet; elapsed time drives which hint we show. */
+function analysisStageLabel(elapsedSec: number): string {
+  if (elapsedSec < 25) return 'Reading floor plan & mapping rooms…';
+  if (elapsedSec < 70) return 'Scoring captures against finishing works…';
+  if (elapsedSec < 150) return 'Building room heatmap & flat summaries…';
+  return 'Finalizing progress report — almost done…';
+}
+
+function formatElapsed(elapsedSec: number): string {
+  const m = Math.floor(elapsedSec / 60);
+  const s = elapsedSec % 60;
+  return m > 0 ? `${m}:${String(s).padStart(2, '0')}` : `${s}s`;
+}
+
+/**
+ * Visual progress that keeps moving while we wait on a long sync POST.
+ * Asymptotes toward ~92% so it never looks "done" before the server responds.
+ */
+function softProgressPct(elapsedSec: number): number {
+  return Math.min(92, Math.round(8 + 84 * (1 - Math.exp(-elapsedSec / 90))));
+}
+
 export default function ConstructionProgressDashboardPage() {
   const { floorId } = useParams<{ floorId: string }>();
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeElapsedSec, setAnalyzeElapsedSec] = useState(0);
+  const [analyzeIsReanalysis, setAnalyzeIsReanalysis] = useState(false);
   const [snapshot, setSnapshot] = useState<FloorProgressSnapshot | null>(null);
   const [notAnalyzed, setNotAnalyzed] = useState(false);
+  const analyzingRef = useRef(false);
 
   const load = useCallback(async () => {
     if (!floorId) return;
@@ -51,14 +76,31 @@ export default function ConstructionProgressDashboardPage() {
     load();
   }, [load]);
 
+  // Tick the overlay clock while analyze is in flight.
+  useEffect(() => {
+    if (!analyzing) {
+      setAnalyzeElapsedSec(0);
+      return;
+    }
+    const started = Date.now();
+    setAnalyzeElapsedSec(0);
+    const id = window.setInterval(() => {
+      setAnalyzeElapsedSec(Math.floor((Date.now() - started) / 1000));
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [analyzing]);
+
   const handleAnalyze = async () => {
-    if (!floorId) return;
+    if (!floorId || analyzingRef.current) return;
     // Whether this is a first-ever analysis or a re-analysis is decided by
     // whether a snapshot already existed the moment the button was pressed —
     // reading `snapshot` again after the call resolves would always say
     // "existed" and the overlay/toast would say "Re-analyzing" even for a
     // first-time run.
     const isReanalysis = !!snapshot;
+    const previousSnapshotId = snapshot?.snapshotId;
+    analyzingRef.current = true;
+    setAnalyzeIsReanalysis(isReanalysis);
     setAnalyzing(true);
     try {
       const result = await constructionProgressService.analyzeFloor(floorId);
@@ -66,8 +108,30 @@ export default function ConstructionProgressDashboardPage() {
       setNotAnalyzed(false);
       toast.success(isReanalysis ? 'Re-analysis complete' : 'Progress analysis complete');
     } catch {
-      toast.error(isReanalysis ? 'Failed to re-analyze floor' : 'Failed to analyze floor');
+      // Client may have aborted while the backend was still finishing. Give the
+      // server a short window and adopt a newer snapshot if one appears.
+      let recovered: FloorProgressSnapshot | null = null;
+      for (let i = 0; i < 6; i++) {
+        await new Promise(r => setTimeout(r, 5_000));
+        try {
+          const detail = await constructionProgressService.getFloorDetail(floorId);
+          if (detail && detail.snapshotId !== previousSnapshotId) {
+            recovered = detail;
+            break;
+          }
+        } catch {
+          /* keep waiting */
+        }
+      }
+      if (recovered) {
+        setSnapshot(recovered);
+        setNotAnalyzed(false);
+        toast.success(isReanalysis ? 'Re-analysis complete' : 'Progress analysis complete');
+      } else {
+        toast.error(isReanalysis ? 'Failed to re-analyze floor' : 'Failed to analyze floor');
+      }
     } finally {
+      analyzingRef.current = false;
       setAnalyzing(false);
     }
   };
@@ -99,6 +163,8 @@ export default function ConstructionProgressDashboardPage() {
     );
   }
 
+  const progressPct = softProgressPct(analyzeElapsedSec);
+
   return (
     <>
       {analyzing && (
@@ -106,26 +172,47 @@ export default function ConstructionProgressDashboardPage() {
           sx={{
             position: 'fixed', inset: 0, zIndex: 1300,
             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-            gap: 2, backgroundColor: 'rgba(17, 24, 39, 0.45)', backdropFilter: 'blur(6px)',
+            gap: 2, backgroundColor: 'rgba(17, 24, 39, 0.55)', backdropFilter: 'blur(6px)',
             WebkitBackdropFilter: 'blur(6px)',
           }}
         >
           <Box
             sx={{
-              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1.5,
+              display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 1.75,
               px: 4, py: 4, borderRadius: '16px', backgroundColor: P.white, boxShadow: shadows.btn,
-              maxWidth: 320, textAlign: 'center',
+              width: '100%', maxWidth: 380, textAlign: 'center',
             }}
           >
-            <Box sx={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Box sx={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', alignSelf: 'center' }}>
               <CircularProgress size={48} thickness={3} sx={{ color: colors.primary }} />
               <AutoAwesomeRounded sx={{ position: 'absolute', fontSize: 20, color: colors.primary }} />
             </Box>
             <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong }}>
-              {snapshot ? 'Re-analyzing floor…' : 'Analyzing floor…'}
+              {analyzeIsReanalysis ? 'Re-analyzing floor…' : 'Analyzing floor…'}
             </Typography>
             <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
-              The AI is reviewing every uploaded capture against the finishing checklist. This can take a moment.
+              {analysisStageLabel(analyzeElapsedSec)}
+            </Typography>
+            <Box sx={{ width: '100%', mt: 0.5 }}>
+              <LinearProgress
+                variant="determinate"
+                value={progressPct}
+                sx={{
+                  height: 8, borderRadius: '99px', backgroundColor: colors.primarySoft,
+                  '& .MuiLinearProgress-bar': { borderRadius: '99px', background: colors.primaryGradient },
+                }}
+              />
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.75 }}>
+                <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: P.muted }}>
+                  {progressPct}%
+                </Typography>
+                <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: P.muted }}>
+                  {formatElapsed(analyzeElapsedSec)} elapsed
+                </Typography>
+              </Box>
+            </Box>
+            <Typography sx={{ fontSize: '0.75rem', color: P.muted, lineHeight: 1.45 }}>
+              This often takes 2–5 minutes on large floors. Keep this screen open until the report appears — leaving early can interrupt the wait even though the server may still finish.
             </Typography>
           </Box>
         </Box>
@@ -283,6 +370,7 @@ export default function ConstructionProgressDashboardPage() {
               floorPlanImageUrl={snapshot.floorPlanImageUrl}
               floorPlanId={snapshot.floorPlanId}
               rooms={snapshot.roomHeatmap}
+              heatmapPins={snapshot.heatmapPins}
             />
           </Box>
 

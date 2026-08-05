@@ -10,9 +10,10 @@ import {
 import type { UploadedFileResponse } from '@/services/uploadService';
 import { STORE_VERSION, WORKFLOW_STORE_KEY } from './persistence';
 import { createSafeStorage } from './safeStorage';
-import { addTombstones, tombstoneSet, clearTombstones } from './tombstones';
-import { pendingUploadPins } from './pendingUploadRegistry';
-import { enqueueWrite, isCreatePending, SYNC_ERROR_EVENT as WRITE_QUEUE_SYNC_ERROR_EVENT, type WriteOpName } from './writeQueue';
+import { addTombstones, tombstoneMap, tombstoneSet, clearTombstones } from './tombstones';
+import { useAuthStore } from './authStore';
+import { pendingUploadPins, removePendingUploadPin } from './pendingUploadRegistry';
+import { enqueueWrite, isCreatePending, cancelWritesForEntityIds, SYNC_ERROR_EVENT as WRITE_QUEUE_SYNC_ERROR_EVENT, type WriteOpName } from './writeQueue';
 import { isLiveUploadedTour } from './tourFilters';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,6 +28,91 @@ import { isLiveUploadedTour } from './tourFilters';
 // It is SEEDED from mockData once at module load (floors/rooms were generated
 // functions there, so we materialise them into real arrays we can edit).
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * True only if the server record carrying a tombstoned id really is the record
+ * this client deleted — i.e. it was created BEFORE we tombstoned that id.
+ *
+ * Re-issuing a delete purely because an id matches a tombstone is unsafe. Ids
+ * are minted from one monotonic counter persisted under the store's own
+ * localStorage key, while tombstones live under a separate key, so the two can
+ * drift apart (a quota-capped/failed persist, or store state reverting to an
+ * older snapshot while tombstones survive). The counter then re-mints an id that
+ * is still tombstoned, and an id-only match deletes a brand-new record that
+ * merely reuses the name — which is exactly how two freshly-uploaded captures
+ * were destroyed minutes after upload, leaving their pins dangling.
+ *
+ * Fails CLOSED: if the record carries no parseable creation time we skip the
+ * delete. A skipped delete leaves a stale row (cosmetic, and the user can
+ * delete it again); a wrong delete destroys a real photo.
+ */
+function recordCreatedAtMs(record: unknown): number | null {
+  const r = record as Record<string, unknown> | undefined;
+  const raw =
+    (r?.createdAt as string | undefined) ??
+    (r?.created_at as string | undefined) ??
+    (r?.capturedAt as string | undefined) ??
+    (r?.captured_at as string | undefined);
+  const ms = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isSameRecordAsTombstoned(
+  id: string,
+  record: unknown,
+  deletedAtById: Record<string, number>,
+): boolean {
+  const deletedAt = deletedAtById[id];
+  if (!deletedAt) return false;
+  const createdAt = recordCreatedAtMs(record);
+  if (createdAt === null) return false;
+  return createdAt < deletedAt;
+}
+
+/**
+ * True when the server's record provably POST-DATES the tombstone for its id —
+ * meaning the id was re-minted for something new and the tombstone is simply
+ * wrong.
+ *
+ * Also fails closed (an unparseable creation time keeps the tombstone), because
+ * clearing one wrongly resurrects a genuinely deleted record.
+ */
+function tombstoneIsSuperseded(
+  id: string,
+  record: unknown,
+  deletedAtById: Record<string, number>,
+): boolean {
+  const deletedAt = deletedAtById[id];
+  if (!deletedAt) return false;
+  const createdAt = recordCreatedAtMs(record);
+  if (createdAt === null) return false;
+  return createdAt > deletedAt;
+}
+
+/**
+ * Whether a record the SERVER still returns should be hidden because this device
+ * deleted it. Requires positive proof — the record must predate the tombstone.
+ *
+ * Hiding on an id match alone silently suppresses server data whenever a
+ * timestamp is unreadable. Legacy records carry `createdAt: 'Just now'` (a
+ * literal string, not a date), so `Date.parse` yields NaN and nothing can be
+ * proven about them: a months-old tombstone then erased a live pin, which in turn
+ * made its freshly-uploaded capture look unlinked and get dropped as well — one
+ * photo short, with the photo itself perfectly intact on the server.
+ *
+ * Deliberately the opposite default from the delete path: DELETING without proof
+ * destroys data, so it fails closed; HIDING without proof destroys the user's
+ * trust in what they can see, so it fails open. A record we really did just
+ * delete has real timestamps on both sides, so it is still provably hidden while
+ * its delete converges.
+ */
+function hiddenByTombstone(
+  id: string,
+  record: unknown,
+  deletedAtById: Record<string, number>,
+): boolean {
+  return id in deletedAtById && isSameRecordAsTombstoned(id, record, deletedAtById);
+}
 
 const PRIMARY_PROJECT_NAME = 'My Home Udyan';
 
@@ -236,6 +322,12 @@ interface WorkflowState {
   // ── Capture Pins ──
   createCapturePin: (args: { floorPlanId: string; floorId: string; towerId: string; projectId: string; x: number; y: number; createdBy?: string }) => string;
   attachCaptureToPin: (pinId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => string;
+  /**
+   * Drop a capture that was attached when upload was accepted (202) but whose
+   * background stitch permanently failed (corrupt file). Unlinks from the pin
+   * WITHOUT deleting the pin — the engineer must re-capture on the same pin.
+   */
+  discardStitchFailedCapture: (pinId: string, stitchJobId: string) => void;
   deleteCapturePin: (id: string) => void;
   publishFloorPlanTour: (floorPlanId: string, pinIds?: string[]) => string[];
 
@@ -419,6 +511,41 @@ function pushNotif(
   mirrorApi('createNotification', [notification]);
 }
 
+/**
+ * Highest numeric suffix used by any id in the snapshot (`c265` -> 265).
+ *
+ * `nextId` mints ids by incrementing a single counter persisted in
+ * localStorage, so that counter must never sit BELOW an id the server already
+ * uses — otherwise the next upload is handed an id that already belongs to
+ * another record. Confirmed in production with the counter reset to 1 while the
+ * server held ids up to c265: re-minted ids collided with historical tombstones
+ * (records silently hidden, then deleted by the reconcile) and made
+ * `_upsert` replace live documents instead of inserting new ones.
+ *
+ * The counter can end up too low for several unrelated reasons — a persist that
+ * never landed, a store version migration, cleared site data on one device while
+ * another keeps uploading — so rather than chase each cause, the counter is
+ * re-based against reality on every hydrate.
+ */
+function highestIdSuffix(data: Partial<WorkflowDataState>): number {
+  const collections: Array<{ id: string }[] | undefined> = [
+    data.projects, data.towers, data.floors, data.flats, data.rooms,
+    data.captures, data.tours, data.floorPlans, data.capturePins, data.defects,
+  ];
+  let max = 0;
+  for (const list of collections) {
+    for (const item of list ?? []) {
+      // Ids look like `<prefix><n>`, and room ids are `<flatId>-r<n>` — take the
+      // trailing digit run in both cases.
+      const m = /(\d+)$/.exec(item?.id ?? '');
+      if (!m) continue;
+      const n = Number(m[1]);
+      if (Number.isSafeInteger(n) && n > max) max = n;
+    }
+  }
+  return max;
+}
+
 function pushAudit(
   set: (fn: (s: WorkflowState) => Partial<WorkflowState>) => void,
   eventType: AuditEventType,
@@ -429,9 +556,20 @@ function pushAudit(
   description: string,
 ) {
   const id = `al${Date.now()}`;
+  // createdAt is a real ISO instant, and the actor is the signed-in user.
+  // Previously this wrote createdAt: 'Just now' with a hardcoded actorId 'u1' /
+  // actorName 'You', which made the whole trail unsortable and attributed every
+  // event to nobody — useless exactly when it was needed to trace who removed a
+  // record. The backend re-stamps identity and time authoritatively, so these
+  // values are only the optimistic local copy.
+  const actor = useAuthStore.getState().user;
   const auditLog = {
-      id, actorId: 'u1', actorName: 'You', eventType, entityType,
-      entityId, entityName, projectId, description, createdAt: 'Just now',
+      id,
+      actorId: actor?.id ?? 'unknown',
+      actorName: actor?.name || actor?.email || 'Unknown user',
+      eventType, entityType,
+      entityId, entityName, projectId, description,
+      createdAt: new Date().toISOString(),
     };
   set(s => ({
     auditLogs: [auditLog, ...s.auditLogs],
@@ -483,6 +621,46 @@ export const useWorkflowStore = create<WorkflowState>()(
         // local state nor re-uploaded, even though the API snapshot omits them —
         // otherwise a delete is undone on the next reload (resurrection bug).
         const tombstones = tombstoneSet();
+        // Deletion timestamps for the same ids, read once: the reconcile blocks
+        // below need them to tell "our delete didn't land" apart from "this id
+        // was re-minted for a new record" (see isSameRecordAsTombstoned).
+        const tombstonedAt = tombstoneMap();
+
+        // ── Self-heal stale tombstones ────────────────────────────────────────
+        // Record ids come from one monotonic counter persisted under the store's
+        // localStorage key, while tombstones live under a separate key, so the
+        // two can drift (a quota-capped persist, or store state reverting to an
+        // older snapshot while tombstones survive). The counter then re-mints an
+        // id that is still tombstoned, and every tombstone check below — which
+        // matches on id alone — treats a brand-new record as deleted: it gets
+        // filtered out of local state, its pin then looks captureless and is
+        // dropped too. Observed hiding 4 of 11 freshly-uploaded captures while
+        // the server held all 13 intact.
+        //
+        // A tombstone for a record that provably post-dates it is wrong, so drop
+        // it for good here. Doing it once, up front, makes every `tombstones.has`
+        // check below correct without each having to re-derive the timestamps.
+        const superseded = [
+          ...(migrated.captures ?? []),
+          ...(migrated.capturePins ?? []),
+          ...(migrated.tours ?? []),
+          ...(migrated.floorPlans ?? []),
+          ...(get().captures ?? []),
+          ...(get().capturePins ?? []),
+          ...(get().tours ?? []),
+          ...(get().floorPlans ?? []),
+        ].reduce<string[]>((acc, rec) => {
+          const id = (rec as { id?: string })?.id;
+          if (id && tombstoneIsSuperseded(id, rec, tombstonedAt)) acc.push(id);
+          return acc;
+        }, []);
+        if (superseded.length) {
+          clearTombstones(superseded);
+          for (const id of superseded) {
+            tombstones.delete(id);
+            delete tombstonedAt[id];
+          }
+        }
 
         // Merge helper: the API snapshot is authoritative for deletion — a hard
         // delete on ANY device makes the row physically absent from every future
@@ -515,7 +693,9 @@ export const useWorkflowStore = create<WorkflowState>()(
             }
           }
           for (const item of (api ?? [])) {
-            if (!tombstones.has(item.id)) map.set(item.id, item);
+            // Server-provided record: only suppress it if the tombstone provably
+            // applies to THIS record (see hiddenByTombstone).
+            if (!hiddenByTombstone(item.id, item, tombstonedAt)) map.set(item.id, item);
           }
           return [...map.values()];
         };
@@ -524,16 +704,37 @@ export const useWorkflowStore = create<WorkflowState>()(
         // API pins if the API returned them, otherwise keep local state.
         const apiPins = migrated.capturePins;
         const localPins = get().capturePins;
+        // Pins whose photo bytes are still in this device's durable upload queue
+        // (offline, retrying, or awaiting a background stitch). Read from a leaf
+        // module rather than fileUploadQueue directly, which imports this store.
+        const pinsWithPendingUploads = pendingUploadPins();
+        const keepLocalPins = replace
+          ? (() => {
+              // replace mode is authoritative for synced data, but must still
+              // keep local pins whose create is in-flight OR whose photo bytes
+              // are still on this device's upload queue — otherwise a snapshot
+              // that races ahead of writeQueue / lags the capture POST drops
+              // the pin mid-upload and the photo has nowhere to attach.
+              const api = apiPins ?? [];
+              const apiIds = new Set(api.map(p => p.id));
+              return localPins.filter(
+                p =>
+                  !apiIds.has(p.id) &&
+                  !tombstones.has(p.id) &&
+                  (isCreatePending('createCapturePin', p.id) || pinsWithPendingUploads.has(p.id)),
+              );
+            })()
+          : [];
         const basePins = (
           replace
-            ? (apiPins ?? [])
+            ? [...(apiPins ?? []), ...keepLocalPins]
             : mergeById(apiPins, localPins, 'createCapturePin')
         )
           // Belt-and-suspenders: mergeById already drops tombstoned/non-pending
           // local-only ids when apiPins is present; this also covers the rare
           // case apiPins is undefined (failed request) and falls back to raw
           // localPins.
-          .filter(p => !tombstones.has(p.id));
+          .filter(p => !hiddenByTombstone(p.id, p, tombstonedAt));
         // Deduplicate captureIds within each pin.
         const deduped = basePins.map(p => ({
           ...p,
@@ -541,25 +742,45 @@ export const useWorkflowStore = create<WorkflowState>()(
         }));
 
         // Drop captureIds that have no corresponding capture record (dangling refs
-        // from captures deleted server-side or from a mismatched sync). Pins that
-        // become fully empty are removed — this is the same logic deleteCapture uses,
-        // but applied at hydration time so stale pins never reach the UI.
-        const mergedCaptureIds = new Set(
+        // from captures deleted server-side or from a mismatched sync). Also
+        // RE-LINK captures that share the pin's backing roomId but are missing
+        // from captureIds — that race (createCapture without updateCapturePin)
+        // is what made "Pin 1" vanish from the plan while still showing in the
+        // gallery, and left Images Analyzed one short.
+        const capturesForHeal = (
           replace
-            ? (migrated.captures ?? []).map(c => c.id)
-            : [...(migrated.captures ?? []), ...get().captures].map(c => c.id)
-        );
-        // Pins whose photo bytes are still in this device's durable upload queue
-        // (offline, retrying, or awaiting a background stitch). Read from a leaf
-        // module rather than fileUploadQueue directly, which imports this store.
-        const pinsWithPendingUploads = pendingUploadPins();
-        const cleanPins = deduped
-          .map(p => ({ ...p, captureIds: p.captureIds.filter(id => mergedCaptureIds.has(id)) }))
+            ? (migrated.captures ?? [])
+            : [...(migrated.captures ?? []), ...get().captures]
+        ).filter(c => !tombstones.has(c.id));
+        const mergedCaptureIds = new Set(capturesForHeal.map(c => c.id));
+        const captureIdsByRoom = new Map<string, string[]>();
+        for (const c of capturesForHeal) {
+          if (!c.roomId) continue;
+          const list = captureIdsByRoom.get(c.roomId) ?? [];
+          list.push(c.id);
+          captureIdsByRoom.set(c.roomId, list);
+        }
+
+        const pinsToResync: WfCapturePin[] = [];
+        const healedPins = deduped.map(p => {
+          const fromIds = p.captureIds.filter(id => mergedCaptureIds.has(id));
+          const fromRoom = (captureIdsByRoom.get(p.roomId) ?? []).filter(id => mergedCaptureIds.has(id));
+          const captureIds = [...new Set([...fromIds, ...fromRoom])];
+          if (fromRoom.some(id => !p.captureIds.includes(id))) {
+            pinsToResync.push({ ...p, captureIds });
+          }
+          return { ...p, captureIds };
+        });
+
+        const cleanPins = healedPins
           .filter(p => {
             // Keep pins that still have captures OR have never had any (freshly placed, not yet captured).
-            // Remove only those that had captures but all of them are now dangling.
+            // Remove only those that had captures but all of them are now dangling —
+            // and no room-owned capture exists either (after the heal above).
             const hadCaptures = basePins.find(bp => bp.id === p.id)!.captureIds.length > 0;
             if (!hadCaptures || p.captureIds.length > 0) return true;
+            // Room still owns captures even if captureIds was stale — keep the pin.
+            if ((captureIdsByRoom.get(p.roomId) ?? []).some(id => mergedCaptureIds.has(id))) return true;
             // Every captureId resolved to nothing — but that is only a deletion if
             // the work actually FINISHED. A pin whose photo bytes are still sitting
             // in this device's durable upload queue (offline, retrying, or being
@@ -575,12 +796,19 @@ export const useWorkflowStore = create<WorkflowState>()(
             return original.captureIds.some(id => isCreatePending('createCapture', id));
           });
 
+        // Persist healed links so the next snapshot / Construction Progress
+        // analyze see the same pin.captureIds the gallery already implied.
+        for (const pin of pinsToResync) {
+          if (tombstones.has(pin.id)) continue;
+          if (!cleanPins.some(p => p.id === pin.id)) continue;
+          mirrorApi('updateCapturePin', [pin.id, { captureIds: pin.captureIds }], 'heal-pin-captures');
+        }
         set(s => {
           const mergedCaptures = (
             replace
               ? (migrated.captures ?? [])
               : mergeById(migrated.captures, s.captures, 'createCapture')
-          ).filter(c => !tombstones.has(c.id));
+          ).filter(c => !hiddenByTombstone(c.id, c, tombstonedAt));
 
           // Captures belonging to a pin whose upload is still pending on THIS
           // device must survive the merge even when the snapshot omits them: with
@@ -588,11 +816,15 @@ export const useWorkflowStore = create<WorkflowState>()(
           // well after the photo bytes were accepted, so "absent from snapshot"
           // does not mean "deleted elsewhere" for these.
           //
+          // Applies in replace mode too — a post-login snapshot must not wipe a
+          // capture that was just attached locally while bytes are still
+          // uploading or stitching on this device.
+          //
           // Scoped strictly to pins with a live queue entry, so a genuine remote
           // delete of a finished capture still converges normally.
-          if (!replace && pinsWithPendingUploads.size) {
+          if (pinsWithPendingUploads.size) {
             const pendingCaptureIds = new Set(
-              cleanPins
+              s.capturePins
                 .filter(p => pinsWithPendingUploads.has(p.id))
                 .flatMap(p => p.captureIds),
             );
@@ -602,18 +834,31 @@ export const useWorkflowStore = create<WorkflowState>()(
               if (mergedCaptures.some(c => c.id === local.id)) continue;
               mergedCaptures.push(local);
             }
+            // Restore captureIds stripped by the dangling-ref filter above when
+            // the capture is still local and the pin's upload is in flight.
+            for (const pin of cleanPins) {
+              if (!pinsWithPendingUploads.has(pin.id)) continue;
+              const localPin = s.capturePins.find(p => p.id === pin.id);
+              if (!localPin) continue;
+              for (const cid of localPin.captureIds) {
+                if (!pin.captureIds.includes(cid) && mergedCaptures.some(c => c.id === cid)) {
+                  pin.captureIds.push(cid);
+                }
+              }
+            }
           }
 
-          // Captures that still live under a pin timeline.
-          const linkedCaptureIds = new Set(cleanPins.flatMap(p => p.captureIds));
-          // Orphans: named like "Pin N" but no longer referenced by any pin.
-          // These accumulate when older pin deletes cascaded locally but left Mongo
-          // rows behind — they then reappear forever in Media Library.
-          const orphanIds = new Set(
-            mergedCaptures
-              .filter(c => /^Pin\s+\d+$/i.test(c.roomName ?? '') && !linkedCaptureIds.has(c.id))
-              .map(c => c.id),
-          );
+          // NOTE: captures whose roomName looks like "Pin N" but which no pin
+          // currently references used to be dropped from local state here, as
+          // presumed leftovers from a pin delete that left Mongo rows behind.
+          // That inference is unsafe — it cannot tell debris apart from a real
+          // photo whose pin link is merely missing on THIS device. Observed: a
+          // stale tombstone hid one legacy pin, so its freshly-uploaded capture
+          // looked unreferenced and was deleted from state too, leaving the app
+          // one capture short of the server (and of the same account in another
+          // browser) while the photo sat intact in Cloudinary and Mongo.
+          // Unlinked captures are now kept; the gallery shows them (see
+          // isGalleryVisibleCapture) so they can be seen and dealt with.
 
           const apiToursRaw = replace
             ? (migrated.tours ?? [])
@@ -634,15 +879,43 @@ export const useWorkflowStore = create<WorkflowState>()(
           // vanishing on one device forever while every other device still has it.
           const liveTours = apiToursRaw.filter(isLiveUploadedTour);
 
+          // Keep backing rooms/flats for offline pins that survive replace mode.
+          // Without this, uploadCapture sees no room, used to return a fake id,
+          // and the file queue treated attach as success while no capture existed.
+          let nextRooms = migrated.rooms ?? s.rooms;
+          let nextFlats = migrated.flats ?? s.flats;
+          if (replace && keepLocalPins.length) {
+            const roomIds = new Set(nextRooms.map(r => r.id));
+            const flatIds = new Set(nextFlats.map(f => f.id));
+            for (const pin of keepLocalPins) {
+              const localRoom = s.rooms.find(r => r.id === pin.roomId);
+              if (localRoom && !roomIds.has(localRoom.id) && !tombstones.has(localRoom.id)) {
+                nextRooms = [...nextRooms, localRoom];
+                roomIds.add(localRoom.id);
+              }
+              const flatId = localRoom?.flatId;
+              if (flatId) {
+                const localFlat = s.flats.find(f => f.id === flatId);
+                if (localFlat && !flatIds.has(localFlat.id) && !tombstones.has(localFlat.id)) {
+                  nextFlats = [...nextFlats, localFlat];
+                  flatIds.add(localFlat.id);
+                }
+              }
+            }
+          }
+
           return {
             ...s,
             ...migrated,
-            uidCounter: s.uidCounter,
+            // Never let the id counter sit below an id the server already uses —
+            // see highestIdSuffix. Monotonic: only ever raised, so a device that
+            // is already ahead keeps its value.
+            uidCounter: Math.max(s.uidCounter, highestIdSuffix(migrated)),
             projects:      migrated.projects      ?? s.projects,
             towers:        migrated.towers        ?? s.towers,
             floors:        migrated.floors        ?? s.floors,
-            flats:         migrated.flats         ?? s.flats,
-            rooms:         migrated.rooms         ?? s.rooms,
+            flats:         nextFlats,
+            rooms:         nextRooms,
             tours:         liveTours,
             // Trust the API snapshot directly for floor plans (same reasoning as
             // `liveTours` above): `migrated.floorPlans ?? s.floorPlans` already
@@ -654,7 +927,7 @@ export const useWorkflowStore = create<WorkflowState>()(
             notifications: migrated.notifications ?? s.notifications,
             auditLogs:     migrated.auditLogs     ?? s.auditLogs,
             users:         migrated.users         ?? s.users,
-            captures: mergedCaptures.filter(c => !orphanIds.has(c.id)),
+            captures: mergedCaptures,
             capturePins: cleanPins,
           };
         });
@@ -662,6 +935,31 @@ export const useWorkflowStore = create<WorkflowState>()(
         // Back-fill re-syncs local-only records to the backend. Skip it entirely
         // in replace mode — those records belong to projects outside this user's
         // scope and must not be re-uploaded.
+        //
+        // Exception: pins (and their backing room/flat) that still have photo
+        // bytes on THIS device. replace skips normal backfill, so if writeQueue
+        // previously dropped a create while offline, reconnect must re-issue
+        // those creates or the upload can never attach.
+        if (replace && pinsWithPendingUploads.size) {
+          const apiPinIds = new Set((apiPins ?? []).map(p => p.id));
+          const apiRoomIds = new Set((migrated.rooms ?? []).map(r => r.id));
+          const apiFlatIds = new Set((migrated.flats ?? []).map(f => f.id));
+          for (const pin of cleanPins) {
+            if (!pinsWithPendingUploads.has(pin.id) || tombstones.has(pin.id)) continue;
+            const room = get().rooms.find(r => r.id === pin.roomId);
+            if (room && !apiRoomIds.has(room.id) && !tombstones.has(room.id) && !isCreatePending('createRoom', room.id)) {
+              const flat = get().flats.find(f => f.id === room.flatId);
+              if (flat && !apiFlatIds.has(flat.id) && !tombstones.has(flat.id) && !isCreatePending('createFlat', flat.id)) {
+                mirrorApi('createFlat', [flat], 'reconnect-flat');
+              }
+              mirrorApi('createRoom', [room], 'reconnect-room');
+            }
+            if (!apiPinIds.has(pin.id) && !isCreatePending('createCapturePin', pin.id)) {
+              mirrorApi('createCapturePin', [pin], 'reconnect-pin');
+            }
+          }
+        }
+
         if (!replace) {
           const apiCaptureIds = new Set((migrated.captures ?? []).map(c => c.id));
           for (const cap of get().captures) {
@@ -701,50 +999,80 @@ export const useWorkflowStore = create<WorkflowState>()(
           // Converged cleanup: if a tombstoned id REAPPEARS in the API snapshot,
           // the server still has it (our delete hasn't applied or was rejected) —
           // re-issue the delete so FE and BE converge instead of silently diverging.
+          //
+          // Guarded by `isSameRecordAsTombstoned`: a reappearing id is only the
+          // record we deleted if the server's copy predates our tombstone. See
+          // that helper for why an id-only match is not safe.
           const apiFloorPlanIds = new Set((migrated.floorPlans ?? []).map(fp => fp.id));
           const apiTourIds = new Set((migrated.tours ?? []).map(t => t.id));
+          const recordById = new Map<string, unknown>();
+          for (const r of [
+            ...(migrated.captures ?? []),
+            ...(apiPins ?? []),
+            ...(migrated.tours ?? []),
+            ...(migrated.floorPlans ?? []),
+          ]) {
+            if ((r as { id?: string })?.id) recordById.set((r as { id: string }).id, r);
+          }
           const stillPresent = new Set<string>([
             ...apiCaptureIds,
             ...apiPinIds,
             ...apiTourIds,
             ...apiFloorPlanIds,
           ]);
-          const reappeared = [...tombstones].filter(id => stillPresent.has(id));
+          const reappeared = [...tombstones].filter(
+            id => stillPresent.has(id) && isSameRecordAsTombstoned(id, recordById.get(id), tombstonedAt),
+          );
           for (const id of reappeared) {
-            if (apiCaptureIds.has(id)) mirrorApi('deleteCapture', [id], 'reconcile-delete-capture');
-            else if (apiPinIds.has(id)) mirrorApi('deleteCapturePin', [id], 'reconcile-delete-pin');
-            else if (apiFloorPlanIds.has(id)) mirrorApi('deleteFloorPlan', [id], 'reconcile-delete-floor-plan');
-            else mirrorApi('deleteTour', [id], 'reconcile-delete-tour');
+            // Audit AUTOMATED deletions too. When captures began vanishing, this
+            // path was the culprit and left no trace at all — the trail only
+            // recorded user-initiated events, so the deletion had to be inferred
+            // from Cloudinary side effects. An unattended delete is exactly the
+            // kind that most needs a record.
+            const kind = apiCaptureIds.has(id)
+              ? (['deleteCapture', 'capture_deleted', 'capture'] as const)
+              : apiPinIds.has(id)
+                ? (['deleteCapturePin', 'capture_pin_deleted', 'capture_pin'] as const)
+                : apiFloorPlanIds.has(id)
+                  ? (['deleteFloorPlan', 'floor_plan_deleted', 'floor_plan'] as const)
+                  : (['deleteTour', 'tour_deleted', 'tour'] as const);
+            const [op, eventType, entityType] = kind;
+            mirrorApi(op, [id], `reconcile-delete-${entityType}`);
+            pushAudit(
+              set, eventType, entityType, id, id, null,
+              `Automatic reconcile delete: id was tombstoned locally at ` +
+                `${new Date(tombstonedAt[id]).toISOString()} but still present in the server ` +
+                `snapshot, so the delete was re-issued (no user action).`,
+            );
           }
 
-          // Also purge pin-named orphans that remain on the server (deleted from the
-          // product but still in Mongo). Tombstone + delete so the next snapshot is clean.
-          const linkedAfter = new Set(get().capturePins.flatMap(p => p.captureIds));
-          const apiOrphans = (migrated.captures ?? []).filter(
-            c => /^Pin\s+\d+$/i.test(c.roomName ?? '') && !linkedAfter.has(c.id),
-          );
-          if (apiOrphans.length) {
-            addTombstones(...apiOrphans.map(c => c.id));
-            for (const orphan of apiOrphans) {
-              mirrorApi('deleteCapture', [orphan.id], 'reconcile-orphan-capture');
-            }
-          }
+          // NOTE: this used to also auto-delete server-side "orphan" captures
+          // here — any capture whose (frozen, never-updated) roomName field
+          // matched /^Pin \d+$/ and wasn't in a pin's CURRENT captureIds list.
+          // That heuristic is unsafe: roomName is stamped once at capture
+          // creation and never kept in sync with pin renumbering, and
+          // `linkedAfter` reflects only this device's in-memory state at this
+          // instant, not a confirmed server-side fact. It fired during normal
+          // use (no delete tapped) and permanently destroyed 3 real, in-use
+          // captures whose pins (pin155/158/160) still referenced them —
+          // leaving those pins pointing at nothing. Orphan capture rows are
+          // now left alone; clean them up manually/via a script if they pile up.
           // Stale tombstones are pruned by TTL in the tombstone module, not eagerly
           // here — clearing on first absence risks dropping one before the delete
           // round-trips, which would let the record resurrect.
-          void clearTombstones; // (kept exported for explicit admin/reset use)
+          // (clearTombstones IS used — see the self-heal pass at the top of this
+          // function, which drops tombstones an id-reuse has made wrong.)
         } else {
-          // Replace mode still needs orphan + tombstone deletes to converge the
-          // scoped snapshot without re-backfilling other projects.
-          const linkedAfter = new Set(get().capturePins.flatMap(p => p.captureIds));
-          const apiCaptureIds = new Set((migrated.captures ?? []).map(c => c.id));
-          const apiTourIds = new Set((migrated.tours ?? []).map(t => t.id));
-          const toDeleteCaptures = [
-            ...[...tombstones].filter(id => apiCaptureIds.has(id)),
-            ...(migrated.captures ?? [])
-              .filter(c => /^Pin\s+\d+$/i.test(c.roomName ?? '') && !linkedAfter.has(c.id))
-              .map(c => c.id),
-          ];
+          // Replace mode still needs tombstone deletes to converge the scoped
+          // snapshot without re-backfilling other projects. Orphan-heuristic
+          // auto-delete was removed here too — see the (!replace) branch above
+          // for why: it's a false-positive-prone client-side guess, not a
+          // server-confirmed fact, and it destroyed real captures in production.
+          const apiCaptureById = new Map((migrated.captures ?? []).map(c => [c.id, c]));
+          const apiTourById = new Map((migrated.tours ?? []).map(t => [t.id, t]));
+          const toDeleteCaptures = [...tombstones].filter(
+            id => apiCaptureById.has(id) && isSameRecordAsTombstoned(id, apiCaptureById.get(id), tombstonedAt),
+          );
           if (toDeleteCaptures.length) {
             addTombstones(...toDeleteCaptures);
             for (const id of toDeleteCaptures) {
@@ -752,7 +1080,9 @@ export const useWorkflowStore = create<WorkflowState>()(
             }
           }
           // Re-issue deletes for tombstoned tours that still appear in the snapshot.
-          for (const id of [...tombstones].filter(tid => apiTourIds.has(tid))) {
+          for (const id of [...tombstones].filter(
+            tid => apiTourById.has(tid) && isSameRecordAsTombstoned(tid, apiTourById.get(tid), tombstonedAt),
+          )) {
             mirrorApi('deleteTour', [id], 'reconcile-delete-tour');
           }
         }
@@ -953,6 +1283,7 @@ export const useWorkflowStore = create<WorkflowState>()(
     // Media Library / galleries show "deleted" images again.
     const leftoverIds = get().captures.filter(c => c.roomId === id).map(c => c.id);
     const leftoverSet = new Set(leftoverIds);
+    cancelWritesForEntityIds(id, ...leftoverIds);
     set(s => ({
       rooms: s.rooms.filter(r => r.id !== id),
       captures: s.captures.filter(c => c.roomId !== id),
@@ -964,6 +1295,14 @@ export const useWorkflowStore = create<WorkflowState>()(
       leftoverIds.forEach(cid => mirrorApi('deleteCapture', [cid]));
     }
     mirrorApi('deleteRoom', [id]);
+    if (room) {
+      pushAudit(
+        set, 'room_deleted', 'room', id, room.name, room.projectId,
+        leftoverIds.length
+          ? `Deleted room "${room.name}" and cascaded ${leftoverIds.length} capture(s): ${leftoverIds.join(', ')}`
+          : `Deleted room "${room.name}"`,
+      );
+    }
   },
   assignFloorPlan(roomId, floorPlanId) {
     set(s => ({ rooms: s.rooms.map(r => r.id === roomId ? { ...r, floorPlanId } : r) }));
@@ -974,7 +1313,10 @@ export const useWorkflowStore = create<WorkflowState>()(
   uploadCapture(roomId, fileCount, mediaAssets = []) {
     const id = get().nextId('c');
     const room = get().rooms.find(r => r.id === roomId);
-    if (!room) return id;
+    // Missing room must NOT look like success — attachCaptureToPin treats any
+    // non-empty id as "attached" and the file queue deletes local bytes.
+    // Returning '' forces a retry (status 0) until hydrate restores the room.
+    if (!room) return '';
     const project = get().projects.find(p => p.id === room.projectId);
     const tower = get().towers.find(t => t.id === room.towerId);
     const floor = get().floors.find(f => f.id === room.floorId);
@@ -1089,6 +1431,13 @@ export const useWorkflowStore = create<WorkflowState>()(
       const remaining = p.captureIds.filter(cid => cid !== id);
       mirrorApi('updateCapturePin', [p.id, { captureIds: remaining }]);
     });
+    if (cap) {
+      pushAudit(
+        set, 'capture_deleted', 'capture', id, cap.roomName, cap.projectId,
+        `Deleted capture ${id} (${cap.roomName})` +
+          (affectedPins.length ? ` — unlinked from pin(s) ${affectedPins.map(p => p.id).join(', ')}` : ' — not linked to any pin'),
+      );
+    }
     // Remove any now-empty pins from the floor plan and resequence the rest to 1..N.
     emptiedPinIds.forEach(pinId => get().deleteCapturePin(pinId));
   },
@@ -1306,6 +1655,7 @@ export const useWorkflowStore = create<WorkflowState>()(
     // Reuse the existing capture pipeline entirely — upload, review, publish all
     // operate on this capture exactly as before. We only record its id on the pin.
     const captureId = get().uploadCapture(pin.roomId, fileCount, mediaAssets);
+    if (!captureId) return '';
     set(s => ({
       capturePins: s.capturePins.map(p =>
         // Deduplicate captureIds — guard against a double-fire attaching the same id twice.
@@ -1317,6 +1667,31 @@ export const useWorkflowStore = create<WorkflowState>()(
     const updated = get().capturePins.find(p => p.id === pinId);
     if (updated) mirrorApi('updateCapturePin', [pinId, { captureIds: updated.captureIds }]);
     return captureId;
+  },
+  discardStitchFailedCapture(pinId, stitchJobId) {
+    const pin = get().capturePins.find(p => p.id === pinId);
+    if (!pin || !stitchJobId) return;
+
+    const captureId = pin.captureIds.find(id => {
+      const c = get().captures.find(x => x.id === id) as (MockCapture & { stitchJobId?: string }) | undefined;
+      return !!c && c.stitchJobId === stitchJobId;
+    });
+    if (!captureId) return;
+
+    const cap = get().captures.find(c => c.id === captureId);
+    const remaining = pin.captureIds.filter(cid => cid !== captureId);
+    set(s => ({
+      captures: s.captures.filter(c => c.id !== captureId),
+      capturePins: s.capturePins.map(p =>
+        p.id === pinId ? { ...p, captureIds: p.captureIds.filter(cid => cid !== captureId) } : p
+      ),
+      towers: cap
+        ? s.towers.map(t => t.id === cap.towerId ? { ...t, captures: Math.max(0, t.captures - 1) } : t)
+        : s.towers,
+    }));
+    addTombstones(captureId);
+    mirrorApi('deleteCapture', [captureId]);
+    mirrorApi('updateCapturePin', [pinId, { captureIds: remaining }]);
   },
   publishFloorPlanTour(floorPlanId, pinIds) {
     // Build ONE sequential walkthrough tour for the whole floor: each pin's latest
@@ -1396,6 +1771,15 @@ export const useWorkflowStore = create<WorkflowState>()(
   deleteCapturePin(id) {
     const pin = get().capturePins.find(p => p.id === id);
     if (!pin) return;
+    // Tombstone FIRST so any concurrent file-queue flush refuses to POST for
+    // this pin (isTombstoned check). Then cancel leftover create/update writes
+    // and drop the pending-upload registry entry synchronously.
+    addTombstones(id);
+    cancelWritesForEntityIds(id, pin.roomId);
+    removePendingUploadPin(id);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('workflow:capture-pin-deleted', { detail: { pinId: id } }));
+    }
     // Remove the pin, its backing room (cascades captures via deleteRoom), then
     // resequence the remaining pins on the same floor plan so numbering stays 1..N.
     get().deleteRoom(pin.roomId);
@@ -1432,7 +1816,6 @@ export const useWorkflowStore = create<WorkflowState>()(
         }),
       };
     });
-    addTombstones(id);
     mirrorApi('deleteCapturePin', [id]);
     // Mirror any sequence changes for pins on the same plan.
     get().capturePins
@@ -1441,6 +1824,11 @@ export const useWorkflowStore = create<WorkflowState>()(
         mirrorApi('updateCapturePin', [p.id, { sequenceNumber: p.sequenceNumber }]);
         mirrorApi('updateRoom', [p.roomId, { name: `Pin ${p.sequenceNumber}` }]);
       });
+    pushAudit(
+      set, 'capture_pin_deleted', 'capture_pin', id, `Pin ${pin.sequenceNumber}`, pin.projectId ?? null,
+      `Deleted pin ${pin.sequenceNumber} (${id}) on floor plan ${pin.floorPlanId}` +
+        (pin.captureIds.length ? ` with capture(s) ${pin.captureIds.join(', ')}` : ' (no captures)'),
+    );
   },
 
   createDefect(d) {
@@ -1556,6 +1944,11 @@ export const useWorkflowStore = create<WorkflowState>()(
             return true;
           });
         }
+        // A persisted counter can be older than the records persisted alongside
+        // it (a write that never landed, or a version migration that fell back
+        // to the seed value of 1). Re-base it here too, so ids minted before the
+        // first API hydrate cannot collide either.
+        base.uidCounter = Math.max(base.uidCounter ?? 1, highestIdSuffix(base));
         return base;
       },
     },

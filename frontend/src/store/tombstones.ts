@@ -73,6 +73,25 @@ export function tombstoneSet(): Set<string> {
   return new Set(Object.keys(map));
 }
 
+/**
+ * Returns the pruned tombstone map (id -> deletedAt epoch ms).
+ *
+ * Callers that RE-ISSUE a delete must use this rather than `tombstoneSet`, so
+ * they can compare the tombstone's age against the server record's creation
+ * time. Ids are minted from a single monotonic counter persisted under the
+ * store's own localStorage key — a DIFFERENT key from this one — so the two can
+ * fall out of sync (a failed/quota-capped persist, or store state reverting to
+ * an older snapshot while these tombstones survive). The counter then re-mints
+ * an id that is still tombstoned here, and an id-only comparison would delete a
+ * brand-new record that merely reuses the name of a long-deleted one. Observed
+ * in production destroying freshly-uploaded captures.
+ */
+export function tombstoneMap(): TombstoneMap {
+  const map = prune(load());
+  save(map);
+  return map;
+}
+
 /** Drop tombstones for ids the server now also reports as gone (cleanup). */
 export function clearTombstones(ids: string[]): void {
   if (!ids.length) return;

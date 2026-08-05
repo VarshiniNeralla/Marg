@@ -8,6 +8,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.core.exceptions import ConflictException, NotFoundException, ValidationException
 from app.models.organization import OrgSettings, OrganizationDocument
 from app.repositories.organization import OrganizationRepository
+from app.services.security_audit import write_security_audit
 from app.repositories.user import UserRepository
 from app.schemas.organization import (
     CreateOrganizationRequest,
@@ -166,15 +167,11 @@ class OrganizationService:
     async def _write_audit_log(
         self, org_id: str, actor_id: str, action: str, resource_id: str
     ) -> None:
-        try:
-            await self._db.audit_logs.insert_one({
-                "org_id": ObjectId(org_id) if ObjectId.is_valid(org_id) else org_id,
-                "actor_id": ObjectId(actor_id) if ObjectId.is_valid(actor_id) else actor_id,
-                "action": action,
-                "resource_type": "organization",
-                "resource_id": ObjectId(resource_id) if ObjectId.is_valid(resource_id) else resource_id,
-                "payload": {},
-                "created_at": datetime.now(timezone.utc),
-            })
-        except Exception as exc:
-            logger.error(f"Audit log write failed [{action}]: {exc}")
+        await write_security_audit(
+            self._db,
+            org_id=org_id,
+            actor_id=actor_id,
+            action=action,
+            resource_type="organization",
+            resource_id=resource_id,
+        )

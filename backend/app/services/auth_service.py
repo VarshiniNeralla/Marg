@@ -36,6 +36,7 @@ from app.schemas.auth import (
     MeResponse,
     RegisterRequest,
 )
+from app.services.security_audit import write_security_audit
 from app.utils.email import send_password_reset_email
 
 settings = get_settings()
@@ -528,17 +529,12 @@ class AuthService:
         Fire-and-forget — failures are logged but never raise (audit must not
         block the primary operation).
         """
-        try:
-            from bson import ObjectId as BsonObjectId
-            log_entry = {
-                "org_id": BsonObjectId(org_id) if org_id and BsonObjectId.is_valid(org_id) else org_id,
-                "actor_id": BsonObjectId(actor_id) if actor_id and BsonObjectId.is_valid(actor_id) else actor_id,
-                "action": action,
-                "resource_type": resource_type,
-                "resource_id": BsonObjectId(resource_id) if resource_id and BsonObjectId.is_valid(resource_id) else resource_id,
-                "payload": payload or {},
-                "created_at": datetime.now(timezone.utc),
-            }
-            await db.audit_logs.insert_one(log_entry)
-        except Exception as exc:
-            logger.error(f"Audit log write failed [{action}]: {exc}")
+        await write_security_audit(
+            db,
+            org_id=org_id,
+            actor_id=actor_id,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            payload=payload,
+        )

@@ -54,7 +54,6 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
           '&:hover': { transform: 'translateY(-3px)' },
           '&:hover .cap-thumb': { boxShadow: '0 12px 32px rgba(15,23,42,0.14)' },
           '&:hover .cap-open': { opacity: 1 },
-          '&:hover .cap-delete': { opacity: 1 },
         },
       }}
     >
@@ -100,14 +99,24 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
           </Box>
         )}
 
-        {/* delete (engineer history only) */}
+        {/* delete — always visible when provided (engineers need a clear control;
+            hover-only + opacity:0 on sm+ hid it forever on touch tablets/laptops) */}
         {onDelete && (
           <Box
             className="cap-delete"
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(capture); }}
-            sx={{ position: 'absolute', top: 8, left: 8, width: 24, height: 24, borderRadius: '7px', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', opacity: { xs: 1, sm: 0 }, transition: `opacity ${motion.durationFast}, background-color ${motion.durationFast}`, '&:hover': { backgroundColor: '#dc2626' } }}
+            sx={{
+              position: 'absolute', top: { xs: 4, sm: 8 }, left: { xs: 4, sm: 8 },
+              width: { xs: 28, sm: 28 }, height: { xs: 28, sm: 28 },
+              borderRadius: '8px',
+              backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(8px)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer', opacity: 1, zIndex: 2,
+              transition: `background-color ${motion.durationFast}`,
+              '&:hover': { backgroundColor: '#dc2626' },
+            }}
           >
-            <DeleteOutlineRounded sx={{ fontSize: 14, color: '#fff' }} />
+            <DeleteOutlineRounded sx={{ fontSize: 15, color: '#fff' }} />
           </Box>
         )}
       </Box>
@@ -133,8 +142,19 @@ function isGalleryVisibleCapture(
   allPinCaptureIds: Set<string>,
   latestPinCaptureIds: Set<string>,
 ): boolean {
+  // Older visits in a pin's timeline stay collapsed behind the pin's latest one.
   if (allPinCaptureIds.has(c.id) && !latestPinCaptureIds.has(c.id)) return false;
-  if (/^Pin\s+\d+$/i.test(c.roomName ?? '') && !allPinCaptureIds.has(c.id)) return false;
+
+  // A capture that no pin references used to be hidden here when its roomName
+  // looked like "Pin N", on the assumption it was debris left behind by a
+  // deleted pin. That assumption is wrong in the case that matters: if the link
+  // between a real photo and its pin is ever lost, the photo is silently erased
+  // from the gallery even though it uploaded fine and is still in Cloudinary —
+  // indistinguishable from data loss, and it sent us hunting a deletion bug that
+  // did not exist. Pin deletion already cascades its captures server-side, and
+  // tombstoned ids never reach this component, so genuine debris is handled
+  // elsewhere. An unlinked capture is now SHOWN, so it can be seen and dealt
+  // with instead of disappearing.
   return true;
 }
 

@@ -1,5 +1,6 @@
 import { useWorkflowStore } from './workflowStore';
 import { fileUploadStatusForPin } from './fileUploadQueue';
+import { pendingUploadPins } from './pendingUploadRegistry';
 
 /**
  * One-time cleanup: deletes every capture pin that has zero attached
@@ -18,9 +19,14 @@ import { fileUploadStatusForPin } from './fileUploadQueue';
  */
 export function pruneOrphanedPins(): number {
   const { capturePins, deleteCapturePin } = useWorkflowStore.getState();
+  const pending = pendingUploadPins();
 
   const orphans = capturePins.filter(
-    p => p.captureIds.length === 0 && !fileUploadStatusForPin(p.id),
+    p =>
+      p.captureIds.length === 0 &&
+      !fileUploadStatusForPin(p.id) &&
+      // Sync mirror — Preferences load may not have finished yet.
+      !pending.has(p.id),
   );
 
   orphans.forEach(p => deleteCapturePin(p.id));

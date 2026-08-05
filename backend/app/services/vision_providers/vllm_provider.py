@@ -127,7 +127,12 @@ class VllmVisionProvider(VisionProvider):
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "List this unit's rooms with their grid cells."},
+                        {"type": "text", "text": (
+                            "List this unit's rooms with their grid cells. "
+                            "Include every printed label — especially Puja, Store, Utility, Dress, "
+                            "PDR, Handwash, Kitchen, Sit-Out, and toilets. Return BOTH Dress/Sit-Out "
+                            "when the drawing shows two. Never paint those cells as Living / Dining."
+                        )},
                         {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
                     ],
                 },

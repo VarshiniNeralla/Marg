@@ -5,6 +5,7 @@ import {
   BugReportRounded, UploadFileRounded, CloseRounded,
   PersonAddRounded, ManageAccountsRounded, AssignmentRounded,
   FolderRounded, EditRounded, AutoAwesomeRounded,
+  DeleteRounded, WrongLocationRounded, MeetingRoomRounded, LayersClearRounded,
 } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
 import type { MockAuditLog, AuditEventType } from '@/data/mockData';
@@ -25,6 +26,10 @@ const EVENT_ICON: Record<AuditEventType, React.ReactNode> = {
   project_created:     <FolderRounded       sx={{ fontSize: 14 }} />,
   project_updated:     <EditRounded         sx={{ fontSize: 14 }} />,
   progress_analysis_completed: <AutoAwesomeRounded sx={{ fontSize: 14 }} />,
+  capture_deleted:     <DeleteRounded       sx={{ fontSize: 14 }} />,
+  capture_pin_deleted: <WrongLocationRounded sx={{ fontSize: 14 }} />,
+  room_deleted:        <MeetingRoomRounded  sx={{ fontSize: 14 }} />,
+  floor_plan_deleted:  <LayersClearRounded  sx={{ fontSize: 14 }} />,
 };
 
 const EVENT_COLOR: Record<AuditEventType, string> = {
@@ -43,6 +48,12 @@ const EVENT_COLOR: Record<AuditEventType, string> = {
   project_created:     '#059669',
   project_updated:     '#d97706',
   progress_analysis_completed: '#7c3aed',
+  // Destructive events all share the danger hue so they stand out when
+  // scanning the feed for "what removed my data?"
+  capture_deleted:     '#dc2626',
+  capture_pin_deleted: '#dc2626',
+  room_deleted:        '#dc2626',
+  floor_plan_deleted:  '#dc2626',
 };
 
 interface ActivityFeedProps {

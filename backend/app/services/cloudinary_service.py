@@ -69,10 +69,13 @@ def configure_cloudinary() -> None:
     )
 
 
+_ROOT_FOLDER = "SiteVision"
+
+
 def cloudinary_folder(kind: str, org_id: str, entity_id: Optional[str] = None) -> str:
     if kind not in ALLOWED_FOLDERS:
         raise ValidationException(f"Unsupported media folder '{kind}'")
-    parts = [kind, org_id]
+    parts = [_ROOT_FOLDER, kind, org_id]
     if entity_id:
         parts.append(entity_id)
     return "/".join(parts)
@@ -327,6 +330,44 @@ async def upload_media(
         # Present when a raw dual-fisheye was stitched to equirectangular server-side.
         "stitch": stitch_meta,
     }
+
+
+async def cloudinary_asset_exists(public_id: str, resource_type: str = "image") -> Optional[bool]:
+    """
+    Authoritative existence check for one Cloudinary asset via the Admin API.
+
+    Returns True (exists), False (definitively gone), or None (couldn't tell —
+    not configured, rate-limited, network error; callers should treat None as
+    "don't act on this").
+
+    Why not just HEAD the delivery URL: Cloudinary's CDN keeps serving a
+    destroyed asset for a while, so a HEAD returns 200 for a file that no
+    longer exists. That false positive is exactly how a destroyed asset got
+    reused from the upload-dedup cache and produced a capture whose image
+    died minutes later. The Admin API reads the account, not the edge cache.
+    """
+    from loguru import logger
+
+    if not public_id:
+        return None
+    try:
+        configure_cloudinary()
+    except Exception:
+        return None
+    try:
+        import cloudinary.api
+
+        await to_thread.run_sync(
+            lambda: cloudinary.api.resource(public_id, resource_type=resource_type)
+        )
+        return True
+    except Exception as exc:
+        # cloudinary.exceptions.NotFound is the only "definitely gone" signal;
+        # anything else (auth, rate limit, transport) is inconclusive.
+        if type(exc).__name__ == "NotFound":
+            return False
+        logger.warning(f"[cloudinary] existence check inconclusive for {public_id}: {exc!r}")
+        return None
 
 
 async def delete_media_assets(media_assets: list[dict]) -> None:

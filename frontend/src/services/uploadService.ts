@@ -87,8 +87,15 @@ export async function uploadCaptureFiles(
   files: File[],
   onProgress?: (percent: number) => void,
   captureId?: string,
+  signal?: AbortSignal,
 ): Promise<UploadCaptureFilesResponse> {
-  return uploadMediaFiles('/uploads/captures', files, onProgress, captureId ? { capture_id: captureId } : undefined);
+  return uploadMediaFiles(
+    '/uploads/captures',
+    files,
+    onProgress,
+    captureId ? { capture_id: captureId } : undefined,
+    signal,
+  );
 }
 
 export async function uploadFloorPlanFiles(
@@ -138,6 +145,7 @@ async function uploadMediaFiles(
   files: File[],
   onProgress?: (percent: number) => void,
   params?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<UploadCaptureFilesResponse> {
   const form = new FormData();
   files.forEach(file => form.append('files', file));
@@ -145,6 +153,7 @@ async function uploadMediaFiles(
   const { data } = await apiClient.post<ApiResponse<UploadCaptureFilesResponse>>(endpoint, form, {
     params,
     headers: { 'Content-Type': 'multipart/form-data' },
+    signal,
     onUploadProgress: event => {
       if (!event.total || !onProgress) return;
       onProgress(Math.round((event.loaded / event.total) * 100));

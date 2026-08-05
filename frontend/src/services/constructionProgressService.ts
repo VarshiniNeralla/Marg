@@ -40,6 +40,18 @@ export interface RoomHeatmapEntry {
   capturesCount: number;
 }
 
+/** Pin positions frozen at analysis time — keeps markers aligned with boxes. */
+export interface HeatmapPinMarker {
+  pinId: string;
+  sequenceNumber: number;
+  x: number;
+  y: number;
+  flatName: string;
+  roomName: string;
+  state: RoomHeatmapState;
+  capturesCount: number;
+}
+
 export interface RoomActivityAssessment {
   activityId: string;
   activityName: string;
@@ -55,6 +67,10 @@ export interface RoomProgress {
   // activities is never "complete".
   isComplete: boolean;
   activities: RoomActivityAssessment[];
+  /** Pins attributed to this room at analysis time (sequence numbers). */
+  pinNumbers?: number[];
+  /** Captures resolved into this room — drives coverage UI independently of AI scores. */
+  capturesCount?: number;
 }
 
 export interface FlatProgress {
@@ -97,6 +113,8 @@ export interface FloorProgressSnapshot {
   imagesAnalyzedCount: number;
   activities: ActivityAssessment[];
   roomHeatmap: RoomHeatmapEntry[];
+  /** Present on snapshots created after pin/box alignment fix. */
+  heatmapPins?: HeatmapPinMarker[];
   flatProgress: FlatProgress[];
   summaryCards: SummaryCards;
   executiveSummary: string;
@@ -149,7 +167,17 @@ export const constructionProgressService = {
   },
 
   analyzeFloor(floorId: string): Promise<FloorProgressSnapshot> {
-    return unwrap(apiClient.post(`/construction-progress/floors/${floorId}/analyze`));
+    // Room-map extraction + per-capture scoring routinely exceeds the shared
+    // apiClient 180s timeout (observed 3–4+ minutes on multi-flat floors).
+    // Timing out early dismisses the UI while the backend is still working and
+    // often triggers a second overlapping analyze. Give this call its own budget.
+    return unwrap(
+      apiClient.post(
+        `/construction-progress/floors/${floorId}/analyze`,
+        undefined,
+        { timeout: 900_000 },
+      ),
+    );
   },
 
   getTimeline(floorId: string): Promise<TimelinePoint[]> {

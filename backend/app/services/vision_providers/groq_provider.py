@@ -441,7 +441,7 @@ ROOM RULES
   unmistakable fixtures. Otherwise omit it.
 - Preserve printed labels EXACTLY — punctuation, hyphens, spacing: "Living / Dining", "Drawing
   Room", "Master Bedroom", "Bedroom-2", "Bedroom-3", "Kitchen", "Utility", "Store", "Dress",
-  "Puja", "Sit-Out", "Balcony", "PDR", "M. Toilet", "Toilet-2", "Toilet-3", "Maid-01". Never
+  "Puja", "Sit-Out", "Balcony", "PDR", "Handwash", "M. Toilet", "Toilet-2", "Toilet-3", "Maid-01". Never
   rename, normalise, or expand.
 - Fixture inference ONLY when no label AND walls are obvious: bed→"Bedroom", kitchen platform+sink
   →"Kitchen", WC+basin→"Toilet", dining table→"Dining", sofa→"Living Room".
@@ -449,7 +449,13 @@ ROOM RULES
   invent toilets, stores, utilities, dress, puja, maid rooms, or balconies.
 - NEVER merge rooms: "Living" and "Drawing Room" are separate unless the label literally says
   "Living / Dining". Never merge Living and Drawing.
-- NO duplicates: never two Kitchens / two Drawing Rooms unless the drawing literally shows two.
+- NEVER absorb small labelled rooms into a larger neighbour:
+  * Printed "Puja", "Store", "Utility", "Dress", "Toilet", "Kitchen", "PDR", "Handwash" are ALWAYS their own rooms.
+  * Do NOT paint those cells as "Living / Dining", "Living", "Dining", or "Sit-Out".
+  * "Utility" is NOT "Sit-Out" and "Sit-Out" is NOT "Utility" — keep the printed label.
+  * If Living/Dining shares a wall with Puja/Store, give Living/Dining only its own cells.
+- Multiple rooms MAY share a name when the drawing shows two (two "Dress", two "Sit-Out") — return BOTH
+  with their own cells. Do NOT collapse them into one.
 - If a room is cut off by the crop edge and you cannot confirm it belongs to THIS flat, omit it.
 - EVERY grid cell belongs to AT MOST ONE room. Two different rooms must NEVER list the same cell —
   real rooms are separated by a wall, so their cell sets never touch, let alone overlap. Before
@@ -462,7 +468,8 @@ ROOM RULES
 NEIGHBOUR FILTERING (critical)
 =========================
 For every candidate room ask: "Is this room inside THIS flat's boundary?" If there is ANY doubt,
-DISCARD it. Never borrow a room (e.g. a Bedroom-3) from a neighbouring apartment.
+DISCARD it. Never borrow a room (e.g. a Bedroom-3, Puja, Store, or Kitchen) from a neighbouring
+apartment — even if that neighbour is visible in this crop.
 
 =========================
 NEVER RETURN THESE (building core / common areas)
@@ -489,8 +496,9 @@ If your confidence for a room is below 70, OMIT that room entirely. reason ∈ {
 "fixture recognition"}}.
 
 Before returning, verify: any room outside this flat? any shaft/lift-lobby/staircase/corridor? any
-duplicate? invented Bedroom-4 or Maid room? merged Living+Drawing? missed Sit-Out? does any grid
-cell appear in more than one room's cell list? Fix before output.
+duplicate? invented Bedroom-4 or Maid room? merged Living+Drawing? merged Puja/Store/Utility into
+Living or Sit-Out? missed Sit-Out / Utility / Puja / Store with a visible printed label? does any
+grid cell appear in more than one room's cell list? Fix before output.
 
 For each kept room list ALL grid cells its floor AREA overlaps.
 
@@ -638,7 +646,12 @@ class GroqVisionProvider(VisionProvider):
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "List this unit's rooms with their grid cells."},
+                        {"type": "text", "text": (
+                            "List this unit's rooms with their grid cells. "
+                            "Include every printed label — especially Puja, Store, Utility, Dress, "
+                            "PDR, Handwash, Kitchen, Sit-Out, and toilets. Return BOTH Dress/Sit-Out "
+                            "when the drawing shows two. Never paint those cells as Living / Dining or Sit-Out."
+                        )},
                         {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
                     ],
                 },

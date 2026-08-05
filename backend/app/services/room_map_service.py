@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 import string
 from datetime import datetime, timezone
 from typing import Any
@@ -17,6 +18,29 @@ from app.services.vision_providers.groq_provider import _COMMON_AREA_TERMS
 _COLLECTION = "floor_plan_room_maps"
 
 _FALLBACK_FLAT = "Unknown"
+
+# Bump when the extraction contract changes in a way that invalidates old
+# cached maps (e.g. removing Flat 01 (A)/(B) suffixes). ensure_room_map
+# re-extracts when a cached doc's schema_version is older than this.
+_ROOM_MAP_SCHEMA_VERSION = 4
+
+# Near-duplicate OCR hits of the same flat number (overlapping tiles reading
+# the same printed label) closer than this are merged into one detection.
+_OCR_DEDUPE_DISTANCE = 0.12
+
+# Occurrences of the SAME flat number farther apart than this are treated as
+# separate physical clusters for ROOM EXTRACTION only — rooms from every
+# cluster are merged under one canonical "Flat 01" name. We never invent
+# "Flat 01 (A)" / "(B)" variants.
+_CLUSTER_SEPARATION = 0.40
+
+# After merging rooms for one flat, drop a minority spatial cluster whose
+# centroids sit farther than this (% of full image) from the primary cluster.
+# Oversized flat crops often bleed into a neighbour; the model then returns
+# that neighbour's Puja/Store/Kitchen under THIS flat's name at the wrong
+# coordinates (confirmed: Flat 02 Puja/Store at x≈35 while the real rooms —
+# and engineer pins — sit at x≈88).
+_ROOM_CLUSTER_LINK_DIST = 18.0
 
 # Per-flat crops carry a labelled grid; the model names which cells each room covers (it can't read
 # pixel-precise polygons off CAD, but reads a grid well). 12x12 keeps each cell ~8% of the crop so
@@ -71,6 +95,28 @@ _CORE_TILE = (0.15, 0.20, 0.98, 0.80)
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _canonical_flat_number(raw: str) -> str:
+    """Strip OCR noise and never-keep alphabetic disambiguation suffixes.
+
+    "01 (A)" / "01(B)" / "Flat 01 (C)" → "01" so Stage 2 always emits
+    "Flat 01", never "Flat 01 (A)".
+    """
+    num = str(raw or "").strip()
+    # Drop a leading "Flat " if the model included it in the number field.
+    if num.lower().startswith("flat "):
+        num = num[5:].strip()
+    num = re.sub(r"\s*\([A-Za-z]\)\s*$", "", num).strip()
+    return num
+
+
+def _canonical_flat_label(raw: str) -> str:
+    """Normalise a stored flat display name to Flat NN (no A/B/C)."""
+    if not raw or raw == _COMMON_AREA_FLAT or raw == _FALLBACK_FLAT:
+        return raw
+    num = _canonical_flat_number(raw)
+    return f"Flat {num}" if num else raw
 
 
 def _coerce_confidence(value: Any) -> int:
@@ -296,8 +342,889 @@ def _parse_rooms(
             "reason": str(room.get("reason") or "")[:200],
         })
     _trim_overlapping_rectangles(rooms, label=label)
+    _reclaim_specialized_from_living(rooms, label=label)
+    _ensure_adjacent_store_utility(rooms, label=label)
     return rooms
 
+
+_SPECIALIZED_ROOM_TOKENS = (
+    "puja", "store", "utility", "dress", "toilet", "kitchen", "maid",
+    "pdr", "handwash", "hand wash", "sit-out", "sit out", "balcony",
+)
+
+
+def _is_living_dining_name(name: str) -> bool:
+    n = name.strip().lower()
+    return "living" in n or n == "dining"
+
+
+def _is_specialized_room_name(name: str) -> bool:
+    n = name.strip().lower()
+    if _is_living_dining_name(n):
+        return False
+    return any(tok in n for tok in _SPECIALIZED_ROOM_TOKENS)
+
+
+def _room_priority(name: str) -> int:
+    n = name.strip().lower()
+    best = 9
+    for tok, pri in _ROOM_PRIORITY.items():
+        if tok in n:
+            best = min(best, pri)
+    return best
+
+
+def _is_large_open_name(name: str) -> bool:
+    n = name.strip().lower()
+    return any(t in n for t in ("living", "dining", "master bedroom", "master bed"))
+
+
+def _room_centroid_xy(room: dict[str, Any]) -> tuple[float, float] | None:
+    poly = room.get("polygon") or []
+    if not poly:
+        return None
+    try:
+        b = _rect_bounds(poly)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (b[0] + b[1]) / 2, (b[2] + b[3]) / 2
+
+
+def _set_room_polygon(room: dict[str, Any], x0: float, x1: float, y0: float, y1: float) -> None:
+    if x1 - x0 < 1.0 or y1 - y0 < 1.0:
+        return
+    room["polygon"] = [
+        {"x": x0, "y": y0},
+        {"x": x1, "y": y0},
+        {"x": x1, "y": y1},
+        {"x": x0, "y": y1},
+    ]
+
+
+def _append_room(
+    rooms: list[dict[str, Any]],
+    *,
+    name: str,
+    x0: float,
+    x1: float,
+    y0: float,
+    y1: float,
+    reason: str,
+) -> None:
+    if x1 - x0 < 1.5 or y1 - y0 < 1.5:
+        return
+    rooms.append({
+        "name": name,
+        "polygon": [
+            {"x": x0, "y": y0}, {"x": x1, "y": y0},
+            {"x": x1, "y": y1}, {"x": x0, "y": y1},
+        ],
+        "confidence": 80,
+        "reason": reason,
+    })
+
+
+def _infer_flat_side(rooms: list[dict[str, Any]]) -> str:
+    """Return 'left' or 'right' from which side of the core holds more room area."""
+    left = right = 0.0
+    for room in rooms:
+        c = _room_centroid_xy(room)
+        if c is None:
+            continue
+        try:
+            b = _rect_bounds(room["polygon"])
+            area = max(0.0, b[1] - b[0]) * max(0.0, b[3] - b[2])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if c[0] < _FLAT_SIDE_SPLIT_X:
+            left += area
+        else:
+            right += area
+    return "left" if left >= right else "right"
+
+
+def _room_type_key(name: str) -> str:
+    """Normalize room name for uniqueness checks (ignore Dress disambiguators)."""
+    n = str(name or "").strip().lower()
+    n = re.sub(r"\s*\([^)]*\)\s*$", "", n).strip()
+    n = re.sub(r"\s+", " ", n)
+    n = n.replace("sit out", "sit-out")
+    return n
+
+
+# Unique functional rooms that AI often places on the neighbour wing — relocate
+# onto this flat's side instead of deleting (Flat 03 was losing Kitchen/Utility).
+# Keep this list narrow: PDR/Puja/Store/M.Toilet are often true bleed copies
+# that later sanitize steps re-synthesize on the correct wing.
+_RELOCATABLE_ROOM_KEYS = frozenset({
+    "kitchen", "utility", "toilet-2", "toilet-3", "toilet-1",
+    "dress", "drawing room", "multi-purpose room", "multipurpose room",
+})
+
+# Clear neighbour-apartment bleed — always drop when on the wrong side.
+_BLEED_ROOM_KEYS = frozenset({
+    "bedroom-4", "toilet-4", "toilet-04", "maid-04", "maid",
+    "living", "dining",  # prefer combined Living / Dining already on-wing
+})
+
+
+def _relocate_room_to_wing(room: dict[str, Any], side: str) -> None:
+    """Shift a wrong-side polygon onto this flat's wing, preserving size/Y."""
+    poly = room.get("polygon") or []
+    if not poly:
+        return
+    try:
+        b = _rect_bounds(poly)
+    except (KeyError, TypeError, ValueError, IndexError):
+        return
+    w = max(3.0, b[1] - b[0])
+    h = max(2.0, b[3] - b[2])
+    if side == "left":
+        x1 = _FLAT_SIDE_SPLIT_X - 1.5
+        x0 = max(1.0, x1 - w)
+    else:
+        x0 = _FLAT_SIDE_SPLIT_X + 1.5
+        x1 = min(99.0, x0 + w)
+    _set_room_polygon(room, x0, x1, b[2], b[2] + h)
+
+
+def _cull_wrong_side_rooms(rooms: list[dict[str, Any]], *, label: str) -> list[dict[str, Any]]:
+    """Drop neighbour-bleed rooms; relocate unique functional rooms onto-wing."""
+    if len(rooms) < 4:
+        return rooms
+    side = _infer_flat_side(rooms)
+
+    def _on_correct_side(c: tuple[float, float]) -> bool:
+        if abs(c[0] - _FLAT_SIDE_SPLIT_X) <= 8.0:
+            return True
+        on_left = c[0] < _FLAT_SIDE_SPLIT_X
+        return on_left if side == "left" else (not on_left)
+
+    on_side_keys: set[str] = set()
+    for room in rooms:
+        c = _room_centroid_xy(room)
+        if c is None or not _on_correct_side(c):
+            continue
+        on_side_keys.add(_room_type_key(str(room.get("name") or "")))
+
+    kept: list[dict[str, Any]] = []
+    dropped: list[str] = []
+    relocated: list[str] = []
+    for room in rooms:
+        c = _room_centroid_xy(room)
+        if c is None:
+            kept.append(room)
+            continue
+        if _on_correct_side(c):
+            kept.append(room)
+            continue
+        name = str(room.get("name") or "?")
+        key = _room_type_key(name)
+        # Already have this room type on the correct wing → drop bleed copy.
+        if key in on_side_keys or key in _BLEED_ROOM_KEYS:
+            dropped.append(name)
+            continue
+        # Unique Kitchen / Utility / Dress / … — keep by moving onto-wing.
+        if key in _RELOCATABLE_ROOM_KEYS:
+            _relocate_room_to_wing(room, side)
+            kept.append(room)
+            on_side_keys.add(key)
+            relocated.append(name)
+            continue
+        dropped.append(name)
+    if dropped:
+        logger.debug(
+            "Room map {}: culled {} wrong-side room(s) (flat is {} wing): {}",
+            label, len(dropped), side, ", ".join(dropped),
+        )
+    if relocated:
+        logger.debug(
+            "Room map {}: relocated {} unique room(s) onto {} wing: {}",
+            label, len(relocated), side, ", ".join(relocated),
+        )
+    return kept or rooms
+
+
+def _carve_specialized_from_large(rooms: list[dict[str, Any]], *, label: str) -> None:
+    """When a specialized room overlaps Living/Master/Dining, cut the large room."""
+    for large in rooms:
+        if not _is_large_open_name(str(large.get("name") or "")):
+            continue
+        lb = _rect_bounds(large["polygon"])
+        for sp in rooms:
+            if sp is large or not _is_specialized_room_name(str(sp.get("name") or "")):
+                continue
+            sb = _rect_bounds(sp["polygon"])
+            ox0, ox1 = max(lb[0], sb[0]), min(lb[1], sb[1])
+            oy0, oy1 = max(lb[2], sb[2]), min(lb[3], sb[3])
+            ox, oy = ox1 - ox0, oy1 - oy0
+            if ox <= 1.0 or oy <= 1.0:
+                continue
+            # Shrink the large room on the thinner overlap axis.
+            if ox <= oy:
+                mid = (ox0 + ox1) / 2
+                large_cx = (lb[0] + lb[1]) / 2
+                if large_cx < mid:
+                    _set_room_polygon(large, lb[0], min(lb[1], mid), lb[2], lb[3])
+                else:
+                    _set_room_polygon(large, max(lb[0], mid), lb[1], lb[2], lb[3])
+            else:
+                mid = (oy0 + oy1) / 2
+                large_cy = (lb[2] + lb[3]) / 2
+                if large_cy < mid:
+                    _set_room_polygon(large, lb[0], lb[1], lb[2], min(lb[3], mid))
+                else:
+                    _set_room_polygon(large, lb[0], lb[1], max(lb[2], mid), lb[3])
+            logger.debug(
+                "Room map {}: carved {!r} out of oversized {!r}",
+                label, sp.get("name"), large.get("name"),
+            )
+            lb = _rect_bounds(large["polygon"])
+
+
+def _fill_master_wet_gap(rooms: list[dict[str, Any]], *, label: str) -> None:
+    """Synthesize PDR / Handwash / M.Toilet / Dress in the gap above Master Bedroom.
+
+    Confirmed on Floor-4 Flat 04: engineer pins for those rooms sit in empty
+    space between Lobby/Dining (above) and Master Bedroom (below) because the
+    model never emitted polygons for the wet core.
+    """
+    master = next(
+        (r for r in rooms if "master" in str(r.get("name") or "").lower() and "bed" in str(r.get("name") or "").lower()),
+        None,
+    )
+    if master is None:
+        return
+    mb = _rect_bounds(master["polygon"])
+
+    def _has_in_gap(token: str, y0: float, y1: float, x0: float, x1: float) -> bool:
+        for r in rooms:
+            if token not in str(r.get("name") or "").lower():
+                continue
+            c = _room_centroid_xy(r)
+            if c is None:
+                continue
+            if x0 - 2 <= c[0] <= x1 + 2 and y0 - 1 <= c[1] <= y1 + 1:
+                return True
+        return False
+
+    # Gap: just above Master, spanning its width (plus a little left for PDR).
+    gap_y1 = mb[2]
+    gap_y0 = gap_y1 - max(6.0, (mb[3] - mb[2]) * 0.85)
+    for r in rooms:
+        if r is master:
+            continue
+        b = _rect_bounds(r["polygon"])
+        if b[3] <= gap_y0 or b[2] >= gap_y1:
+            continue
+        if b[1] < mb[0] - 2 or b[0] > mb[1] + 2:
+            continue
+        if b[3] <= mb[2] + 0.5:
+            gap_y0 = max(gap_y0, b[3])
+
+    if gap_y1 - gap_y0 < 3.5:
+        return
+
+    x0, x1 = mb[0] - 1.0, min(mb[1], mb[0] + max(8.0, (mb[1] - mb[0]) * 0.72))
+    # Column split ~63.5 between PDR(62)/Handwash(65) and M.Toilet(61)/Dress(64).
+    # Keep the wet core from spilling into Dining/Kitchen (pin 17).
+    x_mid = max(x0 + 2.5, min(x1 - 2.5, 63.5))
+    y_mid = (gap_y0 + gap_y1) / 2
+
+    added = False
+    # Top row: PDR (left) | Handwash (right)
+    if not _has_in_gap("pdr", gap_y0, y_mid, x0, x_mid):
+        _append_room(rooms, name="PDR", x0=x0, x1=x_mid, y0=gap_y0, y1=y_mid,
+                     reason="master wet-core gap fill")
+        added = True
+    if not _has_in_gap("handwash", gap_y0, y_mid, x_mid, x1) and not _has_in_gap(
+        "hand wash", gap_y0, y_mid, x_mid, x1
+    ):
+        _append_room(rooms, name="Handwash", x0=x_mid, x1=x1, y0=gap_y0, y1=y_mid,
+                     reason="master wet-core gap fill")
+        added = True
+    # Bottom row: M.Toilet (left) | Dress (right) — do not treat the Master Toilet
+    # BELOW Master as occupying this gap.
+    if not _has_in_gap("m. toilet", y_mid, gap_y1, x0, x_mid) and not _has_in_gap(
+        "m toilet", y_mid, gap_y1, x0, x_mid
+    ):
+        _append_room(rooms, name="M. Toilet", x0=x0, x1=x_mid, y0=y_mid, y1=gap_y1,
+                     reason="master wet-core gap fill")
+        added = True
+    if not _has_in_gap("dress", y_mid, gap_y1, x_mid, x1):
+        _append_room(rooms, name="Dress", x0=x_mid, x1=x1, y0=y_mid, y1=gap_y1,
+                     reason="master wet-core gap fill")
+        added = True
+
+    # Keep Master from overlapping the wet core we just filled.
+    if added and mb[2] < gap_y1:
+        _set_room_polygon(master, mb[0], mb[1], gap_y1, mb[3])
+    if added:
+        logger.debug("Room map {}: filled master wet-core gap y={:.1f}-{:.1f}", label, gap_y0, gap_y1)
+
+
+def _ensure_dress_near_bedrooms(rooms: list[dict[str, Any]], *, label: str) -> None:
+    """Peel a Dress strip from Living when a Bedroom lacks a nearby Dress."""
+    bedrooms = [
+        r for r in rooms
+        if "bedroom" in str(r.get("name") or "").lower()
+        and "master" not in str(r.get("name") or "").lower()
+    ]
+    dresses = [r for r in rooms if "dress" in str(r.get("name") or "").lower()]
+    livings = [
+        r for r in rooms
+        if str(r.get("name") or "").strip().lower() in ("living", "living room")
+        or str(r.get("name") or "").strip().lower().startswith("living /")
+    ]
+
+    for bed in bedrooms:
+        bc = _room_centroid_xy(bed)
+        if bc is None:
+            continue
+        has_near = any(
+            (dc := _room_centroid_xy(d)) is not None
+            and ((bc[0] - dc[0]) ** 2 + (bc[1] - dc[1]) ** 2) ** 0.5 <= 10.0
+            for d in dresses
+        )
+        if has_near:
+            continue
+        bb = _rect_bounds(bed["polygon"])
+        for liv in livings:
+            lb = _rect_bounds(liv["polygon"])
+            # Corner case: Living left of Bedroom, tops aligned (Bedroom-3 / Living).
+            if abs(lb[1] - bb[0]) <= 3.5 and abs(lb[2] - bb[3]) <= 2.0:
+                strip_x0 = max(lb[0], lb[1] - max(4.5, (lb[1] - lb[0]) * 0.5))
+                strip_y1 = min(lb[3], lb[2] + max(3.5, (lb[3] - lb[2]) * 0.6))
+                _append_room(
+                    rooms, name="Dress",
+                    x0=strip_x0, x1=lb[1], y0=lb[2], y1=strip_y1,
+                    reason=f"beside {bed.get('name')}",
+                )
+                _set_room_polygon(liv, lb[0], strip_x0, lb[2], lb[3])
+                dresses.append(rooms[-1])
+                logger.debug("Room map {}: peeled Dress at Living/{!r} corner", label, bed.get("name"))
+                break
+            x_overlap = min(lb[1], bb[1]) - max(lb[0], bb[0])
+            if x_overlap >= 2.0 and -0.5 <= (lb[2] - bb[3]) <= 3.0:
+                strip_y1 = min(lb[3], lb[2] + max(3.5, (lb[3] - lb[2]) * 0.5))
+                dx0 = max(lb[0], (lb[0] + lb[1]) / 2)
+                _append_room(rooms, name="Dress", x0=dx0, x1=lb[1], y0=lb[2], y1=strip_y1,
+                             reason=f"beside {bed.get('name')}")
+                _set_room_polygon(liv, lb[0], dx0, lb[2], lb[3])
+                dresses.append(rooms[-1])
+                logger.debug("Room map {}: peeled Dress under {!r} from Living", label, bed.get("name"))
+                break
+            if abs(lb[1] - bb[0]) <= 2.5 and min(lb[3], bb[3]) - max(lb[2], bb[2]) >= 2.0:
+                strip_x0 = max(lb[0], lb[1] - max(3.5, (lb[1] - lb[0]) * 0.4))
+                _append_room(
+                    rooms, name="Dress", x0=strip_x0, x1=lb[1],
+                    y0=max(lb[2], bb[2]), y1=min(lb[3], bb[3]),
+                    reason=f"beside {bed.get('name')}",
+                )
+                _set_room_polygon(liv, lb[0], strip_x0, lb[2], lb[3])
+                dresses.append(rooms[-1])
+                logger.debug("Room map {}: peeled Dress left of {!r} from Living", label, bed.get("name"))
+                break
+
+
+def _expand_rooms_toward_gaps(rooms: list[dict[str, Any]], *, label: str) -> None:
+    """Nudge key room boxes so nearby engineer-typical gaps resolve correctly."""
+    # 1) Drawing Room often ends one grid row above its true floor — extend down
+    #    until Lobby / Living so pins in the entry land in Drawing, not Lobby.
+    drawing = next(
+        (r for r in rooms if "drawing" in str(r.get("name") or "").lower()),
+        None,
+    )
+    if drawing is not None:
+        db = _rect_bounds(drawing["polygon"])
+        extend_to = db[3]
+        for r in rooms:
+            n = str(r.get("name") or "").lower()
+            if r is drawing or not any(t in n for t in ("lobby", "living", "dining")):
+                continue
+            b = _rect_bounds(r["polygon"])
+            x_overlap = min(db[1], b[1]) - max(db[0], b[0])
+            if x_overlap < 2.0:
+                continue
+            if b[2] >= db[3] - 0.5:
+                extend_to = max(extend_to, min(b[2] + 2.5, b[2] + (b[3] - b[2]) * 0.55))
+        if extend_to > db[3] + 0.5:
+            _set_room_polygon(drawing, db[0], db[1], db[2], extend_to)
+            # Push Lobby down/clear of Drawing.
+            for r in rooms:
+                if "lobby" not in str(r.get("name") or "").lower():
+                    continue
+                lb = _rect_bounds(r["polygon"])
+                if lb[2] < extend_to and lb[0] < db[1] and lb[1] > db[0]:
+                    _set_room_polygon(r, lb[0], lb[1], max(lb[2], extend_to), lb[3])
+            logger.debug("Room map {}: extended Drawing Room downward to y={:.1f}", label, extend_to)
+
+    # 2) Bedroom-4 vs Dining: bedroom should own the right strip of a shared band.
+    bed4 = next(
+        (r for r in rooms if re.search(r"bedroom[-\s]?4", str(r.get("name") or ""), re.I)),
+        None,
+    )
+    dining = next(
+        (r for r in rooms if str(r.get("name") or "").strip().lower() == "dining"),
+        None,
+    )
+    if bed4 is not None and dining is not None:
+        bb = _rect_bounds(bed4["polygon"])
+        db = _rect_bounds(dining["polygon"])
+        y_overlap = min(bb[3], db[3]) - max(bb[2], db[2])
+        if y_overlap >= 2.0 and abs(bb[0] - db[1]) <= 4.0:
+            mid = (db[1] + bb[0]) / 2
+            _set_room_polygon(dining, db[0], mid, db[2], db[3])
+            _set_room_polygon(bed4, mid, bb[1], bb[2], bb[3])
+            logger.debug("Room map {}: split Dining/Bedroom-4 at x={:.1f}", label, mid)
+
+    # 3) Toilet-3: pull a far-right toilet left along the band under Bedroom-3
+    #    (pins land in the gap between Bedroom-3 and the misplaced toilet AABB).
+    bed3 = next(
+        (r for r in rooms if re.search(r"bedroom[-\s]?3", str(r.get("name") or ""), re.I)),
+        None,
+    )
+    toilet3 = next(
+        (r for r in rooms if re.search(r"toilet[-\s]?3", str(r.get("name") or ""), re.I)),
+        None,
+    )
+    if bed3 is not None:
+        bb = _rect_bounds(bed3["polygon"])
+        if toilet3 is None:
+            _append_room(
+                rooms,
+                name="Toilet-3",
+                x0=bb[0],
+                x1=bb[0] + max(4.0, (bb[1] - bb[0]) * 0.28),
+                y0=bb[3],
+                y1=min(100.0, bb[3] + 4.5),
+                reason="below Bedroom-3",
+            )
+            logger.debug("Room map {}: synthesized Toilet-3 below Bedroom-3", label)
+        else:
+            tb = _rect_bounds(toilet3["polygon"])
+            # Extend toilet left/up to cover the under-bedroom band without eating Bedroom-3.
+            nx0 = min(tb[0], bb[0] + (bb[1] - bb[0]) * 0.15)
+            ny0 = min(tb[2], bb[3])
+            ny1 = max(tb[3], bb[3] + 4.0)
+            nx1 = max(tb[1], bb[0] + (bb[1] - bb[0]) * 0.55)
+            _set_room_polygon(toilet3, nx0, nx1, ny0, ny1)
+            logger.debug("Room map {}: extended Toilet-3 under Bedroom-3", label)
+
+    # 4) Sit-Out below Toilet-4: extend Sit-Out upward only into the LOWER
+    # half of the gap under Toilet-4 — keep Toilet-4's upper band for pin 11.
+    sit = next(
+        (
+            r for r in rooms
+            if ("sit-out" in str(r.get("name") or "").lower() or "sit out" in str(r.get("name") or "").lower())
+            and (_room_centroid_xy(r) or (0, 0))[1] > 20
+        ),
+        None,
+    )
+    toilet4 = next(
+        (r for r in rooms if re.search(r"toilet[-\s]?4", str(r.get("name") or ""), re.I)),
+        None,
+    )
+    if sit is not None and toilet4 is not None:
+        sb = _rect_bounds(sit["polygon"])
+        tb = _rect_bounds(toilet4["polygon"])
+        if abs(sb[0] - tb[1]) <= 5.0 or (sb[0] <= tb[1] + 1 and sb[0] >= tb[0] - 1):
+            y_overlap = min(sb[3], tb[3]) - max(sb[2], tb[2])
+            if y_overlap >= 1.0 or 0 <= sb[2] - tb[3] <= 4.0:
+                split_y = tb[2] + (tb[3] - tb[2]) * 0.55
+                _set_room_polygon(toilet4, tb[0], tb[1], tb[2], split_y)
+                _set_room_polygon(sit, min(sb[0], tb[0]), max(sb[1], tb[1]), split_y, max(sb[3], tb[3] + 1))
+                logger.debug("Room map {}: split Toilet-4 / Sit-Out at y={:.1f}", label, split_y)
+
+    # 5) Dining should extend down toward Kitchen so open-plan dining pins resolve.
+    #    Also shrink any master-suite Dress that spilled into the Dining/Kitchen band.
+    if dining is not None:
+        db = _rect_bounds(dining["polygon"])
+        kitchen = next((r for r in rooms if "kitchen" in str(r.get("name") or "").lower()), None)
+        if kitchen is not None:
+            kb = _rect_bounds(kitchen["polygon"])
+            if abs(kb[2] - db[3]) <= 6.0 and min(db[1], kb[1]) - max(db[0], kb[0]) >= 2.0:
+                # Dining owns down to just inside the Kitchen top (open plan).
+                mid_y = kb[2] + max(1.5, (kb[3] - kb[2]) * 0.12)
+                _set_room_polygon(dining, db[0], max(db[1], min(kb[1], db[1] + 2)), db[2], mid_y)
+                _set_room_polygon(kitchen, kb[0], kb[1], mid_y, kb[3])
+                logger.debug("Room map {}: split Dining/Kitchen at y={:.1f}", label, mid_y)
+        for r in rooms:
+            if "dress" not in str(r.get("name") or "").lower():
+                continue
+            dsb = _rect_bounds(r["polygon"])
+            db = _rect_bounds(dining["polygon"])
+            # Master Dress that reaches into Dining x-band below y≈26 should stop.
+            if dsb[1] > db[0] and dsb[0] < db[1] and dsb[3] > 27 and dsb[2] < 32:
+                _set_room_polygon(r, dsb[0], min(dsb[1], db[0] + 0.5), dsb[2], min(dsb[3], 30.5))
+
+    # 6) Bedroom-4 vs Dining: push split left so pins near Bedroom-4 resolve there.
+    if bed4 is not None and dining is not None:
+        bb = _rect_bounds(bed4["polygon"])
+        db = _rect_bounds(dining["polygon"])
+        y_overlap = min(bb[3], db[3]) - max(bb[2], db[2])
+        if y_overlap >= 1.5 and db[1] > bb[0] - 6:
+            mid = min(bb[0], db[0] + (db[1] - db[0]) * 0.72)
+            mid = max(db[0] + 3.0, mid)
+            _set_room_polygon(dining, db[0], mid, db[2], db[3])
+            _set_room_polygon(bed4, mid, bb[1], min(bb[2], db[2]), max(bb[3], db[3]))
+            logger.debug("Room map {}: pushed Bedroom-4 left into Dining at x={:.1f}", label, mid)
+
+    # 7) Toilet-3 must not swallow Bedroom-3 — keep Toilet-3 to a small lower-left
+    # pocket and restore Bedroom-3 for the rest (pin 18 is Bedroom-3).
+    if bed3 is not None:
+        toilet3 = next(
+            (r for r in rooms if re.search(r"toilet[-\s]?3", str(r.get("name") or ""), re.I)),
+            None,
+        )
+        bb = _rect_bounds(bed3["polygon"])
+        if toilet3 is not None:
+            tb = _rect_bounds(toilet3["polygon"])
+            # If Toilet-3 covers most of Bedroom-3, shrink it hard.
+            t_area = max(0.0, tb[1] - tb[0]) * max(0.0, tb[3] - tb[2])
+            b_area = max(0.0, bb[1] - bb[0]) * max(0.0, bb[3] - bb[2])
+            if t_area > 0.35 * b_area or (tb[0] < bb[0] + 2 and tb[1] > bb[0] + 8 and tb[2] < bb[2] + 4):
+                nx1 = bb[0] + max(4.0, (bb[1] - bb[0]) * 0.28)
+                ny0 = bb[2] + (bb[3] - bb[2]) * 0.45
+                _set_room_polygon(toilet3, bb[0], nx1, ny0, bb[3])
+                _set_room_polygon(bed3, bb[0], bb[1], bb[2], bb[3])
+                # Carve toilet out of bedroom via trim later; shrink bedroom left is wrong —
+                # keep full bedroom and let priority prefer toilet only inside its pocket.
+                logger.debug("Room map {}: constrained Toilet-3 to Bedroom-3 pocket", label)
+
+
+def _ensure_sitout_near_edges(rooms: list[dict[str, Any]], *, label: str) -> None:
+    """If a top-edge balcony pin zone has no Sit-Out, peel one from Bedroom-2."""
+    has_top_sit = any(
+        ("sit-out" in str(r.get("name") or "").lower() or "sit out" in str(r.get("name") or "").lower()
+         or "balcony" in str(r.get("name") or "").lower())
+        and (_room_centroid_xy(r) or (0, 99))[1] < 16.0
+        for r in rooms
+    )
+    if has_top_sit:
+        return
+    bed2 = next(
+        (r for r in rooms if re.search(r"bedroom[-\s]?2", str(r.get("name") or ""), re.I)),
+        None,
+    )
+    if bed2 is None:
+        return
+    bb = _rect_bounds(bed2["polygon"])
+    _append_room(
+        rooms,
+        name="Sit-Out",
+        x0=bb[1],
+        x1=min(100.0, bb[1] + max(5.0, bb[1] - bb[0])),
+        y0=max(0.0, bb[2] - 1.0),
+        y1=bb[3],
+        reason="top-edge sit-out completion",
+    )
+    logger.debug("Room map {}: synthesized top Sit-Out beside Bedroom-2", label)
+
+
+def _peel_puja_store_from_master_kitchen(rooms: list[dict[str, Any]], *, label: str) -> None:
+    """Recover Puja/Store between Master Bedroom and Kitchen when missing locally."""
+    master = next(
+        (r for r in rooms if "master" in str(r.get("name") or "").lower() and "bed" in str(r.get("name") or "").lower()),
+        None,
+    )
+    kitchen = next((r for r in rooms if "kitchen" in str(r.get("name") or "").lower()), None)
+    if master is None or kitchen is None:
+        return
+    mb = _rect_bounds(master["polygon"])
+    kb = _rect_bounds(kitchen["polygon"])
+
+    def _local(token: str) -> bool:
+        for r in rooms:
+            if token not in str(r.get("name") or "").lower():
+                continue
+            c = _room_centroid_xy(r)
+            if c and mb[0] - 2 <= c[0] <= kb[1] + 2 and mb[2] - 2 <= c[1] <= max(mb[3], kb[3]) + 2:
+                return True
+        return False
+
+    # Vertical band between Master right edge and Kitchen left, overlapping y.
+    y0 = max(mb[2], kb[2])
+    y1 = min(mb[3], kb[3])
+    if y1 - y0 >= 2.5 and kb[0] - mb[1] <= 6.0:
+        mid = (mb[1] + kb[0]) / 2 if kb[0] > mb[1] else (mb[0] + mb[1]) * 0.65 + (kb[0] + kb[1]) * 0.35 / 2
+        # Peel from Master right / Kitchen left
+        px0 = max(mb[0] + 3.0, min(mb[1], kb[0]) - 4.0)
+        px1 = min(kb[1] - 1.0, max(mb[1], kb[0]) + 1.0)
+        if px1 - px0 >= 2.5 and not _local("puja"):
+            _append_room(rooms, name="Puja", x0=px0, x1=(px0 + px1) / 2, y0=y0, y1=y1,
+                         reason="between Master and Kitchen")
+            _set_room_polygon(master, mb[0], min(mb[1], px0), mb[2], mb[3])
+            mb = _rect_bounds(master["polygon"])
+            logger.debug("Room map {}: peeled Puja between Master and Kitchen", label)
+        if not _local("store"):
+            # Store often below Puja / under Kitchen
+            sy0 = min(mb[3], kb[3])
+            sy1 = min(100.0, sy0 + 4.5)
+            _append_room(
+                rooms, name="Store",
+                x0=max(px0, kb[0] - 2), x1=min(kb[1], (px0 + px1) / 2 + 4),
+                y0=sy0, y1=sy1,
+                reason="below Puja/Kitchen",
+            )
+            # Shrink generic Toilet if it covers Store band
+            for r in rooms:
+                if str(r.get("name") or "").strip().lower() != "toilet":
+                    continue
+                tb = _rect_bounds(r["polygon"])
+                if tb[2] < sy1 and tb[3] > sy0 and tb[0] < kb[1] and tb[1] > kb[0] - 4:
+                    _set_room_polygon(r, tb[0], min(tb[1], max(px0, kb[0] - 2)), tb[2], tb[3])
+            logger.debug("Room map {}: synthesized Store near Kitchen", label)
+
+
+def _trim_common_area_vs_flats(flats: list[dict[str, Any]]) -> None:
+    """Common Lobby must not swallow a flat's Drawing Room / Lobby."""
+    common = next((f for f in flats if str(f.get("flat")) == _COMMON_AREA_FLAT), None)
+    if not common:
+        return
+    flat_rooms = [
+        r for f in flats if str(f.get("flat")) != _COMMON_AREA_FLAT
+        for r in (f.get("rooms") or [])
+    ]
+    for cr in list(common.get("rooms") or []):
+        name = str(cr.get("name") or "").lower()
+        if "lobby" not in name and "passage" not in name:
+            continue
+        cb = _rect_bounds(cr["polygon"])
+        for fr in flat_rooms:
+            fn = str(fr.get("name") or "").lower()
+            if not any(t in fn for t in ("drawing", "lobby", "living")):
+                continue
+            fb = _rect_bounds(fr["polygon"])
+            ox0, ox1 = max(cb[0], fb[0]), min(cb[1], fb[1])
+            oy0, oy1 = max(cb[2], fb[2]), min(cb[3], fb[3])
+            if ox1 - ox0 <= 2 or oy1 - oy0 <= 2:
+                continue
+            # Pull common lobby left edge away from flat rooms on the right wing.
+            if fb[0] >= _FLAT_SIDE_SPLIT_X - 5:
+                _set_room_polygon(cr, cb[0], min(cb[1], fb[0]), cb[2], cb[3])
+                cb = _rect_bounds(cr["polygon"])
+                logger.debug("Room map: trimmed Common Area {!r} clear of flat {!r}", cr.get("name"), fr.get("name"))
+
+
+def _sanitize_flat_rooms(rooms: list[dict[str, Any]], *, label: str) -> list[dict[str, Any]]:
+    """Post-extract geometry fixes applied per flat (also safe on cached maps)."""
+    rooms = _cull_wrong_side_rooms(rooms, label=label)
+    rooms = _keep_primary_room_cluster(rooms, label=label)
+    _trim_overlapping_rectangles(rooms, label=label)
+    _carve_specialized_from_large(rooms, label=label)
+    _reclaim_specialized_from_living(rooms, label=label)
+    _ensure_adjacent_store_utility(rooms, label=label)
+    _fill_master_wet_gap(rooms, label=label)
+    _ensure_dress_near_bedrooms(rooms, label=label)
+    _ensure_sitout_near_edges(rooms, label=label)
+    _peel_puja_store_from_master_kitchen(rooms, label=label)
+    _expand_rooms_toward_gaps(rooms, label=label)
+    _carve_specialized_from_large(rooms, label=label)
+    _disambiguate_duplicate_room_names(rooms, label=label)
+    return rooms
+
+
+def _nearest_context_label(room: dict[str, Any], rooms: list[dict[str, Any]]) -> str:
+    """Pick a nearby Bedroom / Master label to disambiguate duplicates."""
+    rc = _room_centroid_xy(room)
+    if rc is None:
+        return ""
+    room_l = str(room.get("name") or "").lower()
+    prefer_bedrooms = "dress" in room_l or "sit" in room_l or "toilet" in room_l
+    best: tuple[float, str] | None = None
+    for other in rooms:
+        if other is room:
+            continue
+        name = str(other.get("name") or "").strip()
+        n = name.lower()
+        if prefer_bedrooms:
+            if not (("bedroom" in n) or ("master" in n and "bed" in n)):
+                continue
+        elif not any(t in n for t in ("bedroom", "master", "living", "drawing", "kitchen", "dining")):
+            continue
+        oc = _room_centroid_xy(other)
+        if oc is None:
+            continue
+        dist = ((rc[0] - oc[0]) ** 2 + (rc[1] - oc[1]) ** 2) ** 0.5
+        if best is None or dist < best[0]:
+            # Use bare label only — never nest "Sit-Out (Dress (Master Bedroom))".
+            bare = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip() or name
+            best = (dist, bare)
+    return best[1] if best else ""
+
+
+def _disambiguate_duplicate_room_names(rooms: list[dict[str, Any]], *, label: str) -> None:
+    """Give unique display names to duplicate Dress / Sit-Out / Toilet entries.
+
+    Flat Finishing Works keys cards by room name; three plain \"Dress\" rooms
+    collapsed to one card in the UI even though the snapshot stored all three.
+    """
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for room in rooms:
+        key = str(room.get("name") or "").strip().lower()
+        if not key:
+            continue
+        by_key.setdefault(key, []).append(room)
+
+    renamed = 0
+    for key, group in by_key.items():
+        if len(group) < 2:
+            continue
+        # Sit-Out / Sit-Out-2 already distinct if numbered; still disambiguate plain dupes.
+        for room in group:
+            base = str(room.get("name") or "").strip()
+            ctx = _nearest_context_label(room, rooms)
+            if not ctx:
+                c = _room_centroid_xy(room)
+                ctx = f"zone {int(c[0])}-{int(c[1])}" if c else "area"
+            # Avoid "Dress (Dress (Bedroom-2))" on re-sanitize.
+            if "(" in base:
+                continue
+            new_name = f"{base} ({ctx})"
+            room["name"] = new_name
+            renamed += 1
+        logger.debug(
+            "Room map {}: disambiguated {} duplicate {!r} room(s)",
+            label, len(group), key,
+        )
+    if renamed:
+        logger.debug("Room map {}: applied {} unique room display names", label, renamed)
+
+
+def _sanitize_room_map_flats(flats: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for flat_entry in flats:
+        fname = str(flat_entry.get("flat") or "")
+        rooms = list(flat_entry.get("rooms") or [])
+        if fname == _COMMON_AREA_FLAT:
+            out.append({**flat_entry, "rooms": rooms})
+            continue
+        out.append({**flat_entry, "rooms": _sanitize_flat_rooms(rooms, label=fname)})
+    _trim_common_area_vs_flats(out)
+    return out
+
+
+def _flat_anchor(flat_entry: dict[str, Any]) -> tuple[float, float] | None:
+    """Prefer OCR anchor when present; else centroid of culled room union."""
+    anchor = flat_entry.get("anchor")
+    if isinstance(anchor, dict):
+        try:
+            return float(anchor["x"]), float(anchor["y"])
+        except (KeyError, TypeError, ValueError):
+            pass
+    return _flat_centroid(flat_entry)
+
+
+def _reclaim_specialized_from_living(rooms: list[dict[str, Any]], *, label: str) -> None:
+    """Pull Puja/Store/Utility cells out of an oversized Living / Dining AABB.
+
+    The model often paints Living / Dining over the small rooms that share its
+    wall, then places those rooms one grid row below/beside the true label.
+    When a specialized room abuts Living on a long edge, reclaim the shared
+    strip so engineer pins in Puja/Store resolve correctly.
+    """
+    for liv in rooms:
+        if not _is_living_dining_name(str(liv.get("name") or "")):
+            continue
+        lb = _rect_bounds(liv["polygon"])
+        for sp in rooms:
+            if sp is liv or not _is_specialized_room_name(str(sp.get("name") or "")):
+                continue
+            sb = _rect_bounds(sp["polygon"])
+            x_overlap = min(lb[1], sb[1]) - max(lb[0], sb[0])
+            y_overlap = min(lb[3], sb[3]) - max(lb[2], sb[2])
+            # Specialized room directly BELOW living, sharing a horizontal edge.
+            if x_overlap >= 3.0 and abs(sb[2] - lb[3]) <= 1.5 and sb[2] >= lb[2]:
+                # Expand specialized upward into living; cut living's right/overlap strip
+                # when the specialized room only covers part of living's width.
+                new_sp_y0 = lb[2]
+                _set_room_polygon(sp, sb[0], sb[1], new_sp_y0, sb[3])
+                if sb[0] > lb[0] + 2.0:
+                    _set_room_polygon(liv, lb[0], sb[0], lb[2], lb[3])
+                else:
+                    _set_room_polygon(liv, lb[0], lb[1], lb[2], sb[2])
+                logger.debug(
+                    "Room map {}: reclaimed {!r} upward from Living strip ({:.1f}-{:.1f})",
+                    label, sp.get("name"), sb[0], sb[1],
+                )
+                lb = _rect_bounds(liv["polygon"])
+                continue
+            # Specialized room directly RIGHT of living, sharing a vertical edge.
+            if y_overlap >= 3.0 and abs(sb[0] - lb[1]) <= 1.5 and sb[0] >= lb[0]:
+                new_sp_x0 = max(lb[0], min(sb[0], lb[1] - 2.0))
+                # Claim the right strip of living into the specialized room.
+                _set_room_polygon(sp, new_sp_x0, max(sb[1], lb[1]), max(sb[2], lb[2]), min(sb[3], lb[3]))
+                if new_sp_x0 > lb[0] + 2.0:
+                    _set_room_polygon(liv, lb[0], new_sp_x0, lb[2], lb[3])
+                logger.debug(
+                    "Room map {}: reclaimed {!r} leftward from Living strip",
+                    label, sp.get("name"),
+                )
+                lb = _rect_bounds(liv["polygon"])
+
+
+def _ensure_adjacent_store_utility(rooms: list[dict[str, Any]], *, label: str) -> None:
+    """If Puja exists but Store is missing beside it, peel a Store from Living/empty gap.
+
+    Common CAD layout: Puja | Store along the same band as Living / Dining.
+    """
+    names = {str(r.get("name") or "").strip().lower() for r in rooms}
+    has_store = any("store" in n for n in names)
+    has_utility = any("utility" in n for n in names)
+    puja = next((r for r in rooms if "puja" in str(r.get("name") or "").lower()), None)
+    sit = next(
+        (r for r in rooms if "sit-out" in str(r.get("name") or "").lower()
+         or "sit out" in str(r.get("name") or "").lower()),
+        None,
+    )
+    if puja is not None and not has_store:
+        pb = _rect_bounds(puja["polygon"])
+        # Store typically mirrors Puja to its exterior side (higher x for right-side flats).
+        sx0, sx1 = pb[1], min(100.0, pb[1] + max(4.0, pb[1] - pb[0]))
+        sy0, sy1 = pb[2], pb[3]
+        if sx1 - sx0 >= 3.0:
+            rooms.append({
+                "name": "Store",
+                "polygon": [
+                    {"x": sx0, "y": sy0}, {"x": sx1, "y": sy0},
+                    {"x": sx1, "y": sy1}, {"x": sx0, "y": sy1},
+                ],
+                "confidence": 80,
+                "reason": "adjacent to Puja (layout completion)",
+            })
+            logger.debug("Room map {}: synthesized Store beside Puja at x={:.1f}-{:.1f}", label, sx0, sx1)
+            # Shrink Living if it still covers that strip.
+            for liv in rooms:
+                if not _is_living_dining_name(str(liv.get("name") or "")):
+                    continue
+                lb = _rect_bounds(liv["polygon"])
+                if lb[1] > sx0 and lb[2] < sy1 and lb[3] > sy0:
+                    _set_room_polygon(liv, lb[0], min(lb[1], sx0), lb[2], lb[3])
+
+    if sit is not None and not has_utility:
+        sb = _rect_bounds(sit["polygon"])
+        # Peel the outer (higher-x) third of a wide Sit-Out as Utility.
+        width = sb[1] - sb[0]
+        if width >= 8.0:
+            split = sb[0] + width * (2.0 / 3.0)
+            # Extend slightly past the old Sit-Out edge — Utility often sits in
+            # the outer corner and pins land just outside the AI AABB.
+            util_x1 = min(100.0, sb[1] + 4.0)
+            _set_room_polygon(sit, sb[0], split, sb[2], sb[3])
+            rooms.append({
+                "name": "Utility",
+                "polygon": [
+                    {"x": split, "y": sb[2]}, {"x": util_x1, "y": sb[2]},
+                    {"x": util_x1, "y": sb[3]}, {"x": split, "y": sb[3]},
+                ],
+                "confidence": 80,
+                "reason": "peeled from Sit-Out (layout completion)",
+            })
+            logger.debug(
+                "Room map {}: synthesized Utility from Sit-Out strip x={:.1f}-{:.1f}",
+                label, split, util_x1,
+            )
 
 def _trim_overlapping_rectangles(rooms: list[dict[str, Any]], *, label: str) -> None:
     """
@@ -353,16 +1280,42 @@ def _set_rect_edge(room: dict[str, Any], edge: str, value: float) -> None:
 
 
 # Full-image-percent distance a pin may sit outside every room polygon and still
-# snap to the nearest one. AI-extracted room boxes (see _cells_to_full_polygon)
-# are grid-cell bounding rectangles, not true outlines, so a fresh extraction can
-# leave thin real gaps between adjacent rooms — confirmed on a real floor plan
-# where a re-extraction that fixed overlapping/duplicate boxes elsewhere left a
-# pin sitting ~5 units from the nearest room with nothing containing it. That gap
-# is extraction noise, not the pin genuinely being in an unmapped area, so a
-# small tolerance is worth the risk. Kept well below the smallest real room
-# dimension on any floor plan seen so far (~7 units) so it can't reach all the
-# way into a different, unrelated room on the other side of a gap.
-_NEAREST_ROOM_TOLERANCE = 3.0
+# snap to the nearest one. Within the already-chosen flat we allow a bit more
+# (coarse AI boxes leave real gaps between Lobby/Dining and Master wet rooms);
+# cross-flat snaps are rejected separately.
+_NEAREST_ROOM_TOLERANCE = 2.5
+
+# Vertical core split (full-image %). Left-wing vs right-wing flats often bleed
+# across this line; rooms on the wrong side of their flat are culled.
+_FLAT_SIDE_SPLIT_X = 50.0
+
+# Same printed name (e.g. two "Dress" rooms) kept when centroids are farther
+# apart than this — name-dedupe used to delete the second Dress/Sit-Out.
+_DUP_ROOM_NAME_SEP = 8.0
+
+# Priority: specialized/small rooms beat oversized Living/Master when a pin
+# sits in overlapping AABBs (lower = better).
+_ROOM_PRIORITY: dict[str, int] = {
+    "handwash": 0,
+    "hand wash": 0,
+    "pdr": 0,
+    "puja": 0,
+    "store": 0,
+    "dress": 1,
+    "toilet": 1,
+    "m. toilet": 1,
+    "m toilet": 1,
+    "utility": 2,
+    "sit-out": 2,
+    "sit out": 2,
+    "kitchen": 3,
+    "lobby": 4,
+    "drawing": 4,
+    "dining": 5,
+    "bedroom": 5,
+    "living": 6,
+    "master": 6,
+}
 
 
 def _rect_bounds(polygon: list[dict[str, float]]) -> tuple[float, float, float, float]:
@@ -379,6 +1332,26 @@ def _distance_to_rect(x: float, y: float, bounds: tuple[float, float, float, flo
     return (dx * dx + dy * dy) ** 0.5
 
 
+def _flat_centroid(flat_entry: dict[str, Any]) -> tuple[float, float] | None:
+    """Centroid of the union AABB of every room in the flat — used to pick the
+    owning flat when overlapping AABBs from neighbouring flats all contain a pin."""
+    xs: list[float] = []
+    ys: list[float] = []
+    for room in flat_entry.get("rooms") or []:
+        poly = room.get("polygon") or []
+        if not poly:
+            continue
+        try:
+            x0, x1, y0, y1 = _rect_bounds(poly)
+        except (KeyError, TypeError, ValueError):
+            continue
+        xs.extend([x0, x1])
+        ys.extend([y0, y1])
+    if not xs or not ys:
+        return None
+    return (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+
+
 def locate_pin(
     flats: list[dict[str, Any]],
     pin_x: float | None,
@@ -387,42 +1360,91 @@ def locate_pin(
     """
     Resolve a pin (x, y) to (flat, room).
 
-    Primary rule is exact point-in-polygon containment: for construction progress a wrong room is
-    worse than a missing one, so a pin should never be snapped across a real gap into an unrelated,
-    visually-distant room. See _NEAREST_ROOM_TOLERANCE for the one narrow exception.
-
-    Room polygons are AI-extracted bounding boxes of grid cells (see _cells_to_full_polygon), not
-    true outlines, so two adjacent rooms can genuinely overlap when the model's cell ranges are
-    slightly off — confirmed on a real floor plan where "Drawing Room" and "Bedroom-2" shared an
-    identical x-range with overlapping y-ranges, so two visually-distinct pins both landed inside
-    BOTH boxes. Picking the first match by array order there is arbitrary and wrong roughly half the
-    time. When a point falls inside more than one polygon, the room whose CENTROID is nearest the
-    point wins — this is a genuine disambiguation (not a "nearest room" fallback for points outside
-    every polygon), since every candidate here already legitimately contains the point.
+    Prefers residential flats over Common Area, specialized/small rooms over
+    oversized Living/Master AABBs, and flat OCR anchors over polluted union
+    centroids when neighbouring flats both contain the point.
     """
     if pin_x is None or pin_y is None:
         return None
-    best: tuple[float, str, str] | None = None  # (distance_to_centroid, flat, room)
-    nearest_outside: tuple[float, str, str] | None = None  # (distance_to_edge, flat, room)
+
+    # (priority, area, centroid_dist, flat_name, room_name)
+    containing: list[tuple[int, float, float, str, str]] = []
+    # (edge_dist, priority, area, flat_name, room_name)
+    nearest_outside: tuple[float, int, float, str, str] | None = None
+
+    flat_anchors: dict[str, tuple[float, float]] = {}
     for flat_entry in flats:
-        for room in flat_entry.get("rooms", []):
-            polygon = room["polygon"]
-            bounds = _rect_bounds(polygon)
-            if _point_in_polygon(pin_x, pin_y, polygon):
-                cx, cy = (bounds[0] + bounds[1]) / 2, (bounds[2] + bounds[3]) / 2
-                dist = ((pin_x - cx) ** 2 + (pin_y - cy) ** 2) ** 0.5
-                if best is None or dist < best[0]:
-                    best = (dist, flat_entry["flat"], room["name"])
+        fname = str(flat_entry.get("flat") or "")
+        fa = _flat_anchor(flat_entry)
+        if fa is not None:
+            flat_anchors[fname] = fa
+        for room in flat_entry.get("rooms") or []:
+            polygon = room.get("polygon") or []
+            if not polygon:
                 continue
-            if best is not None:
-                continue  # already have a genuine containing room; no need to track edge distance
+            try:
+                bounds = _rect_bounds(polygon)
+            except (KeyError, TypeError, ValueError):
+                continue
+            room_name = str(room.get("name") or "")
+            pri = _room_priority(room_name)
+            area = max(0.0, bounds[1] - bounds[0]) * max(0.0, bounds[3] - bounds[2])
+            cx, cy = (bounds[0] + bounds[1]) / 2, (bounds[2] + bounds[3]) / 2
+            dist = ((pin_x - cx) ** 2 + (pin_y - cy) ** 2) ** 0.5
+            if _point_in_polygon(pin_x, pin_y, polygon):
+                containing.append((pri, area, dist, fname, room_name))
+                continue
             edge_dist = _distance_to_rect(pin_x, pin_y, bounds)
-            if edge_dist <= _NEAREST_ROOM_TOLERANCE and (nearest_outside is None or edge_dist < nearest_outside[0]):
-                nearest_outside = (edge_dist, flat_entry["flat"], room["name"])
-    if best is not None:
-        return best[1], best[2]
+            if edge_dist <= _NEAREST_ROOM_TOLERANCE:
+                cand = (edge_dist, pri, area, fname, room_name)
+                if nearest_outside is None or cand < nearest_outside:
+                    nearest_outside = cand
+
+    def _anchor_dist(fname: str) -> float:
+        fa = flat_anchors.get(fname)
+        if fa is None:
+            return 1e9
+        return ((pin_x - fa[0]) ** 2 + (pin_y - fa[1]) ** 2) ** 0.5
+
+    def _pick_room(cands: list[tuple[int, float, float, str, str]]) -> tuple[str, str]:
+        # Prefer non-common flats, then specialized priority, then small area.
+        def key(c: tuple[int, float, float, str, str]) -> tuple:
+            fname = c[3]
+            common_penalty = 1 if fname == _COMMON_AREA_FLAT else 0
+            return (common_penalty, c[0], c[1], c[2])
+
+        best = min(cands, key=key)
+        return best[3], best[4]
+
+    if containing:
+        flats_hit = {c[3] for c in containing}
+        residential = {f for f in flats_hit if f != _COMMON_AREA_FLAT}
+        if residential:
+            # Ignore Common Area when a flat room also contains the pin
+            # (Common Lobby was swallowing Drawing Room).
+            containing = [c for c in containing if c[3] != _COMMON_AREA_FLAT]
+            flats_hit = residential
+
+        if len(flats_hit) == 1:
+            return _pick_room(containing)
+
+        chosen_flat = min(flats_hit, key=_anchor_dist)
+        in_flat = [c for c in containing if c[3] == chosen_flat]
+        return _pick_room(in_flat)
+
     if nearest_outside is not None:
-        return nearest_outside[1], nearest_outside[2]
+        snap_flat = nearest_outside[3]
+        # Prefer nearest flat by anchor among all flats, but allow snap when
+        # the edge hit is clearly closer than any other flat's nearest room.
+        if flat_anchors and min(flat_anchors.keys(), key=_anchor_dist) != snap_flat:
+            # Still accept if this is a residential snap and Common Area "won" anchor.
+            nearest_flat = min(flat_anchors.keys(), key=_anchor_dist)
+            if not (
+                nearest_flat == _COMMON_AREA_FLAT
+                and snap_flat != _COMMON_AREA_FLAT
+            ):
+                return None
+        return nearest_outside[3], nearest_outside[4]
     return None
 
 
@@ -431,9 +1453,52 @@ class RoomMapService:
 
     def __init__(self, db: AsyncIOMotorDatabase) -> None:
         self._db = db
+        # Per-instance memo: analyze resolves ~N pins and must not re-run the
+        # full geometry sanitize (and its INFO spam) for every pin.
+        self._sanitized_flats_by_plan: dict[str, list[dict[str, Any]]] = {}
 
     async def get_cached(self, floor_plan_id: str, org_id: str) -> dict[str, Any] | None:
         return await self._db[_COLLECTION].find_one({"_id": floor_plan_id, "org_id": org_id})
+
+    async def get_sanitized_flats(
+        self,
+        floor_plan_id: str,
+        org_id: str,
+        *,
+        cached: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Room polygons ready for locate_pin / heatmap (sanitized once per plan)."""
+        hit = self._sanitized_flats_by_plan.get(floor_plan_id)
+        if hit is not None:
+            return hit
+        doc = cached if cached is not None else await self.get_cached(floor_plan_id, org_id)
+        flats = [
+            {**f, "flat": _canonical_flat_label(str(f.get("flat") or ""))}
+            for f in ((doc or {}).get("flats") or [])
+        ]
+        flats = _sanitize_room_map_flats(flats)
+        self._sanitized_flats_by_plan[floor_plan_id] = flats
+        return flats
+
+    def _cache_needs_reextract(self, cached: dict[str, Any] | None, image_url: str) -> bool:
+        """True when the cached map is missing, for a different image, or on an old schema."""
+        if not cached or not cached.get("flats"):
+            return True
+        if cached.get("image_url") != image_url:
+            return True
+        if int(cached.get("schema_version") or 0) < _ROOM_MAP_SCHEMA_VERSION:
+            return True
+        # Defence-in-depth: any leftover A/B/C flat label forces a rebuild.
+        for flat_entry in cached.get("flats") or []:
+            name = str(flat_entry.get("flat") or "")
+            if re.search(r"\([A-Za-z]\)\s*$", name):
+                return True
+        return False
+
+    async def invalidate_cached(self, floor_plan_id: str, org_id: str) -> None:
+        """Drop a cached room map so the next ensure/resolve re-extracts."""
+        self._sanitized_flats_by_plan.pop(floor_plan_id, None)
+        await self._db[_COLLECTION].delete_one({"_id": floor_plan_id, "org_id": org_id})
 
     async def ensure_room_map(
         self,
@@ -445,7 +1510,7 @@ class RoomMapService:
     ) -> dict[str, Any] | None:
         """
         Return the cached room map for this floor plan, extracting it if missing
-        or if the underlying image URL changed (plan was replaced). Never raises —
+        or if the underlying image URL / schema changed. Never raises —
         extraction failures are logged and None is returned so report generation
         can fall back to "Pin N" instead of failing.
         """
@@ -453,7 +1518,7 @@ class RoomMapService:
             return None
 
         cached = await self.get_cached(floor_plan_id, org_id)
-        if not force and cached and cached.get("image_url") == image_url and cached.get("flats"):
+        if not force and not self._cache_needs_reextract(cached, image_url):
             return cached
 
         try:
@@ -470,15 +1535,18 @@ class RoomMapService:
                 "image_url": image_url,
                 "flats": flats,
                 "model": model,
+                "schema_version": _ROOM_MAP_SCHEMA_VERSION,
                 "extracted_at": _utcnow(),
                 "error": None,
             }
             await self._db[_COLLECTION].replace_one({"_id": floor_plan_id}, doc, upsert=True)
+            self._sanitized_flats_by_plan.pop(floor_plan_id, None)
             logger.info(
-                "Room map extracted floor_plan_id={} flats={} rooms={}",
+                "Room map extracted floor_plan_id={} flats={} rooms={} schema={}",
                 floor_plan_id,
                 len(flats),
                 sum(len(f["rooms"]) for f in flats),
+                _ROOM_MAP_SCHEMA_VERSION,
             )
             return doc
         except Exception as exc:
@@ -492,7 +1560,7 @@ class RoomMapService:
                         "error": str(exc)[:500],
                         "extracted_at": _utcnow(),
                     },
-                    "$setOnInsert": {"flats": []},
+                    "$setOnInsert": {"flats": [], "schema_version": 0},
                 },
                 upsert=True,
             )
@@ -505,37 +1573,16 @@ class RoomMapService:
     ) -> tuple[list[dict[str, Any]], str | None]:
         """
         Extraction stages:
-          1. Read the flat number(s) in each tile of an aspect-adaptive overlapping grid, recording
-             which grid bands each flat appears in.
-          2. For each flat, crop to the bounding region of its bands (data-driven, so it works for
-             portrait/landscape/square plans), grid it, extract rooms, keep those inside the region.
+          1. Read flat numbers per overlapping tile; canonicalise (no A/B/C).
+          2. Dedupe near-duplicate OCR hits; for distant same-number clusters,
+             extract rooms from each cluster and MERGE under one "Flat NN".
           3. Extract building-core / common areas from the central crop.
 
-        Returns (flats, model) where flats is [{"flat": "Flat 01", "rooms": [{name, polygon}]}].
+        Returns (flats, model) where flats is [{"flat": "Flat 01", "rooms": [...]}].
         """
         W, H = full.size
         model: str | None = None
 
-        # Stage 1 — read the flat number(s) in each focused tile of an aspect-adaptive overlapping
-        # grid. Record every (col, row) band a flat appears in, so its crop region can be derived
-        # from its actual position (works for portrait/landscape/square, unlike fixed quadrants).
-        #
-        # IMPORTANT: the SAME flat number (e.g. "01") legitimately repeats more than once on a
-        # single floor plan — many towers number flats per-wing/per-core, so "Flat 01" in the top
-        # wing and "Flat 01" in the bottom wing can be two entirely different, physically separate
-        # units that happen to share a label (confirmed empirically on a real plan: same label,
-        # different room names/dimensions/layout in each occurrence). Grouping cells purely by
-        # label text merges their bounding regions into one oversized crop, and Stage 2 then only
-        # manages to extract rooms for ONE of the two real flats — the other silently vanishes from
-        # the room map entirely, leaving a real, populated part of the floor plan with zero room
-        # polygons (this is exactly what caused capture pins there to never resolve to any room).
-        #
-        # A flat's cells can't be split by grid-adjacency alone — the 3x3 grid's overlapping bands
-        # mean two occurrences read in "adjacent" cells can still be genuinely far apart in real
-        # image space (confirmed on a real plan). So each occurrence also carries its absolute
-        # (x, y) position in the FULL image (0-1), derived from the model's reported in-tile
-        # fraction — no extra model calls, just a richer per-tile response schema — and
-        # `_split_oversized_flats` clusters occurrences by that actual distance.
         flat_cells: dict[str, list[tuple[int, int]]] = {}
         flat_positions: dict[str, list[tuple[float, float]]] = {}
         for ri, (fy0, fy1) in enumerate(_GRID_BANDS):
@@ -545,15 +1592,14 @@ class RoomMapService:
                 model = model or res.model
                 for entry in res.content.get("flats") or []:
                     if isinstance(entry, dict):
-                        num = str(entry.get("number") or "").strip()
+                        num = _canonical_flat_number(str(entry.get("number") or ""))
                         try:
                             lx = max(0.0, min(1.0, float(entry.get("x", 0.5))))
                             ly = max(0.0, min(1.0, float(entry.get("y", 0.5))))
                         except (TypeError, ValueError):
                             lx = ly = 0.5
                     else:
-                        # Tolerate a provider still returning bare strings (old schema).
-                        num = str(entry).strip()
+                        num = _canonical_flat_number(str(entry))
                         lx = ly = 0.5
                     if not num:
                         continue
@@ -562,61 +1608,62 @@ class RoomMapService:
                     abs_y = fy0 + ly * (fy1 - fy0)
                     flat_positions.setdefault(num, []).append((abs_x, abs_y))
 
-        flat_cells, flat_positions = self._split_oversized_flats(flat_cells, flat_positions)
+        flat_cells, flat_positions = self._consolidate_flat_detections(flat_cells, flat_positions)
 
-        # Stage 2 — for each flat, derive a TIGHT crop centred on where its label was actually seen
-        # (its occurrences' absolute-position centroid, padded by a fixed margin) rather than the
-        # full union of grid bands it appeared in. A band-union crop can be huge — e.g. a label read
-        # in bands (row1, row2) spans nearly the whole image height — and sweeps in a neighbouring
-        # flat's rooms, which the model then extracts INSTEAD of the target flat's own rooms
-        # (confirmed on a real floor plan: a flat's band-union crop also contained a chunk of the
-        # building core / an adjacent flat, and the model's response was entirely the wrong flat's
-        # rooms). The occurrence positions are a direct, already-available fix for this.
         flats: list[dict[str, Any]] = []
         for num in sorted(flat_cells):
-            cells = flat_cells[num]
             positions = flat_positions.get(num) or []
-            if positions:
-                cx = sum(p[0] for p in positions) / len(positions)
-                cy = sum(p[1] for p in positions) / len(positions)
-                fx0 = max(0.0, cx - _FLAT_CROP_HALF_SPAN)
-                fx1 = min(1.0, cx + _FLAT_CROP_HALF_SPAN)
-                fy0 = max(0.0, cy - _FLAT_CROP_HALF_SPAN)
-                fy1 = min(1.0, cy + _FLAT_CROP_HALF_SPAN)
-            else:
-                # No position data (e.g. provider still on the old bare-string schema) — fall back
-                # to the previous band-union behaviour.
-                fx0 = max(0.0, min(_GRID_BANDS[c][0] for c, _ in cells) - _FLAT_CROP_PAD)
-                fx1 = min(1.0, max(_GRID_BANDS[c][1] for c, _ in cells) + _FLAT_CROP_PAD)
-                fy0 = max(0.0, min(_GRID_BANDS[r][0] for _, r in cells) - _FLAT_CROP_PAD)
-                fy1 = min(1.0, max(_GRID_BANDS[r][1] for _, r in cells) + _FLAT_CROP_PAD)
-            crop = full.crop((int(fx0 * W), int(fy0 * H), int(fx1 * W), int(fy1 * H)))
-            gridded = _draw_grid(crop, _CROP_GRID_COLS, _CROP_GRID_ROWS)
-            res = await provider.extract_rooms_in_crop(
-                image_b64=_to_jpeg_b64(gridded),
-                mime="image/jpeg",
-                cols=_CROP_GRID_COLS,
-                rows=_CROP_GRID_ROWS,
-                # Tells the model exactly which flat-number label to target when the crop still
-                # catches the edge of a neighbouring flat — a real floor plan showed the model
-                # anchoring on the WRONG flat's rooms when two labels were both visible in-crop.
-                target_flat_number=num.split(" (")[0],
-            )
-            model = model or res.model
-            rooms = _parse_rooms(
-                res.content.get("rooms"),
-                crop_box=(fx0, fy0, fx1, fy1),
-                # Ownership = the flat's crop region in percent (rooms outside it are neighbour bleed).
-                own_x=(fx0 * 100, fx1 * 100),
-                own_y=(fy0 * 100, fy1 * 100),
-                exclude_common=True,
-                label=f"Flat {num}",
-            )
-            if rooms:
-                flats.append({"flat": f"Flat {num}", "rooms": rooms})
+            cells = flat_cells[num]
+            clusters = self._position_clusters(positions)
+            if not clusters:
+                clusters = [positions] if positions else [[]]
 
-        # Stage 3 — extract building-core / common areas from the central crop, so pins in the
-        # lift lobby / shafts resolve to a common area instead of a neighbouring flat's room.
+            all_rooms: list[dict[str, Any]] = []
+            cluster_anchor: tuple[float, float] | None = None
+            for cluster in clusters:
+                if cluster:
+                    cx = sum(p[0] for p in cluster) / len(cluster)
+                    cy = sum(p[1] for p in cluster) / len(cluster)
+                    if cluster_anchor is None:
+                        cluster_anchor = (cx * 100.0, cy * 100.0)
+                    fx0 = max(0.0, cx - _FLAT_CROP_HALF_SPAN)
+                    fx1 = min(1.0, cx + _FLAT_CROP_HALF_SPAN)
+                    fy0 = max(0.0, cy - _FLAT_CROP_HALF_SPAN)
+                    fy1 = min(1.0, cy + _FLAT_CROP_HALF_SPAN)
+                elif cells:
+                    fx0 = max(0.0, min(_GRID_BANDS[c][0] for c, _ in cells) - _FLAT_CROP_PAD)
+                    fx1 = min(1.0, max(_GRID_BANDS[c][1] for c, _ in cells) + _FLAT_CROP_PAD)
+                    fy0 = max(0.0, min(_GRID_BANDS[r][0] for _, r in cells) - _FLAT_CROP_PAD)
+                    fy1 = min(1.0, max(_GRID_BANDS[r][1] for _, r in cells) + _FLAT_CROP_PAD)
+                else:
+                    continue
+                crop = full.crop((int(fx0 * W), int(fy0 * H), int(fx1 * W), int(fy1 * H)))
+                gridded = _draw_grid(crop, _CROP_GRID_COLS, _CROP_GRID_ROWS)
+                res = await provider.extract_rooms_in_crop(
+                    image_b64=_to_jpeg_b64(gridded),
+                    mime="image/jpeg",
+                    cols=_CROP_GRID_COLS,
+                    rows=_CROP_GRID_ROWS,
+                    target_flat_number=num,
+                )
+                model = model or res.model
+                rooms = _parse_rooms(
+                    res.content.get("rooms"),
+                    crop_box=(fx0, fy0, fx1, fy1),
+                    own_x=(fx0 * 100, fx1 * 100),
+                    own_y=(fy0 * 100, fy1 * 100),
+                    exclude_common=True,
+                    label=f"Flat {num}",
+                )
+                all_rooms.extend(rooms)
+
+            merged = self._merge_rooms_for_flat(all_rooms, label=f"Flat {num}")
+            if merged:
+                entry: dict[str, Any] = {"flat": f"Flat {num}", "rooms": merged}
+                if cluster_anchor is not None:
+                    entry["anchor"] = {"x": cluster_anchor[0], "y": cluster_anchor[1]}
+                flats.append(entry)
+
         fx0, fy0, fx1, fy1 = _CORE_TILE
         core_crop = full.crop((int(fx0 * W), int(fy0 * H), int(fx1 * W), int(fy1 * H)))
         core_gridded = _draw_grid(core_crop, _CROP_GRID_COLS, _CROP_GRID_ROWS)
@@ -639,105 +1686,121 @@ class RoomMapService:
             if common_rooms:
                 flats.append({"flat": _COMMON_AREA_FLAT, "rooms": common_rooms})
         except NotImplementedError:
-            pass  # provider without common-area support — flats still extracted
+            pass
 
+        flats = _sanitize_room_map_flats(flats)
         return flats, model
 
-    def _split_oversized_flats(
+    def _consolidate_flat_detections(
         self,
         flat_cells: dict[str, list[tuple[int, int]]],
         flat_positions: dict[str, list[tuple[float, float]]],
     ) -> tuple[dict[str, list[tuple[int, int]]], dict[str, list[tuple[float, float]]]]:
-        """
-        Splits a flat label into multiple distinct flats when its occurrences
-        (already gathered in Stage 1 — no extra model calls here) sit far
-        apart in the FULL IMAGE, using each occurrence's absolute (x, y)
-        position (derived from the model's reported in-tile fraction, see
-        `_extract_flats`).
-
-        Grid CELL adjacency alone can't disambiguate this: `_GRID_BANDS`'s
-        overlapping bands mean two occurrences read in "adjacent" cells (e.g.
-        row 1 and row 2) can still be genuinely far apart in absolute terms.
-        Absolute distance is the actual test that matters; cell indices were
-        only ever a proxy for it.
-
-        Occurrences farther apart than one grid band's width (each band spans
-        45% of the axis) are treated as genuinely separate flats — anything
-        closer is treated as repeated/overlapping readings of the same flat.
-
-        Returns both the (possibly split) cell map AND the matching position
-        map, so Stage 2 can derive each resulting flat's crop from ITS OWN
-        occurrences' positions rather than the full original cell-band union
-        (a tight, position-centred crop avoids sweeping in a neighbouring
-        flat's rooms — see `_extract_flats` Stage 2 for why an oversized crop
-        caused wrong-flat room extraction on a real floor plan).
-
-        This replaced an earlier attempt that re-cropped a synthetic "half" of
-        the bounding box and asked the model to re-read it — that was
-        unreliable because the arbitrary split point could land on the wrong
-        side of where the label actually printed, making a real second flat
-        look like "no evidence" purely by bad luck of geometry.
-        """
-        _SEPARATION_THRESHOLD = 0.40  # slightly under one band's 0.45 width
-
+        """Merge near-duplicate OCR hits for the same flat number. Never invent A/B/C keys."""
         result_cells: dict[str, list[tuple[int, int]]] = {}
         result_positions: dict[str, list[tuple[float, float]]] = {}
 
+        for num, positions in flat_positions.items():
+            cells = flat_cells.get(num) or []
+            kept_pos: list[tuple[float, float]] = []
+            kept_cells: list[tuple[int, int]] = []
+            for idx, pos in enumerate(positions):
+                cell = cells[idx] if idx < len(cells) else None
+                duplicate = False
+                for prev in kept_pos:
+                    if ((pos[0] - prev[0]) ** 2 + (pos[1] - prev[1]) ** 2) ** 0.5 <= _OCR_DEDUPE_DISTANCE:
+                        duplicate = True
+                        break
+                if duplicate:
+                    continue
+                kept_pos.append(pos)
+                if cell is not None:
+                    kept_cells.append(cell)
+            result_positions[num] = kept_pos
+            result_cells[num] = kept_cells or list(dict.fromkeys(cells))
+
         for num, cells in flat_cells.items():
-            positions = flat_positions.get(num) or []
-            if len(positions) < 2:
-                result_cells[num] = cells
-                result_positions[num] = positions
-                continue
-
-            clusters: list[list[int]] = []  # each entry: indices into `positions`
-            for i, pos in enumerate(positions):
-                placed = False
-                for cluster in clusters:
-                    # Compare against the cluster's current centroid.
-                    cx = sum(positions[j][0] for j in cluster) / len(cluster)
-                    cy = sum(positions[j][1] for j in cluster) / len(cluster)
-                    if ((pos[0] - cx) ** 2 + (pos[1] - cy) ** 2) ** 0.5 <= _SEPARATION_THRESHOLD:
-                        cluster.append(i)
-                        placed = True
-                        break
-                if not placed:
-                    clusters.append([i])
-
-            if len(clusters) < 2:
-                result_cells[num] = cells
-                result_positions[num] = positions
-                continue
-
-            # Cells and positions were appended in the same order per num (see
-            # `_extract_flats` Stage 1), so index `idx` in `cells` corresponds
-            # to index `idx` in `positions` — zip them directly.
-            cell_buckets: list[list[tuple[int, int]]] = [[] for _ in clusters]
-            pos_buckets: list[list[tuple[float, float]]] = [[] for _ in clusters]
-            for idx, cell in enumerate(cells):
-                for gi, cluster in enumerate(clusters):
-                    if idx in cluster:
-                        cell_buckets[gi].append(cell)
-                        pos_buckets[gi].append(positions[idx])
-                        break
-
-            keep = [i for i, b in enumerate(cell_buckets) if b]
-            if len(keep) < 2:
-                result_cells[num] = cells
-                result_positions[num] = positions
-                continue
-
-            logger.info(
-                "[room-map] flat label '{}' occurrences are far apart in absolute "
-                "position — splitting into {} separate flats (cells={}, positions={})",
-                num, len(keep), cells, positions,
-            )
-            for out_idx, gi in enumerate(keep, start=1):
-                key = f"{num} ({chr(64 + out_idx)})"
-                result_cells[key] = cell_buckets[gi]
-                result_positions[key] = pos_buckets[gi]
-
+            if num not in result_cells:
+                result_cells[num] = list(dict.fromkeys(cells))
+                result_positions[num] = []
         return result_cells, result_positions
+
+    def _position_clusters(
+        self,
+        positions: list[tuple[float, float]],
+    ) -> list[list[tuple[float, float]]]:
+        """Group far-apart detections so each cluster gets its own room-extract crop."""
+        if not positions:
+            return []
+        if len(positions) == 1:
+            return [list(positions)]
+
+        clusters: list[list[int]] = []
+        for i, pos in enumerate(positions):
+            placed = False
+            for cluster in clusters:
+                cx = sum(positions[j][0] for j in cluster) / len(cluster)
+                cy = sum(positions[j][1] for j in cluster) / len(cluster)
+                if ((pos[0] - cx) ** 2 + (pos[1] - cy) ** 2) ** 0.5 <= _CLUSTER_SEPARATION:
+                    cluster.append(i)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([i])
+        return [[positions[i] for i in cluster] for cluster in clusters]
+
+    def _merge_rooms_for_flat(
+        self,
+        rooms: list[dict[str, Any]],
+        *,
+        label: str,
+    ) -> list[dict[str, Any]]:
+        """Deduplicate rooms extracted from multiple clusters of the same flat number.
+
+        Same printed name is kept twice when centroids are far apart (two Dress
+        rooms, two Sit-Outs). Close duplicates keep the larger AABB.
+        """
+        if not rooms:
+            return []
+        merged: list[dict[str, Any]] = []
+        for room in rooms:
+            name = str(room.get("name") or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            rc = _room_centroid_xy(room)
+            twin_idx = None
+            for i, existing in enumerate(merged):
+                if str(existing.get("name") or "").strip().lower() != key:
+                    continue
+                ec = _room_centroid_xy(existing)
+                if rc is None or ec is None:
+                    twin_idx = i
+                    break
+                sep = ((rc[0] - ec[0]) ** 2 + (rc[1] - ec[1]) ** 2) ** 0.5
+                if sep <= _DUP_ROOM_NAME_SEP:
+                    twin_idx = i
+                    break
+            if twin_idx is None:
+                merged.append(room)
+                continue
+            existing = merged[twin_idx]
+            try:
+                b1 = _rect_bounds(existing["polygon"])
+                b2 = _rect_bounds(room["polygon"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            area1 = max(0.0, b1[1] - b1[0]) * max(0.0, b1[3] - b1[2])
+            area2 = max(0.0, b2[1] - b2[0]) * max(0.0, b2[3] - b2[2])
+            if area2 > area1:
+                merged[twin_idx] = room
+        # Full sanitize (cull / wet-gap / dress / sit-out) runs once on the
+        # whole floor map after every flat is merged.
+        merged = _keep_primary_room_cluster(merged, label=label)
+        _trim_overlapping_rectangles(merged, label=label)
+        _reclaim_specialized_from_living(merged, label=label)
+        _ensure_adjacent_store_utility(merged, label=label)
+        return merged
 
     async def resolve_pin_location(
         self,
@@ -750,20 +1813,19 @@ class RoomMapService:
     ) -> tuple[str, str]:
         """
         Resolve a pin's (x, y) to (flat, room) using the cached room map.
-        Self-heals floor plans uploaded before this feature existed: if no cache
-        row exists yet, extraction is run lazily here (once) instead of forever
-        falling back. Falls back to ("Unknown", fallback_pin_name) if the floor
-        plan can't be found, extraction fails, or the pin lands outside every
-        detected room — never raises.
+        Self-heals missing / stale-schema caches via lazy extract. Falls back to
+        ("Unknown", fallback_pin_name) when unresolved — never raises.
         """
         if floor_plan_id:
             cached = await self.get_cached(floor_plan_id, org_id)
-            if cached is None:
+            image_url = str((cached or {}).get("image_url") or "")
+            if cached is None or self._cache_needs_reextract(cached, image_url):
                 cached = await self._extract_for_existing_plan(floor_plan_id, org_id)
-            flats = (cached or {}).get("flats") or []
+            flats = await self.get_sanitized_flats(floor_plan_id, org_id, cached=cached)
             located = locate_pin(flats, pin_x, pin_y)
             if located:
-                return located
+                flat_name, room_name = located
+                return _canonical_flat_label(flat_name), room_name
         return _FALLBACK_FLAT, fallback_pin_name
 
     async def _extract_for_existing_plan(
@@ -783,3 +1845,103 @@ class RoomMapService:
             org_id=org_id,
             image_url=image_url,
         )
+
+
+def _room_centroid(room: dict[str, Any]) -> tuple[float, float] | None:
+    poly = room.get("polygon") or []
+    if not poly:
+        return None
+    try:
+        b = _rect_bounds(poly)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (b[0] + b[1]) / 2, (b[2] + b[3]) / 2
+
+
+def _room_area(room: dict[str, Any]) -> float:
+    poly = room.get("polygon") or []
+    if not poly:
+        return 0.0
+    try:
+        b = _rect_bounds(poly)
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+    return max(0.0, b[1] - b[0]) * max(0.0, b[3] - b[2])
+
+
+def _keep_primary_room_cluster(
+    rooms: list[dict[str, Any]],
+    *,
+    label: str,
+    link_dist: float = _ROOM_CLUSTER_LINK_DIST,
+) -> list[dict[str, Any]]:
+    """Drop only small neighbour-bleed outliers; keep multi-wing flats intact.
+
+    Oversized flat crops can include a slice of the adjacent apartment (1–3
+    rooms). Those should be dropped. L-shaped / multi-wing flats, however,
+    legitimately have room centroids farther apart than ``link_dist`` — the
+    old "keep largest cluster only" rule deleted Living / Master Bedroom /
+    Puja on real Floor-4 maps and broke pin→room + Flat Finishing rosters.
+    """
+    if len(rooms) < 4:
+        return rooms
+
+    centroids: list[tuple[float, float] | None] = [_room_centroid(r) for r in rooms]
+    parent = list(range(len(rooms)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    for i in range(len(rooms)):
+        ci = centroids[i]
+        if ci is None:
+            continue
+        for j in range(i + 1, len(rooms)):
+            cj = centroids[j]
+            if cj is None:
+                continue
+            if ((ci[0] - cj[0]) ** 2 + (ci[1] - cj[1]) ** 2) ** 0.5 <= link_dist:
+                union(i, j)
+
+    clusters: dict[int, list[int]] = {}
+    for i in range(len(rooms)):
+        clusters.setdefault(find(i), []).append(i)
+
+    if len(clusters) < 2:
+        return rooms
+
+    def cluster_score(idxs: list[int]) -> tuple[float, int]:
+        return (sum(_room_area(rooms[i]) for i in idxs), len(idxs))
+
+    primary = max(clusters.values(), key=cluster_score)
+    primary_area = cluster_score(primary)[0] or 1.0
+
+    kept: set[int] = set(primary)
+    dropped: list[str] = []
+    for idxs in clusters.values():
+        if set(idxs) <= kept:
+            continue
+        area, n = cluster_score(idxs)
+        # Neighbour bleed is almost always a tiny satellite (1–3 rooms).
+        # Anything larger is treated as part of this flat (second wing).
+        if n <= 3 and area < 0.28 * primary_area:
+            dropped.extend(str(rooms[i].get("name") or "?") for i in idxs)
+            continue
+        kept.update(idxs)
+
+    if dropped:
+        logger.debug(
+            "Room map {}: dropping {} neighbour-bleed room(s) outside primary cluster: {}",
+            label, len(dropped), ", ".join(dropped),
+        )
+    if len(kept) == len(rooms):
+        return rooms
+    return [rooms[i] for i in sorted(kept)]

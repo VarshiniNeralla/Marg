@@ -2,30 +2,24 @@
  * Durable offline file-upload queue (Phase 1 of the mobile-app effort).
  *
  * `writeQueue.ts` already makes PIN/CAPTURE METADATA durable — a pin placed
- * offline survives a reload and replays once the backend is reachable. But
- * the actual photo BYTES never went through it: `runPinUpload` in
- * CaptureWorkflowPage.tsx called `uploadCaptureFiles(files)` directly, and on
- * failure only kept the original `File` objects in an in-memory `Map`
- * (`failedFilesRef`). A `File` object is a live, in-memory handle — closing
- * the app (not just backgrounding it) throws it away, and with it the
- * captured photo, even though the pin itself survives.
+ * offline survives a reload and replays once the backend is reachable. This
+ * queue makes the photo BYTES durable too, without OOMing the WebView.
  *
- * This queue closes that gap using the same durable-descriptor pattern as
- * writeQueue.ts, adapted for binary payloads:
- *   • Each captured file is written to the app's private on-device storage
- *     (`@capacitor/filesystem`, Directory.Data) as base64 — this is REAL
- *     disk, survives a full app kill, unlike an in-memory File/Blob.
- *   • A small descriptor ({ pinId, fileUri, fileName, attempts, status }) is
- *     persisted via `@capacitor/preferences` (Capacitor's native key-value
- *     store) and replayed on load, on reconnect, and on a periodic timer —
- *     mirroring writeQueue.ts's persist/backoff/replay design exactly.
- *   • Uploads for DIFFERENT pins run concurrently (one slow/retrying upload
- *     must not block unrelated pins), but uploads for the SAME pin are
- *     strictly serial (re-captures must attach in the order they were taken).
- *   • On success, the on-device file is deleted and the pin is attached via
- *     the existing `attachCaptureToPin` store action (unchanged) — from
- *     that point on, this queue's job is done and writeQueue.ts's existing
- *     durability takes over for the resulting metadata mutation.
+ * Critical design (learned the hard way on-device with ~12MB Insta360 .insp):
+ *   • Enqueue is MEMORY-FIRST: register the pin + keep the File in RAM, then
+ *     kick `flush()` immediately so `/uploads/captures` can start. A prior
+ *     "await full-file base64 → Filesystem.writeFile before any POST" path
+ *     held ~16MB strings × N captures on the JS heap, ANR'd / OOM-killed the
+ *     app (logs: OPTIONS /uploads/captures, multi-minute gap, process restart,
+ *     almost no POST bodies).
+ *   • Disk durability runs in the BACKGROUND, one file at a time, via chunked
+ *     base64 appends that yield to the event loop — so a camera-WiFi hang or
+ *     app kill still has a recoverable copy once the write finishes, without
+ *     blocking upload or the UI.
+ *   • At most one multipart upload runs at a time (serial pin flush). Concurrent
+ *     12MB POSTs plus base64 copies were a second OOM vector.
+ *   • `memoryFiles` caps how many live File handles we keep; older ones are
+ *     spilled to disk before accepting more.
  *
  * On web (no Capacitor native layer), Filesystem/Preferences fall back to
  * their web implementations (IndexedDB-backed), so this module works
@@ -37,7 +31,8 @@ import { Network } from '@capacitor/network';
 import { useAuthStore } from './authStore';
 import { useWorkflowStore } from './workflowStore';
 import { uploadCaptureFiles, getCaptureStitchJob } from '@/services/uploadService';
-import { setPendingUploadPins } from './pendingUploadRegistry';
+import { setPendingUploadPins, removePendingUploadPin, addPendingUploadPin } from './pendingUploadRegistry';
+import { isTombstoned } from './tombstones';
 
 const QUEUE_KEY = 'sitesurelabs-file-upload-queue-v1';
 const FILE_DIR = 'pending-uploads';
@@ -49,6 +44,16 @@ const POLL_MS = 20_000;
 // stitch takes ~25s, so a 20s cadence would routinely add most of another cycle
 // of dead waiting after the panorama was already finished.
 const STITCH_POLL_MS = 4_000;
+/** Max live File handles in RAM. Beyond this, enqueue spills the oldest to disk
+ *  before accepting another ~12MB capture — otherwise 11 captures ≈ 130MB+ and
+ *  the Android WebView is OOM-killed. */
+const MAX_MEMORY_FILES = 2;
+/** Binary chunk size for durable writes. Keeps each base64 string ~340KB so we
+ *  never allocate one giant 16MB+ string on the JS heap. */
+const DISK_CHUNK_BYTES = 256 * 1024;
+/** Attach/upload aborted because the pin was intentionally deleted. Not a
+ *  network failure — must discard the queue entry, never retry/repost. */
+const PIN_DELETED_STATUS = 410;
 
 /** Emitted whenever a queued upload's status changes, so the UI can reflect
  *  'queued' | 'uploading' | 'failed' without polling the queue directly. */
@@ -62,11 +67,22 @@ export const FILE_UPLOAD_SUCCEEDED_EVENT = 'workflow:file-upload-succeeded';
 export const SYNC_ERROR_EVENT = 'workflow:sync-error';
 
 export type FileUploadStatus = 'queued' | 'uploading' | 'processing' | 'failed';
+/** Why a queue entry is stuck in 'failed' — drives Retry vs Capture Again. */
+export type FileUploadFailKind = 'corrupt' | 'upload';
 
 export interface PendingFileUpload {
   id: string;              // `fq${Date.now()}_${seq++}`
   pinId: string;
-  fileUri: string;          // path under Directory.Data/pending-uploads
+  /** Path under Directory.Data/pending-uploads. Set as soon as the durable
+   *  write starts (before chunks finish) so a mid-write kill does not drop
+   *  the queue row on cold start. Prefer `bytesReady` before reading. */
+  fileUri: string;
+  /**
+   * false while chunked disk write is in progress; true once the full file is
+   * on disk. Undefined = legacy entry written before this flag existed (treat
+   * as ready when fileUri is set).
+   */
+  bytesReady?: boolean;
   fileName: string;          // original captured filename, for the multipart part
   mimeType: string;
   attempts: number;
@@ -79,6 +95,10 @@ export interface PendingFileUpload {
    * recovered by re-uploading.
    */
   stitchJobId?: string;
+  /** Set when status === 'failed'. */
+  failKind?: FileUploadFailKind;
+  /** User-facing reason shown on the pin panel. */
+  errorMessage?: string;
 }
 
 // ── Persistence (Preferences instead of localStorage: idiomatic Capacitor
@@ -87,21 +107,117 @@ export interface PendingFileUpload {
 
 let queue: PendingFileUpload[] = [];
 let loaded = false;
+/** Single-flight Preferences load — concurrent load() must not race and wipe enqueues. */
+let loadPromise: Promise<PendingFileUpload[]> | null = null;
 let seq = 0;
 const inFlightPins = new Set<string>();
+/**
+ * Freshly-enqueued Files kept in RAM so flush can POST without a Filesystem
+ * read + base64 decode. Disk is written in the background for crash recovery.
+ */
+const memoryFiles = new Map<string, File>();
+/** AbortControllers for in-flight multipart uploads, keyed by pin id. */
+const uploadAbortControllers = new Map<string, AbortController>();
+/** Entry ids whose background disk write should be skipped (upload finished). */
+const diskPersistCancelled = new Set<string>();
+/** Serialise durable writes so we never base64-encode two 12MB files at once. */
+let diskPersistChain: Promise<void> = Promise.resolve();
 
 async function load(): Promise<PendingFileUpload[]> {
   if (loaded) return queue;
-  try {
-    const { value } = await Preferences.get({ key: QUEUE_KEY });
-    const parsed = value ? (JSON.parse(value) as PendingFileUpload[]) : [];
-    queue = Array.isArray(parsed) ? parsed : [];
-  } catch {
-    queue = [];
+  if (loadPromise) return loadPromise;
+  loadPromise = (async () => {
+    try {
+      const { value } = await Preferences.get({ key: QUEUE_KEY });
+      const parsed = value ? (JSON.parse(value) as PendingFileUpload[]) : [];
+      queue = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      queue = [];
+    }
+    // Persisted 'uploading' can never be in-flight after a cold start —
+    // inFlightPins is memory-only. Without this reset, flush() skips the entry
+    // forever and the capture sits on "Uploading…" with no POST ever sent again.
+    let dirty = false;
+    const kept: PendingFileUpload[] = [];
+    const dropFiles: PendingFileUpload[] = [];
+    for (const entry of queue) {
+      if (entry.status === 'uploading') {
+        entry.status = 'queued';
+        dirty = true;
+      }
+      // Pin was intentionally deleted — never re-POST these bytes (the smoking
+      // gun for "deleted captures stitch themselves again on next login").
+      if (isTombstoned(entry.pinId)) {
+        dirty = true;
+        dropFiles.push(entry);
+        diskPersistCancelled.add(entry.id);
+        memoryFiles.delete(entry.id);
+        continue;
+      }
+      const hasBytes =
+        memoryFiles.has(entry.id) ||
+        (!!entry.fileUri && entry.bytesReady !== false) ||
+        !!entry.stitchJobId;
+      // Incomplete disk write (path reserved, chunks never finished) and no RAM —
+      // bytes are gone. Keep as 'failed' so the pin stays busy (not pruned) and
+      // the user can re-capture; do not silently drop (that deleted the pin).
+      if (!hasBytes) {
+        if (entry.status !== 'failed') {
+          entry.status = 'failed';
+          entry.failKind = 'corrupt';
+          entry.errorMessage = 'Capture file was lost on this device — please capture again.';
+          dirty = true;
+        } else if (!entry.errorMessage) {
+          entry.failKind = entry.failKind ?? 'corrupt';
+          entry.errorMessage = 'Capture file was lost on this device — please capture again.';
+          dirty = true;
+        }
+        kept.push(entry);
+        continue;
+      }
+      kept.push(entry);
+    }
+    queue = kept;
+    loaded = true;
+    syncPendingRegistry();
+    if (dirty) {
+      try {
+        await Preferences.set({ key: QUEUE_KEY, value: JSON.stringify(queue) });
+      } catch {
+        /* best-effort */
+      }
+    }
+    for (const entry of dropFiles) {
+      void deleteLocalFile(entry);
+    }
+    return queue;
+  })();
+  return loadPromise;
+}
+
+/** True when this pin must never receive another upload (deleted). */
+function pinUploadForbidden(pinId: string): boolean {
+  return isTombstoned(pinId);
+}
+
+async function discardEntry(entry: PendingFileUpload): Promise<void> {
+  releaseEntryBytes(entry);
+  queue = queue.filter(e => e.id !== entry.id);
+  removePendingUploadPin(entry.pinId);
+  await persist();
+  await deleteLocalFile(entry);
+}
+
+/** Reset orphaned 'uploading' rows that no live flush chain owns. */
+function healOrphanedUploading(): boolean {
+  let healed = false;
+  for (const entry of queue) {
+    if (entry.status === 'uploading' && !inFlightPins.has(entry.pinId)) {
+      entry.status = 'queued';
+      healed = true;
+    }
   }
-  loaded = true;
-  syncPendingRegistry();
-  return queue;
+  return healed;
 }
 
 /**
@@ -141,20 +257,55 @@ function emitError(message: string, context?: string): void {
 }
 
 // ── File <-> base64 conversion ───────────────────────────────────────────────
-// Filesystem.writeFile requires base64 for binary data (no `encoding` option);
-// FileReader.readAsDataURL is the standard way to get there from a File/Blob.
+// Native Filesystem.writeFile requires base64 for binary. We NEVER encode a
+// whole ~12MB capture in one shot — that allocated ~16MB strings and OOM-killed
+// the WebView. Chunked encode + appendFile keeps peak heap bounded.
 
-function fileToBase64(file: File): Promise<string> {
+function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(reader.error);
     reader.onload = () => {
       const result = reader.result as string;
-      // "data:<mime>;base64,<data>" — Filesystem wants only the payload.
       resolve(result.slice(result.indexOf(',') + 1));
     };
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(blob);
   });
+}
+
+/**
+ * Write `file` to Directory.Data in small base64 chunks, yielding between
+ * chunks so the UI / upload flush can run. Safe to call while an upload of the
+ * same File is in flight (reads are independent). Returns false if cancelled
+ * mid-write (caller must delete any partial file).
+ */
+async function writeFileChunked(entryId: string, file: File, fileUri: string): Promise<boolean> {
+  let offset = 0;
+  let first = true;
+  while (offset < file.size) {
+    if (diskPersistCancelled.has(entryId)) return false;
+    const end = Math.min(offset + DISK_CHUNK_BYTES, file.size);
+    const base64 = await blobToBase64(file.slice(offset, end));
+    if (first) {
+      await Filesystem.writeFile({
+        path: fileUri,
+        data: base64,
+        directory: Directory.Data,
+        recursive: true,
+      });
+      first = false;
+    } else {
+      await Filesystem.appendFile({
+        path: fileUri,
+        data: base64,
+        directory: Directory.Data,
+      });
+    }
+    offset = end;
+    // Yield so upload XHR / React can breathe between ~256KB chunks.
+    await new Promise<void>(r => setTimeout(r, 0));
+  }
+  return !diskPersistCancelled.has(entryId);
 }
 
 /**
@@ -174,6 +325,71 @@ async function base64ToFile(base64: string, fileName: string, mimeType: string):
   const dataUrl = `data:${mimeType};base64,${base64}`;
   const blob = await (await fetch(dataUrl)).blob();
   return new File([blob], fileName, { type: mimeType });
+}
+
+/** Spill one idle in-memory file to disk and drop the RAM handle. */
+async function spillOldestMemoryFile(): Promise<void> {
+  for (const [id, file] of memoryFiles) {
+    const entry = queue.find(e => e.id === id);
+    if (!entry || entry.status === 'uploading') continue;
+    await persistEntryToDisk(id, file);
+    // After durable write, drop RAM — uploadEntry will read from disk if needed.
+    // Do NOT drop while bytesReady === false (path reserved, chunks still writing).
+    if (entry.fileUri && entry.bytesReady !== false) memoryFiles.delete(id);
+    return;
+  }
+  // Everything in memory is mid-upload — wait briefly for a slot to free.
+  await new Promise<void>(r => setTimeout(r, 250));
+}
+
+async function persistEntryToDisk(entryId: string, file: File): Promise<void> {
+  if (diskPersistCancelled.has(entryId)) return;
+  const entry = queue.find(e => e.id === entryId);
+  // Already durable (bytesReady true, or legacy entry with fileUri and no flag).
+  if (!entry || (entry.fileUri && entry.bytesReady !== false)) return;
+
+  const fileUri = entry.fileUri || `${FILE_DIR}/${Date.now()}_${seq++}_${entry.fileName}`;
+  // Reserve the path in Preferences BEFORE chunked write so a kill mid-write
+  // still leaves a queue row (marked incomplete via bytesReady=false) instead
+  // of a silent drop on cold start.
+  if (!entry.fileUri) {
+    entry.fileUri = fileUri;
+    entry.bytesReady = false;
+    await persist();
+  }
+
+  let completed = false;
+  try {
+    completed = await writeFileChunked(entryId, file, fileUri);
+  } catch {
+    // Disk full / permission — upload can still proceed from memory this session.
+    entry.fileUri = '';
+    delete entry.bytesReady;
+    await persist();
+    await Filesystem.deleteFile({ path: fileUri, directory: Directory.Data }).catch(() => {});
+    return;
+  }
+  if (!completed || diskPersistCancelled.has(entryId) || !queue.some(e => e.id === entryId)) {
+    entry.fileUri = '';
+    delete entry.bytesReady;
+    await persist();
+    await Filesystem.deleteFile({ path: fileUri, directory: Directory.Data }).catch(() => {});
+    return;
+  }
+  entry.fileUri = fileUri;
+  entry.bytesReady = true;
+  await persist();
+}
+
+function scheduleDiskPersist(entryId: string, file: File): void {
+  diskPersistChain = diskPersistChain
+    .then(async () => {
+      if (diskPersistCancelled.has(entryId)) return;
+      await persistEntryToDisk(entryId, file);
+    })
+    .catch(() => {
+      /* individual write failures are non-fatal */
+    });
 }
 
 // ── Backoff (identical formula to writeQueue.ts) ─────────────────────────────
@@ -210,7 +426,59 @@ function isUnreachable(status: number): boolean {
 function messageFor(status: number): string {
   if (status === 403) return 'You do not have permission to upload that capture.';
   if (status === 401) return 'Your session expired — the capture will upload once you sign in again.';
+  if (status === 422) {
+    return 'This capture is corrupted or unsupported — please capture again.';
+  }
   return 'A capture could not be uploaded. It will retry automatically.';
+}
+
+const CORRUPT_CAPTURE_MESSAGE =
+  'This capture is corrupted or unsupported — please capture again.';
+
+/**
+ * Background stitch failures that will never succeed with the same bytes
+ * (corrupt .insp, unsupported layout). Transient cases (timeout / lost spool)
+ * should re-upload; permanent ones must stop the retry loop and ask for a
+ * fresh capture.
+ */
+function isPermanentStitchFailure(error: string | null | undefined): boolean {
+  if (!error) return true;
+  const e = error.toLowerCase();
+  if (
+    e.includes('timed out') ||
+    e.includes('spooled upload missing') ||
+    e.includes('no spooled file') ||
+    e.includes('orphaned')
+  ) {
+    return false;
+  }
+  return (
+    e.includes('could not stitch') ||
+    e.includes('corrupt') ||
+    e.includes('unsupported') ||
+    e.includes('could not decode') ||
+    e.includes('imdecode') ||
+    e.includes('422') ||
+    e.includes('validation')
+  );
+}
+
+async function markEntryCorruptFailed(
+  entry: PendingFileUpload,
+  message: string = CORRUPT_CAPTURE_MESSAGE,
+): Promise<void> {
+  const jobId = entry.stitchJobId;
+  if (jobId) {
+    useWorkflowStore.getState().discardStitchFailedCapture(entry.pinId, jobId);
+  }
+  releaseEntryBytes(entry);
+  void deleteLocalFile(entry);
+  entry.status = 'failed';
+  entry.failKind = 'corrupt';
+  entry.errorMessage = message;
+  delete entry.stitchJobId;
+  await persist();
+  emitError(message, entry.pinId);
 }
 
 // ── Upload one entry ──────────────────────────────────────────────────────────
@@ -222,9 +490,15 @@ function pendingJobIdOf(result: { files: { stitchJobId?: string; processing_stat
 }
 
 async function deleteLocalFile(entry: PendingFileUpload): Promise<void> {
+  if (!entry.fileUri) return;
   await Filesystem.deleteFile({ path: entry.fileUri, directory: Directory.Data }).catch(() => {
     /* stray file on disk is harmless; never fail the upload over cleanup */
   });
+}
+
+function releaseEntryBytes(entry: PendingFileUpload): void {
+  diskPersistCancelled.add(entry.id);
+  memoryFiles.delete(entry.id);
 }
 
 /**
@@ -232,37 +506,81 @@ async function deleteLocalFile(entry: PendingFileUpload): Promise<void> {
  * the bytes but is still stitching (entry stays queued as 'processing').
  */
 async function uploadEntry(entry: PendingFileUpload): Promise<boolean> {
-  const { data } = await Filesystem.readFile({
-    path: entry.fileUri,
-    directory: Directory.Data,
-  });
-  const file = await base64ToFile(data as string, entry.fileName, entry.mimeType);
-  const result = await uploadCaptureFiles([file]);
+  // Prefer the in-memory File from enqueue (same-session fast path). Fall back
+  // to the on-device base64 copy after an app restart / process death.
+  let file = memoryFiles.get(entry.id);
+  if (!file) {
+    if (!entry.fileUri || entry.bytesReady === false) {
+      const err = new Error('Capture bytes not yet durable and not in memory') as Error & { status: number };
+      err.status = 0;
+      throw err;
+    }
+    const { data } = await Filesystem.readFile({
+      path: entry.fileUri,
+      directory: Directory.Data,
+    });
+    file = await base64ToFile(data as string, entry.fileName, entry.mimeType);
+  }
+
+  const controller = new AbortController();
+  uploadAbortControllers.set(entry.pinId, controller);
+  let result: Awaited<ReturnType<typeof uploadCaptureFiles>>;
+  try {
+    result = await uploadCaptureFiles([file], undefined, undefined, controller.signal);
+  } finally {
+    if (uploadAbortControllers.get(entry.pinId) === controller) {
+      uploadAbortControllers.delete(entry.pinId);
+    }
+  }
   const fileCount = result.count || 1;
 
   // Attach immediately either way, so the pin registers the capture the moment
   // the bytes are safe rather than ~25s later when stitching ends. For a pending
   // asset the panorama URL is null and processingStatus is 'processing'; the
   // real asset replaces it once the job completes.
-  useWorkflowStore.getState().attachCaptureToPin(entry.pinId, fileCount, result.files);
+  const captureId = useWorkflowStore.getState().attachCaptureToPin(entry.pinId, fileCount, result.files);
+  if (!captureId) {
+    // Tombstoned pin → permanent discard. Missing pin/room (hydrate race) →
+    // retry as unreachable without burning attempts — never treat that as
+    // "deleted" or we lose legitimate offline captures.
+    if (pinUploadForbidden(entry.pinId)) {
+      const err = new Error('Capture pin was deleted') as Error & { status: number };
+      err.status = PIN_DELETED_STATUS;
+      throw err;
+    }
+    const err = new Error('Capture pin not in local store yet') as Error & { status: number };
+    err.status = 0;
+    throw err;
+  }
 
   const jobId = pendingJobIdOf(result);
   if (jobId) {
     entry.stitchJobId = jobId;
     entry.status = 'processing';
+    // Keep RAM until disk has a full copy — clearing early left a stitch-fail
+    // → re-upload path with no bytes after a process kill.
+    if (entry.fileUri && entry.bytesReady !== false) {
+      memoryFiles.delete(entry.id);
+    }
     await persist();
     return false;
   }
 
+  releaseEntryBytes(entry);
   await deleteLocalFile(entry);
   return true;
 }
 
 /**
- * Poll a stitch job once. Returns 'done' (asset attached, entry finishable),
- * 'pending' (still stitching), or 'failed' (re-upload needed).
+ * Poll a stitch job once. Returns:
+ *  - 'done' — asset attached, entry finishable
+ *  - 'pending' — still stitching
+ *  - 'retry' — transient server loss; re-upload same bytes
+ *  - 'permanent' — corrupt/unsupported; do not re-upload
  */
-async function pollStitchEntry(entry: PendingFileUpload): Promise<'done' | 'pending' | 'failed'> {
+async function pollStitchEntry(
+  entry: PendingFileUpload,
+): Promise<'done' | 'pending' | 'retry' | 'permanent'> {
   const jobId = entry.stitchJobId as string;
   const job = await getCaptureStitchJob(jobId);
   if (job.status === 'completed' && job.asset) {
@@ -271,64 +589,29 @@ async function pollStitchEntry(entry: PendingFileUpload): Promise<'done' | 'pend
     // missing the same photo would be stored twice. We know the id locally, so
     // never rely solely on the server echoing it back.
     const asset = { ...job.asset, stitchJobId: job.asset.stitchJobId ?? jobId };
-    useWorkflowStore.getState().attachCaptureToPin(entry.pinId, 1, [asset]);
+    const captureId = useWorkflowStore.getState().attachCaptureToPin(entry.pinId, 1, [asset]);
+    if (!captureId) return 'pending';
+    releaseEntryBytes(entry);
     await deleteLocalFile(entry);
     return 'done';
   }
-  if (job.status === 'failed') return 'failed';
+  if (job.status === 'failed') {
+    return isPermanentStitchFailure(job.error) ? 'permanent' : 'retry';
+  }
   return 'pending';
 }
 
-/**
- * Upload a freshly-captured file straight from memory — no Filesystem
- * write/read round-trip at all — for the common case where the device is
- * online right now. This is strictly an optimization over the durable queue
- * below (which remains the source of truth for offline/interrupted
- * uploads): skipping the base64 write+read+decode entirely avoids the
- * multi-second-plus main-thread stall confirmed on-device for large (~12MB)
- * captures, and lets a normal, immediate capture upload at the speed a plain
- * `File` object allows.
- *
- * Returns true if the direct upload succeeded (caller does nothing further —
- * `attachCaptureToPin` has already run). Returns false for ANY failure
- * (including "we're offline") so the caller can fall back to
- * `enqueueFileUpload`'s durable, retryable queue — this function never
- * throws.
- *
- * A raw 360 accepted for background stitching returns FALSE on purpose: the
- * capture is attached right away for instant UI feedback, but the durable queue
- * must still own the job so polling survives an app restart. `enqueueFileUpload`
- * is given the jobId so it resumes polling instead of re-uploading the bytes.
- */
-export async function tryDirectUpload(
-  pinId: string,
-  file: File,
-): Promise<boolean | { pendingJobId: string }> {
-  try {
-    const status = await Network.getStatus();
-    if (!status.connected) return false;
-    const result = await uploadCaptureFiles([file]);
-    const fileCount = result.count || 1;
-    useWorkflowStore.getState().attachCaptureToPin(pinId, fileCount, result.files);
-    const jobId = pendingJobIdOf(result);
-    if (jobId) return { pendingJobId: jobId };
-    return true;
-  } catch {
-    // Any failure (network, timeout, server error, auth) — the durable queue
-    // is the fallback path and already knows how to retry/classify errors.
-    return false;
-  }
-}
-
-// ── Per-pin serial, cross-pin concurrent flush ───────────────────────────────
-// A pin's uploads must attach in the order they were captured (re-capture
-// after re-capture), but one pin's retry backoff must never stall a
-// different pin's otherwise-ready upload.
+// ── Per-pin SERIAL flush (one multipart at a time) ───────────────────────────
+// Cross-pin concurrency was removed on purpose: N simultaneous ~12MB POSTs
+// plus any in-flight disk encode OOMs mid-range Android WebViews. One pin's
+// stitch poll is cheap; one pin's upload holds the slot until it finishes.
 
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let activePollMs: number | null = null;
 let hadBacklog = false;
+let flushRunning = false;
+let flushAgain = false;
 
 function nextRetryDelay(): number | null {
   // Entries with attempts > 0 reached a server and are on real exponential
@@ -343,20 +626,33 @@ function nextRetryDelay(): number | null {
 }
 
 async function flush(): Promise<void> {
+  // Coalesce overlapping flush() calls (reconnect + focus + poll) into one
+  // follow-up pass instead of starting parallel pin chains.
+  if (flushRunning) {
+    flushAgain = true;
+    return;
+  }
+  flushRunning = true;
+  try {
+    do {
+      flushAgain = false;
+      await flushOnce();
+    } while (flushAgain);
+  } finally {
+    flushRunning = false;
+  }
+}
+
+async function flushOnce(): Promise<void> {
   await load();
+  if (healOrphanedUploading()) await persist();
   if (!queue.length) return;
   if (!useAuthStore.getState().isAuthenticated) {
     // Not signed in YET (e.g. this flush ran mid-token-refresh, or before
     // WorkflowApiBootstrap's post-login flush had a chance to fire). Unlike
     // the rest of this function, this early return must still arm the poll
     // timer — otherwise a queued photo that hits this exact branch on its
-    // very first flush attempt has no mechanism left to ever retry itself:
-    // startPolling() below only runs once flush() gets PAST this check, so a
-    // queue that never gets past it never polls, and sits at 'queued'
-    // forever until an unrelated online/focus/network event happens to fire
-    // (reproduced: a capture taken right as the access token expired had its
-    // pin/room/audit-log writes all land normally, but its own
-    // /uploads/captures request was never even sent).
+    // very first flush attempt has no mechanism left to ever retry itself.
     startPolling();
     return;
   }
@@ -374,121 +670,160 @@ async function flush(): Promise<void> {
     byPin.get(entry.pinId)!.push(entry);
   }
 
-  await Promise.all(
-    [...byPin.entries()].map(async ([pinId, entries]) => {
-      if (inFlightPins.has(pinId)) return; // this pin's chain is already running
-      inFlightPins.add(pinId);
-      try {
-        // Oldest first — preserves re-capture ordering for this pin.
-        for (const entry of entries.sort((a, b) => a.createdAt - b.createdAt)) {
-          // Already on the server and stitching: poll the job instead of
-          // re-uploading. Re-sending the bytes would be wasteful (the backend
-          // dedups it anyway) and would restart this pin's chain needlessly.
-          if (entry.stitchJobId) {
-            try {
-              const outcome = await pollStitchEntry(entry);
-              if (outcome === 'done') {
-                queue = queue.filter(e => e.id !== entry.id);
-                await persist();
-                emitUploadSucceeded(entry.pinId);
-                continue;
-              }
-              if (outcome === 'failed') {
-                // Server could not finish the stitch (e.g. restart lost the
-                // spooled bytes). Drop the jobId and let normal upload retry
-                // re-send from the on-device copy we deliberately kept.
-                delete entry.stitchJobId;
-                entry.status = 'queued';
-                await persist();
-                break;
-              }
-              hadBacklog = true;
-              entry.status = 'processing';
-              await persist();
-              break; // still stitching — check again on the next poll tick
-            } catch (error) {
-              const pollStatus = statusOf(error);
-              if (pollStatus === 404) {
-                // Job record is gone (e.g. wiped DB) — fall back to re-uploading.
-                delete entry.stitchJobId;
-                entry.status = 'queued';
-              } else {
-                entry.status = 'processing';
-              }
-              hadBacklog = true;
-              await persist();
-              break;
-            }
-          }
+  // Serial across pins — see module header. Oldest pin first so floor capture
+  // order roughly matches upload order.
+  const pinOrder = [...byPin.entries()].sort(
+    (a, b) => (a[1][0]?.createdAt ?? 0) - (b[1][0]?.createdAt ?? 0),
+  );
 
-          entry.status = 'uploading';
-          await persist();
+  for (const [pinId, entries] of pinOrder) {
+    if (inFlightPins.has(pinId)) continue;
+    inFlightPins.add(pinId);
+    try {
+      // Oldest first — preserves re-capture ordering for this pin.
+      for (const entry of entries.sort((a, b) => a.createdAt - b.createdAt)) {
+        // Deleted pin — never POST / poll. Drop local bytes so login cannot
+        // resurrect stitches for pins the user already removed.
+        if (pinUploadForbidden(entry.pinId)) {
+          await discardEntry(entry);
+          continue;
+        }
+
+        // Already on the server and stitching: poll the job instead of
+        // re-uploading. Re-sending the bytes would be wasteful (the backend
+        // dedups it anyway) and would restart this pin's chain needlessly.
+        if (entry.stitchJobId) {
           try {
-            const finished = await uploadEntry(entry);
-            if (!finished) {
-              // Accepted for background stitching; entry stays queued as
-              // 'processing' and the poll branch above takes over next tick.
-              hadBacklog = true;
-              break;
-            }
-            queue = queue.filter(e => e.id !== entry.id);
-            await persist();
-            emitUploadSucceeded(entry.pinId);
-          } catch (error) {
-            const status = statusOf(error);
-            if (status === 401) {
-              hadBacklog = true;
-              // Same status as a fresh capture: this is an ordinary "not sent
-              // yet" state, not a failure — a 401 resolves itself once the
-              // auth layer refreshes the token, with no user action needed
-              // (see writeQueue.ts's identical treatment of 401).
-              entry.status = 'queued';
-              await persist();
-              break; // wait for the auth layer to refresh; don't burn an attempt
-            }
-            if (isPermanent(status)) {
+            const outcome = await pollStitchEntry(entry);
+            if (outcome === 'done') {
               queue = queue.filter(e => e.id !== entry.id);
               await persist();
-              emitError(messageFor(status), entry.pinId);
+              emitUploadSucceeded(entry.pinId);
               continue;
             }
-            hadBacklog = true;
-            if (isUnreachable(status)) {
-              // No server was ever reached — this is what "offline" looks
-              // like. Never counts toward MAX_ATTEMPTS: a field capture must
-              // survive however many hours it takes to get signal back, not
-              // get silently dropped by a fixed retry counter.
+            if (outcome === 'permanent') {
+              // Corrupt / unsupported file — keep the pin as failed and ask
+              // for a fresh capture. Re-sending the same bytes cannot succeed.
+              await markEntryCorruptFailed(entry);
+              break;
+            }
+            if (outcome === 'retry') {
+              // Server could not finish the stitch (e.g. restart lost the
+              // spooled bytes). Drop the jobId and let normal upload retry
+              // re-send from the on-device copy we deliberately kept.
+              delete entry.stitchJobId;
               entry.status = 'queued';
               await persist();
               break;
             }
-            entry.attempts += 1;
-            if (entry.attempts >= MAX_ATTEMPTS) {
-              // A server WAS reached repeatedly and kept rejecting/erroring —
-              // genuinely gave up. This is the only case that should read as
-              // 'failed' to the user; being offline is expected and silent.
-              // KEPT in the queue (not removed): retryFileUpload/discardFileUpload
-              // need it to still exist to re-arm or clean up the on-device
-              // file — deleting it here would silently orphan that file AND
-              // make the UI's "Retry Upload" button a dead click with nothing
-              // left to retry.
-              entry.status = 'failed';
-              await persist();
-              emitError(messageFor(status), entry.pinId);
-              continue;
-            }
-            // Still retrying — stays 'queued' so it reads as "saved, will
-            // send later" instead of a false alarm on every retry cycle.
-            entry.status = 'queued';
+            hadBacklog = true;
+            entry.status = 'processing';
             await persist();
-            break; // stop this pin's chain; scheduleNextAttempt() will retry
+            break; // still stitching — check again on the next poll tick
+          } catch (error) {
+            const pollStatus = statusOf(error);
+            if (pollStatus === 404) {
+              // Job record is gone (e.g. wiped DB) — fall back to re-uploading.
+              delete entry.stitchJobId;
+              entry.status = 'queued';
+            } else {
+              entry.status = 'processing';
+            }
+            hadBacklog = true;
+            await persist();
+            break;
           }
         }
-      } finally {
-        inFlightPins.delete(pinId);
+
+        // Need bytes in memory or a finished disk copy before starting the POST.
+        const diskReady = !!entry.fileUri && entry.bytesReady !== false;
+        if (!memoryFiles.has(entry.id) && !diskReady) {
+          hadBacklog = true;
+          break;
+        }
+
+        entry.status = 'uploading';
+        await persist();
+        try {
+          const finished = await uploadEntry(entry);
+          if (!finished) {
+            // Accepted for background stitching; entry stays queued as
+            // 'processing' and the poll branch above takes over next tick.
+            hadBacklog = true;
+            break;
+          }
+          queue = queue.filter(e => e.id !== entry.id);
+          await persist();
+          emitUploadSucceeded(entry.pinId);
+        } catch (error) {
+          const status = statusOf(error);
+          if (status === PIN_DELETED_STATUS) {
+            await discardEntry(entry);
+            continue;
+          }
+          if (status === 401) {
+            hadBacklog = true;
+            // Same status as a fresh capture: this is an ordinary "not sent
+            // yet" state, not a failure — a 401 resolves itself once the
+            // auth layer refreshes the token, with no user action needed
+            // (see writeQueue.ts's identical treatment of 401).
+            entry.status = 'queued';
+            await persist();
+            break; // wait for the auth layer to refresh; don't burn an attempt
+          }
+          if (isPermanent(status)) {
+            // Keep the entry as 'failed' so the pin stays red and the user can
+            // capture again. Dropping it here used to clear the marker and leave
+            // no way to know which pin needed a fresh photo (esp. 422 corrupt).
+            releaseEntryBytes(entry);
+            void deleteLocalFile(entry);
+            entry.status = 'failed';
+            entry.failKind = status === 422 ? 'corrupt' : 'upload';
+            entry.errorMessage =
+              status === 422 ? CORRUPT_CAPTURE_MESSAGE : messageFor(status);
+            delete entry.stitchJobId;
+            await persist();
+            emitError(entry.errorMessage, entry.pinId);
+            continue;
+          }
+          hadBacklog = true;
+          if (isUnreachable(status)) {
+            // No server was ever reached — this is what "offline" looks
+            // like. Never counts toward MAX_ATTEMPTS: a field capture must
+            // survive however many hours it takes to get signal back, not
+            // get silently dropped by a fixed retry counter.
+            entry.status = 'queued';
+            await persist();
+            break;
+          }
+          entry.attempts += 1;
+          if (entry.attempts >= MAX_ATTEMPTS) {
+            // A server WAS reached repeatedly and kept rejecting/erroring —
+            // genuinely gave up. This is the only case that should read as
+            // 'failed' to the user; being offline is expected and silent.
+            // KEPT in the queue (not removed): retryFileUpload/discardFileUpload
+            // need it to still exist to re-arm or clean up the on-device
+            // file — deleting it here would silently orphan that file AND
+            // make the UI's "Retry Upload" button a dead click with nothing
+            // left to retry.
+            entry.status = 'failed';
+            entry.failKind = 'upload';
+            entry.errorMessage = 'Upload failed — retry or capture again.';
+            await persist();
+            emitError(messageFor(status), entry.pinId);
+            continue;
+          }
+          // Still retrying — stays 'queued' so it reads as "saved, will
+          // send later" instead of a false alarm on every retry cycle.
+          entry.status = 'queued';
+          await persist();
+          break; // stop this pin's chain; scheduleNextAttempt() will retry
+        }
       }
-    }),
-  );
+    } finally {
+      inFlightPins.delete(pinId);
+    }
+  }
 
   if (!queue.length) {
     stopPolling();
@@ -533,28 +868,63 @@ function stopPolling(): void {
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /**
- * Persist a captured file to on-device storage and enqueue it for upload.
- * Returns immediately (the write to disk is the only awaited step) — the
- * actual network upload happens in the background via `flush()`.
+ * Register a captured file for upload and return quickly.
+ *
+ * 1. Pending-upload registry is updated synchronously so hydrate cannot drop
+ *    the pin during the await that follows.
+ * 2. Queue descriptor is persisted immediately.
+ * 3. The live `File` is kept in RAM and `flush()` starts the POST right away.
+ * 4. A background, chunked disk write makes the bytes survive an app kill —
+ *    without blocking the UI on a full-file base64 encode (the OOM/ANR cause).
  */
 export async function enqueueFileUpload(
   pinId: string,
   file: File,
   opts?: { stitchJobId?: string },
 ): Promise<void> {
+  // Never queue bytes for a pin the user already deleted — that is how
+  // "deleted" captures reappeared as Cloudinary stitches on the next login.
+  if (isTombstoned(pinId)) return;
+
+  // Sync BEFORE await load() — closes the hydrate race that dropped pins
+  // while Preferences was still being read.
+  addPendingUploadPin(pinId);
+
   await load();
-  const base64 = await fileToBase64(file);
-  const fileUri = `${FILE_DIR}/${Date.now()}_${seq++}_${file.name}`;
-  await Filesystem.writeFile({
-    path: fileUri,
-    data: base64,
-    directory: Directory.Data,
-    recursive: true,
-  });
+  if (isTombstoned(pinId)) {
+    removePendingUploadPin(pinId);
+    return;
+  }
+
+  // Backpressure: never hold more than MAX_MEMORY_FILES large captures in RAM.
+  let spillGuards = 0;
+  while (memoryFiles.size >= MAX_MEMORY_FILES && spillGuards++ < 80) {
+    await spillOldestMemoryFile();
+  }
+  // If every in-memory file is mid-upload, wait for a slot rather than
+  // ballooning heap (OOM → kill → lost capture before disk persist).
+  while (memoryFiles.size >= MAX_MEMORY_FILES && spillGuards++ < 200) {
+    await new Promise<void>(r => setTimeout(r, 400));
+    await spillOldestMemoryFile();
+  }
+
+  // A fresh photo on this pin replaces any prior failed attempt (corrupt
+  // stitch / exhausted retries). Do not leave the old bytes queued beside
+  // the new ones — that would re-send the bad file or block flush.
+  const priorFailed = queue.filter(e => e.pinId === pinId && e.status === 'failed');
+  if (priorFailed.length) {
+    for (const e of priorFailed) {
+      releaseEntryBytes(e);
+      void deleteLocalFile(e);
+    }
+    queue = queue.filter(e => !(e.pinId === pinId && e.status === 'failed'));
+  }
+
+  const id = `fq${Date.now()}_${seq++}`;
   queue.push({
-    id: `fq${Date.now()}_${seq++}`,
+    id,
     pinId,
-    fileUri,
+    fileUri: '',
     fileName: file.name,
     mimeType: file.type || 'image/jpeg',
     attempts: 0,
@@ -565,6 +935,10 @@ export async function enqueueFileUpload(
     status: opts?.stitchJobId ? 'processing' : 'queued',
     ...(opts?.stitchJobId ? { stitchJobId: opts.stitchJobId } : {}),
   });
+  if (!opts?.stitchJobId) {
+    memoryFiles.set(id, file);
+    scheduleDiskPersist(id, file);
+  }
   await persist();
   void flush();
 }
@@ -577,6 +951,23 @@ export function flushFileUploadQueue(): void {
 /** Current status of a pin's queued upload, if any (drives the pin marker UI). */
 export function fileUploadStatusForPin(pinId: string): FileUploadStatus | undefined {
   return queue.find(e => e.pinId === pinId)?.status;
+}
+
+/**
+ * Synchronous snapshot of every pin id with a queue entry right now, keyed to
+ * its status.
+ *
+ * The async `allQueuedPinStatuses` below exists to SEED a freshly-mounted page
+ * (it awaits the initial Preferences read). This one is for the change-event
+ * handler, which runs long after that read has resolved and needs the whole map
+ * synchronously — reading pin-by-pin with `fileUploadStatusForPin` can only tell
+ * a caller about pins it already knows, so it cannot notice a pin that has just
+ * GAINED an entry.
+ */
+export function queuedPinStatuses(): Record<string, FileUploadStatus> {
+  const out: Record<string, FileUploadStatus> = {};
+  for (const entry of queue) out[entry.pinId] = entry.status;
+  return out;
 }
 
 /**
@@ -602,24 +993,54 @@ export async function allQueuedPinStatuses(): Promise<Record<string, FileUploadS
  * Resets attempts to 0 — otherwise it would come back around to
  * MAX_ATTEMPTS on the very first retry and immediately re-fail permanently
  * again with no real second chance.
+ *
+ * Corrupt captures cannot be fixed by re-sending: no-op so the UI must
+ * offer Capture Again instead.
  */
 export function retryFileUpload(pinId: string): void {
   const entry = queue.find(e => e.pinId === pinId && e.status === 'failed');
-  if (!entry) return;
+  if (!entry || entry.failKind === 'corrupt') return;
   entry.attempts = 0;
   entry.status = 'queued';
+  delete entry.failKind;
+  delete entry.errorMessage;
   void persist().then(() => void flush());
+}
+
+/** User-facing failure copy for a pin stuck in 'failed', if any. */
+export function fileUploadErrorForPin(pinId: string): string | undefined {
+  const entry = queue.find(e => e.pinId === pinId && e.status === 'failed');
+  return entry?.errorMessage;
+}
+
+/** 'corrupt' → Capture Again; 'upload' → Retry Upload still makes sense. */
+export function fileUploadFailKindForPin(pinId: string): FileUploadFailKind | undefined {
+  return queue.find(e => e.pinId === pinId && e.status === 'failed')?.failKind;
 }
 
 /** Drop a pin's queued upload and its on-device file (e.g. the pin itself was deleted). */
 export async function discardFileUpload(pinId: string): Promise<void> {
+  // Sync first: hydrate/prune must not see this pin as "still uploading"
+  // while we await Preferences load/persist.
+  removePendingUploadPin(pinId);
   await load();
   const entries = queue.filter(e => e.pinId === pinId);
   queue = queue.filter(e => e.pinId !== pinId);
+  for (const e of entries) {
+    diskPersistCancelled.add(e.id);
+    memoryFiles.delete(e.id);
+  }
+  const abort = uploadAbortControllers.get(pinId);
+  if (abort) {
+    abort.abort();
+    uploadAbortControllers.delete(pinId);
+  }
   await persist();
   await Promise.all(
     entries.map(e =>
-      Filesystem.deleteFile({ path: e.fileUri, directory: Directory.Data }).catch(() => {}),
+      e.fileUri
+        ? Filesystem.deleteFile({ path: e.fileUri, directory: Directory.Data }).catch(() => {})
+        : Promise.resolve(),
     ),
   );
 }
@@ -630,11 +1051,35 @@ export function pendingFileUploadCount(): number {
 
 // ── Triggers ─────────────────────────────────────────────────────────────────
 
+const PIN_DELETED_EVENT = 'workflow:capture-pin-deleted';
+
+/**
+ * On reconnect: heal orphaned 'uploading' rows and flush. Do NOT abort healthy
+ * in-flight multipart bodies — aborting after OPTIONS but mid-body was leaving
+ * captures stuck and forcing full re-uploads of 12MB files (and more OOM risk).
+ * Dead sockets still fail via apiClient's 180s timeout / network error, then
+ * retry as status 0.
+ */
+async function onConnectivityRestored(): Promise<void> {
+  await load();
+  if (healOrphanedUploading()) await persist();
+  void flush();
+}
+
 if (typeof window !== 'undefined') {
   void load().then(() => void flush());
-  window.addEventListener('online', () => void flush());
+  window.addEventListener('online', () => void onConnectivityRestored());
   window.addEventListener('focus', () => void flush());
+  window.addEventListener(PIN_DELETED_EVENT, (e: Event) => {
+    const pinId = (e as CustomEvent<{ pinId?: string }>).detail?.pinId;
+    if (pinId) void discardFileUpload(pinId);
+  });
+  // Dynamic import avoids a cycle: this module → uploadService → apiClient →
+  // sessionRefresh (which emits the event we listen for).
+  void import('@/services/sessionRefresh').then(({ AUTH_SESSION_RESTORED_EVENT }) => {
+    window.addEventListener(AUTH_SESSION_RESTORED_EVENT, () => void flush());
+  });
   Network.addListener('networkStatusChange', status => {
-    if (status.connected) void flush();
+    if (status.connected) void onConnectivityRestored();
   });
 }

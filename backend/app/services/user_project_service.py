@@ -9,6 +9,7 @@ from app.core.exceptions import ConflictException, ForbiddenException, NotFoundE
 from app.models.user_project import UserProjectDocument
 from app.repositories.user import UserRepository
 from app.repositories.user_project import UserProjectRepository
+from app.services.security_audit import write_security_audit
 from app.schemas.user_project import (
     AssignmentResponse,
     CreateAssignmentRequest,
@@ -223,15 +224,12 @@ class UserProjectService:
         resource_id: str,
         payload: Optional[dict] = None,
     ) -> None:
-        try:
-            await self._db.audit_logs.insert_one({
-                "org_id": ObjectId(org_id) if ObjectId.is_valid(org_id) else org_id,
-                "actor_id": ObjectId(actor_id) if ObjectId.is_valid(actor_id) else actor_id,
-                "action": action,
-                "resource_type": "user_project",
-                "resource_id": ObjectId(resource_id) if ObjectId.is_valid(resource_id) else resource_id,
-                "payload": payload or {},
-                "created_at": datetime.now(timezone.utc),
-            })
-        except Exception as exc:
-            logger.error(f"Audit log write failed [{action}]: {exc}")
+        await write_security_audit(
+            self._db,
+            org_id=org_id,
+            actor_id=actor_id,
+            action=action,
+            resource_type="user_project",
+            resource_id=resource_id,
+            payload=payload,
+        )

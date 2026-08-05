@@ -29,6 +29,11 @@ function isNetworkError(error: unknown): boolean {
  */
 export type RestoreOutcome = 'restored' | 'no-session' | 'offline';
 
+/** Fired after a successful cookie→access-token exchange. Durable queues listen
+ *  so captures that hit 401 mid-upload resume immediately (isAuthenticated does
+ *  not flip on refresh, so WorkflowApiBootstrap alone will not re-flush). */
+export const AUTH_SESSION_RESTORED_EVENT = 'workflow:auth-session-restored';
+
 /**
  * Attempt to exchange the refresh cookie for a new access token.
  */
@@ -54,6 +59,9 @@ export function restoreSessionFromCookie(): Promise<RestoreOutcome> {
         },
       );
       setAccessToken(data.data.access_token);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(AUTH_SESSION_RESTORED_EVENT));
+      }
       return 'restored';
     } catch (error) {
       // Backend unreachable (offline, DNS failure, backend down) — keep the

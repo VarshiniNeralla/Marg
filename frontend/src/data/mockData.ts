@@ -454,8 +454,8 @@ export const permissionMatrix: PermissionMatrix[] = [
     role: 'field_engineer',
     modules: {
       projects:  ['view'],
-      captures:  ['view','create','edit'],
-      tours:     ['view'],
+      captures:  ['view','create','edit','delete'],
+      tours:     ['view','create','publish','edit','delete'],
       analytics: [],
       users:     [],
       settings:  [],
@@ -502,14 +502,22 @@ export type AuditEventType =
   | 'review_assigned'
   | 'project_created'
   | 'project_updated'
-  | 'progress_analysis_completed';
+  | 'progress_analysis_completed'
+  // Destructive events. These were absent, so nothing recorded WHO removed a
+  // capture/pin/room — when captures started disappearing there was no trail to
+  // read, only Cloudinary side effects to infer from. Deletions are the events
+  // an audit log exists for, so they are first-class now.
+  | 'capture_deleted'
+  | 'capture_pin_deleted'
+  | 'room_deleted'
+  | 'floor_plan_deleted';
 
 export interface MockAuditLog {
   id: string;
   actorId: string;
   actorName: string;
   eventType: AuditEventType;
-  entityType: 'capture' | 'tour' | 'defect' | 'floor_plan' | 'user' | 'project' | 'report';
+  entityType: 'capture' | 'tour' | 'defect' | 'floor_plan' | 'user' | 'project' | 'report' | 'room' | 'capture_pin';
   entityId: string;
   entityName: string;
   projectId: string | null;

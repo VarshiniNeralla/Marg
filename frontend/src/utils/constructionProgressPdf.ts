@@ -13,14 +13,14 @@ const STATUS_COLOR: Record<ActivityStatus, string> = {
 
 const HEATMAP_COLOR: Record<RoomHeatmapState, string> = {
   no_images: '#cbd5e1',
-  uploaded: '#0891b2',
+  uploaded: '#d97706', // legacy — same as in_progress
   in_progress: '#d97706',
   completed: '#16a34a',
 };
 
 const HEATMAP_LABEL: Record<RoomHeatmapState, string> = {
   no_images: 'No Photos Yet',
-  uploaded: 'Photographed — Not Started',
+  uploaded: 'Work In Progress',
   in_progress: 'Work In Progress',
   completed: 'Completed',
 };
@@ -112,28 +112,62 @@ function polygonToPoints(polygon: RoomHeatmapEntry['polygon']): string {
   return polygon.map(p => `${p.x},${p.y}`).join(' ');
 }
 
+function pointInPolygon(x: number, y: number, polygon: RoomHeatmapEntry['polygon']): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x;
+    const yi = polygon[i].y;
+    const xj = polygon[j].x;
+    const yj = polygon[j].y;
+    if ((yi > y) !== (yj > y) && x < xi + ((y - yi) * (xj - xi)) / (yj - yi)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function coloredRoomsForHeatmap(snapshot: FloorProgressSnapshot): RoomHeatmapEntry[] {
+  const colored = snapshot.roomHeatmap.filter(r => r.state !== 'no_images');
+  const pins = snapshot.heatmapPins;
+  if (!pins?.length) return colored;
+  return colored.filter(room =>
+    room.polygon?.length > 0 && pins.some(p => pointInPolygon(p.x, p.y, room.polygon)),
+  );
+}
+
 function buildHeatmapPage(snapshot: FloorProgressSnapshot): string | null {
   if (!snapshot.floorPlanImageUrl || snapshot.roomHeatmap.length === 0) return null;
 
   // Only rooms with real capture evidence get drawn — a grey box for every
   // uncaptured room makes the overlay unreadable and adds no information the
   // plain floor plan underneath doesn't already show (matches the live
-  // FloorPlanHeatmapOverlay.tsx behavior).
-  const coloredRooms = snapshot.roomHeatmap.filter(r => r.state !== 'no_images');
+  // FloorPlanHeatmapOverlay.tsx behavior). Prefer rooms that contain a
+  // snapshot pin tip so PDF markers/boxes stay aligned.
+  const coloredRooms = coloredRoomsForHeatmap(snapshot);
   const polygons = coloredRooms
     .map(r => `<polygon points="${polygonToPoints(r.polygon)}" fill="${HEATMAP_COLOR[r.state]}" fill-opacity="0.38" stroke="${HEATMAP_COLOR[r.state]}" stroke-width="0.3" />`)
+    .join('');
+  const pinMarkers = (snapshot.heatmapPins ?? [])
+    .map(p => {
+      // Teardrop tip at (x,y); circle center slightly above.
+      const cy = p.y - 1.8;
+      return `<g>
+        <circle cx="${p.x}" cy="${cy}" r="1.6" fill="#2563eb" stroke="#fff" stroke-width="0.35"/>
+        <text x="${p.x}" y="${cy}" text-anchor="middle" dominant-baseline="central" fill="#fff" font-size="1.6" font-weight="700">${p.sequenceNumber}</text>
+      </g>`;
+    })
     .join('');
 
   return `
     <h2 class="section-title page-intro">Floor Plan Heatmap</h2>
     <div class="heatmap-legend">
-      ${(Object.keys(HEATMAP_COLOR) as RoomHeatmapState[]).filter(state => state !== 'no_images').map(state => `
+      ${(Object.keys(HEATMAP_COLOR) as RoomHeatmapState[]).filter(state => state !== 'no_images' && state !== 'uploaded').map(state => `
         <div class="legend-item"><span class="legend-dot" style="background:${HEATMAP_COLOR[state]}"></span>${escapeHtml(HEATMAP_LABEL[state])}</div>
       `).join('')}
     </div>
     <div class="heatmap-frame avoid-break">
       <img src="${escapeHtml(snapshot.floorPlanImageUrl)}" alt="Floor plan" class="heatmap-img" />
-      <svg class="heatmap-svg" viewBox="0 0 100 100" preserveAspectRatio="none">${polygons}</svg>
+      <svg class="heatmap-svg" viewBox="0 0 100 100" preserveAspectRatio="none">${polygons}${pinMarkers}</svg>
     </div>
   `;
 }

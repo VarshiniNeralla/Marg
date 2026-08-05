@@ -58,11 +58,32 @@ export function setPendingUploadPins(pinIds: Iterable<string>): void {
 }
 
 /**
+ * Synchronously mark a pin as having an upload in flight BEFORE any async
+ * Preferences work. Closes the race where hydrate/prune runs between
+ * `enqueueFileUpload`'s start and its first `persist()` and drops the pin.
+ */
+export function addPendingUploadPin(pinId: string): void {
+  if (!pinId || pinsWithPendingUploads.has(pinId)) return;
+  pinsWithPendingUploads.add(pinId);
+  writeMirror([...pinsWithPendingUploads]);
+}
+
+/**
+ * Synchronously drop one pin from the pending set (e.g. on pin delete).
+ * Must run BEFORE any async Preferences discard so hydrate/prune cannot keep
+ * treating a deleted pin as "upload still in flight" for another tick.
+ */
+export function removePendingUploadPin(pinId: string): void {
+  if (!pinId || !pinsWithPendingUploads.has(pinId)) return;
+  pinsWithPendingUploads.delete(pinId);
+  writeMirror([...pinsWithPendingUploads]);
+}
+
+/**
  * Pins with unfinished upload/stitch work on this device.
  *
- * Only `setPendingUploadPins` mutates this — the durable queue calls it on every
- * persist, so the set is always a whole-queue snapshot rather than something
- * maintained by incremental add/remove calls that could drift out of sync.
+ * `setPendingUploadPins` replaces the whole set on every queue persist;
+ * `removePendingUploadPin` is the sync escape hatch for deletes.
  */
 export function pendingUploadPins(): ReadonlySet<string> {
   return pinsWithPendingUploads;

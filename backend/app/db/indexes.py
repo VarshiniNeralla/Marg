@@ -189,6 +189,14 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         [("org_id", ASCENDING), ("resource_type", ASCENDING), ("resource_id", ASCENDING)],
         name="audit_resource",
     )
+    # Canonical read path: every API query filters on the string `orgId` and
+    # splits project activity from the security/identity category, then sorts by
+    # `createdAt`. The two indexes above only cover the legacy snake_case keys,
+    # so neither served these queries.
+    await db.audit_logs.create_index(
+        [("orgId", ASCENDING), ("logCategory", ASCENDING), ("createdAt", DESCENDING)],
+        name="audit_org_category_created",
+    )
     # TTL: auto-purge audit logs after 365 days
     await db.audit_logs.create_index(
         [("created_at", ASCENDING)],

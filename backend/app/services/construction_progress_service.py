@@ -20,13 +20,204 @@ from app.services.construction_progress_providers import (
     ConstructionProgressProvider,
     VllmConstructionProgressProvider,
 )
-from app.services.room_map_service import RoomMapService, _COMMON_AREA_FLAT
+from app.services.flat_finishing_rosters import complete_flat_room_roster
+from app.services.pin_orphan_service import restore_orphan_pins_for_floor
+from app.services.room_map_service import (
+    RoomMapService,
+    _COMMON_AREA_FLAT,
+    _canonical_flat_label,
+    _point_in_polygon,
+    locate_pin,
+)
 
 _COLLECTION = "construction_progress_snapshots"
+_PIN_HALO_HALF = 2.5  # % of floor-plan width/height for per-pin fallback boxes
+# Grow room AABBs just enough to enclose pins that locate_pin already attributed
+# via its edge-tolerance (pins often sit 1–3% outside coarse AI grid boxes).
+_ROOM_EXPAND_PAD = 0.75
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _normalize_polygon(polygon: list[Any]) -> list[dict[str, float]]:
+    pts: list[dict[str, float]] = []
+    for p in polygon or []:
+        if isinstance(p, dict) and "x" in p and "y" in p:
+            pts.append({"x": float(p["x"]), "y": float(p["y"])})
+        elif isinstance(p, (list, tuple)) and len(p) >= 2:
+            pts.append({"x": float(p[0]), "y": float(p[1])})
+    return pts
+
+
+def _room_key(flat: str, room: str) -> tuple[str, str]:
+    return _canonical_flat_label(flat), str(room or "").strip().lower()
+
+
+def _aabb_polygon(x0: float, x1: float, y0: float, y1: float) -> list[dict[str, float]]:
+    x0 = max(0.0, min(100.0, x0))
+    x1 = max(0.0, min(100.0, x1))
+    y0 = max(0.0, min(100.0, y0))
+    y1 = max(0.0, min(100.0, y1))
+    return [
+        {"x": x0, "y": y0},
+        {"x": x1, "y": y0},
+        {"x": x1, "y": y1},
+        {"x": x0, "y": y1},
+    ]
+
+
+def _expand_polygon_to_include(
+    polygon: list[dict[str, float]],
+    points: list[tuple[float, float]],
+    *,
+    pad: float = _ROOM_EXPAND_PAD,
+) -> list[dict[str, float]]:
+    """Expand a room AABB so every attributed pin tip falls inside the drawn box."""
+    if not polygon:
+        return polygon
+    xs = [p["x"] for p in polygon]
+    ys = [p["y"] for p in polygon]
+    for x, y in points:
+        xs.append(x)
+        ys.append(y)
+    return _aabb_polygon(min(xs) - pad, max(xs) + pad, min(ys) - pad, max(ys) + pad)
+
+
+def _pin_halo_polygon(x: float, y: float, half: float = _PIN_HALO_HALF) -> list[dict[str, float]]:
+    return _aabb_polygon(x - half, x + half, y - half, y + half)
+
+
+def _align_heatmap_to_pins(
+    room_heatmap: list[dict[str, Any]],
+    *,
+    pins: list[dict[str, Any]],
+    captures: list[CaptureRef],
+    flats: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Lock pin labels to locate_pin; keep room-map polygons unexpanded.
+
+    Expanding AABBs so every attributed pin sits inside caused heavy overlap
+    (one pin inside neighbour boxes grew several rooms at once). Drawn boxes
+    stay as the room map extracted them; pin→room identity lives on
+    ``heatmapPins`` (used by the UI when a pin is clicked).
+    """
+    caps_by_pin: dict[str, list[CaptureRef]] = {}
+    for cap in captures:
+        if cap.pin_id:
+            caps_by_pin.setdefault(cap.pin_id, []).append(cap)
+
+    state_by_room: dict[tuple[str, str], str] = {
+        _room_key(str(r.get("flatName") or ""), str(r.get("roomName") or "")): str(
+            r.get("state") or "no_images"
+        )
+        for r in room_heatmap
+    }
+
+    heatmap_pins: list[dict[str, Any]] = []
+    for pin in pins:
+        pin_id = str(pin.get("_id") or pin.get("id") or "")
+        pin_caps = caps_by_pin.get(pin_id) or []
+        if not pin_caps:
+            continue
+        try:
+            x = float(pin.get("x"))
+            y = float(pin.get("y"))
+        except (TypeError, ValueError):
+            continue
+        # Start from capture attribution (same locate pass used for scoring),
+        # then re-resolve against the current room map so labels stay in sync.
+        flat_name = pin_caps[0].flat_name
+        room_name = pin_caps[0].room_name
+        located = locate_pin(flats, x, y)
+        resolved = located is not None
+        if located:
+            flat_name, room_name = located[0], located[1]
+            flat_name = _canonical_flat_label(flat_name)
+        state = state_by_room.get(_room_key(flat_name, room_name), "in_progress")
+        if state in ("no_images", "uploaded"):
+            state = "in_progress"
+        heatmap_pins.append({
+            "pinId": pin_id,
+            "sequenceNumber": int(pin.get("sequenceNumber") or pin.get("sequence_number") or 0),
+            "x": x,
+            "y": y,
+            "flatName": flat_name,
+            "roomName": room_name,
+            "state": state,
+            "capturesCount": len(pin_caps),
+            "resolved": resolved,
+        })
+
+    pins_by_room: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for p in heatmap_pins:
+        pins_by_room.setdefault(_room_key(p["flatName"], p["roomName"]), []).append(p)
+
+    aligned: list[dict[str, Any]] = []
+    covered_pin_ids: set[str] = set()
+    for room in room_heatmap:
+        state = str(room.get("state") or "no_images")
+        if state == "uploaded":
+            state = "in_progress"
+        flat_name = str(room.get("flatName") or "")
+        room_name = str(room.get("roomName") or "")
+        key = _room_key(flat_name, room_name)
+        if state == "no_images":
+            aligned.append({**room, "state": state})
+            continue
+        poly = _normalize_polygon(room.get("polygon") or [])
+        if not poly:
+            continue
+        room_pins = pins_by_room.get(key) or []
+        # Never paint a coarse AABB unless an attributed pin tip actually
+        # sits inside it — overlapping neighbour boxes were inventing
+        # "progress" wash on the wrong flat/room.
+        pins_inside = [
+            p for p in room_pins
+            if _point_in_polygon(float(p["x"]), float(p["y"]), poly)
+        ]
+        if room_pins and not pins_inside:
+            continue
+        if not room_pins:
+            # Colored without a resolved pin (should be rare) — skip wash.
+            continue
+        captures_count = max(
+            int(room.get("capturesCount") or 0),
+            sum(int(p["capturesCount"]) for p in room_pins),
+        )
+        # Photographed rooms keep their original map polygon — never expand
+        # into neighbours. Pins are listed on the room via heatmapPins.
+        aligned.append({
+            **room,
+            "polygon": poly,
+            "state": state,
+            "capturesCount": captures_count,
+            "pinNumbers": sorted(
+                {int(p["sequenceNumber"]) for p in pins_inside if p.get("sequenceNumber")}
+            ),
+        })
+        for p in pins_inside:
+            covered_pin_ids.add(p["pinId"])
+
+    # locate_pin miss (or name not on the room-map roster): personal halo so
+    # the pin still has a clickable room identity.
+    for p in heatmap_pins:
+        if p["pinId"] in covered_pin_ids:
+            continue
+        aligned.append({
+            "flatName": p["flatName"],
+            "roomName": p["roomName"],
+            "polygon": _pin_halo_polygon(p["x"], p["y"]),
+            "state": p["state"],
+            "capturesCount": p["capturesCount"],
+            "pinNumbers": [int(p["sequenceNumber"])] if p.get("sequenceNumber") else [],
+        })
+
+    for p in heatmap_pins:
+        p.pop("resolved", None)
+    heatmap_pins.sort(key=lambda p: p["sequenceNumber"])
+    return aligned, heatmap_pins
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -87,26 +278,97 @@ class ConstructionProgressService:
         }
 
     async def _get_capture_refs(self, org_id: str, floor_id: str, floor_plan_id: str) -> list[CaptureRef]:
-        """Floor -> capture_pins (real floorId) -> captureIds -> captures.
-        Captures themselves don't reliably carry floorId, so pins are the only
-        reliable join key from floor to its captures (confirmed empirically:
-        real capture docs commonly have floorId=None)."""
+        """Floor -> capture_pins -> captures (by captureIds AND by pin roomId).
+
+        Captures don't reliably carry floorId, so pins are the join key. Linking
+        used to require pin.captureIds only — when createCapture landed without
+        updateCapturePin(captureIds), the photo stayed in the gallery as an
+        orphan and never entered analysis. We also pull captures whose roomId
+        matches a pin's backing room and self-heal captureIds so the undercount
+        cannot recur.
+        """
         pins = await self._db["capture_pins"].find({"orgId": org_id, "floorId": floor_id}).to_list(length=1000)
+        # Pull floor-prefixed captures even when no pin exists yet — restore may
+        # have just recreated pins, but also covers mid-flight orphans.
+        if not pins:
+            # Last-chance restore when every pin was wiped but captures remain.
+            await restore_orphan_pins_for_floor(
+                self._db,
+                org_id=org_id,
+                floor_id=floor_id,
+                floor_plan_id=floor_plan_id or None,
+                resequence=True,
+            )
+            pins = await self._db["capture_pins"].find({"orgId": org_id, "floorId": floor_id}).to_list(length=1000)
         if not pins:
             return []
 
         capture_ids: list[str] = []
         pin_by_capture: dict[str, dict[str, Any]] = {}
+        pin_by_room: dict[str, dict[str, Any]] = {}
+        room_ids: list[str] = []
         for pin in pins:
-            for cid in pin.get("captureIds") or []:
-                capture_ids.append(cid)
-                pin_by_capture[cid] = pin
+            room_id = str(pin.get("roomId") or pin.get("room_id") or "")
+            if room_id:
+                pin_by_room[room_id] = pin
+                room_ids.append(room_id)
+            for cid in pin.get("captureIds") or pin.get("capture_ids") or []:
+                if not cid:
+                    continue
+                cid_s = str(cid)
+                capture_ids.append(cid_s)
+                pin_by_capture[cid_s] = pin
+
+        # Room-owned captures (may be missing from captureIds after a sync race).
+        room_captures: list[dict[str, Any]] = []
+        if room_ids:
+            room_captures = await self._db["captures"].find(
+                {
+                    "orgId": org_id,
+                    "$or": [
+                        {"roomId": {"$in": room_ids}},
+                        {"room_id": {"$in": room_ids}},
+                    ],
+                }
+            ).to_list(length=2000)
+
+        for cap in room_captures:
+            cap_id = str(cap.get("id") or cap.get("_id") or "")
+            if not cap_id:
+                continue
+            room_id = str(cap.get("roomId") or cap.get("room_id") or "")
+            pin = pin_by_room.get(room_id)
+            if not pin:
+                continue
+            if cap_id not in pin_by_capture:
+                # Self-heal: persist the missing link so gallery/analysis/pins converge.
+                pin_key = pin.get("_id") or pin.get("id")
+                if pin_key:
+                    await self._db["capture_pins"].update_one(
+                        {"_id": pin_key, "orgId": org_id},
+                        {"$addToSet": {"captureIds": cap_id}},
+                    )
+                    logger.info(
+                        "[construction-progress] healed orphan capture={} onto pin={} via roomId={}",
+                        cap_id, pin_key, room_id,
+                    )
+                pin_by_capture[cap_id] = pin
+                capture_ids.append(cap_id)
 
         if not capture_ids:
             return []
 
+        # Deduplicate ids while keeping order.
+        seen_ids: set[str] = set()
+        unique_ids: list[str] = []
+        for cid in capture_ids:
+            if cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            unique_ids.append(cid)
+
         captures = await self._db["captures"].find(
-            {"orgId": org_id, "$or": [{"_id": {"$in": capture_ids}}, {"id": {"$in": capture_ids}}]}
+            {"orgId": org_id, "$or": [{"_id": {"$in": unique_ids}}, {"id": {"$in": unique_ids}}]}
         ).to_list(length=2000)
 
         refs: list[CaptureRef] = []
@@ -172,49 +434,50 @@ class ConstructionProgressService:
         (`captures_by_room`, built directly from resolved pin->room captures)
         — NOT by whether the AI found confirmable activity evidence there.
         Those are different questions: a room can have real uploaded photos
-        that the model simply couldn't match to any checklist activity (still
-        "uploaded", genuinely photographed, just not scoreable yet), which
-        must not look identical to a room nobody has ever photographed at all
-        (previously both showed grey — this was the bug: only 1 of 63 rooms
-        ever got colored even when captures existed in several rooms, because
-        `activities_by_room` only has entries where the AI actually confirmed
-        something).
+        that the model simply couldn't match to any checklist activity. Product
+        rule: any photographed room is "in_progress" (field capture implies
+        work is underway) — never a separate "uploaded / unconfirmed" state.
+        Only rooms with zero captures stay "no_images".
         """
         if not floor_plan_id:
             return []
         cached = await self._room_maps.get_cached(floor_plan_id, org_id)
-        flats = (cached or {}).get("flats") or []
+        flats = await self._room_maps.get_sanitized_flats(
+            floor_plan_id, org_id, cached=cached,
+        )
 
         heatmap: list[dict[str, Any]] = []
         for flat_entry in flats:
-            flat_name = flat_entry.get("flat") or ""
+            flat_name = _canonical_flat_label(str(flat_entry.get("flat") or ""))
             for room in flat_entry.get("rooms") or []:
                 room_name = room.get("name") or ""
                 polygon = room.get("polygon") or []
                 key = (flat_name, room_name)
+                # Case-insensitive + legacy A/B/C flat labels so status isn't lost.
+                legacy_keys = [
+                    k for k in captures_by_room
+                    if str(k[1]).strip().lower() == str(room_name).strip().lower()
+                    and _canonical_flat_label(k[0]) == flat_name
+                ]
                 captures_count = captures_by_room.get(key, 0)
-                pcts = activities_by_room.get(key, [])
+                if not captures_count:
+                    captures_count = sum(captures_by_room.get(k, 0) for k in legacy_keys)
+                pcts = list(activities_by_room.get(key, []))
+                if not pcts:
+                    for k in activities_by_room:
+                        if (
+                            str(k[1]).strip().lower() == str(room_name).strip().lower()
+                            and _canonical_flat_label(k[0]) == flat_name
+                        ):
+                            pcts.extend(activities_by_room.get(k, []))
                 if captures_count == 0:
                     state = "no_images"
-                elif not pcts:
-                    state = "uploaded"
+                elif pcts and all(p >= COMPLETE_THRESHOLD for p in pcts):
+                    state = "completed"
                 else:
-                    # "Completed" requires EVERY confirmed activity in this
-                    # room to individually clear the threshold — not just an
-                    # average across them. An average let a room with e.g.
-                    # six activities at 100% and one at 60% still read
-                    # "Completed" (avg ~94%) here while the same room
-                    # correctly failed the stricter per-activity rule on the
-                    # Flat Finishing Works page, which is confusing since a
-                    # room is either genuinely fully done or it isn't — the
-                    # two views must never disagree on that.
-                    avg_pct = sum(pcts) / len(pcts)
-                    if all(p >= COMPLETE_THRESHOLD for p in pcts):
-                        state = "completed"
-                    elif avg_pct > 2:
-                        state = "in_progress"
-                    else:
-                        state = "uploaded"
+                    # Captured = work in progress, whether or not the model
+                    # returned activity percentages yet.
+                    state = "in_progress"
                 heatmap.append({
                     "flatName": flat_name,
                     "roomName": room_name,
@@ -232,7 +495,46 @@ class ConstructionProgressService:
             raise ValueError("Floor not found")
 
         as_of = as_of or _utcnow()
-        captures = await self._get_capture_refs(org_id, floor_id, context["floorPlanId"])
+        floor_plan_id = context.get("floorPlanId") or ""
+        # Upgrade / rebuild stale room maps (schema v2 drops Flat 01 (A)/(B)
+        # phantoms) before resolving pins, so capture assignment and heatmap
+        # share the same canonical flat list.
+        if floor_plan_id and context.get("floorPlanImageUrl"):
+            await self._room_maps.ensure_room_map(
+                floor_plan_id=floor_plan_id,
+                org_id=org_id,
+                image_url=str(context["floorPlanImageUrl"]),
+                force=False,
+            )
+        # Recreate pins for captures whose backing pin/room was deleted in a
+        # sync race — otherwise Images Analyzed undercounts and Pin N vanishes
+        # from the plan while still appearing in the gallery.
+        restored = await restore_orphan_pins_for_floor(
+            self._db,
+            org_id=org_id,
+            floor_id=floor_id,
+            floor_plan_id=floor_plan_id or None,
+            resequence=True,
+        )
+        if restored:
+            logger.info(
+                "[construction-progress] restored {} orphan pin(s) before analyze floor={}",
+                restored, floor_id,
+            )
+        captures = await self._get_capture_refs(org_id, floor_id, floor_plan_id)
+        # Defence-in-depth: never leave A/B/C on capture refs even if a stale
+        # map briefly resolved them that way.
+        captures = [
+            CaptureRef(
+                capture_id=c.capture_id,
+                pin_id=c.pin_id,
+                room_name=c.room_name,
+                flat_name=_canonical_flat_label(c.flat_name),
+                captured_at=c.captured_at,
+                image_url=c.image_url,
+            )
+            for c in captures
+        ]
         capture_lookup = {c.capture_id: c for c in captures}
 
         # "Flat Finishing Works" must reach 100% only once EVERY ROOM in every
@@ -245,19 +547,54 @@ class ConstructionProgressService:
         flat_units: list[str] = []
         common_area_units: list[str] = []
         flat_room_rosters: dict[str, list[str]] = {}
-        floor_plan_id = context.get("floorPlanId")
+        sanitized_flats: list[dict[str, Any]] = []
         if floor_plan_id:
             cached_room_map = await self._room_maps.get_cached(floor_plan_id, org_id)
-            for flat_entry in (cached_room_map or {}).get("flats") or []:
-                flat_name = flat_entry.get("flat") or ""
+            sanitized_flats = await self._room_maps.get_sanitized_flats(
+                floor_plan_id, org_id, cached=cached_room_map,
+            )
+            for flat_entry in sanitized_flats:
+                flat_name = _canonical_flat_label(str(flat_entry.get("flat") or ""))
                 if not flat_name:
                     continue
-                room_names = [r.get("name") or "" for r in flat_entry.get("rooms") or [] if r.get("name")]
+                # Preserve every room polygon on this flat (including duplicate
+                # Dress/Sit-Out after disambiguation). Order is stable for UI.
+                room_names = [
+                    str(r.get("name") or "").strip()
+                    for r in (flat_entry.get("rooms") or [])
+                    if str(r.get("name") or "").strip()
+                ]
                 if flat_name == _COMMON_AREA_FLAT:
                     common_area_units = room_names
                 else:
                     flat_units.append(flat_name)
-                    flat_room_rosters[flat_name] = room_names
+                    # Guarantee every functional room on the floor plan appears
+                    # in Flat Finishing (extract/sanitize often omit Kitchen,
+                    # Multi-Purpose, labeled Dress/Balcony, etc.).
+                    flat_room_rosters[flat_name] = complete_flat_room_roster(
+                        flat_name, room_names,
+                    )
+
+        # Any pin-attributed room must appear in Flat Finishing even if the
+        # room-map roster briefly omitted it (name drift / late sanitize).
+        for cap in captures:
+            fname = _canonical_flat_label(cap.flat_name)
+            rname = str(cap.room_name or "").strip()
+            if not fname or not rname or fname == _COMMON_AREA_FLAT or fname == "Unknown":
+                continue
+            roster = flat_room_rosters.setdefault(fname, [])
+            if fname not in flat_units:
+                flat_units.append(fname)
+            if rname not in roster:
+                roster.append(rname)
+
+        # Re-complete after capture union so templates still fill gaps.
+        for fname in list(flat_room_rosters.keys()):
+            if fname == _COMMON_AREA_FLAT:
+                continue
+            flat_room_rosters[fname] = complete_flat_room_roster(
+                fname, flat_room_rosters[fname],
+            )
 
         result = await self._provider.assess_floor_progress(
             floor_id=floor_id,
@@ -312,6 +649,22 @@ class ConstructionProgressService:
             org_id, context["floorPlanId"], activities_by_room, captures_by_room
         )
 
+        pins_for_align = await self._db["capture_pins"].find(
+            {"orgId": org_id, "floorId": floor_id}
+        ).to_list(length=1000)
+        flats_for_align: list[dict[str, Any]] = []
+        if floor_plan_id:
+            cached_for_align = await self._room_maps.get_cached(floor_plan_id, org_id)
+            flats_for_align = await self._room_maps.get_sanitized_flats(
+                floor_plan_id, org_id, cached=cached_for_align,
+            )
+        room_heatmap, heatmap_pins = _align_heatmap_to_pins(
+            room_heatmap,
+            pins=pins_for_align,
+            captures=captures,
+            flats=flats_for_align,
+        )
+
         # Three honest buckets, not two: lumping "actively being worked on,
         # with real photos" together with "never photographed at all" under
         # one "pending" number is what made a floor with visible in-progress
@@ -319,6 +672,7 @@ class ConstructionProgressService:
         # from a floor nobody has touched yet.
         rooms_completed = sum(1 for r in room_heatmap if r["state"] == "completed")
         rooms_in_progress = sum(1 for r in room_heatmap if r["state"] in ("uploaded", "in_progress"))
+        # Legacy snapshots may still carry "uploaded"; treat as in_progress for counts.
         rooms_not_started = sum(1 for r in room_heatmap if r["state"] == "no_images")
         # ActivityStatus has its own explicit "no_evidence" state now — an
         # activity nobody has photographed anywhere is never mislabelled
@@ -368,6 +722,126 @@ class ConstructionProgressService:
             for fp in result.flat_progress
         ]
 
+        # Guarantee every flat's full room-map roster is present in Flat
+        # Finishing Works (provider may omit empty rooms on some paths).
+        by_flat_doc = {
+            _canonical_flat_label(str(d["flatName"])): d for d in flat_progress_docs
+        }
+        for flat_name, room_names in flat_room_rosters.items():
+            doc_fp = by_flat_doc.get(flat_name)
+            if doc_fp is None:
+                doc_fp = {
+                    "flatName": flat_name,
+                    "completionPct": 0.0,
+                    "roomsComplete": 0,
+                    "roomsTotal": len(room_names),
+                    "rooms": [],
+                }
+                flat_progress_docs.append(doc_fp)
+                by_flat_doc[flat_name] = doc_fp
+            existing = {str(r.get("roomName") or "") for r in doc_fp["rooms"]}
+            for room_name in room_names:
+                if room_name in existing:
+                    continue
+                doc_fp["rooms"].append({
+                    "roomName": room_name,
+                    "isComplete": False,
+                    "activities": [],
+                    "pinNumbers": [],
+                    "capturesCount": 0,
+                })
+                existing.add(room_name)
+            # Stable alphabetical order so every flat reads consistently.
+            doc_fp["rooms"].sort(key=lambda r: str(r.get("roomName") or "").lower())
+
+        # Attach pin numbers + capture counts so Flat Finishing Works can show
+        # every roster room with accurate coverage (not "No Photos Yet" when
+        # pins/captures exist under that room name).
+        # Prefer geometric pin→room from heatmapPins (unique names after
+        # disambiguation); fall back to name key for older snapshots.
+        pins_by_room_key: dict[tuple[str, str], list[int]] = {}
+        for p in heatmap_pins:
+            pins_by_room_key.setdefault(
+                _room_key(str(p["flatName"]), str(p["roomName"])), []
+            ).append(int(p["sequenceNumber"]))
+        # Also fold pin rooms into roster (same guarantee as captures above).
+        for p in heatmap_pins:
+            fname = _canonical_flat_label(str(p.get("flatName") or ""))
+            rname = str(p.get("roomName") or "").strip()
+            if not fname or not rname or fname in (_COMMON_AREA_FLAT, "Unknown"):
+                continue
+            doc_fp = by_flat_doc.get(fname)
+            if doc_fp is None:
+                continue
+            if not any(str(r.get("roomName") or "") == rname for r in doc_fp["rooms"]):
+                doc_fp["rooms"].append({
+                    "roomName": rname,
+                    "isComplete": False,
+                    "activities": [],
+                    "pinNumbers": [],
+                    "capturesCount": 0,
+                })
+                doc_fp["rooms"].sort(key=lambda r: str(r.get("roomName") or "").lower())
+
+        caps_by_room_key = {
+            _room_key(flat, room): count
+            for (flat, room), count in captures_by_room.items()
+        }
+        # Polygon lookup for rooms that share a base name (Dress ×3).
+        room_poly_by_flat: dict[str, list[tuple[str, list[dict[str, float]]]]] = {}
+        for flat_entry in flats_for_align:
+            fname = _canonical_flat_label(str(flat_entry.get("flat") or ""))
+            for r in flat_entry.get("rooms") or []:
+                poly = _normalize_polygon(r.get("polygon") or [])
+                if poly:
+                    room_poly_by_flat.setdefault(fname, []).append(
+                        (str(r.get("name") or ""), poly)
+                    )
+
+        for fp in flat_progress_docs:
+            fname = _canonical_flat_label(str(fp["flatName"]))
+            for room in fp["rooms"]:
+                rname = str(room["roomName"])
+                key = _room_key(fname, rname)
+                pin_nums = sorted({n for n in pins_by_room_key.get(key, []) if n})
+                polys = [
+                    poly for n, poly in room_poly_by_flat.get(fname, [])
+                    if n == rname
+                ]
+                if polys and heatmap_pins:
+                    inside = []
+                    for p in heatmap_pins:
+                        if _canonical_flat_label(str(p["flatName"])) != fname:
+                            continue
+                        try:
+                            px, py = float(p["x"]), float(p["y"])
+                        except (TypeError, ValueError):
+                            continue
+                        if any(_point_in_polygon(px, py, poly) for poly in polys):
+                            seq = int(p.get("sequenceNumber") or 0)
+                            if seq:
+                                inside.append(seq)
+                    if inside:
+                        pin_nums = sorted(set(inside))
+                room["pinNumbers"] = pin_nums
+                room["capturesCount"] = int(caps_by_room_key.get(key, 0) or len(pin_nums))
+                if int(room["capturesCount"] or 0) <= 0:
+                    room["activities"] = []
+                    room["isComplete"] = False
+            complete = sum(1 for r in fp["rooms"] if r.get("isComplete"))
+            total = len(fp["rooms"])
+            fp["roomsComplete"] = complete
+            fp["roomsTotal"] = total
+            fp["completionPct"] = round((complete / total) * 100, 1) if total else 0.0
+
+        # Prefer residential flats first in the Flat Finishing dropdown.
+        flat_progress_docs.sort(
+            key=lambda d: (
+                0 if str(d.get("flatName") or "").lower().startswith("flat") else 1,
+                str(d.get("flatName") or ""),
+            )
+        )
+
         doc = {
             "orgId": org_id,
             "projectId": context["projectId"],
@@ -385,6 +859,7 @@ class ConstructionProgressService:
             "imagesAnalyzedCount": len(captures),
             "activities": activity_docs,
             "roomHeatmap": room_heatmap,
+            "heatmapPins": heatmap_pins,
             "flatProgress": flat_progress_docs,
             "summaryCards": {
                 "roomsCompleted": rooms_completed,
@@ -455,24 +930,26 @@ class ConstructionProgressService:
         async for row in self._db[_COLLECTION].aggregate(pipeline):
             latest_by_floor[str(row["_id"])] = row["doc"]
 
-        # A floor only counts as having captures if at least one of its pins
-        # has a captureIds entry that resolves to a REAL capture document —
-        # dangling/stale pin references (known to exist from earlier data)
-        # must not make an empty floor appear analyzable.
+        # A floor counts as having captures if any pin on it links a real capture
+        # via captureIds OR owns a capture through its backing roomId (orphans
+        # healed at analyze time still need to make the floor listable).
         pins = await self._db["capture_pins"].find(
-            {"orgId": org_id, "captureIds.0": {"$exists": True}}
+            {"orgId": org_id}
         ).to_list(length=5000)
         candidate_capture_ids: set[str] = set()
+        room_ids_by_floor: dict[str, list[str]] = {}
         pin_ids_by_floor: dict[str, list[str]] = {}
         for pin in pins:
             fid = str(pin.get("floorId") or "")
             if not fid:
                 continue
-            ids = [cid for cid in (pin.get("captureIds") or []) if cid]
-            if not ids:
-                continue
-            pin_ids_by_floor.setdefault(fid, []).extend(ids)
-            candidate_capture_ids.update(ids)
+            room_id = str(pin.get("roomId") or pin.get("room_id") or "")
+            if room_id:
+                room_ids_by_floor.setdefault(fid, []).append(room_id)
+            ids = [str(cid) for cid in (pin.get("captureIds") or pin.get("capture_ids") or []) if cid]
+            if ids:
+                pin_ids_by_floor.setdefault(fid, []).extend(ids)
+                candidate_capture_ids.update(ids)
 
         existing_capture_ids: set[str] = set()
         if candidate_capture_ids:
@@ -489,10 +966,29 @@ class ConstructionProgressService:
             async for doc in cursor:
                 existing_capture_ids.add(str(doc.get("id") or doc.get("_id") or ""))
 
+        floors_with_room_captures: set[str] = set()
+        all_room_ids = [rid for rids in room_ids_by_floor.values() for rid in rids]
+        if all_room_ids:
+            async for doc in self._db["captures"].find(
+                {
+                    "orgId": org_id,
+                    "$or": [
+                        {"roomId": {"$in": all_room_ids}},
+                        {"room_id": {"$in": all_room_ids}},
+                    ],
+                },
+                {"roomId": 1, "room_id": 1},
+            ):
+                rid = str(doc.get("roomId") or doc.get("room_id") or "")
+                for fid, rids in room_ids_by_floor.items():
+                    if rid in rids:
+                        floors_with_room_captures.add(fid)
+                        break
+
         floors_with_captures = {
             fid for fid, cids in pin_ids_by_floor.items()
             if any(cid in existing_capture_ids for cid in cids)
-        }
+        } | floors_with_room_captures
 
         summaries: list[dict[str, Any]] = []
         for floor in floors:
@@ -584,6 +1080,7 @@ def _serialize_snapshot(doc: dict[str, Any] | None) -> dict[str, Any] | None:
         "imagesAnalyzedCount": doc.get("imagesAnalyzedCount", 0),
         "activities": doc.get("activities", []),
         "roomHeatmap": doc.get("roomHeatmap", []),
+        "heatmapPins": doc.get("heatmapPins", []),
         "flatProgress": doc.get("flatProgress", []),
         "summaryCards": doc.get("summaryCards", {}),
         "executiveSummary": doc.get("executiveSummary", ""),

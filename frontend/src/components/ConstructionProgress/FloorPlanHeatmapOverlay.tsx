@@ -4,29 +4,94 @@ import { MapRounded, CloseRounded, ImageNotSupportedRounded } from '@mui/icons-m
 import { colors } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getCapturePinsByFloorPlan } from '@store/workflowSelectors';
-import type { RoomHeatmapEntry, RoomHeatmapState } from '@/services/constructionProgressService';
+import type {
+  HeatmapPinMarker,
+  RoomHeatmapEntry,
+  RoomHeatmapState,
+} from '@/services/constructionProgressService';
 
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#ffffff' };
 
-const STATE_COLOR: Record<RoomHeatmapState, string> = {
+/** Fold legacy "uploaded" into in_progress — capture always implies work underway. */
+function displayState(state: RoomHeatmapState): Exclude<RoomHeatmapState, 'uploaded'> {
+  return state === 'uploaded' ? 'in_progress' : state;
+}
+
+const STATE_COLOR: Record<Exclude<RoomHeatmapState, 'uploaded'>, string> = {
   no_images: '#cbd5e1',
-  uploaded: colors.info,
   in_progress: colors.warning,
   completed: colors.success,
 };
 
-const STATE_LABEL: Record<RoomHeatmapState, string> = {
+const STATE_LABEL: Record<Exclude<RoomHeatmapState, 'uploaded'>, string> = {
   no_images: 'No Photos Uploaded Yet',
-  uploaded: 'Photographed — Not Started',
   in_progress: 'Work In Progress',
   completed: 'Completed',
 };
+
+const LEGEND_STATES: Array<Exclude<RoomHeatmapState, 'uploaded' | 'no_images'>> = [
+  'in_progress',
+  'completed',
+];
 
 function polygonToPoints(polygon: RoomHeatmapEntry['polygon']): string {
   return polygon.map(p => `${p.x},${p.y}`).join(' ');
 }
 
-function RoomDetailPanel({ room, onClose }: { room: RoomHeatmapEntry; onClose: () => void }) {
+function pointInPolygon(x: number, y: number, polygon: RoomHeatmapEntry['polygon']): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x;
+    const yi = polygon[i].y;
+    const xj = polygon[j].x;
+    const yj = polygon[j].y;
+    if ((yi > y) !== (yj > y) && x < xi + ((y - yi) * (xj - xi)) / (yj - yi)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/** Only keep colored rooms that belong to at least one photographed pin tip. */
+function roomsAlignedToPins(
+  rooms: RoomHeatmapEntry[],
+  pins: Array<{ x: number; y: number }>,
+  heatmapPins?: HeatmapPinMarker[],
+): RoomHeatmapEntry[] {
+  const colored = rooms.filter(r => displayState(r.state) !== 'no_images' && r.polygon?.length);
+  if (heatmapPins && heatmapPins.length > 0) {
+    // Name match alone is not enough — overlapping AABBs from neighbour flats
+    // must not paint wash unless the attributed pin tip is inside the box.
+    return colored.filter(room => {
+      if (/^Pin\s+\d+$/i.test(room.roomName)) {
+        const seq = Number(room.roomName.replace(/^Pin\s+/i, ''));
+        const hp = heatmapPins.find(p => p.sequenceNumber === seq);
+        if (hp && !/^Pin\s+\d+$/i.test(hp.roomName) && hp.roomName !== 'Unknown') {
+          return false;
+        }
+        return true;
+      }
+      const attributed = heatmapPins.filter(p =>
+        p.flatName === room.flatName
+        && p.roomName.localeCompare(room.roomName, undefined, { sensitivity: 'base' }) === 0,
+      );
+      return attributed.some(p => pointInPolygon(p.x, p.y, room.polygon));
+    });
+  }
+  if (pins.length === 0) return colored;
+  return colored.filter(room => pins.some(p => pointInPolygon(p.x, p.y, room.polygon)));
+}
+
+type RoomPanelInfo = {
+  roomName: string;
+  flatName: string;
+  state: RoomHeatmapState;
+  capturesCount: number;
+  pinLabel?: string;
+};
+
+function RoomDetailPanel({ room, onClose }: { room: RoomPanelInfo; onClose: () => void }) {
+  const state = displayState(room.state);
   return (
     <Modal open onClose={onClose} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', p: 2 }}>
       <Box sx={{ width: '100%', maxWidth: 420, backgroundColor: '#fff', borderRadius: '16px', p: 3, outline: 'none' }}>
@@ -38,27 +103,29 @@ function RoomDetailPanel({ room, onClose }: { room: RoomHeatmapEntry; onClose: (
             <CloseRounded sx={{ fontSize: 20 }} />
           </IconButton>
         </Box>
-        <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, mb: 2 }}>
+        <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, mb: 0.75 }}>
           {room.flatName}
         </Typography>
+        {room.pinLabel && (
+          <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.primary, mb: 2 }}>
+            {room.pinLabel}
+          </Typography>
+        )}
         <Box
           sx={{
             display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 1.25, py: 0.5,
-            borderRadius: '8px', backgroundColor: `${STATE_COLOR[room.state]}18`, mb: 2,
+            borderRadius: '8px', backgroundColor: `${STATE_COLOR[state]}18`, mb: 2,
           }}
         >
-          <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: STATE_COLOR[room.state] }} />
-          <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: STATE_COLOR[room.state] }}>
-            {STATE_LABEL[room.state]}
+          <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: STATE_COLOR[state] }} />
+          <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: STATE_COLOR[state] }}>
+            {STATE_LABEL[state]}
           </Typography>
         </Box>
         <Typography sx={{ fontSize: '0.875rem', color: colors.textBody }}>
-          {room.state === 'no_images' &&
-            'No 360° capture has been taken in this room yet — ask the field engineer to photograph it so it can be included in the next analysis.'}
-          {room.state === 'uploaded' &&
-            `${room.capturesCount} capture${room.capturesCount === 1 ? '' : 's'} analyzed, but the AI could not confirm any finishing work has started here yet — this could mean the room is genuinely untouched, or the photo doesn't clearly show enough to tell.`}
-          {(room.state === 'in_progress' || room.state === 'completed') &&
-            `${room.capturesCount} capture${room.capturesCount === 1 ? '' : 's'} analyzed for this room.`}
+          {state === 'no_images'
+            ? 'No 360° capture has been taken in this room yet — ask the field engineer to photograph it so it can be included in the next analysis.'
+            : `${room.capturesCount} capture${room.capturesCount === 1 ? '' : 's'} analyzed for this room.`}
         </Typography>
       </Box>
     </Modal>
@@ -69,18 +136,78 @@ export default function FloorPlanHeatmapOverlay({
   floorPlanImageUrl,
   floorPlanId,
   rooms,
+  heatmapPins,
 }: {
   floorPlanImageUrl: string;
   floorPlanId: string;
   rooms: RoomHeatmapEntry[];
+  /** Frozen at analysis — preferred over live workflow pins when present. */
+  heatmapPins?: HeatmapPinMarker[];
 }) {
-  const [selectedRoom, setSelectedRoom] = useState<RoomHeatmapEntry | null>(null);
+  const [selectedRoom, setSelectedRoom] = useState<RoomPanelInfo | null>(null);
   const [imgLoaded, setImgLoaded] = useState(false);
   const allPins = useWorkflowStore(s => s.capturePins);
-  const pins = floorPlanId ? getCapturePinsByFloorPlan(allPins, floorPlanId) : [];
+  const livePins = floorPlanId ? getCapturePinsByFloorPlan(allPins, floorPlanId) : [];
 
-  const noImageCount = rooms.filter(r => r.state === 'no_images').length;
+  // Snapshot pins keep markers glued to the boxes from the same analysis.
+  // Live pins are a fallback for older snapshots that predate heatmapPins.
+  const pins: Array<{
+    id: string;
+    sequenceNumber: number;
+    x: number;
+    y: number;
+    roomName?: string;
+    flatName?: string;
+    state?: RoomHeatmapState;
+    capturesCount?: number;
+  }> =
+    heatmapPins && heatmapPins.length > 0
+      ? heatmapPins.map(p => ({
+          id: p.pinId,
+          sequenceNumber: p.sequenceNumber,
+          x: p.x,
+          y: p.y,
+          roomName: p.roomName,
+          flatName: p.flatName,
+          state: p.state,
+          capturesCount: p.capturesCount,
+        }))
+      : livePins.map(p => ({
+          id: p.id,
+          sequenceNumber: p.sequenceNumber,
+          x: p.x,
+          y: p.y,
+        }));
+
+  const visibleRooms = roomsAlignedToPins(rooms, pins, heatmapPins);
+
+  const noImageCount = rooms.filter(r => displayState(r.state) === 'no_images').length;
   const coverageGapShare = rooms.length > 0 ? noImageCount / rooms.length : 0;
+
+  function openPinRoom(pin: (typeof pins)[number]) {
+    // Prefer the pin's attributed room from the analysis snapshot — never
+    // resolve via overlapping polygons (that was the wrong-room click bug).
+    if (pin.roomName && pin.flatName) {
+      setSelectedRoom({
+        roomName: pin.roomName,
+        flatName: pin.flatName,
+        state: pin.state ?? 'in_progress',
+        capturesCount: pin.capturesCount ?? 1,
+        pinLabel: `Pin ${pin.sequenceNumber}`,
+      });
+      return;
+    }
+    const match = visibleRooms.find(r => pointInPolygon(pin.x, pin.y, r.polygon));
+    if (match) {
+      setSelectedRoom({
+        roomName: match.roomName,
+        flatName: match.flatName,
+        state: match.state,
+        capturesCount: match.capturesCount,
+        pinLabel: `Pin ${pin.sequenceNumber}`,
+      });
+    }
+  }
 
   return (
     <Box sx={{ p: 3, borderRadius: '14px', backgroundColor: P.white, border: `1.5px solid ${P.border}` }}>
@@ -92,10 +219,7 @@ export default function FloorPlanHeatmapOverlay({
           </Typography>
         </Box>
         <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
-          {/* 'no_images' is never drawn on the plan (see the polygon filter below),
-              so it has no swatch here either — a legend entry for a color that
-              never appears would just be confusing. */}
-          {(Object.keys(STATE_COLOR) as RoomHeatmapState[]).filter(state => state !== 'no_images').map(state => (
+          {LEGEND_STATES.map(state => (
             <Box key={state} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
               <Box sx={{ width: 9, height: 9, borderRadius: '3px', backgroundColor: STATE_COLOR[state] }} />
               <Typography sx={{ fontSize: '0.6875rem', color: P.muted }}>{STATE_LABEL[state]}</Typography>
@@ -141,39 +265,39 @@ export default function FloorPlanHeatmapOverlay({
             <svg
               viewBox="0 0 100 100"
               preserveAspectRatio="none"
-              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
             >
-              {/* Only rooms with real capture evidence get a colored box — a grey
-                  box for every uncaptured room made the overlay unreadable (every
-                  room on the floor outlined at once) and added no information the
-                  plain floor plan underneath doesn't already show. A room with no
-                  photos yet is simply left unmarked. */}
-              {rooms.filter(room => room.state !== 'no_images').map((room, i) => (
-                <polygon
-                  key={i}
-                  points={polygonToPoints(room.polygon)}
-                  fill={STATE_COLOR[room.state]}
-                  fillOpacity={0.35}
-                  stroke={STATE_COLOR[room.state]}
-                  strokeWidth={0.3}
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => setSelectedRoom(room)}
-                />
-              ))}
+              {/* Room progress wash — visual only. Room identity comes from
+                  clicking a pin (heatmapPins attribution), not overlapping boxes. */}
+              {visibleRooms.map((room, i) => {
+                const state = displayState(room.state);
+                return (
+                  <polygon
+                    key={i}
+                    points={polygonToPoints(room.polygon)}
+                    fill={STATE_COLOR[state]}
+                    fillOpacity={0.12}
+                    stroke={STATE_COLOR[state]}
+                    strokeOpacity={0.45}
+                    strokeWidth={0.2}
+                  />
+                );
+              })}
             </svg>
 
-            {/* Pin markers — plain absolutely-positioned HTML, not part of the
-                SVG above: that SVG uses preserveAspectRatio="none" (non-uniform
-                stretch) to line polygons up with the floor plan image, which
-                would visually distort a circle/number marker. Pins use the
-                same %-based left/top + translate(-50%,-100%) convention as
-                CaptureWorkflowPage.tsx's floor-plan pin markers. */}
+            {/* Pin markers — clickable; open the attributed room panel. */}
             {pins.map(pin => (
               <Box
                 key={pin.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openPinRoom(pin);
+                }}
                 sx={{
                   position: 'absolute', left: `${pin.x}%`, top: `${pin.y}%`,
                   transform: 'translate(-50%, -100%)', zIndex: 2,
+                  cursor: 'pointer',
+                  '&:hover > div': { transform: 'rotate(-45deg) scale(1.08)' },
                 }}
               >
                 <Box
@@ -182,6 +306,7 @@ export default function FloorPlanHeatmapOverlay({
                     transform: 'rotate(-45deg)', backgroundColor: colors.primary,
                     border: '2px solid #fff', boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'transform 0.12s ease',
                   }}
                 >
                   <Typography sx={{ fontSize: '0.625rem', fontWeight: 800, color: '#fff', transform: 'rotate(45deg)' }}>

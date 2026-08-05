@@ -22,8 +22,10 @@
  *   • Permanent client errors (validation/permission) are dropped instead of
  *     blocking the queue forever, and surfaced to the user via a toast event.
  */
+import { Network } from '@capacitor/network';
 import { workflowApiService } from '@/services/workflowApiService';
 import { useAuthStore } from './authStore';
+import { isTombstoned } from './tombstones';
 
 const QUEUE_KEY = 'sitesurelabs-write-queue-v1';
 const MAX_QUEUE = 1000;
@@ -102,6 +104,11 @@ function isPermanent(status: number): boolean {
   return status === 400 || status === 403 || status === 404 || status === 409 || status === 422;
 }
 
+/** status 0 = never reached a server (offline / DNS / timeout). Must not burn attempts. */
+function isUnreachable(status: number): boolean {
+  return status === 0;
+}
+
 function emitError(message: string, status: number, context?: string): void {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(
@@ -117,7 +124,51 @@ function emitRecovered(): void {
 function messageForStatus(status: number): string {
   if (status === 403) return 'You do not have permission to save that change.';
   if (status === 401) return 'Your session expired — please sign in again to save changes.';
-  return 'A change could not be saved to the server. It will retry automatically.';
+  return 'A change could not be saved to the server and will not be retried. Please try again manually.';
+}
+
+/**
+ * A 404 on a delete op means the record is already gone from the server —
+ * exactly the outcome the user wanted, just arrived at from a different
+ * path (e.g. this device's queue still had a stale delete queued for
+ * something already removed elsewhere). That's a no-op success, not a
+ * failure, and should never surface an error toast.
+ */
+function isNoopDelete(op: string, status: number): boolean {
+  return status === 404 && op.startsWith('delete');
+}
+
+/** True if this write would recreate or patch an intentionally deleted id. */
+function writeTargetsTombstone(entry: PendingWrite): boolean {
+  if (
+    entry.op === 'deleteCapturePin' ||
+    entry.op === 'deleteRoom' ||
+    entry.op === 'deleteCapture' ||
+    entry.op === 'deleteTour' ||
+    entry.op === 'deleteFloorPlan'
+  ) {
+    return false;
+  }
+  if (
+    entry.op === 'createCapturePin' ||
+    entry.op === 'createRoom' ||
+    entry.op === 'createCapture' ||
+    entry.op === 'createTour' ||
+    entry.op === 'createFloorPlan'
+  ) {
+    const id = (entry.args[0] as { id?: string } | undefined)?.id;
+    return !!id && isTombstoned(id);
+  }
+  if (
+    entry.op === 'updateCapturePin' ||
+    entry.op === 'updateRoom' ||
+    entry.op === 'updateCapture' ||
+    entry.op === 'updateTour'
+  ) {
+    const id = entry.args[0] as string | undefined;
+    return !!id && isTombstoned(id);
+  }
+  return false;
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
@@ -143,7 +194,12 @@ async function flush(): Promise<void> {
   if (typeof window === 'undefined') return;
   if (!queue.length) return;
   // Don't hammer the API (and trigger login redirects) while signed out.
-  if (!useAuthStore.getState().isAuthenticated) return;
+  // Still arm the poll so a backlog taken offline / mid-refresh retries once
+  // auth returns — matching fileUploadQueue's auth-blocked behaviour.
+  if (!useAuthStore.getState().isAuthenticated) {
+    startPolling();
+    return;
+  }
 
   flushing = true;
   try {
@@ -151,6 +207,16 @@ async function flush(): Promise<void> {
     // (a create is never overtaken by a later update of the same entity).
     while (queue.length) {
       const entry = queue[0];
+
+      // Never recreate/update an entity the client already deleted. Leftover
+      // createCapturePin / updateCapturePin entries after a pin delete were
+      // resurrecting deleted pins on the next login (then file uploads attached).
+      if (writeTargetsTombstone(entry)) {
+        queue.shift();
+        save();
+        continue;
+      }
+
       try {
         await dispatch(entry);
         queue.shift();
@@ -165,17 +231,28 @@ async function flush(): Promise<void> {
         }
 
         if (isPermanent(status)) {
-          // Won't ever succeed — drop it so the queue can make progress, but
-          // tell the user their change wasn't saved.
+          // Won't ever succeed — drop it so the queue can make progress.
           queue.shift();
           save();
-          emitError(messageForStatus(status), status, entry.context);
+          if (!isNoopDelete(entry.op, status)) {
+            // Tell the user their change wasn't saved — unless this was a
+            // delete for something already gone, which is a no-op success.
+            emitError(messageForStatus(status), status, entry.context);
+          }
           continue;
         }
 
-        // Transient (network / 0 / 429 / 5xx). Count it; give up only after
-        // MAX_ATTEMPTS so a poison entry can't wedge the queue forever.
         hadBacklog = true;
+        // Offline / unreachable: never burn attempts. A pin create taken on
+        // camera WiFi must survive hours offline — dropping it after ~5 min
+        // left the photo queued with nowhere to attach after login hydrate.
+        if (isUnreachable(status)) {
+          save();
+          scheduleRetry(backoffFor(Math.max(1, entry.attempts || 1)));
+          break;
+        }
+        // Reachable transient (429 / 5xx). Count it; give up only after
+        // MAX_ATTEMPTS so a poison entry can't wedge the queue forever.
         entry.attempts += 1;
         if (entry.attempts >= MAX_ATTEMPTS) {
           queue.shift();
@@ -295,12 +372,71 @@ export function isCreatePending(op: WriteOpName, id: string): boolean {
   return queue.some(e => e.op === op && (e.args[0] as { id?: string } | undefined)?.id === id);
 }
 
+/**
+ * Drop pending create/update writes for the given entity ids so a delete cannot
+ * be undone by a later FIFO replay of an earlier create, or by an attach/update
+ * that was enqueued before the pin was tombstoned (logs: PUT pin → 404 after
+ * DELETE, and resurrected pins from leftover createCapturePin entries).
+ *
+ * Delete ops for those ids are kept — they are what make the server converge.
+ */
+export function cancelWritesForEntityIds(...ids: string[]): void {
+  const idSet = new Set(ids.filter(Boolean));
+  if (!idSet.size) return;
+
+  const before = queue.length;
+  queue = queue.filter(e => {
+    if (
+      e.op === 'deleteCapturePin' ||
+      e.op === 'deleteRoom' ||
+      e.op === 'deleteCapture' ||
+      e.op === 'deleteTour' ||
+      e.op === 'deleteFloorPlan'
+    ) {
+      return true;
+    }
+    if (
+      e.op === 'createCapturePin' ||
+      e.op === 'createRoom' ||
+      e.op === 'createCapture' ||
+      e.op === 'createTour' ||
+      e.op === 'createFloorPlan'
+    ) {
+      const id = (e.args[0] as { id?: string } | undefined)?.id;
+      return !id || !idSet.has(id);
+    }
+    if (
+      e.op === 'updateCapturePin' ||
+      e.op === 'updateRoom' ||
+      e.op === 'updateCapture' ||
+      e.op === 'updateTour' ||
+      e.op === 'updateDefect'
+    ) {
+      const id = e.args[0] as string | undefined;
+      return !id || !idSet.has(id);
+    }
+    return true;
+  });
+  if (queue.length !== before) save();
+}
+
 // ── Triggers ─────────────────────────────────────────────────────────────────
 
 if (typeof window !== 'undefined') {
   // Replay anything left over from a previous session as soon as we load.
   window.addEventListener('online', () => void flush());
   window.addEventListener('focus', () => void flush());
+  // Capacitor reports camera-WiFi → site-WiFi as networkStatusChange; the
+  // browser `online` event often does not fire for that switch.
+  Network.addListener('networkStatusChange', status => {
+    if (status.connected) void flush();
+  });
   // Defer the initial replay a tick so the auth store can rehydrate first.
   setTimeout(() => void flush(), 0);
+  // Dynamic import avoids pulling sessionRefresh (and thus apiClient) into this
+  // module's static graph. Token refresh does not flip isAuthenticated, so this
+  // is what wakes queued pin/room writes that hit 401 mid-flight.
+  void import('@/services/sessionRefresh').then(({ AUTH_SESSION_RESTORED_EVENT }) => {
+    window.addEventListener(AUTH_SESSION_RESTORED_EVENT, () => void flush());
+  });
 }

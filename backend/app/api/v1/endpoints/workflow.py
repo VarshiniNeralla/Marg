@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import httpx
 from bson import ObjectId
 from fastapi import APIRouter, File, Query, Response, UploadFile, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -19,7 +20,14 @@ from loguru import logger
 
 settings = get_settings()
 from app.services.capture_stitch_service import CaptureStitchService
-from app.services.cloudinary_service import cloudinary_folder, signed_upload_params, upload_media, delete_media_assets
+from app.services.security_audit import SECURITY_CATEGORY
+from app.services.cloudinary_service import (
+    cloudinary_asset_exists,
+    cloudinary_folder,
+    signed_upload_params,
+    upload_media,
+    delete_media_assets,
+)
 from app.services.room_map_service import RoomMapService
 from app.services.ai_progress_service import AIProgressService
 from app.utils.pagination import success_response
@@ -265,9 +273,65 @@ def _validate_upload_size(file: UploadFile, *, will_be_reprocessed: bool = False
 
 _UPLOAD_DEDUP_COLLECTION = "capture_upload_dedup"
 
+# Project activity reads exclude the security/identity category. Matches rows
+# where logCategory is absent (every project event) as well as explicit nulls,
+# so only rows tagged "security" are filtered out.
+_PROJECT_AUDIT_FILTER: dict[str, Any] = {"logCategory": {"$ne": SECURITY_CATEGORY}}
+
+
+async def _dedup_asset_is_live(asset: dict[str, Any]) -> bool:
+    """
+    True only if the cached asset's Cloudinary file is still actually
+    fetchable AND lives on the currently-configured Cloudinary account. The
+    dedup cache is keyed on a hash of the raw bytes and never expires, but
+    the Cloudinary asset it points to can vanish independently (manual
+    cleanup, account TTL, ...) — confirmed in production: a capture
+    uploaded days after an identical-bytes upload got handed back the old
+    cache entry's URL, which by then 404'd, so the "upload" silently
+    produced a dead capture instead of a real one. Reusing a cache entry is
+    only safe once we know the URL it points to is real.
+
+    The account check matters independently of liveness: after a Cloudinary
+    credential migration, entries created under the old cloud name can stay
+    live (still resolvable) indefinitely, so a pure HEAD check would keep
+    silently handing back old-account assets forever instead of migrating
+    fresh uploads to the new account.
+    """
+    url = asset.get("original_url")
+    if not url:
+        return False
+    cloud_name = get_settings().CLOUDINARY_CLOUD_NAME
+    if cloud_name and f"res.cloudinary.com/{cloud_name}/" not in url:
+        return False
+
+    # Ask the account, not the CDN edge — a destroyed asset keeps serving over
+    # the CDN for a while, and trusting that 200 is how a destroyed asset got
+    # handed back from this cache and produced a capture that went dead later.
+    public_id = asset.get("public_id")
+    if public_id:
+        exists = await cloudinary_asset_exists(
+            public_id, asset.get("resource_type") or "image"
+        )
+        if exists is False:
+            return False
+        if exists is True:
+            return True
+        # exists is None → inconclusive, fall through to the delivery-URL probe.
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.head(url, follow_redirects=True)
+        return resp.status_code < 400
+    except Exception as exc:
+        logger.warning(f"[capture-upload] dedup liveness check failed for {url}: {exc!r}")
+        return False
+
 
 async def _dedup_lookup(db: Optional[AsyncIOMotorDatabase], key: str) -> Optional[dict[str, Any]]:
-    """Previously-completed result for these exact bytes, if any."""
+    """Previously-completed result for these exact bytes, if any — verified to
+    still be live on Cloudinary before being trusted. A dead cache entry is
+    dropped so a later upload of the same bytes doesn't hit the same dead
+    result again."""
     if db is None:
         return None
     try:
@@ -275,7 +339,20 @@ async def _dedup_lookup(db: Optional[AsyncIOMotorDatabase], key: str) -> Optiona
     except Exception as exc:  # cache must never break an upload
         logger.warning(f"[capture-upload] dedup lookup failed: {exc!r}")
         return None
-    return (doc or {}).get("asset")
+    asset = (doc or {}).get("asset")
+    if asset is None:
+        return None
+    if await _dedup_asset_is_live(asset):
+        return asset
+    logger.warning(
+        f"[capture-upload] dedup entry key={key[-12:]} points to a dead asset "
+        f"({asset.get('original_url')}) — discarding cache and re-uploading fresh"
+    )
+    try:
+        await db[_UPLOAD_DEDUP_COLLECTION].delete_one({"_id": key})
+    except Exception as exc:
+        logger.warning(f"[capture-upload] failed to evict dead dedup entry: {exc!r}")
+    return None
 
 
 async def _dedup_store(db: Optional[AsyncIOMotorDatabase], key: str, asset: dict[str, Any]) -> None:
@@ -289,6 +366,92 @@ async def _dedup_store(db: Optional[AsyncIOMotorDatabase], key: str, asset: dict
         )
     except Exception as exc:
         logger.warning(f"[capture-upload] dedup store failed: {exc!r}")
+
+
+async def _dedup_evict_for_assets(
+    db: Optional[AsyncIOMotorDatabase], assets: list[dict[str, Any]]
+) -> None:
+    """Drop dedup entries whose cached Cloudinary asset was just destroyed, so a
+    later upload of the same bytes re-uploads instead of being handed a corpse."""
+    public_ids = [pid for a in assets if (pid := (a or {}).get("public_id"))]
+    if db is None or not public_ids:
+        return
+    try:
+        result = await db[_UPLOAD_DEDUP_COLLECTION].delete_many(
+            {"asset.public_id": {"$in": public_ids}}
+        )
+        if result.deleted_count:
+            logger.info(
+                f"[capture-upload] evicted {result.deleted_count} dedup entry(s) "
+                f"for destroyed asset(s): {', '.join(public_ids)}"
+            )
+    except Exception as exc:
+        logger.warning(f"[capture-upload] dedup eviction failed: {exc!r}")
+
+
+async def _release_capture_assets(
+    db: AsyncIOMotorDatabase, ctx: CallerContext, assets: list[dict[str, Any]]
+) -> None:
+    """
+    Clean up a just-deleted capture's Cloudinary files — but only the ones no
+    surviving capture still points at, and evict the upload-dedup cache for
+    each file actually destroyed.
+
+    Two capture documents can legitimately share one Cloudinary asset: the
+    dedup cache is keyed on a hash of the raw bytes and deliberately hands the
+    same asset back when an identical photo is uploaded again, so a retry
+    doesn't re-stitch or duplicate storage. That made a plain
+    `delete_media_assets` call unsafe here in two compounding ways, both
+    confirmed in production:
+
+      • Deleting one sharer destroyed the file out from under the other, whose
+        image then 404'd — surfacing as a blank thumbnail or a room stuck on
+        "Photographed — Not Started" even though its capture row looked fine.
+      • The dedup entry outlived the destroy, so the NEXT upload of those same
+        bytes got a cache hit on an already-destroyed asset. The liveness
+        probe in `_dedup_lookup` can't catch that on its own: Cloudinary's CDN
+        keeps serving a destroyed file for a short window, so the HEAD returns
+        200 and the new capture is created pointing at something that goes
+        dead minutes later.
+
+    Callers must delete the capture document(s) BEFORE calling this, so the
+    reference check below doesn't count the row being removed.
+    """
+    if not assets:
+        return
+
+    keep: set[str] = set()
+    for asset in assets:
+        public_id = (asset or {}).get("public_id")
+        if not public_id:
+            continue
+        try:
+            still_used = await db["captures"].find_one(
+                {
+                    "orgId": ctx.org_id,
+                    "$or": [
+                        {"mediaAssets.public_id": public_id},
+                        {"media_assets.public_id": public_id},
+                        {"public_id": public_id},
+                    ],
+                },
+                {"_id": 1},
+            )
+        except Exception as exc:  # cleanup must never block the decided delete
+            logger.warning(f"[cloudinary] reference check failed for {public_id}: {exc!r}")
+            still_used = {"_id": "unknown"}  # fail safe: keep the file
+        if still_used is not None:
+            keep.add(public_id)
+            logger.info(
+                f"[cloudinary] keeping public_id={public_id} — still referenced by "
+                f"capture {still_used.get('_id')}"
+            )
+
+    releasable = [a for a in assets if (a or {}).get("public_id") not in keep]
+    if not releasable:
+        return
+    await delete_media_assets(releasable)
+    await _dedup_evict_for_assets(db, releasable)
 
 
 async def _upload_files(
@@ -509,9 +672,23 @@ async def _delete(db: AsyncIOMotorDatabase, collection: str, id: str, ctx: Calle
 
 @router.get("/workflow/snapshot", summary="Get all workflow data for the current organization")
 async def workflow_snapshot(ctx: CallerContext, db: DB):
+    # Heal pins deleted while their captures survived (gallery shows Pin N,
+    # plan/analysis does not) before the client hydrates.
+    try:
+        from app.services.pin_orphan_service import restore_orphan_pins_for_org
+        restored = await restore_orphan_pins_for_org(db, org_id=ctx.org_id)
+        if restored:
+            logger.info("[workflow-snapshot] restored {} orphan pin(s) org={}", restored, ctx.org_id)
+    except Exception:
+        logger.exception("[workflow-snapshot] orphan pin restore failed org={}", ctx.org_id)
+
     data = {}
     for key, collection in COLLECTIONS.items():
-        data[key] = (await _list(db, collection, ctx, limit=500))["items"]
+        # The snapshot feeds the dashboard activity feed, so it carries project
+        # activity only — security/identity events are read separately via
+        # /audit-logs/security (see _PROJECT_AUDIT_FILTER).
+        extra = _PROJECT_AUDIT_FILTER if collection == "audit_logs" else None
+        data[key] = (await _list(db, collection, ctx, limit=500, extra_filter=extra))["items"]
     return success_response(data=data)
 
 
@@ -629,7 +806,7 @@ async def delete_room(room_id: str, ctx: CallerContext, db: DB, _=Depends(requir
     room_captures = await db["captures"].find({"orgId": ctx.org_id, "roomId": room_id}).to_list(length=None)
     await db["captures"].delete_many({"orgId": ctx.org_id, "roomId": room_id})
     for cap in room_captures:
-        await delete_media_assets(cap.get("mediaAssets") or cap.get("media_assets") or [])
+        await _release_capture_assets(db, ctx, cap.get("mediaAssets") or cap.get("media_assets") or [])
     await _delete(db, "rooms", room_id, ctx)
     return success_response(message="Room deleted")
 
@@ -689,6 +866,12 @@ async def create_capture(payload: dict[str, Any], ctx: CallerContext, db: DB, _=
             "public_id", "format", "size", "uploaded_at",
         },
     )
+    # Pin.captureIds used to be updated in a SEPARATE client write that often
+    # lagged or never landed (writeQueue / hydrate race). Analysis only follows
+    # pin.captureIds, so the photo stayed in the gallery as an orphan while
+    # Construction Progress under-counted. Link here by roomId so create alone
+    # is enough to keep pin ↔ capture in sync.
+    await _link_capture_to_pin_by_room(db, ctx, stored)
     return success_response(data=stored, message="Capture uploaded")
 
 
@@ -716,7 +899,7 @@ async def delete_capture(capture_id: str, ctx: CallerContext, db: DB, _=Depends(
     await _delete(db, "captures", capture_id, ctx)
     if capture:
         assets = capture.get("mediaAssets") or capture.get("media_assets") or []
-        await delete_media_assets(assets)
+        await _release_capture_assets(db, ctx, assets)
     # Drop progress analyses that compared this capture so saved-report history
     # cannot resurface deleted panorama images in the tour compare UI.
     try:
@@ -897,6 +1080,68 @@ async def delete_floor_plan(floor_plan_id: str, ctx: CallerContext, db: DB, _=De
     return success_response(message="Floor plan deleted")
 
 
+async def _link_capture_to_pin_by_room(
+    db: AsyncIOMotorDatabase,
+    ctx: CallerContext,
+    capture: dict[str, Any] | None,
+) -> None:
+    """Ensure the pin that owns this capture's room lists the capture id.
+
+    Analysis joins floor → pins → captureIds → captures. If createCapture lands
+    without a matching updateCapturePin(captureIds), the photo is an orphan in
+    the gallery and never enters Construction Progress. Linking by roomId makes
+    createCapture alone sufficient. If the pin/room were deleted in a race,
+    recreate them so the photo is never stranded.
+    """
+    if not capture:
+        return
+    cap_id = str(capture.get("id") or capture.get("_id") or "")
+    room_id = str(capture.get("roomId") or capture.get("room_id") or "")
+    if not cap_id or not room_id:
+        return
+    pin = await db["capture_pins"].find_one({
+        "orgId": ctx.org_id,
+        "$or": [{"roomId": room_id}, {"room_id": room_id}],
+    })
+    if not pin:
+        # Infer floorId from roomId prefix (t72554-f3-f72557-flat-a-rN → floor).
+        parts = room_id.split("-")
+        floor_id = "-".join(parts[:3]) if len(parts) >= 3 else ""
+        if floor_id:
+            from app.services.pin_orphan_service import restore_orphan_pins_for_floor
+            await restore_orphan_pins_for_floor(
+                db, org_id=ctx.org_id, floor_id=floor_id, resequence=True,
+            )
+            pin = await db["capture_pins"].find_one({
+                "orgId": ctx.org_id,
+                "$or": [{"roomId": room_id}, {"room_id": room_id}],
+            })
+        if not pin:
+            return
+    pin_id = pin.get("_id") or pin.get("id")
+    if not pin_id:
+        return
+    await db["capture_pins"].update_one(
+        {"_id": pin_id, "orgId": ctx.org_id},
+        {"$addToSet": {"captureIds": cap_id}, "$set": {"updatedAt": _now()}},
+    )
+
+
+async def _resequence_pins_on_plan(
+    db: AsyncIOMotorDatabase,
+    ctx: CallerContext,
+    floor_plan_id: str,
+) -> None:
+    """Renumber remaining pins on a floor plan to 1..N after a delete.
+
+    Client deleteCapturePin already renumbers; server-side delete did not, which
+    left permanent gaps (pins 2–14 with no Pin 1) after any path that deleted
+    without going through the client helper.
+    """
+    from app.services.pin_orphan_service import resequence_pins_on_plan
+    await resequence_pins_on_plan(db, org_id=ctx.org_id, floor_plan_id=floor_plan_id)
+
+
 # ── Capture Pins ────────────────────────────────────────────────────────────
 @router.get("/floor-plans/{floor_plan_id}/pins", summary="List capture pins for a floor plan")
 async def list_capture_pins(floor_plan_id: str, ctx: CallerContext, db: DB):
@@ -927,6 +1172,7 @@ async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(
     pin = await db["capture_pins"].find_one({"_id": _id_filter(pin_id), "orgId": ctx.org_id})
     if not pin:
         raise NotFoundException("capture pin", pin_id)
+    floor_plan_id = str(pin.get("floorPlanId") or pin.get("floor_plan_id") or "")
     capture_ids = [
         cid for cid in (pin.get("captureIds") or pin.get("capture_ids") or [])
         if isinstance(cid, str) and cid
@@ -936,7 +1182,7 @@ async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(
         cap = await db["captures"].find_one({"_id": _id_filter(cid), "orgId": ctx.org_id})
         await db["captures"].delete_one({"_id": _id_filter(cid), "orgId": ctx.org_id})
         if cap:
-            await delete_media_assets(cap.get("mediaAssets") or cap.get("media_assets") or [])
+            await _release_capture_assets(db, ctx, cap.get("mediaAssets") or cap.get("media_assets") or [])
         try:
             purged = await AIProgressService(db).purge_for_timeline(ctx.org_id, cid)
             if purged:
@@ -947,9 +1193,10 @@ async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(
         room_captures = await db["captures"].find({"orgId": ctx.org_id, "roomId": str(room_id)}).to_list(length=None)
         await db["captures"].delete_many({"orgId": ctx.org_id, "roomId": str(room_id)})
         for cap in room_captures:
-            await delete_media_assets(cap.get("mediaAssets") or cap.get("media_assets") or [])
+            await _release_capture_assets(db, ctx, cap.get("mediaAssets") or cap.get("media_assets") or [])
         await db["rooms"].delete_one({"_id": _id_filter(str(room_id)), "orgId": ctx.org_id})
     await _delete(db, "capture_pins", pin_id, ctx)
+    await _resequence_pins_on_plan(db, ctx, floor_plan_id)
     return success_response(message="Capture pin deleted")
 
 
@@ -1003,14 +1250,71 @@ async def unread_notification_count(ctx: CallerContext, db: DB):
     return success_response(data={"count": count})
 
 
-@router.get("/audit-logs", summary="List audit logs")
+@router.get("/audit-logs", summary="List project audit logs")
 async def list_audit_logs(ctx: CallerContext, db: DB, project_id: Optional[str] = None, skip: int = 0, limit: int = 100, _=Depends(require_permission("auditLogs", "view"))):
-    filters = {"projectId": project_id} if project_id else None
+    """Project activity only. Security/identity events (logins, registrations,
+    user changes) are excluded — logins alone outnumber every project event, so
+    including them buries the construction activity this feed exists to show.
+    Read those through `/audit-logs/security` instead."""
+    filters: dict[str, Any] = dict(_PROJECT_AUDIT_FILTER)
+    if project_id:
+        filters["projectId"] = project_id
+    return success_response(data=await _list(db, "audit_logs", ctx, skip, limit, filters))
+
+
+@router.get("/audit-logs/security", summary="List security/identity audit logs")
+async def list_security_audit_logs(
+    ctx: CallerContext,
+    db: DB,
+    skip: int = 0,
+    limit: int = 100,
+    action: Optional[str] = None,
+    _=Depends(require_permission("auditLogs", "view")),
+):
+    """Logins, registrations, user and organization changes — the identity trail,
+    kept separate from the project activity feed. Optionally filter by `action`
+    (e.g. USER_LOGIN)."""
+    filters: dict[str, Any] = {"logCategory": SECURITY_CATEGORY}
+    if action:
+        filters["action"] = action
     return success_response(data=await _list(db, "audit_logs", ctx, skip, limit, filters))
 
 
 @router.post("/audit-logs", status_code=status.HTTP_201_CREATED, summary="Create audit log")
 async def create_audit_log(payload: dict[str, Any], ctx: CallerContext, db: DB):
+    """
+    Record one audit event. Identity and timestamp are stamped from the
+    authenticated request and always overwrite whatever the client sent.
+
+    An audit trail the client can fill in freely is not a trail: this endpoint
+    used to store the payload verbatim, and the client sent
+    actorId="u1" / actorName="You" / createdAt="Just now" — a literal string,
+    not a timestamp. Every entry was therefore unsortable and attributed to
+    nobody, which is precisely why a run of disappearing captures could not be
+    traced through the log and had to be reconstructed from storage side
+    effects instead.
+    """
+    now = datetime.now(timezone.utc)
+    payload["actorId"] = ctx.user_id
+    payload["actorRole"] = ctx.role
+    payload["createdAt"] = now.isoformat()
+    payload["created_at"] = now.isoformat()
+
+    # Resolve a human-readable actor once, so the feed does not have to join
+    # against users (and still reads correctly if the user is later removed).
+    try:
+        user = await db["users"].find_one(
+            {"_id": _id_filter(ctx.user_id)}, {"name": 1, "email": 1, "full_name": 1}
+        )
+    except Exception as exc:  # never let enrichment break the write
+        logger.warning(f"[audit] actor lookup failed for {ctx.user_id}: {exc!r}")
+        user = None
+    if user:
+        payload["actorName"] = user.get("name") or user.get("full_name") or user.get("email") or ctx.user_id
+        payload["actorEmail"] = user.get("email")
+    else:
+        payload.setdefault("actorName", ctx.user_id)
+
     return success_response(data=await _upsert(db, "audit_logs", payload, ctx), message="Audit log created")
 
 

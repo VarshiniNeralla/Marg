@@ -17,22 +17,35 @@ const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#fff
 
 function roomStatusColor(room: RoomProgress): string {
   if (room.isComplete) return colors.success;
-  if (room.activities.length > 0) return colors.warning;
+  if (room.activities.length > 0 || (room.capturesCount ?? 0) > 0 || (room.pinNumbers?.length ?? 0) > 0) {
+    return colors.warning;
+  }
   return colors.textSubdued;
 }
 
 function RoomCard({ room, onOpenEvidence }: { room: RoomProgress; onOpenEvidence: (activityName: string, captureIds: string[]) => void }) {
   const color = roomStatusColor(room);
   const hasEvidence = room.activities.length > 0;
+  const hasCaptures = (room.capturesCount ?? 0) > 0 || (room.pinNumbers?.length ?? 0) > 0;
+  const pinLabel = room.pinNumbers?.length
+    ? `Pin${room.pinNumbers.length === 1 ? '' : 's'} ${room.pinNumbers.join(', ')}`
+    : null;
   return (
     <Box sx={{ p: 1.75, borderRadius: '12px', backgroundColor: P.white, border: `1.5px solid ${P.border}` }}>
       <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1, mb: 1 }}>
-        <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong, lineHeight: 1.35 }}>
-          {room.roomName}
-        </Typography>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong, lineHeight: 1.35 }}>
+            {room.roomName}
+          </Typography>
+          {pinLabel && (
+            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.primary, mt: 0.25 }}>
+              {pinLabel}
+            </Typography>
+          )}
+        </Box>
         <Box sx={{ px: 1, py: 0.25, borderRadius: '6px', flexShrink: 0, backgroundColor: `${color}18`, whiteSpace: 'nowrap' }}>
           <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color }}>
-            {room.isComplete ? 'Completed' : hasEvidence ? 'Work in Progress' : 'No Photos Yet'}
+            {room.isComplete ? 'Completed' : hasEvidence || hasCaptures ? 'Work in Progress' : 'No Photos Yet'}
           </Typography>
         </Box>
       </Box>
@@ -66,6 +79,12 @@ function RoomCard({ room, onOpenEvidence }: { room: RoomProgress; onOpenEvidence
             </Box>
           ))}
         </Box>
+      ) : hasCaptures ? (
+        <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
+          {(room.capturesCount ?? room.pinNumbers?.length ?? 0)} capture
+          {(room.capturesCount ?? room.pinNumbers?.length ?? 0) === 1 ? '' : 's'} mapped to this room
+          — finishing activities not scored yet (re-analyze after more evidence if needed).
+        </Typography>
       ) : (
         <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
           No captures cover this room yet.
@@ -108,12 +127,16 @@ function FlatOverview({ flat, onOpenEvidence }: { flat: FlatProgress; onOpenEvid
         </Box>
       </Box>
 
-      <Typography sx={{ fontSize: '1rem', fontWeight: 800, color: P.strong, mb: 1.5 }}>
+      <Typography sx={{ fontSize: '1rem', fontWeight: 800, color: P.strong, mb: 0.5 }}>
         Room-by-Room Status
       </Typography>
+      <Typography sx={{ fontSize: '0.8125rem', color: P.muted, mb: 1.5 }}>
+        Showing all {flat.rooms.length} rooms in {flat.flatName}
+        {' '}({flat.rooms.filter(r => (r.capturesCount ?? 0) > 0 || (r.pinNumbers?.length ?? 0) > 0).length} with captures)
+      </Typography>
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.25 }}>
-        {flat.rooms.map(room => (
-          <RoomCard key={room.roomName} room={room} onOpenEvidence={onOpenEvidence} />
+        {flat.rooms.map((room, idx) => (
+          <RoomCard key={`${room.roomName}-${idx}`} room={room} onOpenEvidence={onOpenEvidence} />
         ))}
       </Box>
     </Box>
@@ -133,7 +156,19 @@ export default function FlatFinishingWorksPage() {
     try {
       const detail = await constructionProgressService.getFloorDetail(floorId);
       setSnapshot(detail);
-      if (detail.flatProgress.length > 0) setSelectedFlat(detail.flatProgress[0].flatName);
+      if (detail.flatProgress.length > 0) {
+        // Prefer the flat with the most mapped captures (Floor 4 → Flat 04),
+        // otherwise first residential flat in the list.
+        const scored = detail.flatProgress.map(f => ({
+          name: f.flatName,
+          score: f.rooms.reduce(
+            (n, r) => n + (r.capturesCount ?? 0) + (r.pinNumbers?.length ?? 0),
+            0,
+          ),
+        }));
+        scored.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+        setSelectedFlat(scored[0]?.name || detail.flatProgress[0].flatName);
+      }
     } catch {
       toast.error('Failed to load flat finishing works');
     } finally {
@@ -195,7 +230,7 @@ export default function FlatFinishingWorksPage() {
           >
             {snapshot.flatProgress.map(f => (
               <MenuItem key={f.flatName} value={f.flatName}>
-                {f.flatName} — {Math.round(f.completionPct)}%
+                {f.flatName} — {Math.round(f.completionPct)}% · {f.roomsTotal} rooms
               </MenuItem>
             ))}
           </Select>
