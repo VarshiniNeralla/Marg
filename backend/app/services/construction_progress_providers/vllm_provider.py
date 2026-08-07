@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import time
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from typing import Any
 
 import httpx
 from loguru import logger
+from PIL import Image, ImageStat
 
 from app.core.config import Settings, get_settings
 from app.services.image_fetch import download_image, resize_if_needed
@@ -41,13 +43,16 @@ from app.services.construction_progress_providers.base import (
 )
 
 # A capture the model itself was unsure about (weak/indirect/partial view) must not surface as
-# "evidence" for an activity card or be averaged into its floor-wide score — see the confidence
-# floor check in assess_floor_progress for why.
+# "evidence" for a floor-wide activity card — see the confidence floor check in
+# assess_floor_progress for why.
 _MIN_EVIDENCE_CONFIDENCE = 50.0
-# Room heatmap status is allowed a lower bar: a legitimate finishing activity the model sees
-# but is only moderately sure about should still move the room out of "Photographed — Not
-# Started". Activity cards keep the stricter evidence floor above.
-_MIN_HEATMAP_CONFIDENCE = 30.0
+# Room heatmap + Flat Finishing per-room bars use a lower bar so a legitimate
+# finishing activity the model sees but is only moderately sure about still
+# scores the room (instead of "1 capture mapped — finishing activities not
+# scored yet" while sibling bedrooms show 100%).
+_MIN_ROOM_CONFIDENCE = 30.0
+# Alias kept for older call sites / comments that said "heatmap".
+_MIN_HEATMAP_CONFIDENCE = _MIN_ROOM_CONFIDENCE
 
 # The completion_pct an activity/unit must reach to read as genuinely "done" — shared between
 # _status_for_pct and the MEP/door-shutter gate below so both use the same bar for "finished".
@@ -78,6 +83,12 @@ The room/flat label in the user message is approximate pin location only. Score 
 actually visible even if the label does not match the space (e.g. an office or living area
 photo whose pin label says "Toilet").
 
+CRITICAL — do not return an empty assessments list for finished interiors:
+- Always score shared finishes that are visible: ceiling/wall punning, putty, paint,
+  flooring/tiles, skirting, switches, cleaning — regardless of what kind of room it is.
+- Returning {"assessments": []} for a finished-looking interior is incorrect. Prefer a
+  short list of visible shared finishes over an empty list.
+
 BE EVIDENCE-BASED — report only what this photo directly shows:
 - Only assess an activity if its own work is visibly present — e.g. only score paint-stage
   activities if you can see the wall finish; do not mark every paint stage complete just
@@ -100,10 +111,83 @@ Omit activities this photo does not clearly show. Do not include any other text.
 """
 
 
+# Room names that make Gemma return {"assessments": []} even when shared finishes
+# (paint, flooring, putty) are clearly visible — verified by A/B: same Kitchen
+# photo scores with a neutral/"bedroom" label and fails with a "Kitchen" label.
+_LABEL_BIAS_ROOM_TOKENS = (
+    "kitchen",
+    "utility",
+    "puja",
+    "pooja",
+    "toilet",
+    "bath",
+    "wc",
+    "living",
+    "dining",
+    "drawing",
+    "lobby",
+    "balcony",
+    "sit-out",
+    "sit out",
+    "store",
+)
+
+
+def _pin_location_text(capture: CaptureRef, *, neutralize: bool = False) -> str:
+    """Build the pin-location line for the vision user prompt.
+
+    For Kitchen / Utility / Toilet / Puja / Living / etc., NEVER put the
+    room-type word in the prompt — Gemma returns {"assessments": []} for the
+    same photo when the label says Kitchen, but scores shared finishes when
+    the label is neutral or "Master Bedroom". On empty-assessment retry,
+    always use the neutral wording.
+    """
+    room = (capture.room_name or "").strip()
+    flat = (capture.flat_name or "").strip() or "unknown flat"
+    room_l = room.lower()
+    biased = neutralize or any(tok in room_l for tok in _LABEL_BIAS_ROOM_TOKENS)
+    if biased:
+        # Deliberately omit the room name — even as a parenthetical hint.
+        return (
+            f"Approximate pin location: finished interior space in {flat}. "
+            "Score every visible shared finishing activity from the checklist "
+            "(ceiling, walls, floor, putty, paint, tiles, switches, cleaning). "
+            "Do not require room-specific fixtures before scoring."
+        )
+    return (
+        f"Approximate pin location label: {room} ({flat}). "
+        "Score visible finishing work in the photo even if this label is wrong."
+    )
+
+
 def _activities_checklist_text(activities: list[ActivityDef]) -> str:
     lines = [f"- {a.activity_id}: {a.name} ({'flat interior' if a.section == 'flat' else 'common/shared area'})"
              for a in activities]
     return "Checklist of finishing activities to assess:\n" + "\n".join(lines)
+
+
+# Shared finishes that almost every finished interior shows — used as a
+# short fallback checklist when the full flat list makes Gemma return [].
+_CORE_FLAT_ACTIVITY_IDS = (
+    "flat.ceiling_punning_2",
+    "flat.wall_punning_4",
+    "flat.vitrified_flooring_16",
+    "flat.putty_1st_coat_25",
+    "flat.putty_2nd_coat_26",
+    "flat.primer_1st_coat_paint_27",
+    "flat.final_coat_paint_37",
+    "flat.normal_cleaning_29",
+)
+
+
+def _image_is_blank(image_bytes: bytes, *, min_stdev: float = 8.0) -> bool:
+    """True when the photo has almost no visual variation (solid grey / failed stitch)."""
+    try:
+        im = Image.open(io.BytesIO(image_bytes)).convert("RGB").resize((96, 48))
+        st = ImageStat.Stat(im)
+        return max(float(x) for x in st.stddev) < min_stdev
+    except Exception:
+        return False
 
 
 # The synthetic flat name room_map_service.py stamps on every common-area
@@ -217,6 +301,47 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                     result = await self._assess_capture(
                         capture, checklist_text, previous=previous_by_pin.get(capture.pin_id)
                     )
+                    # Gemma (and similar) sometimes returns an empty assessments
+                    # list for kitchens / wet areas / living rooms even when
+                    # finishing work is visible — one forced retry recovers most.
+                    if not result:
+                        logger.info(
+                            "[construction-progress] empty assessment for capture={} "
+                            "({} / {}) — retrying once",
+                            capture.capture_id, capture.room_name, capture.flat_name,
+                        )
+                        result = await self._assess_capture(
+                            capture,
+                            checklist_text,
+                            previous=previous_by_pin.get(capture.pin_id),
+                            force_nonempty=True,
+                        )
+                    # Full checklist still empty → try a short core-finishes list
+                    # (paint / putty / floor / ceiling). Verified to recover
+                    # Toilet-3 / Utility when the long checklist short-circuits.
+                    if not result and not is_common:
+                        core_acts = [
+                            a for a in activities
+                            if a.section == "flat" and a.activity_id in _CORE_FLAT_ACTIVITY_IDS
+                        ]
+                        if core_acts:
+                            logger.info(
+                                "[construction-progress] empty after retry for capture={} "
+                                "({}/{}) — trying core finishes checklist",
+                                capture.capture_id, capture.room_name, capture.flat_name,
+                            )
+                            result = await self._assess_capture(
+                                capture,
+                                _activities_checklist_text(core_acts),
+                                previous=None,
+                                force_nonempty=True,
+                            )
+                    if not result:
+                        logger.warning(
+                            "[construction-progress] capture={} ({}/{}) still returned "
+                            "no scorable activities after retry",
+                            capture.capture_id, capture.room_name, capture.flat_name,
+                        )
                     return capture, result
                 except Exception as exc:
                     logger.warning(
@@ -247,6 +372,10 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         per_activity_unit_pct: dict[str, dict[tuple[str, str], float]] = {}
         per_activity_unit_conf: dict[str, dict[tuple[str, str], float]] = {}
         per_activity_unit_evidence: dict[str, dict[tuple[str, str], str]] = {}
+        # Lower-threshold twin used only for Flat Finishing room cards / heatmap.
+        per_activity_room_pct: dict[str, dict[tuple[str, str], float]] = {}
+        per_activity_room_conf: dict[str, dict[tuple[str, str], float]] = {}
+        per_activity_room_evidence: dict[str, dict[tuple[str, str], str]] = {}
         # Raw per-CAPTURE signal (not per-unit) — a room's own heatmap status
         # must reflect what THAT capture's own photo showed, never whether a
         # sibling room in the same flat happened to score higher for the
@@ -274,16 +403,23 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                 activity_id = activity.activity_id
                 conf = float(entry["confidence_pct"])
                 pct = float(entry["completion_pct"])
-                # Heatmap room state: accept moderate confidence so visible
-                # finishing work is not stuck on "Photographed — Not Started".
-                if conf >= _MIN_HEATMAP_CONFIDENCE and (pct > 0 or conf >= _MIN_EVIDENCE_CONFIDENCE):
-                    per_capture_completion.setdefault(capture.capture_id, []).append(pct)
-                # Activity cards / flat progress: keep the stricter evidence floor.
-                if conf < _MIN_EVIDENCE_CONFIDENCE:
-                    continue
                 if not capture.room_name:
                     continue
                 unit = (capture.flat_name, capture.room_name)
+                # Heatmap + Flat Finishing room bars: accept moderate confidence.
+                if conf >= _MIN_ROOM_CONFIDENCE and (pct > 0 or conf >= _MIN_EVIDENCE_CONFIDENCE):
+                    per_capture_completion.setdefault(capture.capture_id, []).append(pct)
+                if conf >= _MIN_ROOM_CONFIDENCE:
+                    room_pcts = per_activity_room_pct.setdefault(activity_id, {})
+                    room_confs = per_activity_room_conf.setdefault(activity_id, {})
+                    room_ev = per_activity_room_evidence.setdefault(activity_id, {})
+                    if pct > room_pcts.get(unit, -1.0):
+                        room_pcts[unit] = pct
+                        room_confs[unit] = conf
+                        room_ev[unit] = capture.capture_id
+                # Floor-wide activity cards: keep the stricter evidence floor.
+                if conf < _MIN_EVIDENCE_CONFIDENCE:
+                    continue
                 units_pct = per_activity_unit_pct.setdefault(activity_id, {})
                 units_conf = per_activity_unit_conf.setdefault(activity_id, {})
                 units_evidence = per_activity_unit_evidence.setdefault(activity_id, {})
@@ -315,6 +451,17 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                 )
                 if not doors_confirmed:
                     mep_pcts[unit] = 0.0
+        mep_room = per_activity_room_pct.get(_MEP_CEILING_ACTIVITY_ID)
+        if mep_room:
+            door_room_by_id = [
+                per_activity_room_pct.get(door_id, {}) for door_id in _DOOR_SHUTTER_ACTIVITY_IDS
+            ]
+            for unit in list(mep_room):
+                doors_confirmed = any(
+                    door_pcts.get(unit, 0.0) >= COMPLETE_THRESHOLD for door_pcts in door_room_by_id
+                )
+                if not doors_confirmed:
+                    mep_room[unit] = 0.0
 
         # Room-level roster: every (flat, room) that exists per the room map,
         # used as the denominator for a flat activity's floor-wide percentage
@@ -394,9 +541,9 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
 
         flat_progress = _build_flat_progress(
             activities_by_id=activities_by_id,
-            per_activity_unit_pct=per_activity_unit_pct,
-            per_activity_unit_conf=per_activity_unit_conf,
-            per_activity_unit_evidence=per_activity_unit_evidence,
+            per_activity_unit_pct=per_activity_room_pct,
+            per_activity_unit_conf=per_activity_room_conf,
+            per_activity_unit_evidence=per_activity_room_evidence,
             flat_room_rosters=flat_room_rosters or {},
         )
 
@@ -432,10 +579,22 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         )
 
     async def _assess_capture(
-        self, capture: CaptureRef, checklist_text: str, *, previous: CaptureRef | None = None,
+        self,
+        capture: CaptureRef,
+        checklist_text: str,
+        *,
+        previous: CaptureRef | None = None,
+        force_nonempty: bool = False,
     ) -> dict[str, dict[str, Any]]:
         image_bytes, mime = await download_image(capture.image_url, timeout=self._timeout)
         image_bytes = resize_if_needed(image_bytes)
+        if _image_is_blank(image_bytes):
+            logger.warning(
+                "[construction-progress] capture={} ({}/{}) image is blank/near-blank "
+                "— skipping vision scoring (re-upload needed)",
+                capture.capture_id, capture.room_name, capture.flat_name,
+            )
+            return {}
         image_b64 = base64.b64encode(image_bytes).decode("ascii")
 
         content: list[dict[str, Any]] = []
@@ -451,10 +610,24 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                     "context on capture={}: {}", previous.capture_id, capture.capture_id, exc,
                 )
 
+        nonempty_nudge = ""
+        if force_nonempty:
+            nonempty_nudge = (
+                " CRITICAL: Your previous reply listed zero assessments. Look again carefully at "
+                "walls, ceiling, floor, and openings. If ANY finishing work is visible (plaster, "
+                "putty, paint, tiles, flooring, doors, skirting, electrical points), you MUST "
+                "return at least the matching checklist activities with your best completion_pct "
+                "and confidence_pct — never an empty assessments array for a finished or "
+                "partially finished interior."
+            )
+
+        # On empty retry, neutralize room-type labels — Gemma often returns []
+        # for Kitchen/Utility/etc. while scoring the same photo under a neutral label.
+        location_line = _pin_location_text(capture, neutralize=force_nonempty)
+
         if prev_b64 and prev_mime:
             user_text = (
-                f"Approximate pin location label: {capture.room_name} ({capture.flat_name}). "
-                "Score visible finishing work even if this label is wrong.\n\n"
+                f"{location_line}\n\n"
                 "You are given TWO photos of this SAME spot, taken at different times: an EARLIER "
                 "photo first, then the CURRENT (most recent) photo second. The earlier photo is "
                 "for context only — to help you see what has changed — but your assessment must "
@@ -464,6 +637,7 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                 "Assess the CURRENT (second) photo against the checklist above per the system "
                 "instructions. If the space is already finished, report the completed finishing "
                 "activities you can see — do not return an empty assessments list."
+                f"{nonempty_nudge}"
             )
             content = [
                 {"type": "text", "text": user_text},
@@ -474,12 +648,12 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
             ]
         else:
             user_text = (
-                f"Approximate pin location label: {capture.room_name} ({capture.flat_name}). "
-                "Score visible finishing work in the photo even if this label is wrong.\n\n"
+                f"{location_line}\n\n"
                 f"{checklist_text}\n\n"
                 "Assess this photo against the checklist above per the system instructions. "
                 "If the space is already finished, report the completed finishing activities "
                 "you can see — do not return an empty assessments list."
+                f"{nonempty_nudge}"
             )
             content = [
                 {"type": "text", "text": user_text},
@@ -492,7 +666,9 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": content},
             ],
-            "temperature": 0.2,
+            # Slightly higher temperature on empty retry reduces the model's
+            # habit of short-circuiting to {"assessments": []}.
+            "temperature": 0.35 if force_nonempty else 0.2,
             "max_tokens": 4096,
             "response_format": {"type": "json_object"},
         }
@@ -586,9 +762,20 @@ def _build_flat_progress(
     flat_activity_ids = {aid for aid, a in activities_by_id.items() if a.section == "flat"}
     flats: list[FlatProgress] = []
     for flat_name, room_names in flat_room_rosters.items():
+        # Safety net: include any scored (flat, room) units missing from the
+        # roster (e.g. Toilet-04 kept as a pin label after roster bleed cull).
+        room_list = list(room_names)
+        seen = {str(r) for r in room_list}
+        extras: set[str] = set()
+        for units in per_activity_unit_pct.values():
+            for fname, rname in units:
+                if fname == flat_name and rname and rname not in seen:
+                    extras.add(rname)
+        if extras:
+            room_list.extend(sorted(extras))
         rooms: list[RoomProgress] = []
         rooms_complete = 0
-        for room_name in room_names:
+        for room_name in room_list:
             unit = (flat_name, room_name)
             room_activities: list[RoomActivityAssessment] = []
             for activity_id in flat_activity_ids:
@@ -613,7 +800,7 @@ def _build_flat_progress(
             if is_complete:
                 rooms_complete += 1
             rooms.append(RoomProgress(room_name=room_name, is_complete=is_complete, activities=room_activities))
-        rooms_total = len(room_names)
+        rooms_total = len(room_list)
         completion_pct = round((rooms_complete / rooms_total) * 100, 1) if rooms_total else 0.0
         flats.append(
             FlatProgress(

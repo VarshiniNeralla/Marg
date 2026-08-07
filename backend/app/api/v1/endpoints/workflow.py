@@ -327,11 +327,35 @@ async def _dedup_asset_is_live(asset: dict[str, Any]) -> bool:
         return False
 
 
+async def _dedup_asset_has_content(asset: dict[str, Any]) -> bool:
+    """False when the cached Cloudinary JPEG is blank/near-blank (failed stitch)."""
+    url = asset.get("original_url") or asset.get("processed_panorama_url")
+    if not url:
+        return False
+    try:
+        from app.services.image_fetch import download_image
+        from app.services.panorama_service import panorama_content_is_blank
+
+        raw, _mime = await download_image(url, timeout=20)
+        if panorama_content_is_blank(raw):
+            logger.warning(
+                f"[capture-upload] dedup asset is blank/near-blank "
+                f"({asset.get('public_id')}) — treating as unusable"
+            )
+            return False
+        return True
+    except Exception as exc:
+        logger.warning(f"[capture-upload] dedup content check failed: {exc!r}")
+        # Inconclusive — allow reuse rather than forcing a full re-stitch on every
+        # transient download blip; liveness already passed.
+        return True
+
+
 async def _dedup_lookup(db: Optional[AsyncIOMotorDatabase], key: str) -> Optional[dict[str, Any]]:
     """Previously-completed result for these exact bytes, if any — verified to
-    still be live on Cloudinary before being trusted. A dead cache entry is
-    dropped so a later upload of the same bytes doesn't hit the same dead
-    result again."""
+    still be live on Cloudinary and non-blank before being trusted. A dead or
+    blank cache entry is dropped so a later upload of the same bytes doesn't
+    hit the same bad result again."""
     if db is None:
         return None
     try:
@@ -342,10 +366,10 @@ async def _dedup_lookup(db: Optional[AsyncIOMotorDatabase], key: str) -> Optiona
     asset = (doc or {}).get("asset")
     if asset is None:
         return None
-    if await _dedup_asset_is_live(asset):
+    if await _dedup_asset_is_live(asset) and await _dedup_asset_has_content(asset):
         return asset
     logger.warning(
-        f"[capture-upload] dedup entry key={key[-12:]} points to a dead asset "
+        f"[capture-upload] dedup entry key={key[-12:]} points to a dead/blank asset "
         f"({asset.get('original_url')}) — discarding cache and re-uploading fresh"
     )
     try:
@@ -357,6 +381,14 @@ async def _dedup_lookup(db: Optional[AsyncIOMotorDatabase], key: str) -> Optiona
 
 async def _dedup_store(db: Optional[AsyncIOMotorDatabase], key: str, asset: dict[str, Any]) -> None:
     if db is None:
+        return
+    # Never cache a blank/corrupt stitch — otherwise the next upload of the same
+    # .insp bytes instantly reuses a grey panorama.
+    if not await _dedup_asset_has_content(asset):
+        logger.warning(
+            f"[capture-upload] refusing to cache blank asset key={key[-12:]} "
+            f"public_id={asset.get('public_id')}"
+        )
         return
     try:
         await db[_UPLOAD_DEDUP_COLLECTION].replace_one(
@@ -645,6 +677,18 @@ async def _upsert_preserving(
     return _serialise(stored or doc)
 
 
+# Media URL fields that must never be wiped to null by a review/publish patch
+# that happens to include a full capture object still mid-stitch.
+_CAPTURE_MEDIA_URL_FIELDS = {
+    "mediaAssets", "media_assets",
+    "original_url", "originalUrl", "originalFileUrl", "original_file_url",
+    "processedPanoramaUrl", "processed_panorama_url",
+    "thumbnailUrl", "thumbnail_url",
+    "previewUrl", "preview_url",
+    "public_id",
+}
+
+
 async def _patch(
     db: AsyncIOMotorDatabase,
     collection: str,
@@ -653,6 +697,14 @@ async def _patch(
     ctx: CallerContext,
 ) -> dict[str, Any]:
     update = dict(payload)
+    # Review/publish used to $set the entire client capture object — including
+    # null processedPanoramaUrl / thumbnailUrl while a stitch was still running,
+    # which wiped a good (or pending) panorama out of Mongo. Drop null media
+    # fields so review status changes cannot erase images.
+    if collection == "captures":
+        for key in list(update.keys()):
+            if key in _CAPTURE_MEDIA_URL_FIELDS and update[key] is None:
+                update.pop(key)
     update["updatedAt"] = _now()
     result = await db[collection].find_one_and_update(
         {"_id": _id_filter(id), "orgId": ctx.org_id},

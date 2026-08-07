@@ -87,6 +87,63 @@ def validate_stitched_output(width: int, height: int, *, filename: str = "") -> 
         )
 
 
+def panorama_content_is_blank(
+    data: bytes,
+    *,
+    min_stdev: float = 12.0,
+    max_grey_frac: float = 0.50,
+) -> bool:
+    """
+    True when a 2:1 JPEG is visually empty — solid mid-grey or only a thin
+    corrupted band (failed fisheye stitch). Confirmed on Floor-1 .insp uploads
+    that passed aspect-ratio validation but rendered as grey gallery thumbs.
+    """
+    if not data or not _PIL_OK:
+        return False
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            rgb = img.convert("RGB")
+            # Sample a small grid; full 5760×2880 is unnecessary for emptiness.
+            small = rgb.resize((256, 128))
+            pixels = list(small.getdata())
+            if not pixels:
+                return True
+            # Channel stdev — solid #808080 → ~0.
+            n = len(pixels)
+            means = [sum(p[c] for p in pixels) / n for c in range(3)]
+            var = [
+                sum((p[c] - means[c]) ** 2 for p in pixels) / n
+                for c in range(3)
+            ]
+            max_stdev = max(v ** 0.5 for v in var)
+            if max_stdev < min_stdev:
+                return True
+            grey = sum(
+                1
+                for r, g, b in pixels
+                if abs(r - 128) < 14 and abs(g - 128) < 14 and abs(b - 128) < 14
+            )
+            if (grey / n) >= max_grey_frac:
+                return True
+            return False
+    except Exception as exc:
+        logger.warning(f"panorama blank-check failed (treating as non-blank): {exc}")
+        return False
+
+
+def validate_stitched_content(data: bytes, *, filename: str = "") -> None:
+    """Raise when stitch JPEG is blank/near-blank (aspect already validated)."""
+    if panorama_content_is_blank(data):
+        logger.error(
+            f"Stitch output is blank/near-blank for '{filename}' "
+            f"({len(data)} bytes) — refusing to upload"
+        )
+        raise PanoramaValidationError(
+            "Stitching produced a blank or unusable panorama. "
+            "Export an equirectangular JPEG from Insta360 Studio and upload that instead."
+        )
+
+
 def classify_projection_bgr(img_bgr) -> Literal["flat", "dualfisheye", "equirectangular"]:
     """
     Backend analogue of the frontend projection classifier.

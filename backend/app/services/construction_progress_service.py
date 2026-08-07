@@ -303,6 +303,19 @@ class ConstructionProgressService:
         if not pins:
             return []
 
+        # Refine sparse room maps with pin positions BEFORE locating each pin
+        # (Floor-1 Flat 02 extracts often miss Bedroom-3/4 / balconies / toilets).
+        pin_hints: list[tuple[float, float]] = []
+        for pin in pins:
+            try:
+                pin_hints.append((float(pin["x"]), float(pin["y"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if floor_plan_id and pin_hints:
+            await self._room_maps.get_sanitized_flats(
+                floor_plan_id, org_id, pin_hints=pin_hints,
+            )
+
         capture_ids: list[str] = []
         pin_by_capture: dict[str, dict[str, Any]] = {}
         pin_by_room: dict[str, dict[str, Any]] = {}

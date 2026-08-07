@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Box, Typography, CircularProgress, MenuItem, Select, type SelectChangeEvent } from '@mui/material';
-import { ArrowBackRounded, PhotoLibraryRounded, CheckCircleRounded, HourglassTopRounded } from '@mui/icons-material';
+import { Box, Typography, CircularProgress, MenuItem, Select, type SelectChangeEvent, Collapse, IconButton } from '@mui/material';
+import {
+  ArrowBackRounded,
+  PhotoLibraryRounded,
+  CheckCircleRounded,
+  HourglassTopRounded,
+  ExpandMoreRounded,
+} from '@mui/icons-material';
 import { Link, useParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { colors, motion } from '@theme/tokens';
@@ -23,17 +29,49 @@ function roomStatusColor(room: RoomProgress): string {
   return colors.textSubdued;
 }
 
+function roomCompletionPct(room: RoomProgress): number {
+  if (room.isComplete) return 100;
+  if (room.activities.length === 0) return 0;
+  const sum = room.activities.reduce((n, a) => n + a.completionPct, 0);
+  return Math.round(sum / room.activities.length);
+}
+
 function RoomCard({ room, onOpenEvidence }: { room: RoomProgress; onOpenEvidence: (activityName: string, captureIds: string[]) => void }) {
+  const [expanded, setExpanded] = useState(false);
   const color = roomStatusColor(room);
   const hasEvidence = room.activities.length > 0;
   const hasCaptures = (room.capturesCount ?? 0) > 0 || (room.pinNumbers?.length ?? 0) > 0;
   const pinLabel = room.pinNumbers?.length
     ? `Pin${room.pinNumbers.length === 1 ? '' : 's'} ${room.pinNumbers.join(', ')}`
     : null;
+  const pct = roomCompletionPct(room);
+  const statusLabel = room.isComplete
+    ? 'Completed'
+    : hasEvidence || hasCaptures
+      ? 'Work in Progress'
+      : 'No Photos Yet';
+  const canExpand = hasEvidence;
+
   return (
-    <Box sx={{ p: 1.75, borderRadius: '12px', backgroundColor: P.white, border: `1.5px solid ${P.border}` }}>
-      <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1, mb: 1 }}>
-        <Box sx={{ minWidth: 0 }}>
+    <Box
+      sx={{
+        p: 1.75,
+        borderRadius: '12px',
+        backgroundColor: P.white,
+        border: `1.5px solid ${P.border}`,
+        // Expanded cards take the full row so the neighbour isn't left with a hole.
+        gridColumn: expanded ? '1 / -1' : 'auto',
+      }}
+    >
+      <Box
+        onClick={canExpand ? () => setExpanded(v => !v) : undefined}
+        sx={{
+          display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1,
+          cursor: canExpand ? 'pointer' : 'default',
+          userSelect: canExpand ? 'none' : 'auto',
+        }}
+      >
+        <Box sx={{ minWidth: 0, flex: 1 }}>
           <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong, lineHeight: 1.35 }}>
             {room.roomName}
           </Typography>
@@ -43,25 +81,90 @@ function RoomCard({ room, onOpenEvidence }: { room: RoomProgress; onOpenEvidence
             </Typography>
           )}
         </Box>
-        <Box sx={{ px: 1, py: 0.25, borderRadius: '6px', flexShrink: 0, backgroundColor: `${color}18`, whiteSpace: 'nowrap' }}>
-          <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color }}>
-            {room.isComplete ? 'Completed' : hasEvidence || hasCaptures ? 'Work in Progress' : 'No Photos Yet'}
-          </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+          <Box sx={{ px: 1, py: 0.25, borderRadius: '6px', backgroundColor: `${color}18`, whiteSpace: 'nowrap' }}>
+            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color }}>
+              {statusLabel}
+            </Typography>
+          </Box>
+          {canExpand && (
+            <IconButton
+              size="small"
+              aria-label={expanded ? 'Hide activity details' : 'Show activity details'}
+              onClick={e => {
+                e.stopPropagation();
+                setExpanded(v => !v);
+              }}
+              sx={{
+                p: 0.25,
+                color: P.muted,
+                transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                transition: `transform ${motion.durationFast} ${motion.easeOut}`,
+              }}
+            >
+              <ExpandMoreRounded sx={{ fontSize: 20 }} />
+            </IconButton>
+          )}
         </Box>
       </Box>
 
-      {hasEvidence ? (
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+      {/* Collapsed summary: overall room progress */}
+      <Box sx={{ mt: 1.25 }}>
+        {(hasEvidence || hasCaptures || room.isComplete) ? (
+          <>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 0.5 }}>
+              <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
+                Room progress
+                {hasEvidence ? ` · ${room.activities.length} activit${room.activities.length === 1 ? 'y' : 'ies'}` : ''}
+              </Typography>
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 800, color: P.strong }}>
+                {pct}%
+              </Typography>
+            </Box>
+            <Box sx={{ height: 6, borderRadius: '999px', backgroundColor: colors.borderLight, overflow: 'hidden' }}>
+              <Box
+                sx={{
+                  height: '100%',
+                  width: `${pct}%`,
+                  backgroundColor: pct >= 92 ? colors.success : pct > 0 ? colors.warning : colors.borderLight,
+                  borderRadius: '999px',
+                  transition: `width ${motion.durationSlow} ${motion.easeOut}`,
+                }}
+              />
+            </Box>
+          </>
+        ) : (
+          <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
+            No captures cover this room yet.
+          </Typography>
+        )}
+        {!hasEvidence && hasCaptures && (
+          <Typography sx={{ fontSize: '0.6875rem', color: P.muted, mt: 0.75 }}>
+            {(room.capturesCount ?? room.pinNumbers?.length ?? 0)} capture
+            {(room.capturesCount ?? room.pinNumbers?.length ?? 0) === 1 ? '' : 's'} mapped
+            — photo could not be scored (blank/corrupt image, or finishing finishes not
+            confidently visible). Re-upload a clear photo or re-analyze if needed.
+          </Typography>
+        )}
+      </Box>
+
+      {/* Expanded: per-activity bars */}
+      <Collapse in={expanded && canExpand} timeout={200}>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75, mt: 1.5, pt: 1.25, borderTop: `1px solid ${P.border}` }}>
+          <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: P.muted, textTransform: 'uppercase', letterSpacing: '0.04em', mb: 0.25 }}>
+            Activity detail
+          </Typography>
           {room.activities.map(a => (
             <Box key={a.activityId} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Box sx={{ flex: 1, minWidth: 0 }}>
                 <Typography noWrap sx={{ fontSize: '0.75rem', color: P.muted }}>{a.activityName}</Typography>
                 <Box sx={{ height: 4, borderRadius: '999px', backgroundColor: colors.borderLight, overflow: 'hidden', mt: 0.25 }}>
-                  <Box sx={{
-                    height: '100%', width: `${a.completionPct}%`,
-                    backgroundColor: a.completionPct >= 92 ? colors.success : colors.warning,
-                    borderRadius: '999px', transition: `width ${motion.durationSlow} ${motion.easeOut}`,
-                  }}
+                  <Box
+                    sx={{
+                      height: '100%', width: `${a.completionPct}%`,
+                      backgroundColor: a.completionPct >= 92 ? colors.success : colors.warning,
+                      borderRadius: '999px',
+                    }}
                   />
                 </Box>
               </Box>
@@ -70,7 +173,10 @@ function RoomCard({ room, onOpenEvidence }: { room: RoomProgress; onOpenEvidence
               </Typography>
               {a.evidenceCaptureIds.length > 0 && (
                 <Box
-                  onClick={() => onOpenEvidence(a.activityName, a.evidenceCaptureIds)}
+                  onClick={e => {
+                    e.stopPropagation();
+                    onOpenEvidence(a.activityName, a.evidenceCaptureIds);
+                  }}
                   sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', color: colors.primary, '&:hover': { opacity: 0.75 } }}
                 >
                   <PhotoLibraryRounded sx={{ fontSize: 15 }} />
@@ -79,17 +185,7 @@ function RoomCard({ room, onOpenEvidence }: { room: RoomProgress; onOpenEvidence
             </Box>
           ))}
         </Box>
-      ) : hasCaptures ? (
-        <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
-          {(room.capturesCount ?? room.pinNumbers?.length ?? 0)} capture
-          {(room.capturesCount ?? room.pinNumbers?.length ?? 0) === 1 ? '' : 's'} mapped to this room
-          — finishing activities not scored yet (re-analyze after more evidence if needed).
-        </Typography>
-      ) : (
-        <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
-          No captures cover this room yet.
-        </Typography>
-      )}
+      </Collapse>
     </Box>
   );
 }
@@ -134,7 +230,7 @@ function FlatOverview({ flat, onOpenEvidence }: { flat: FlatProgress; onOpenEvid
         Showing all {flat.rooms.length} rooms in {flat.flatName}
         {' '}({flat.rooms.filter(r => (r.capturesCount ?? 0) > 0 || (r.pinNumbers?.length ?? 0) > 0).length} with captures)
       </Typography>
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.25 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.25, alignItems: 'start' }}>
         {flat.rooms.map((room, idx) => (
           <RoomCard key={`${room.roomName}-${idx}`} room={room} onOpenEvidence={onOpenEvidence} />
         ))}

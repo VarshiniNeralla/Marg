@@ -15,6 +15,7 @@ import ActivitySection from '@/components/ConstructionProgress/ActivitySection';
 import FloorPlanHeatmapOverlay from '@/components/ConstructionProgress/FloorPlanHeatmapOverlay';
 import ProgressTimelineChart from '@/components/ConstructionProgress/ProgressTimelineChart';
 import ProgressComparisonView from '@/components/ConstructionProgress/ProgressComparisonView';
+import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { exportConstructionProgressPdf } from '@/utils/constructionProgressPdf';
 import { exportConstructionProgressExcel } from '@/utils/constructionProgressExcel';
 
@@ -48,6 +49,7 @@ export default function ConstructionProgressDashboardPage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeElapsedSec, setAnalyzeElapsedSec] = useState(0);
   const [analyzeIsReanalysis, setAnalyzeIsReanalysis] = useState(false);
+  const [confirmReanalyzeOpen, setConfirmReanalyzeOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<FloorProgressSnapshot | null>(null);
   const [notAnalyzed, setNotAnalyzed] = useState(false);
   const analyzingRef = useRef(false);
@@ -298,7 +300,7 @@ export default function ConstructionProgressDashboardPage() {
                 Flat Finishing Works
               </Button>
               <Button
-                onClick={handleAnalyze}
+                onClick={() => setConfirmReanalyzeOpen(true)}
                 disabled={analyzing}
                 startIcon={analyzing ? <CircularProgress size={14} sx={{ color: colors.primary }} /> : <RefreshRounded sx={{ fontSize: 18 }} />}
                 sx={{
@@ -378,6 +380,19 @@ export default function ConstructionProgressDashboardPage() {
         </>
       )}
     </Box>
+
+      <ConfirmDialog
+        open={confirmReanalyzeOpen}
+        title="Re-analyze this floor?"
+        description="This will run progress analysis again using the latest captures and room map. The current report will be replaced with a new snapshot."
+        confirmLabel="Re-analyze"
+        cancelLabel="Cancel"
+        onConfirm={() => {
+          setConfirmReanalyzeOpen(false);
+          void handleAnalyze();
+        }}
+        onCancel={() => setConfirmReanalyzeOpen(false)}
+      />
     </>
   );
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import io
 import re
 import string
@@ -1105,6 +1106,201 @@ def _sanitize_room_map_flats(flats: list[dict[str, Any]]) -> list[dict[str, Any]
     return out
 
 
+# Normalized 4BHK cell layout (fx0,fx1,fy0,fy1) fitted into a pin-cloud bbox.
+# Tuned for Grava-style Flat 02 right-wing plans where AI extract often
+# misses Bedroom-3/4, balconies, Toilet-3/04, PDR, Kitchen, and Lobby.
+_PIN_FIT_4BHK_CELLS: tuple[tuple[str, float, float, float, float], ...] = (
+    ("Lobby", 0.00, 0.18, 0.00, 0.28),
+    ("Drawing Room", 0.14, 0.42, 0.00, 0.28),
+    ("PDR", 0.40, 0.56, 0.00, 0.22),
+    ("Toilet-04", 0.54, 0.70, 0.00, 0.16),
+    ("Dress (Bedroom-4)", 0.54, 0.72, 0.14, 0.32),
+    ("Bedroom-4", 0.70, 0.92, 0.00, 0.30),
+    # One balcony strip — pins 12 & 14 are two captures in the same space.
+    ("Balcony (Bedroom-4 side)", 0.90, 1.04, 0.00, 0.36),
+    ("Bedroom-2", 0.16, 0.42, 0.28, 0.50),
+    ("Toilet-2", 0.16, 0.34, 0.48, 0.62),
+    ("Dress (Bedroom-2)", 0.32, 0.46, 0.48, 0.62),
+    ("Bedroom-3", 0.74, 0.96, 0.28, 0.50),
+    ("Living / Dining", 0.46, 0.72, 0.46, 0.68),
+    ("Puja", 0.70, 0.86, 0.52, 0.68),
+    ("Toilet-3", 0.86, 1.04, 0.46, 0.64),
+    ("Store", 0.68, 0.80, 0.66, 0.80),
+    ("Kitchen", 0.78, 0.96, 0.68, 0.86),
+    ("M. Toilet", 0.14, 0.32, 0.60, 0.78),
+    ("Dress (Master Bedroom)", 0.30, 0.46, 0.60, 0.78),
+    ("Master Bedroom", 0.16, 0.48, 0.76, 0.98),
+    ("Sit-Out", 0.48, 0.72, 0.86, 1.04),
+    ("Utility", 0.74, 0.96, 0.86, 1.04),
+)
+
+
+def _nearest_flat_label(
+    x: float,
+    y: float,
+    flats: list[dict[str, Any]],
+) -> str | None:
+    best: tuple[float, str] | None = None
+    for flat_entry in flats:
+        fname = str(flat_entry.get("flat") or "")
+        if not fname or fname == _COMMON_AREA_FLAT:
+            continue
+        fa = _flat_anchor(flat_entry)
+        if fa is None:
+            continue
+        dist = ((x - fa[0]) ** 2 + (y - fa[1]) ** 2) ** 0.5
+        if best is None or dist < best[0]:
+            best = (dist, fname)
+    return best[1] if best else None
+
+
+def _rehome_rooms_by_flat_anchor(flats: list[dict[str, Any]]) -> None:
+    """Move rooms whose centroid is closer to another flat's OCR anchor.
+
+    Floor-1 extracts often paste Flat 01 rooms on top of Flat 02 geometry
+    (and vice versa), so pins resolve to the wrong flat even when the room
+    name is right.
+    """
+    residential = [
+        f for f in flats
+        if str(f.get("flat") or "") and str(f.get("flat")) != _COMMON_AREA_FLAT
+    ]
+    if len(residential) < 2:
+        return
+
+    moved = 0
+    for flat_entry in residential:
+        fname = str(flat_entry.get("flat") or "")
+        keep: list[dict[str, Any]] = []
+        for room in list(flat_entry.get("rooms") or []):
+            c = _room_centroid_xy(room)
+            if c is None:
+                keep.append(room)
+                continue
+            nearest = _nearest_flat_label(c[0], c[1], residential)
+            if nearest is None or nearest == fname:
+                keep.append(room)
+                continue
+            target = next((f for f in residential if str(f.get("flat")) == nearest), None)
+            if target is None:
+                keep.append(room)
+                continue
+            target.setdefault("rooms", []).append(room)
+            moved += 1
+        flat_entry["rooms"] = keep
+    if moved:
+        logger.debug("Room map: re-homed {} room(s) to nearest flat anchor", moved)
+
+
+def _pin_cloud_bbox(
+    points: list[tuple[float, float]],
+    *,
+    pad: float = 2.5,
+) -> tuple[float, float, float, float] | None:
+    if not points:
+        return None
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    return (
+        max(0.0, min(xs) - pad),
+        min(100.0, max(xs) + pad),
+        max(0.0, min(ys) - pad),
+        min(100.0, max(ys) + pad),
+    )
+
+
+def _rooms_from_pin_fit_cells(
+    bbox: tuple[float, float, float, float],
+    cells: tuple[tuple[str, float, float, float, float], ...],
+    *,
+    reason: str,
+) -> list[dict[str, Any]]:
+    x0, x1, y0, y1 = bbox
+    w = max(1.0, x1 - x0)
+    h = max(1.0, y1 - y0)
+    rooms: list[dict[str, Any]] = []
+    for name, fx0, fx1, fy0, fy1 in cells:
+        rx0 = x0 + fx0 * w
+        rx1 = x0 + fx1 * w
+        ry0 = y0 + fy0 * h
+        ry1 = y0 + fy1 * h
+        # Clamp to plan bounds while keeping a usable box.
+        rx0, rx1 = max(0.0, rx0), min(100.0, rx1)
+        ry0, ry1 = max(0.0, ry0), min(100.0, ry1)
+        if rx1 - rx0 < 1.8 or ry1 - ry0 < 1.8:
+            continue
+        rooms.append({
+            "name": name,
+            "polygon": [
+                {"x": rx0, "y": ry0}, {"x": rx1, "y": ry0},
+                {"x": rx1, "y": ry1}, {"x": rx0, "y": ry1},
+            ],
+            "confidence": 85,
+            "reason": reason,
+        })
+    return rooms
+
+
+def _flat_needs_pin_fit(rooms: list[dict[str, Any]], pin_count: int) -> bool:
+    """True when extract is too thin to cover a fully pinned 4BHK flat."""
+    if pin_count >= 12 and len(rooms) < 16:
+        return True
+    names = {str(r.get("name") or "").strip().lower() for r in rooms}
+    bases = {re.sub(r"\s*\([^)]*\)\s*$", "", n).strip() for n in names}
+    required = {"bedroom-3", "bedroom-4", "kitchen", "pdr", "toilet-3"}
+    missing = sum(1 for r in required if not any(r in b for b in bases))
+    if pin_count >= 10 and missing >= 2:
+        return True
+    return False
+
+
+def _refine_flats_with_pin_hints(
+    flats: list[dict[str, Any]],
+    pin_hints: list[tuple[float, float]],
+) -> list[dict[str, Any]]:
+    """Improve sparse / overlapping maps using engineer pin positions.
+
+    1) Re-home rooms to the flat whose OCR anchor is nearest the room centroid.
+    2) For flats with many nearby pins but a thin extract, rebuild room AABBs
+       from a 4BHK cell layout fitted to that flat's pin cloud.
+    """
+    if not pin_hints or not flats:
+        return flats
+
+    _rehome_rooms_by_flat_anchor(flats)
+
+    pins_by_flat: dict[str, list[tuple[float, float]]] = {}
+    for x, y in pin_hints:
+        fname = _nearest_flat_label(x, y, flats)
+        if not fname:
+            continue
+        pins_by_flat.setdefault(fname, []).append((x, y))
+
+    for flat_entry in flats:
+        fname = str(flat_entry.get("flat") or "")
+        if not fname or fname == _COMMON_AREA_FLAT:
+            continue
+        pts = pins_by_flat.get(fname) or []
+        rooms = list(flat_entry.get("rooms") or [])
+        if not _flat_needs_pin_fit(rooms, len(pts)):
+            continue
+        bbox = _pin_cloud_bbox(pts)
+        if bbox is None:
+            continue
+        rebuilt = _rooms_from_pin_fit_cells(
+            bbox, _PIN_FIT_4BHK_CELLS, reason=f"pin-fit layout for {fname}",
+        )
+        if len(rebuilt) < 12:
+            continue
+        _disambiguate_duplicate_room_names(rebuilt, label=fname)
+        flat_entry["rooms"] = rebuilt
+        logger.info(
+            "Room map {}: rebuilt {} rooms from {} pin hint(s) (extract had {})",
+            fname, len(rebuilt), len(pts), len(rooms),
+        )
+    return flats
+
+
 def _flat_anchor(flat_entry: dict[str, Any]) -> tuple[float, float] | None:
     """Prefer OCR anchor when present; else centroid of culled room union."""
     anchor = flat_entry.get("anchor")
@@ -1466,19 +1662,28 @@ class RoomMapService:
         org_id: str,
         *,
         cached: dict[str, Any] | None = None,
+        pin_hints: list[tuple[float, float]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Room polygons ready for locate_pin / heatmap (sanitized once per plan)."""
+        """Room polygons ready for locate_pin / heatmap (sanitized once per plan).
+
+        When ``pin_hints`` are provided (engineer capture pin positions), sparse
+        / overlapping flat extracts are refined so pins land in real rooms.
+        """
         hit = self._sanitized_flats_by_plan.get(floor_plan_id)
-        if hit is not None:
-            return hit
-        doc = cached if cached is not None else await self.get_cached(floor_plan_id, org_id)
-        flats = [
-            {**f, "flat": _canonical_flat_label(str(f.get("flat") or ""))}
-            for f in ((doc or {}).get("flats") or [])
-        ]
-        flats = _sanitize_room_map_flats(flats)
-        self._sanitized_flats_by_plan[floor_plan_id] = flats
-        return flats
+        if hit is None:
+            doc = cached if cached is not None else await self.get_cached(floor_plan_id, org_id)
+            flats = [
+                {**f, "flat": _canonical_flat_label(str(f.get("flat") or ""))}
+                for f in ((doc or {}).get("flats") or [])
+            ]
+            flats = _sanitize_room_map_flats(flats)
+            self._sanitized_flats_by_plan[floor_plan_id] = flats
+            hit = flats
+        if pin_hints:
+            refined = _refine_flats_with_pin_hints(copy.deepcopy(hit), pin_hints)
+            self._sanitized_flats_by_plan[floor_plan_id] = refined
+            return refined
+        return hit
 
     def _cache_needs_reextract(self, cached: dict[str, Any] | None, image_url: str) -> bool:
         """True when the cached map is missing, for a different image, or on an old schema."""

@@ -96,10 +96,12 @@ def template_for_flat(flat_name: str, existing: list[str] | None = None) -> tupl
 def _is_bleed_for_layout(name: str, template: tuple[str, ...]) -> bool:
     base = _base(name)
     compact = base.replace(" ", "")
-    # Toilet-04 / Maid-04 are always neighbour OCR junk.
-    if re.match(r"^(toilet-?0?4|maid-?0?4|maid)$", compact):
-        return True
-    if template == _LAYOUT_3BHK and re.match(r"^(bedroom-4|toilet-4)$", compact):
+    # Toilet-04 / Maid-04 are neighbour OCR junk on 3BHK wings only.
+    # On 4BHK flats (Flat 02 / 04) Toilet-04 is often the real fourth toilet
+    # label on the floor plan — dropping it orphans scored captures.
+    if template == _LAYOUT_3BHK and re.match(
+        r"^(toilet-?0?4|maid-?0?4|maid|bedroom-4|toilet-4)$", compact
+    ):
         return True
     return False
 
@@ -167,6 +169,8 @@ def complete_flat_room_roster(flat_name: str, existing: list[str]) -> list[str]:
                 "living / dining": {"living / dining", "living/dining"},
                 "pdr": {"pdr", "powder room"},
                 "m. toilet": {"m. toilet", "master toilet"},
+                # Floor-1 Flat 02 labels the fourth toilet "Toilet-04".
+                "toilet-1": {"toilet-1", "toilet-01", "toilet-04", "toilet-4"},
                 "multi-purpose room": {
                     "multi-purpose room", "multipurpose room", "multi purpose room",
                 },

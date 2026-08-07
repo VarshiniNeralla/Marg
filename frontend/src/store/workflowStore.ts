@@ -1638,14 +1638,36 @@ export const useWorkflowStore = create<WorkflowState>()(
     // Background stitching means this runs TWICE for one photo: once when the
     // server accepts the bytes (202, panorama not ready) and again when the
     // stitch job finishes with the real asset. Both calls carry the same
-    // stitchJobId, so the second must UPDATE the existing capture rather than
+    // stitchJobId, so the second must UPDATE the in-flight capture rather than
     // create another one — otherwise a single photo produces two capture records
-    // and the pin shows a bogus "2 captures" badge (observed: 5 pins each with
-    // two records pointing at the identical Cloudinary URL).
+    // and the pin shows a bogus "2 captures" badge.
+    //
+    // Only match an *in-flight* placeholder (no panorama URL yet / still
+    // processing). A finished capture that shares a stitchJobId — e.g. content-
+    // hash dedup when the user intentionally re-captures with the same file —
+    // must become a new timeline entry on the pin.
     const incomingJobId = (mediaAssets[0] as { stitchJobId?: string } | undefined)?.stitchJobId;
     const existingId = pin.captureIds.find(id => {
-      const c = get().captures.find(x => x.id === id) as (MockCapture & { stitchJobId?: string }) | undefined;
-      return !!c && !!incomingJobId && c.stitchJobId === incomingJobId;
+      const c = get().captures.find(x => x.id === id) as (MockCapture & {
+        stitchJobId?: string;
+        mediaAssets?: UploadedFileResponse[];
+        processedPanoramaUrl?: string;
+        processingStatus?: string;
+      }) | undefined;
+      if (!c || !incomingJobId || c.stitchJobId !== incomingJobId) return false;
+      // Prefer the stitched panorama — pending 202 assets often have original_url
+      // set while processed_panorama_url is still null.
+      const panorama =
+        c.mediaAssets?.[0]?.processed_panorama_url
+        || c.processedPanoramaUrl
+        || null;
+      const status = (c.processingStatus ?? '').toLowerCase();
+      const stillProcessing =
+        !panorama
+        || status === 'processing'
+        || status === 'pending'
+        || status === 'queued';
+      return stillProcessing;
     });
     if (existingId) {
       get().finalizeCaptureMedia(existingId, fileCount, mediaAssets);

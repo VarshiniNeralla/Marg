@@ -19,6 +19,8 @@ from app.services.panorama_service import (
     is_equirectangular,
     is_raw_capture,
     measure_image,
+    panorama_content_is_blank,
+    validate_stitched_content,
     validate_stitched_output,
 )
 from app.services.fisheye_stitch import StitchResult, stitch_equirectangular
@@ -138,11 +140,15 @@ def _thumbnail_url(public_id: str, resource_type: str, secure_url: str, filename
         )
     if resource_type not in {"image", "video"}:
         return secure_url
+    # Equirectangular captures are 2:1. Using crop=fill at 480×320 (3:2) takes the
+    # image centre — for a failed stitch that is mostly mid-grey with a thin band
+    # of content near a pole, the gallery card becomes a solid grey tile even when
+    # SOME pixels exist. Scale-to-width keeps the full panorama visible; the card
+    # uses object-fit:cover so good captures still look filled.
     return cloudinary.CloudinaryImage(public_id).build_url(
         secure=True,
-        width=480,
-        height=320,
-        crop="fill",
+        width=640,
+        crop="scale",
         quality="auto",
         fetch_format="auto",
     )
@@ -215,6 +221,7 @@ async def upload_media(
         else:
             try:
                 validate_stitched_output(result.width, result.height, filename=filename)
+                validate_stitched_content(result.processed_image, filename=filename)
             except PanoramaValidationError as exc:
                 raise ValidationException(str(exc)) from exc
 

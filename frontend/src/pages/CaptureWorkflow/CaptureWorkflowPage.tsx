@@ -21,6 +21,7 @@ import {
 } from '@store/fileUploadQueue';
 import { pendingUploadPins } from '@store/pendingUploadRegistry';
 import { useDeviceType, usesCameraCapture } from '@/hooks/useDeviceType';
+import { useDoubleTap } from '@/hooks/useDoubleTap';
 import CameraCaptureDialog from '@/features/capturePins/CameraCaptureDialog';
 import { Insta360Camera } from '@/plugins/insta360Camera';
 
@@ -328,6 +329,75 @@ interface RenderPin {
   hasCapture: boolean;
   /** Optimistic-upload state: set while this pin's capture is uploading or after it failed. */
   status?: PinUploadStatus;
+}
+
+/** Numbered pin marker: single-tap selects, double-tap starts re-capture. */
+function WorkflowFloorPinMarker({
+  pin,
+  scale,
+  onPinClick,
+  onPinActivate,
+}: {
+  pin: RenderPin;
+  scale: number;
+  onPinClick: (pinId: string) => void;
+  onPinActivate: (pinId: string) => void;
+}) {
+  const { handlers } = useDoubleTap(() => onPinActivate(pin.id), {
+    onSingleTap: () => onPinClick(pin.id),
+  });
+
+  // 'processing' must outrank hasCapture: the capture IS attached while the
+  // panorama is still stitching, so keying purely off hasCapture would show a
+  // finished-looking green pin for a capture that isn't viewable yet.
+  const color = pin.status === 'failed'
+    ? '#dc2626'
+    : pin.status === 'processing' || pin.status === 'uploading'
+      ? '#d97706'
+      : pin.hasCapture ? '#16a34a' : '#d97706';
+
+  return (
+    <Box
+      // Purely positional — NOT the click target. Ancestor zoom would inflate
+      // the hit box; the counter-scaled child below owns pointer events.
+      sx={{ position: 'absolute', left: `${pin.x}%`, top: `${pin.y}%`, transform: 'translate(-50%,-100%)', zIndex: 5, pointerEvents: 'none' }}
+    >
+      <Box
+        data-pin-id={pin.id}
+        onPointerDown={(e) => { e.stopPropagation(); handlers.onPointerDown(e); }}
+        onPointerMove={(e) => { e.stopPropagation(); handlers.onPointerMove(e); }}
+        onPointerUp={(e) => { e.stopPropagation(); handlers.onPointerUp(e); }}
+        sx={{ transform: `scale(${1 / scale})`, transformOrigin: 'bottom center', cursor: 'pointer', pointerEvents: 'auto', touchAction: 'none' }}
+      >
+        <Box sx={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.5))', transition: T, opacity: pin.status === 'uploading' || pin.status === 'processing' ? 0.85 : 1, '&:hover': { transform: 'scale(1.08)' } }}>
+          <Box sx={{ width: { xs: 20, sm: 30 }, height: { xs: 20, sm: 30 }, borderRadius: '50% 50% 50% 0', backgroundColor: color, border: { xs: '2px solid #fff', sm: '3px solid #fff' }, transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Typography sx={{ fontSize: { xs: '0.625rem', sm: '0.8125rem' }, fontWeight: 800, color: '#fff', transform: 'rotate(45deg)', lineHeight: 1 }}>{pin.sequenceNumber}</Typography>
+          </Box>
+          <Box sx={{ width: 2, height: { xs: 4, sm: 6 }, backgroundColor: color, mt: '-1px' }} />
+          {(pin.status === 'uploading' || pin.status === 'processing') && (
+            <Box sx={{
+              position: 'absolute', top: -5, right: -7,
+              width: 13, height: 13, borderRadius: '50%',
+              border: '2px solid #fff', borderTopColor: 'transparent',
+              backgroundColor: P.blue,
+              animation: 'pinspin 0.8s linear infinite',
+              '@keyframes pinspin': { to: { transform: 'rotate(360deg)' } },
+            }} />
+          )}
+          {pin.status === 'failed' && (
+            <Box sx={{
+              position: 'absolute', top: -6, right: -8,
+              width: 14, height: 14, borderRadius: '50%',
+              backgroundColor: '#dc2626', border: '2px solid #fff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Typography sx={{ fontSize: '0.5625rem', fontWeight: 900, color: '#fff', lineHeight: 1 }}>!</Typography>
+            </Box>
+          )}
+        </Box>
+      </Box>
+    </Box>
+  );
 }
 
 /* ── Floor plan viewer with pin, fullscreen, pinch-to-zoom ──────────────── */
@@ -703,72 +773,16 @@ function FloorPlanWithPin({
               <Box component="img" src={imageUrl} alt="Floor plan" draggable={false}
                 sx={{ display: 'block', maxWidth: '88vw', maxHeight: { xs: '48vh', sm: '70vh' }, width: 'auto', height: 'auto' }} />
 
-              {/* Persisted, numbered pins */}
-              {pins.map(p => {
-                // 'processing' must outrank hasCapture: the capture IS attached
-                // while the panorama is still stitching server-side, so keying
-                // purely off hasCapture would show a finished-looking green pin
-                // for a capture that isn't viewable yet.
-                const color = p.status === 'failed'
-                  ? '#dc2626'
-                  : p.status === 'processing' || p.status === 'uploading'
-                    ? '#d97706'
-                    : p.hasCapture ? '#16a34a' : '#d97706';
-                return (
-                  <Box
-                    key={p.id}
-                    // Purely positional — NOT the click target. This box inherits the
-                    // ancestor's zoom `scale()`, so its own layout box (and therefore
-                    // its hit-test region) grows with zoom even though the marker drawn
-                    // inside it is counter-scaled back to a constant visual size. Putting
-                    // the click handler / data-pin-id here made the clickable area grow
-                    // with zoom while the visible pin stayed small — clicks far from a
-                    // zoomed-in pin were still landing on it. The listener now lives on
-                    // the counter-scaled child below, whose hit box tracks its paint size.
-                    sx={{ position: 'absolute', left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%,-100%)', zIndex: 5, pointerEvents: 'none' }}
-                  >
-                    {/* Counter-scale so the marker AND its clickable hit-box both stay a
-                        constant on-screen size regardless of zoom (anchored at the tip). */}
-                    <Box
-                      data-pin-id={p.id}
-                      onPointerUp={(e) => {
-                        e.stopPropagation();
-                        onPinClick(p.id);
-                      }}
-                      sx={{ transform: `scale(${1 / scale})`, transformOrigin: 'bottom center', cursor: 'pointer', pointerEvents: 'auto', touchAction: 'none' }}
-                    >
-                      <Box sx={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.5))', transition: T, opacity: p.status === 'uploading' || p.status === 'processing' ? 0.85 : 1, '&:hover': { transform: 'scale(1.08)' } }}>
-                        <Box sx={{ width: { xs: 20, sm: 30 }, height: { xs: 20, sm: 30 }, borderRadius: '50% 50% 50% 0', backgroundColor: color, border: { xs: '2px solid #fff', sm: '3px solid #fff' }, transform: 'rotate(-45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                          <Typography sx={{ fontSize: { xs: '0.625rem', sm: '0.8125rem' }, fontWeight: 800, color: '#fff', transform: 'rotate(45deg)', lineHeight: 1 }}>{p.sequenceNumber}</Typography>
-                        </Box>
-                        <Box sx={{ width: 2, height: { xs: 4, sm: 6 }, backgroundColor: color, mt: '-1px' }} />
-                        {/* Upload-in-progress / background-stitch spinner badge */}
-                        {(p.status === 'uploading' || p.status === 'processing') && (
-                          <Box sx={{
-                            position: 'absolute', top: -5, right: -7,
-                            width: 13, height: 13, borderRadius: '50%',
-                            border: '2px solid #fff', borderTopColor: 'transparent',
-                            backgroundColor: P.blue,
-                            animation: 'pinspin 0.8s linear infinite',
-                            '@keyframes pinspin': { to: { transform: 'rotate(360deg)' } },
-                          }} />
-                        )}
-                        {/* Upload-failed badge */}
-                        {p.status === 'failed' && (
-                          <Box sx={{
-                            position: 'absolute', top: -6, right: -8,
-                            width: 14, height: 14, borderRadius: '50%',
-                            backgroundColor: '#dc2626', border: '2px solid #fff',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          }}>
-                            <Typography sx={{ fontSize: '0.5625rem', fontWeight: 900, color: '#fff', lineHeight: 1 }}>!</Typography>
-                          </Box>
-                        )}
-                      </Box>
-                    </Box>
-                  </Box>
-                );
-              })}
+              {/* Persisted, numbered pins — single tap selects, double tap re-captures */}
+              {pins.map(p => (
+                <WorkflowFloorPinMarker
+                  key={p.id}
+                  pin={p}
+                  scale={scale}
+                  onPinClick={onPinClick}
+                  onPinActivate={onPinActivate}
+                />
+              ))}
 
               {/* Pending pin */}
               {pin && (
@@ -1557,21 +1571,25 @@ export default function CaptureWorkflowPage() {
                     <CloudUploadRounded sx={{ fontSize: 15 }} /> Queued
                   </Box>
                 )}
-                {!selStatus && (isMobile ? (
-                  /* Mobile/Tablet: Take Picture button */
+                {/* Capture Again / Take Picture — available whenever the pin isn't
+                    in a failed state that already shows Capture Again above. Allow
+                    while uploading/processing so a new visit can be queued on the
+                    same point (fileUploadQueue processes per-pin sequentially). */}
+                {selStatus !== 'failed' && (isMobile ? (
                   <Box
                     onClick={() => handleTakePicture(selectedPinObj)}
                     sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
                   >
-                    <CameraAltRounded sx={{ fontSize: 15 }} /> Take Picture
+                    <CameraAltRounded sx={{ fontSize: 15 }} />
+                    {selectedPinObj.captureIds.length > 0 ? 'Capture Again' : 'Take Picture'}
                   </Box>
                 ) : (
-                  /* Desktop: Capture Again → activates upload zone */
                   <Box
                     onClick={() => { setActiveCapturePinId(selectedPinObj.id); setPendingPin(null); setSelectedPinId(null); }}
                     sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
                   >
-                    <AddAPhotoRounded sx={{ fontSize: 15 }} /> Capture Again
+                    <AddAPhotoRounded sx={{ fontSize: 15 }} />
+                    {selectedPinObj.captureIds.length > 0 ? 'Capture Again' : 'Upload Capture'}
                   </Box>
                 ))}
                 {(() => {

@@ -262,6 +262,43 @@ class CaptureStitchService:
         of the two paths ever needs to win.
         """
         try:
+            new_url = payload.get("processed_panorama_url") or payload.get("original_url")
+            # Never replace an existing good panorama with a blank/corrupt stitch
+            # result (recover_orphaned_jobs / flaky stitch regressions).
+            if new_url:
+                existing = await self._db["captures"].find_one(
+                    {"stitchJobId": job_id, "orgId": org_id},
+                    {
+                        "processedPanoramaUrl": 1,
+                        "processed_panorama_url": 1,
+                        "original_url": 1,
+                    },
+                )
+                if existing:
+                    old_url = (
+                        existing.get("processedPanoramaUrl")
+                        or existing.get("processed_panorama_url")
+                        or existing.get("original_url")
+                    )
+                    if old_url and old_url != new_url:
+                        from app.services.image_fetch import download_image
+                        from app.services.panorama_service import panorama_content_is_blank
+
+                        try:
+                            new_bytes, _ = await download_image(new_url, timeout=30)
+                            if panorama_content_is_blank(new_bytes):
+                                old_bytes, _ = await download_image(old_url, timeout=30)
+                                if not panorama_content_is_blank(old_bytes):
+                                    logger.error(
+                                        f"[stitch-job] refusing to overwrite good panorama on "
+                                        f"job={job_id} with blank stitch output"
+                                    )
+                                    return
+                        except Exception as exc:
+                            logger.warning(
+                                f"[stitch-job] blank-overwrite guard failed for job={job_id}: {exc!r}"
+                            )
+
             result = await self._db["captures"].update_one(
                 {"stitchJobId": job_id, "orgId": org_id},
                 {
