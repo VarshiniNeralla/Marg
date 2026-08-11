@@ -1,0 +1,46 @@
+{
+  "_comment": "Replace by running: python tools/progress_metrics.py --all-floors --write-baseline  (from backend/, with .env). Do this BEFORE T4–T11 land so the machine 'before' reading is real.",
+  "generatedAt": null,
+  "scope": "pending-baseline",
+  "snapshotCount": 0,
+  "floorIds": [],
+  "rigVersion": 1,
+  "completeThreshold": 92.0,
+  "m1_blank_low_yield": {
+    "photographedRooms": 0,
+    "zeroActivityRatePct": 0,
+    "below5ActivityRatePct": 0,
+    "activityCountP50": 0,
+    "activityCountHistogram": {}
+  },
+  "m2_sequence_violations": {
+    "roomsChecked": 0,
+    "violationCount": 0,
+    "violationRatePerRoom": 0,
+    "examples": []
+  },
+  "m3_applicability_violations": {
+    "scoredActivities": 0,
+    "violationCount": 0,
+    "violationRatePct": 0,
+    "examples": []
+  },
+  "m4_time_regressions": {
+    "pairsChecked": 0,
+    "regressionCount": 0,
+    "regressionRatePct": 0,
+    "examples": []
+  },
+  "m5_confidence": {
+    "count": 0,
+    "belowEvidenceFloorPct": 0,
+    "belowRoomFloorPct": 0,
+    "histogram": {}
+  },
+  "m6_room_attribution": {
+    "pinsTracked": 0,
+    "unstablePinCount": 0,
+    "unstableRatePct": 0,
+    "examples": []
+  }
+}

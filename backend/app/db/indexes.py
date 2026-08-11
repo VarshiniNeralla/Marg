@@ -271,6 +271,23 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         name="construction_progress_project_date",
     )
 
+    # ── construction_progress_reviews (human accuracy judgments — T3) ────────
+    await db.construction_progress_reviews.create_index(
+        [("orgId", ASCENDING), ("floorId", ASCENDING), ("createdAt", DESCENDING)],
+        name="construction_progress_reviews_floor",
+    )
+    await db.construction_progress_reviews.create_index(
+        [("orgId", ASCENDING), ("snapshotId", ASCENDING)],
+        name="construction_progress_reviews_snapshot",
+    )
+
+    # ── capture_derived_views (equirect→perspective cache — T4) ─────────────
+    await db.capture_derived_views.create_index(
+        [("orgId", ASCENDING), ("captureId", ASCENDING), ("rigVersion", ASCENDING)],
+        name="capture_derived_views_key",
+        unique=True,
+    )
+
     # ── capture_stitch_jobs (background 360 stitching) ───────────────────────
     # The dedupKey lookup is the in-flight guard that stops a retried upload from
     # starting a second stitch of the same bytes, so it runs on every raw upload.

@@ -3,16 +3,23 @@ Real vision-model-backed ConstructionProgressProvider using the same local
 vLLM endpoint already used for room-map extraction and before/after progress
 analysis elsewhere in this codebase (app/services/vision_providers/vllm_provider.py).
 
-Design: one vision call per capture image (not per activity — 49 activities x
-N captures would be far too many calls), asking the model to identify which
-of the given activities are visible in THIS photo and their apparent
-completion state. Per-activity results are then aggregated across every
-capture available for the floor: an activity's final completion % is the
-average of every unit's (flat/common-area room) best evidence. An activity
-reads "completed" only once that average is near-total (>=92%) across every
-unit on the floor; anything short of that — including an activity no capture
-ever reported on — reads as "in_progress". Only two states are ever shown;
-see `ActivityStatus` in base.py for why.
+T4/T7 design change (v2-surface-groups):
+* Panoramas are reprojected into a rig of 6 flat views (4 walls + ceiling +
+  floor) via panorama_views.render_rig; a phone photo passes through as a
+  single generic view.
+* Instead of one huge 39-item checklist per capture, the provider issues one
+  vision call per SURFACE GROUP (ceiling / walls / openings / fixtures /
+  floor / cleanliness) — each call sees ONLY the views for that group and
+  ONLY the activities in that group whose applicable_rooms match the
+  capture's room name.
+* Concealed activities (observability=="concealed") are never asked of the
+  model — v4 does not fill-forward invent their scores from downstream work.
+* The prompt asks for continuous completion_pct (0–100) + confidence +
+  evidence from direct visual scope coverage (v4.3-visual-scope).
+* Per-room precedence (precedence.apply_precedence) runs BEFORE the roster
+  rollup: fill-forward off; block-backward + MEP↔door-shutter gate remain.
+* Per-unit capture merge uses incompleteness-wins (min); evidence_class +
+  evidence text that admit insufficiency/material-only force 0 or low %.
 """
 from __future__ import annotations
 
@@ -21,15 +28,21 @@ import base64
 import io
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
+import cv2
 import httpx
+import numpy as np
 from loguru import logger
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from PIL import Image, ImageStat
 
 from app.core.config import Settings, get_settings
+from app.services.derived_views_service import get_or_render_views
 from app.services.image_fetch import download_image, resize_if_needed
+from app.services.panorama_service import is_equirectangular, measure_image
+from app.services.panorama_views import DEFAULT_RIG, RIG_VERSION, ViewSpec, render_rig
 from app.services.construction_progress_providers.activities import ActivityDef
 from app.services.construction_progress_providers.base import (
     ActivityAssessment,
@@ -41,143 +54,531 @@ from app.services.construction_progress_providers.base import (
     RoomActivityAssessment,
     RoomProgress,
 )
+from app.services.construction_progress_providers.precedence import (
+    WALL_FINISH_CHAIN,
+    apply_precedence,
+)
 
-# A capture the model itself was unsure about (weak/indirect/partial view) must not surface as
-# "evidence" for a floor-wide activity card — see the confidence floor check in
-# assess_floor_progress for why.
+# A capture the model itself was unsure about (weak/indirect/partial view)
+# must not surface as "evidence" for a floor-wide activity card — see the
+# confidence floor in assess_floor_progress. With the v2 bucketed confidence
+# (low=30, medium=60, high=90), this floor keeps only medium+high.
 _MIN_EVIDENCE_CONFIDENCE = 50.0
-# Room heatmap + Flat Finishing per-room bars use a lower bar so a legitimate
-# finishing activity the model sees but is only moderately sure about still
-# scores the room (instead of "1 capture mapped — finishing activities not
-# scored yet" while sibling bedrooms show 100%).
+# Room heatmap + Flat Finishing per-room bars use the lower bar so a
+# legitimate finishing activity the model reported at low confidence still
+# scores the room bar (but not the floor-wide card).
 _MIN_ROOM_CONFIDENCE = 30.0
 # Alias kept for older call sites / comments that said "heatmap".
 _MIN_HEATMAP_CONFIDENCE = _MIN_ROOM_CONFIDENCE
 
-# The completion_pct an activity/unit must reach to read as genuinely "done" — shared between
-# _status_for_pct and the MEP/door-shutter gate below so both use the same bar for "finished".
+# The completion_pct an activity/unit must reach to read as genuinely "done" —
+# shared with precedence.COMPLETE_THRESHOLD (kept locally for import stability).
 COMPLETE_THRESHOLD = 92.0
 
-# MEP Ceiling Services cannot be reported complete in a flat whose own door shutters aren't
-# confirmed installed — see the gate in assess_floor_progress for why.
+# Bump on every prompt / taxonomy / surface-group change. Reviews and metrics
+# must never pool accuracy across versions (see T3 provenance stamping).
+# v4: Flat Finishing visual completion scoring engine — continuous %, no
+# fill-forward, no max aggregation, material≠install, independent activities.
+# v4.1: strict false-ceiling identification (smooth/white/punned slab ≠ FC).
+# v4.2: stage-aware walls/putty/wiring; evidence↔score consistency; scope language.
+# v4.3: visual-scope — evidence_class; activity≠room-looks-finished; putty/wiring hard stops.
+PROMPT_VERSION = "v4.4-area-scope"
+
+# The synthetic flat name room_map_service.py stamps on every common-area
+# room (lobby, lift lobby, shafts, ...), so a capture's own flat_name tells
+# us definitively which section it belongs to — no guessing needed.
+_COMMON_AREA_FLAT = "Common Area"
+
+# Fallback only when the model returns a legacy state without completion_pct.
+_STATE_TO_PCT: dict[str, float] = {
+    "not_started": 0.0,
+    "early": 15.0,
+    "in_progress": 40.0,
+    "mostly_complete": 80.0,
+    "complete": 100.0,
+}
+_CONFIDENCE_TO_PCT: dict[str, float] = {
+    "low": 30.0,
+    "medium": 60.0,
+    "high": 90.0,
+}
+
+# When the model's own evidence admits insufficiency, never keep a high %.
+_INSUFFICIENT_EVIDENCE_MARKERS: tuple[str, ...] = (
+    "cannot be confirmed",
+    "cannot confirm",
+    "insufficient evidence",
+    "insufficient",
+    "cannot distinguish",
+    "does not prove",
+    "does not establish",
+    "cannot establish",
+    "not enough evidence",
+    "not sufficient",
+    "cannot determine",
+    "cannot verify",
+    "unclear whether",
+    "unable to confirm",
+    "unable to distinguish",
+)
+
+_NO_BOARD_MARKERS: tuple[str, ...] = (
+    "no gypsum",
+    "no boards",
+    "no board",
+    "boards are absent",
+    "boards absent",
+    "no boxing",
+    "no installed board",
+    "without boards",
+    "without gypsum",
+)
+
+# Appearance-only language that must NOT justify putty-stage scores (v4.3).
+_PUTTY_APPEARANCE_ONLY_MARKERS: tuple[str, ...] = (
+    "white and smooth",
+    "smooth white",
+    "white wall",
+    "walls are white",
+    "walls look white",
+    "uniform white",
+    "putty-like",
+    "looks finished",
+    "finished appearance",
+    "finished-looking",
+    "smooth pale",
+    "mostly white",
+)
+
+_PUTTY_STAGE_PROOF_MARKERS: tuple[str, ...] = (
+    "first putty",
+    "1st putty",
+    "putty 1st",
+    "first-coat putty",
+    "first coat putty",
+    "putty layer",
+    "putty patches",
+    "second putty",
+    "2nd putty",
+    "putty 2nd",
+    "second-coat",
+    "second coat putty",
+)
+
+_EVIDENCE_CLASS_ZERO: frozenset[str] = frozenset({
+    "material_present_only",
+    "related_infrastructure_only",
+    "not_observable",
+})
+
+# Activity status "completed" requires essentially full scope (v4.3).
+# Precedence / near-done gates keep COMPLETE_THRESHOLD separately.
+COMPLETED_STATUS_PCT = 100.0
+
+
+def apply_evidence_class(activity_id: str, pct: float, evidence_class: str | None) -> float:
+    """Map internal evidence_class → completion (v4.3). Does not invent %.
+
+    CONFIRMED_INSTALLED / PARTIALLY_INSTALLED → leave pct (scope-based).
+    MATERIAL_PRESENT_ONLY / RELATED_INFRASTRUCTURE_ONLY / NOT_OBSERVABLE → 0.
+    INSUFFICIENT_STAGE_EVIDENCE → 0 for putty stages; otherwise leave (caller
+    may still cap via reconcile).
+    """
+    try:
+        value = max(0.0, min(100.0, float(pct)))
+    except (TypeError, ValueError):
+        return 0.0
+    cls = (evidence_class or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if not cls:
+        return value
+    if cls in _EVIDENCE_CLASS_ZERO:
+        return 0.0
+    if cls == "insufficient_stage_evidence":
+        aid = (activity_id or "").lower()
+        if "putty" in aid or "primer" in aid or "paint" in aid:
+            return 0.0
+        return value
+    # confirmed_installed / partially_installed / unknown → keep
+    return value
+
+
+def reconcile_pct_with_evidence(
+    activity_id: str,
+    pct: float,
+    evidence: str,
+    evidence_class: str | None = None,
+) -> float:
+    """Cap/zero scores that contradict evidence class or evidence text (v4.3)."""
+    value = apply_evidence_class(activity_id, pct, evidence_class)
+    text = (evidence or "").lower()
+    if not text:
+        return value
+
+    aid = (activity_id or "").lower()
+    if "false_ceiling_boxing" in aid or aid.endswith("boxing_24"):
+        if any(m in text for m in _NO_BOARD_MARKERS):
+            return 0.0
+
+    # Putty: white/smooth/finished appearance alone is NEVER enough.
+    if "putty_1st" in aid or "putty_2nd" in aid:
+        appearance = any(m in text for m in _PUTTY_APPEARANCE_ONLY_MARKERS) or (
+            "white" in text and "smooth" in text
+        )
+        stage_proof = any(m in text for m in _PUTTY_STAGE_PROOF_MARKERS)
+        if appearance and not stage_proof and value > 0:
+            return 0.0
+        if "putty_2nd" in aid and any(
+            m in text
+            for m in (
+                "cannot distinguish",
+                "unable to distinguish",
+                "does not prove",
+                "does not establish",
+                "cannot establish",
+                "cannot confirm",
+                "insufficient",
+            )
+        ):
+            return 0.0
+
+    if any(m in text for m in _INSUFFICIENT_EVIDENCE_MARKERS):
+        # Stage-specific putty already handled; other activities stay low.
+        if "putty" in aid:
+            return 0.0
+        value = min(value, 25.0)
+
+    # Electrical: "all boxes have wires" / boxes+loose wires alone ≠ mid/high %.
+    if "electrical_wiring" in aid:
+        boxes_wires = (
+            ("box" in text or "boxes" in text)
+            and ("wire" in text or "conductor" in text)
+        )
+        if boxes_wires and value > 40.0:
+            if any(m in text for m in _INSUFFICIENT_EVIDENCE_MARKERS) or (
+                "all visible" in text and "box" in text
+            ):
+                value = min(value, 25.0)
+            elif "routed" not in text and "scope" not in text and "%" not in text:
+                value = min(value, 25.0)
+
+    # Shutter: leaning/present without fixing → 0.
+    if "door_shutter" in aid or "shutter_fixing" in aid:
+        if any(
+            m in text
+            for m in ("leaning", "propped", "on the floor", "stacked", "not fixed", "not hung")
+        ):
+            return 0.0
+        if "present" in text and "hardware" not in text and "hung" not in text and "fixed" not in text:
+            if value > 0 and "install" not in text:
+                return 0.0
+
+    # Window on floor / leaning → 0 for window activity claims that admit it.
+    if "window" in aid or "sld" in aid:
+        if any(m in text for m in ("on the floor", "leaning", "stacked nearby", "propped")):
+            # If evidence only describes the loose component, zero; if mixed,
+            # prefer_lower elsewhere handles multi-component — here force 0 when
+            # no "installed"/"fixed in opening" counter-claim.
+            if "installed" not in text and "fixed in" not in text:
+                return 0.0
+
+    return value
+
+
+def prefer_lower_unit_evidence(
+    existing: dict[str, Any] | None,
+    *,
+    pct: float,
+    conf: float,
+    capture_id: str,
+    evidence: str,
+) -> dict[str, Any]:
+    """Per-(activity, room) merge: incompleteness wins (never max)."""
+    candidate = {
+        "pct": float(pct),
+        "conf": float(conf),
+        "capture_id": capture_id,
+        "evidence": evidence,
+    }
+    if existing is None:
+        return candidate
+    if candidate["pct"] < existing["pct"]:
+        return candidate
+    if candidate["pct"] == existing["pct"] and candidate["conf"] > existing["conf"]:
+        return candidate
+    return existing
+
+
+def rollup_photographed_unit_pcts(pcts: list[float]) -> float:
+    """Floor/flat rollup across photographed rooms — mean of unit scores.
+
+    One complete room + one incomplete room cannot become 100% (mean < 100).
+    Empty list → 0.
+    """
+    if not pcts:
+        return 0.0
+    return float(sum(pcts) / len(pcts))
+
+
+def rollup_floor_finishing_progress(
+    flat_progress: list[FlatProgress],
+    assessments: list[ActivityAssessment],
+) -> float:
+    """Floor finishing % from flat + common finishing scopes (v4.4).
+
+    Does NOT average only high-scoring activity cards (that inflated overall
+    to ~60% while flats sat at 1–7%). Instead:
+      mean(photographed flat finishing %, …, common finishing %)
+    Flats with zero photographed rooms are omitted (not incomplete).
+    """
+    parts: list[float] = []
+    for fp in flat_progress:
+        if getattr(fp, "rooms_photographed", 0) > 0:
+            parts.append(float(fp.completion_pct))
+    common = [
+        a for a in assessments
+        if a.activity.section == "common" and a.status in ("in_progress", "completed")
+    ]
+    if common:
+        parts.append(sum(float(a.completion_pct) for a in common) / len(common))
+    if not parts:
+        assessed = [
+            a for a in assessments
+            if a.status in ("in_progress", "completed")
+        ]
+        if not assessed:
+            return 0.0
+        return round(sum(float(a.completion_pct) for a in assessed) / len(assessed), 1)
+    return round(sum(parts) / len(parts), 1)
+
+# Which view surfaces to include with each surface_group call. Openings and
+# fixtures both live on walls; cleanliness reads across both walls and floor.
+_SURFACE_TO_VIEW_SURFACES: dict[str, tuple[str, ...]] = {
+    "ceiling": ("ceiling",),
+    "walls": ("walls",),
+    "openings": ("walls",),
+    "fixtures": ("walls",),
+    "floor": ("floor",),
+    "cleanliness": ("walls", "floor"),
+}
+
+# Concurrent vision-call budget. Raised 3→5 (T7g) — each capture now spawns
+# multiple surface-group calls, so 5 stays well under the vLLM's practical
+# per-instance concurrency ceiling while roughly halving wall-clock time.
+_CAPTURE_CONCURRENCY = 5
+
+# JPEG quality used when rendering locally (matches derived_views_service).
+_LOCAL_JPEG_QUALITY = 85
+
+# IDs whose zero-seeded row is required for block-backward and the
+# MEP↔door gate (see precedence.py). Fill-forward is disabled in v4.
 _MEP_CEILING_ACTIVITY_ID = "flat.mep_ceiling_services_plumbing_fire_gas_3"
-_DOOR_SHUTTER_ACTIVITY_IDS = (
+_DOOR_SHUTTER_ACTIVITY_IDS: tuple[str, ...] = (
     "flat.main_door_shutter_fixing_temporary_21",
     "flat.internal_door_shutter_fixing_with_hardware_22",
 )
 
+
 _SYSTEM_PROMPT = """
-You are a Chartered Civil Engineer and Construction Quality Auditor with over 20 years of
-experience inspecting high-rise residential finishing works.
+You are a Chartered Civil Engineer scoring ACTUAL OBSERVABLE construction progress
+for Flat Finishing Works from site photographs.
 
-You are looking at ONE photograph from a site inspection. It may be a normal photo or an
-equirectangular (360-degree) panorama of an interior room or common area.
+You see ONE OR MORE rectilinear photos of ONE surface family (ceiling / walls /
+floor) in a single room.
 
-The space may be mid-construction OR already finished / furnished / occupied. BOTH count.
-If finishing work is visibly complete (false ceiling installed, walls painted, flooring laid,
-doors/fixtures fitted, switches installed, room cleaned, etc.), you MUST report those
-checklist activities with high completion_pct and high confidence_pct. Never return an empty
-assessments list merely because the room looks finished, lived-in, or is not a bare shell.
+CORE QUESTION (v4.4)
+Do NOT answer "How finished does this room look?"
+Answer: "What physical portion of THIS SPECIFIC ACTIVITY is visibly completed?"
 
-The room/flat label in the user message is approximate pin location only. Score what is
-actually visible even if the label does not match the space (e.g. an office or living area
-photo whose pin label says "Toilet").
+AREA SCOPE (mandatory):
+  Score ONLY checklist items for THIS room type. Do not treat other-area
+  activities as incomplete. Absence of toilet/kitchen/balcony work in a
+  bedroom photo is not evidence those activities are incomplete — they are
+  simply out of scope for this image.
+  Completed paint finish can support that underlying putty is done; the
+  server enforces paint⇒putty. Putty alone must NEVER invent paint completion.
 
-CRITICAL — do not return an empty assessments list for finished interiors:
-- Always score shared finishes that are visible: ceiling/wall punning, putty, paint,
-  flooring/tiles, skirting, switches, cleaning — regardless of what kind of room it is.
-- Returning {"assessments": []} for a finished-looking interior is incorrect. Prefer a
-  short list of visible shared finishes over an empty list.
+Order (mandatory):
+  1) Identify the physical object/surface/work for the activity
+  2) Determine its visible state
+  3) Estimate completed / total RELEVANT OBSERVABLE SCOPE
+  4) Assign completion_pct
+Never reverse this (room-looks-finished → high %).
 
-BE EVIDENCE-BASED — report only what this photo directly shows:
-- Only assess an activity if its own work is visibly present — e.g. only score paint-stage
-  activities if you can see the wall finish; do not mark every paint stage complete just
-  because one coat looks done.
-- Do not invent upstream/downstream steps that are not visible.
-- Distant, partial, poorly-lit, or ambiguous views → low confidence_pct (well under 50) or omit.
-- A bare unplastered concrete/block wall means wall-finish activities have not begun.
-- Most photos only speak to a handful of checklist items — that is normal. Do not pad.
-- Never claim fixtures/rooms that are not visible at all in this photo.
-- completion_pct (0-100): how finished that activity looks from this photo.
-- confidence_pct (0-100): how certain you are from image quality and framing.
+INTERNAL EVIDENCE CLASS (set on every scored item; used for consistency):
+  CONFIRMED_INSTALLED — required work clearly installed/applied; score by scope
+  PARTIALLY_INSTALLED — clear partial activity; score proportionally
+  MATERIAL_PRESENT_ONLY — material present but not installed → completion_pct MUST be 0
+  RELATED_INFRASTRUCTURE_ONLY — related but not proof (box≠wiring done; GI≠boxing;
+    white wall≠putty; smooth slab≠FC) → completion_pct MUST be 0
+  INSUFFICIENT_STAGE_EVIDENCE — finished-looking but stage unproven (esp. putty) → 0
+  NOT_OBSERVABLE — use state not_visible (omit or 0)
 
-Respond ONLY with a JSON object of this exact shape:
+STAGE ID (walls/ceilings) — earliest stage you can PROVE:
+  RAW → PUNNING → PUTTY 1ST → PUTTY 2ND → PRIMER → FINAL PAINT
+Colour ≠ stage. white≠putty; smooth≠2nd putty; white ceiling≠FC/paint.
+
+Return ONLY JSON:
 {
   "assessments": [
-    {"activity_id": "<id from the checklist>", "completion_pct": 55, "confidence_pct": 70}
+    {
+      "activity_id": "<verbatim checklist id>",
+      "evidence_class": "CONFIRMED_INSTALLED | PARTIALLY_INSTALLED | MATERIAL_PRESENT_ONLY | RELATED_INFRASTRUCTURE_ONLY | INSUFFICIENT_STAGE_EVIDENCE | NOT_OBSERVABLE",
+      "completion_pct": <integer 0-100>,
+      "state": "not_visible | scored",
+      "evidence": "<one short factual scope sentence — production style, not review commentary>",
+      "confidence": "low | medium | high"
+    }
   ]
 }
-Omit activities this photo does not clearly show. Do not include any other text.
+
+completion_pct = (visibly completed required scope / total observable relevant scope)×100
+Continuous 0–100. No default 50%. No fill-forward. No sequence inference.
+Confidence ≠ completion. High confidence + low % is valid.
+
+state not_visible → omit or completion_pct 0. Prefer omit over inventing.
+
+HARD RULES:
+1. Direct visual evidence only — no likely/probably/expected/sequence.
+2. Activities independent — never use one activity as proof of another
+   (punning≠putty; putty≠paint; wiring≠switches; GI≠boxing; frame≠shutter;
+    shutter≠polish; material≠install).
+3. Material present only (leaning/stacked/on floor) = 0%.
+4. Negative evidence: ask what COMPLETE would look like; if missing, lower/zero.
+5. One component ≠ entire activity — count openings/components/surfaces.
+6. 100% only if essentially entire observable relevant scope is complete.
+7. Unseen = UNVERIFIED, not complete.
+8. Evidence MUST justify the %. If evidence is weaker than the score → LOWER %.
+9. Evidence text: factual measurable scope only. Forbidden: "I would keep…",
+   "This is reasonable…", "The model says…", "defensible…".
+
+ACTIVITY RULES (v4.3):
+WALL PUNNING — completed punned visible area / total relevant visible wall area.
+Inspect lower/upper, corners, reveals, columns, patches, grey/raw/rough. Anchors:
+0–20 small; 25–40 limited; 45–60 ~half; 65–75 most with clear unfinished; 80–90 only
+if unfinished genuinely small; 100 all observable planes. Large unfinished → not 90+.
+Punning CAN be high on clearly punned surfaces. Do NOT use "room looks finished".
+
+PUTTY 1ST — white/smooth/pale/finished alone = INSUFFICIENT_STAGE_EVIDENCE → 0%.
+Allow partial ONLY with direct first-putty evidence (why it is 1st putty, not mere white).
+If cannot distinguish punning vs 1st putty → 0%.
+
+PUTTY 2ND — ABSOLUTE: 0% unless direct 2nd-coat evidence (denser/smoother/opaque than
+1st, still unpainted). Smooth/white/uniform NEVER enough. Cannot distinguish 1st vs 2nd → 0%.
+
+CEILING PUNNING — ceiling SURFACE only. Do NOT reduce for wires/pipes/service holes/MEP.
+Reduce only for raw/unpunned/damaged ceiling surface.
+
+FALSE CEILING — keep v4.1. Smooth/white/punned/concrete/slab curves/MEP ≠ FC (=0).
+Framing: GI/MS grid/channels/hangers only. Boxing: installed gypsum/cement boards only.
+GI only → boxing 0%. Localized small frame in mostly punned slab → PARTIAL framing only,
+not 100% of whole ceiling.
+
+ELECTRICAL WIRING — boxes/conduits/loose wires/pulled conductors awaiting termination
+are RELATED_INFRASTRUCTURE / early rough-in, NOT high completion.
+"All visible boxes have wires" ≠ 100%. Score routed/installed wiring SCOPE.
+0–10 isolated; 10–25 early; 25–40 meaningful but early; 40–60 substantial unfinished;
+60–80 most scope; 80–100 nearly all. If evidence says cannot confirm → must be low/0.
+
+DOOR FRAMES — fixed in actual door openings only. Not shutters, cabinets, lift doors,
+leaning frames, look-alikes. One frame can be 100% at CAPTURE level; not flat-level 100%
+unless all required openings accounted for.
+
+SHUTTER+HARDWARE — present≠fixed; leaning/propped/on floor = 0%. Need hung + hardware.
+
+WINDOW/UTILITY/SLD — COMBINED component count. 1/3≈33%, 2/3≈67%. Floor/leaning/
+stacked/wrapped = MATERIAL_PRESENT_ONLY → 0 for that component.
+
+MODULAR SWITCHES — empty box = 0%. FLOORING — fixed tiles only. CLEANING — debris → 0%.
+
+Evidence examples (good):
+"~55% of observable wall area is smooth/punned; large grey lower bands remain unfinished."
+"White/smooth walls only; cannot establish first putty vs punning — Putty 1st 0%."
+"Boxes and exposed conductors at several points; wiring scope beyond early rough-in not confirmed — ~20%."
+"GI channels in one localized ceiling opening; majority of ceiling is punned slab — framing ~25%."
+"1 of 3 W3A/utility/SLD components fixed in openings — ~33%."
+"Window frame on floor — not installed — 0%."
+
+No prose outside JSON. No markdown fences.
 """
 
 
-# Room names that make Gemma return {"assessments": []} even when shared finishes
-# (paint, flooring, putty) are clearly visible — verified by A/B: same Kitchen
-# photo scores with a neutral/"bedroom" label and fails with a "Kitchen" label.
-_LABEL_BIAS_ROOM_TOKENS = (
-    "kitchen",
-    "utility",
-    "puja",
-    "pooja",
-    "toilet",
-    "bath",
-    "wc",
-    "living",
-    "dining",
-    "drawing",
-    "lobby",
-    "balcony",
-    "sit-out",
-    "sit out",
-    "store",
-)
-
-
-def _pin_location_text(capture: CaptureRef, *, neutralize: bool = False) -> str:
-    """Build the pin-location line for the vision user prompt.
-
-    For Kitchen / Utility / Toilet / Puja / Living / etc., NEVER put the
-    room-type word in the prompt — Gemma returns {"assessments": []} for the
-    same photo when the label says Kitchen, but scores shared finishes when
-    the label is neutral or "Master Bedroom". On empty-assessment retry,
-    always use the neutral wording.
-    """
-    room = (capture.room_name or "").strip()
+def _pin_location_text(capture: CaptureRef) -> str:
+    """Always include the room name (v1 label-bias branch removed in T7d)."""
+    room = (capture.room_name or "").strip() or "unknown room"
     flat = (capture.flat_name or "").strip() or "unknown flat"
-    room_l = room.lower()
-    biased = neutralize or any(tok in room_l for tok in _LABEL_BIAS_ROOM_TOKENS)
-    if biased:
-        # Deliberately omit the room name — even as a parenthetical hint.
-        return (
-            f"Approximate pin location: finished interior space in {flat}. "
-            "Score every visible shared finishing activity from the checklist "
-            "(ceiling, walls, floor, putty, paint, tiles, switches, cleaning). "
-            "Do not require room-specific fixtures before scoring."
-        )
-    return (
-        f"Approximate pin location label: {room} ({flat}). "
-        "Score visible finishing work in the photo even if this label is wrong."
-    )
+    return f"Pin location: {room} in {flat}."
 
 
-def _activities_checklist_text(activities: list[ActivityDef]) -> str:
-    lines = [f"- {a.activity_id}: {a.name} ({'flat interior' if a.section == 'flat' else 'common/shared area'})"
-             for a in activities]
-    return "Checklist of finishing activities to assess:\n" + "\n".join(lines)
+def _room_tokens(name: str) -> set[str]:
+    lowered = (name or "").lower()
+    for sep in ("/", "-", ",", "(", ")", "."):
+        lowered = lowered.replace(sep, " ")
+    return {tok for tok in lowered.split() if tok}
 
 
-# Shared finishes that almost every finished interior shows — used as a
-# short fallback checklist when the full flat list makes Gemma return [].
-_CORE_FLAT_ACTIVITY_IDS = (
-    "flat.ceiling_punning_2",
-    "flat.wall_punning_4",
-    "flat.vitrified_flooring_16",
-    "flat.putty_1st_coat_25",
-    "flat.putty_2nd_coat_26",
-    "flat.primer_1st_coat_paint_27",
-    "flat.final_coat_paint_37",
-    "flat.normal_cleaning_29",
-)
+def _significant_room_tokens(name: str) -> set[str]:
+    """Tokens used for applicable_rooms matching — ignore pure digits.
+
+    Otherwise \"Bedroom-2\" shares token \"2\" with \"toilet-2\" and falsely
+    activates toilet-only activities.
+    """
+    return {tok for tok in _room_tokens(name) if not tok.isdigit() and len(tok) > 1}
+
+
+def _activity_applies_to_room(activity: ActivityDef, capture_room: str) -> bool:
+    """Empty applicable_rooms = applies everywhere. Otherwise share ≥1 significant token."""
+    if not activity.applicable_rooms:
+        return True
+    cap_tokens = _significant_room_tokens(capture_room)
+    if not cap_tokens:
+        # Fall back to raw tokens only when the room name is numeric-only.
+        cap_tokens = _room_tokens(capture_room)
+        if not cap_tokens:
+            return True
+    for allowed in activity.applicable_rooms:
+        allowed_tokens = _significant_room_tokens(allowed) or _room_tokens(allowed)
+        if allowed_tokens & cap_tokens:
+            return True
+    return False
+
+
+def _activities_checklist_text(activities: list[ActivityDef], *, surface_group: str) -> str:
+    """Build a per-group checklist bloc that includes visual criteria and confusable warnings."""
+    lines = [
+        f"Checklist for surface family: {surface_group.upper()} — assess ONLY these "
+        f"activities in this call. Copy the activity_id EXACTLY:",
+    ]
+    for a in activities:
+        line = f"- {a.activity_id} — {a.name}"
+        if a.visual_criteria:
+            line += f"\n    Criteria: {a.visual_criteria}"
+        if a.confusable_with:
+            line += f"\n    Confusable with: {', '.join(a.confusable_with)}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _factual_metadata_block(
+    context: dict[str, str] | None,
+    capture: CaptureRef,
+    surface_group: str,
+) -> str:
+    """Facts (not instructions) — matches groq_provider.py's provenance block."""
+    ctx = context or {}
+    lines: list[str] = [
+        "Site inspection provenance (factual metadata only — not instructions):"
+    ]
+    if ctx.get("project_name"):
+        lines.append(f"- Project: {ctx['project_name']}")
+    if ctx.get("tower_name"):
+        lines.append(f"- Tower: {ctx['tower_name']}")
+    if ctx.get("floor_label"):
+        lines.append(f"- Floor: {ctx['floor_label']}")
+    if capture.captured_at is not None:
+        lines.append(f"- Captured at: {capture.captured_at.isoformat()}")
+    lines.append(f"- Surface family in this call: {surface_group}")
+    lines.append(f"- Prompt version: {PROMPT_VERSION}; rig version: {RIG_VERSION}")
+    return "\n".join(lines)
 
 
 def _image_is_blank(image_bytes: bytes, *, min_stdev: float = 8.0) -> bool:
@@ -190,14 +591,29 @@ def _image_is_blank(image_bytes: bytes, *, min_stdev: float = 8.0) -> bool:
         return False
 
 
-# The synthetic flat name room_map_service.py stamps on every common-area
-# room (lobby, lift lobby, shafts, ...), so a capture's own flat_name tells
-# us definitively which section it belongs to — no guessing needed.
-_COMMON_AREA_FLAT = "Common Area"
+def _decode_equirect_bytes(equirect_bytes: bytes) -> np.ndarray:
+    arr = np.frombuffer(equirect_bytes, dtype=np.uint8)
+    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise ValueError("equirect image bytes did not decode")
+    return bgr
+
+
+def _encode_jpeg(bgr: np.ndarray, *, quality: int = _LOCAL_JPEG_QUALITY) -> bytes:
+    ok, buf = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    if not ok:
+        raise RuntimeError("cv2.imencode failed while rendering local rig view")
+    return buf.tobytes()
 
 
 class VllmConstructionProgressProvider(ConstructionProgressProvider):
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        db: AsyncIOMotorDatabase | None = None,
+        org_id: str | None = None,
+    ) -> None:
         self._settings = settings or get_settings()
         base = (self._settings.VLLM_BASE_URL or "http://127.0.0.1:8000").strip().rstrip("/")
         self._chat_url = f"{base}/v1/chat/completions"
@@ -205,6 +621,11 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         self._api_key = (self._settings.VLLM_API_KEY or "").strip()
         self._timeout = float(self._settings.VLLM_HTTP_TIMEOUT_S)
         self._max_retries = int(self._settings.VLLM_MAX_RETRIES)
+        # Optional wiring for cached derived rig views (T4). Without a db, each
+        # analyze call re-renders views on the fly — still correct, just not
+        # cached across runs.
+        self._db = db
+        self._org_id = org_id
 
     async def assess_floor_progress(
         self,
@@ -216,66 +637,51 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         flat_units: list[str] | None = None,
         common_area_units: list[str] | None = None,
         flat_room_rosters: dict[str, list[str]] | None = None,
+        context: dict[str, str] | None = None,
     ) -> FloorProgressResult:
         if not captures:
             return FloorProgressResult(
                 overall_progress_pct=0.0,
                 overall_confidence_pct=0.0,
                 activities=[
-                    ActivityAssessment(activity=a, status="no_evidence", completion_pct=0.0, confidence_pct=0.0)
+                    ActivityAssessment(
+                        activity=a,
+                        status=(
+                            "not_observable"
+                            if a.observability != "observable"
+                            else "not_assessed"
+                        ),
+                        completion_pct=0.0,
+                        confidence_pct=0.0,
+                    )
                     for a in activities
                 ],
                 executive_summary="No captures are available for this floor yet — analysis requires at least one uploaded photo.",
                 model=self._model,
             )
 
+        # Absorb org_id from the context if the provider was constructed
+        # without one (typical: the factory owns db, the service passes org
+        # per call). Needed for derived-views cache keys.
+        if context and context.get("org_id") and not self._org_id:
+            self._org_id = str(context["org_id"])
+
         activities_by_id = {a.activity_id: a for a in activities}
         activities_by_name = {a.name.strip().lower(): a for a in activities}
-        # Each capture is shown ONLY its own section's checklist — a flat
-        # interior photo never even sees the common-area activity list (and
-        # vice versa). Confirmed necessary on real data: given the full mixed
-        # checklist, the model repeatedly mis-tagged a flat-interior photo
-        # (a bedroom/living room) with common-area activity ids like
-        # "Corridor Flooring" / "Fire Doors & Shaft Doors" at 100% — evidence
-        # for an activity that room can't possibly demonstrate. The roster
-        # filter downstream already scrubs that mismatch out of scoring, but
-        # by then the capture has already wasted its one vision call
-        # answering the wrong checklist instead of its own.
-        flat_checklist_text = _activities_checklist_text([a for a in activities if a.section == "flat"])
-        common_checklist_text = _activities_checklist_text([a for a in activities if a.section == "common"])
 
-        # A pin can be photographed more than once over time (e.g. a "before"
-        # shot and a later "after" shot of the same spot). Only the MOST
-        # RECENT capture per pin should count as scoring evidence — averaging
-        # an old and a new photo of the same room as if they were two
-        # independent rooms would drag a now-finished room's score back down
-        # toward its earlier, unfinished state. Captures with no pin_id (e.g.
-        # legacy data) each stand alone, since there's no group to collapse.
-        latest_by_pin: dict[str, CaptureRef] = {}
-        previous_by_pin: dict[str, CaptureRef] = {}
-        standalone: list[CaptureRef] = []
-        for capture in captures:
-            if not capture.pin_id:
-                standalone.append(capture)
-                continue
-            current = latest_by_pin.get(capture.pin_id)
-            if current is None:
-                latest_by_pin[capture.pin_id] = capture
-                continue
-            # Both captures carry a pin_id — keep whichever is newer as the
-            # primary evidence, and remember the older one as before/after
-            # context (missing captured_at sorts as older, never displacing a
-            # dated one, so an unstamped upload can't wrongly become "latest").
-            new_is_later = (
-                capture.captured_at is not None
-                and (current.captured_at is None or capture.captured_at > current.captured_at)
-            )
-            if new_is_later:
-                previous_by_pin[capture.pin_id] = current
-                latest_by_pin[capture.pin_id] = capture
-            else:
-                previous_by_pin[capture.pin_id] = capture
+        # Only observable activities are asked of the model (T7i). Concealed
+        # activities are not invented via fill-forward in v4.
+        observable_flat_acts = [
+            a for a in activities if a.section == "flat" and a.observability == "observable"
+        ]
+        observable_common_acts = [
+            a for a in activities if a.section == "common" and a.observability == "observable"
+        ]
 
+        # Latest-per-pin dedupe (before/after context dropped in v2 — each
+        # surface-group call already sees the current photo alongside its
+        # sibling views; older shots would just multiply cost).
+        latest_by_pin, standalone = _dedupe_latest_per_pin(captures)
         scoring_captures = standalone + list(latest_by_pin.values())
         skipped_older = len(captures) - len(scoring_captures)
         if skipped_older:
@@ -285,61 +691,28 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                 floor_id, skipped_older,
             )
 
-        # One real vision call per SCORING capture (latest-per-pin), run
-        # concurrently (bounded) — each is assessed independently against
-        # ONLY its own section's checklist (flat vs. common, decided by
-        # whether the capture's flat_name is the synthetic "Common Area"),
-        # optionally with its own earlier photo attached as before/after
-        # context.
-        semaphore = asyncio.Semaphore(3)
+        semaphore = asyncio.Semaphore(_CAPTURE_CONCURRENCY)
 
         async def _assess_one(capture: CaptureRef) -> tuple[CaptureRef, dict[str, dict[str, Any]]]:
             async with semaphore:
                 try:
                     is_common = capture.flat_name == _COMMON_AREA_FLAT
-                    checklist_text = common_checklist_text if is_common else flat_checklist_text
+                    section_acts = observable_common_acts if is_common else observable_flat_acts
+                    # Filter by applicable_rooms so a kitchen photo never
+                    # gets asked about "Balcony Glass Railing" etc.
+                    room_acts = [
+                        a for a in section_acts
+                        if _activity_applies_to_room(a, capture.room_name)
+                    ]
+                    if not room_acts:
+                        return capture, {}
                     result = await self._assess_capture(
-                        capture, checklist_text, previous=previous_by_pin.get(capture.pin_id)
+                        capture, room_acts, context=context,
                     )
-                    # Gemma (and similar) sometimes returns an empty assessments
-                    # list for kitchens / wet areas / living rooms even when
-                    # finishing work is visible — one forced retry recovers most.
-                    if not result:
-                        logger.info(
-                            "[construction-progress] empty assessment for capture={} "
-                            "({} / {}) — retrying once",
-                            capture.capture_id, capture.room_name, capture.flat_name,
-                        )
-                        result = await self._assess_capture(
-                            capture,
-                            checklist_text,
-                            previous=previous_by_pin.get(capture.pin_id),
-                            force_nonempty=True,
-                        )
-                    # Full checklist still empty → try a short core-finishes list
-                    # (paint / putty / floor / ceiling). Verified to recover
-                    # Toilet-3 / Utility when the long checklist short-circuits.
-                    if not result and not is_common:
-                        core_acts = [
-                            a for a in activities
-                            if a.section == "flat" and a.activity_id in _CORE_FLAT_ACTIVITY_IDS
-                        ]
-                        if core_acts:
-                            logger.info(
-                                "[construction-progress] empty after retry for capture={} "
-                                "({}/{}) — trying core finishes checklist",
-                                capture.capture_id, capture.room_name, capture.flat_name,
-                            )
-                            result = await self._assess_capture(
-                                capture,
-                                _activities_checklist_text(core_acts),
-                                previous=None,
-                                force_nonempty=True,
-                            )
                     if not result:
                         logger.warning(
-                            "[construction-progress] capture={} ({}/{}) still returned "
-                            "no scorable activities after retry",
+                            "[construction-progress] capture={} ({}/{}) returned "
+                            "no scorable activities (all not_visible)",
                             capture.capture_id, capture.room_name, capture.flat_name,
                         )
                     return capture, result
@@ -352,42 +725,22 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
 
         results = await asyncio.gather(*[_assess_one(c) for c in scoring_captures])
 
-        # Aggregate per activity, grouped by UNIT. A "common" activity's unit
-        # is the common-area room (capture.room_name) — common areas have no
-        # further per-flat breakdown. A "flat" activity's unit is now the
-        # SPECIFIC ROOM within its flat, (capture.flat_name, capture.room_name)
-        # — NOT the whole flat. This is the fix for a real reported bug: a
-        # unit of "flat" let one photographed room's evidence stand in for
-        # the entire flat (a bedroom's finished ceiling made the WHOLE flat
-        # read as done for "Ceiling Punning" even with a dozen unphotographed
-        # rooms), inflating progress. Grouping by room means a flat's
-        # activity percentage (below) is now a genuine average across every
-        # room in that flat, and a flat's own completion (flat_progress) is
-        # built from whether each of its rooms is independently complete.
-        # Within one unit, the BEST (max) completion_pct reported by any of
-        # its captures wins (a room re-photographed later takes its best
-        # evidence). Evidence is likewise kept per-unit so the confirmed
-        # candidate for each unit is what shows on the activity card, not
-        # every capture that happened to mention the activity.
-        per_activity_unit_pct: dict[str, dict[tuple[str, str], float]] = {}
-        per_activity_unit_conf: dict[str, dict[tuple[str, str], float]] = {}
-        per_activity_unit_evidence: dict[str, dict[tuple[str, str], str]] = {}
-        # Lower-threshold twin used only for Flat Finishing room cards / heatmap.
-        per_activity_room_pct: dict[str, dict[tuple[str, str], float]] = {}
-        per_activity_room_conf: dict[str, dict[tuple[str, str], float]] = {}
-        per_activity_room_evidence: dict[str, dict[tuple[str, str], str]] = {}
+        # ── Collapse to per-unit conservative evidence ──────────────────────
+        # Unit = (flat_name, room_name). For each (activity, unit) keep the
+        # LOWEST completion_pct across captures (incompleteness wins). On a
+        # tie, keep the higher-confidence / clearer evidence text.
+        per_unit_best: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
         # Raw per-CAPTURE signal (not per-unit) — a room's own heatmap status
-        # must reflect what THAT capture's own photo showed, never whether a
-        # sibling room in the same flat happened to score higher for the
-        # same activity.
+        # must reflect what THAT capture's own photo showed, not what a
+        # sibling room happened to score for the same activity.
         per_capture_completion: dict[str, list[float]] = {}
+
         for capture, per_capture in results:
             for raw_id, entry in per_capture.items():
                 activity = activities_by_id.get(raw_id) or activities_by_name.get(
                     str(raw_id).strip().lower()
                 )
                 if activity is None:
-                    # Model sometimes returns a near-slug; try matching on id suffix/name token.
                     raw_l = str(raw_id).strip().lower().replace(" ", "_").replace("-", "_")
                     activity = next(
                         (
@@ -403,72 +756,53 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                 activity_id = activity.activity_id
                 conf = float(entry["confidence_pct"])
                 pct = float(entry["completion_pct"])
+                evidence_text = str(entry.get("evidence") or "")
+                if conf >= _MIN_ROOM_CONFIDENCE and (pct > 0 or conf >= _MIN_EVIDENCE_CONFIDENCE):
+                    per_capture_completion.setdefault(capture.capture_id, []).append(pct)
                 if not capture.room_name:
                     continue
                 unit = (capture.flat_name, capture.room_name)
-                # Heatmap + Flat Finishing room bars: accept moderate confidence.
-                if conf >= _MIN_ROOM_CONFIDENCE and (pct > 0 or conf >= _MIN_EVIDENCE_CONFIDENCE):
-                    per_capture_completion.setdefault(capture.capture_id, []).append(pct)
+                unit_map = per_unit_best.setdefault(unit, {})
+                unit_map[activity_id] = prefer_lower_unit_evidence(
+                    unit_map.get(activity_id),
+                    pct=pct,
+                    conf=conf,
+                    capture_id=capture.capture_id,
+                    evidence=evidence_text,
+                )
+
+        # ── Precedence per room (T7h / v4.4) ────────────────────────────────
+        # Paint⇒putty fills required putty when paint is complete. Block-backward
+        # zeros mid-chain claims but does not erase evidenced paint. MEP↔door
+        # gate zeros MEP without confirmed door shutters.
+        _apply_precedence_per_room(per_unit_best, activities_by_id)
+
+        # ── Split into strict / lenient dicts by confidence ────────────────
+        per_activity_unit_pct: dict[str, dict[tuple[str, str], float]] = {}
+        per_activity_unit_conf: dict[str, dict[tuple[str, str], float]] = {}
+        per_activity_unit_evidence: dict[str, dict[tuple[str, str], str]] = {}
+        per_activity_room_pct: dict[str, dict[tuple[str, str], float]] = {}
+        per_activity_room_conf: dict[str, dict[tuple[str, str], float]] = {}
+        per_activity_room_evidence: dict[str, dict[tuple[str, str], str]] = {}
+        per_activity_room_evidence_text: dict[str, dict[tuple[str, str], str]] = {}
+
+        for unit, act_map in per_unit_best.items():
+            for aid, e in act_map.items():
+                pct = float(e["pct"])
+                conf = float(e["conf"])
+                capture_id = str(e.get("capture_id") or "")
+                evidence_text = str(e.get("evidence") or "")
                 if conf >= _MIN_ROOM_CONFIDENCE:
-                    room_pcts = per_activity_room_pct.setdefault(activity_id, {})
-                    room_confs = per_activity_room_conf.setdefault(activity_id, {})
-                    room_ev = per_activity_room_evidence.setdefault(activity_id, {})
-                    if pct > room_pcts.get(unit, -1.0):
-                        room_pcts[unit] = pct
-                        room_confs[unit] = conf
-                        room_ev[unit] = capture.capture_id
-                # Floor-wide activity cards: keep the stricter evidence floor.
-                if conf < _MIN_EVIDENCE_CONFIDENCE:
-                    continue
-                units_pct = per_activity_unit_pct.setdefault(activity_id, {})
-                units_conf = per_activity_unit_conf.setdefault(activity_id, {})
-                units_evidence = per_activity_unit_evidence.setdefault(activity_id, {})
-                if pct > units_pct.get(unit, -1.0):
-                    units_pct[unit] = pct
-                    units_conf[unit] = conf
-                    units_evidence[unit] = capture.capture_id
+                    per_activity_room_pct.setdefault(aid, {})[unit] = pct
+                    per_activity_room_conf.setdefault(aid, {})[unit] = conf
+                    per_activity_room_evidence.setdefault(aid, {})[unit] = capture_id
+                    per_activity_room_evidence_text.setdefault(aid, {})[unit] = evidence_text
+                if conf >= _MIN_EVIDENCE_CONFIDENCE:
+                    per_activity_unit_pct.setdefault(aid, {})[unit] = pct
+                    per_activity_unit_conf.setdefault(aid, {})[unit] = conf
+                    per_activity_unit_evidence.setdefault(aid, {})[unit] = capture_id
 
-        # "MEP Ceiling Services" cannot be reported as finished in a ROOM
-        # whose own door shutters (main or internal) aren't confirmed
-        # installed IN THAT SAME ROOM — per product decision, MEP completion
-        # implies the doors are hung, checked per-room now that the unit of
-        # account is a room, not a whole flat (a door photo in one bedroom
-        # must not silently unlock MEP credit for a different room). A room
-        # failing this gate has its MEP contribution ZEROED for the roster
-        # average (not merely capped just under the completion line) —
-        # capping alone can't guarantee the FLOOR-WIDE average stays under
-        # the completion threshold once other rooms are already at 100%, so
-        # the only reliable gate is to force this room's own contribution to
-        # read as "not done" outright.
-        mep_pcts = per_activity_unit_pct.get(_MEP_CEILING_ACTIVITY_ID)
-        if mep_pcts:
-            door_pcts_by_id = [
-                per_activity_unit_pct.get(door_id, {}) for door_id in _DOOR_SHUTTER_ACTIVITY_IDS
-            ]
-            for unit in list(mep_pcts):
-                doors_confirmed = any(
-                    door_pcts.get(unit, 0.0) >= COMPLETE_THRESHOLD for door_pcts in door_pcts_by_id
-                )
-                if not doors_confirmed:
-                    mep_pcts[unit] = 0.0
-        mep_room = per_activity_room_pct.get(_MEP_CEILING_ACTIVITY_ID)
-        if mep_room:
-            door_room_by_id = [
-                per_activity_room_pct.get(door_id, {}) for door_id in _DOOR_SHUTTER_ACTIVITY_IDS
-            ]
-            for unit in list(mep_room):
-                doors_confirmed = any(
-                    door_pcts.get(unit, 0.0) >= COMPLETE_THRESHOLD for door_pcts in door_room_by_id
-                )
-                if not doors_confirmed:
-                    mep_room[unit] = 0.0
-
-        # Room-level roster: every (flat, room) that exists per the room map,
-        # used as the denominator for a flat activity's floor-wide percentage
-        # (below) — a room with no evidence still occupies a slot and
-        # contributes 0%, extending the existing "unphotographed units count
-        # as 0%" principle down to room granularity. Common-area rooms have
-        # no further breakdown, so they're their own roster entry directly.
+        # ── Rosters (unchanged behaviour) ──────────────────────────────────
         flat_room_roster: list[tuple[str, str]] = [
             (flat_name, room_name)
             for flat_name, room_names in (flat_room_rosters or {}).items()
@@ -482,55 +816,48 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         for activity in activities:
             units_pct = per_activity_unit_pct.get(activity.activity_id)
             if not units_pct:
-                # Nobody has photographed anything relevant to this activity
-                # anywhere on the floor — "in_progress" would falsely claim
-                # work has been observed starting.
+                # Nobody has photographed an applicable area for this activity.
+                # Concealed / document-only → not_observable; else not_assessed
+                # (inactive — not "No Photos Yet" / incomplete).
+                empty_status: ActivityStatus = (
+                    "not_observable" if activity.observability != "observable" else "not_assessed"
+                )
                 assessments.append(
                     ActivityAssessment(
-                        activity=activity, status="no_evidence",
+                        activity=activity, status=empty_status,
                         completion_pct=0.0, confidence_pct=0.0, evidence_capture_ids=[],
                     )
                 )
                 continue
 
-            # The denominator is every ROOM that EXISTS on the floor per the
-            # relevant roster, not just the rooms photographed so far — a
-            # room with no evidence still occupies a slot and contributes 0%,
-            # which is what makes "photographed 2 of 40 rooms, both finished"
-            # read as 5%, not 100%. Falls back to only-the-photographed-rooms
-            # when no room-map roster was supplied (e.g. a floor plan hasn't
-            # been extracted yet, or a caller/test with no room map at all).
             roster = flat_room_roster if activity.section == "flat" else common_room_roster
-            all_units = roster if roster else list(units_pct.keys())
-            pcts = [units_pct.get(u, 0.0) for u in all_units]
-            avg_pct = sum(pcts) / len(pcts) if pcts else 0.0
+            valid_units = set(roster) if roster else set(units_pct.keys())
+            photographed = [u for u in units_pct if u in valid_units] if valid_units else list(units_pct.keys())
+            if not photographed:
+                empty_status = (
+                    "not_observable" if activity.observability != "observable" else "not_assessed"
+                )
+                assessments.append(
+                    ActivityAssessment(
+                        activity=activity, status=empty_status,
+                        completion_pct=0.0, confidence_pct=0.0, evidence_capture_ids=[],
+                    )
+                )
+                continue
+            pcts = [units_pct[u] for u in photographed]
+            avg_pct = rollup_photographed_unit_pcts(pcts)
 
             units_conf = per_activity_unit_conf.get(activity.activity_id, {})
-            confs = list(units_conf.values())
+            confs = [units_conf[u] for u in photographed if u in units_conf]
             avg_conf = sum(confs) / len(confs) if confs else 0.0
 
-            status = _status_for_pct(avg_pct)
             units_evidence = per_activity_unit_evidence.get(activity.activity_id, {})
-            # Evidence must be restricted to units that are ACTUALLY part of
-            # this activity's roster (real rooms for the relevant section) —
-            # without this, a capture's room_name/flat_name (e.g. a flat's
-            # "Living / Dining") could get recorded as a bogus "unit" for an
-            # activity the model mis-associated it with. That bogus unit was
-            # already correctly excluded from the completion_pct average
-            # (roster-based), but with no matching filter here it still
-            # leaked into the evidence list — showing a mismatched photo as
-            # "evidence" for an activity, with a percentage that visibly
-            # didn't match (0% average, yet an evidence photo attached)
-            # because the two code paths disagreed about what counts as a
-            # real unit.
-            valid_units = set(all_units)
-            candidate_units = [u for u in units_evidence if u in valid_units]
-            # Evidence sorted by that unit's completion (most-finished units
-            # first) so the photos shown are the ones best supporting the
-            # reported status, capped at 3 like before.
+            candidate_units = [u for u in units_evidence if u in valid_units and units_evidence[u]]
             evidence = [
                 units_evidence[u] for u in sorted(candidate_units, key=lambda u: -units_pct.get(u, 0.0))
             ][:3]
+            # Photographed applicable units exist → never "No Photos Yet".
+            status = _status_for_pct(avg_pct, has_evidence=True)
             assessments.append(
                 ActivityAssessment(
                     activity=activity, status=status,
@@ -544,26 +871,12 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
             per_activity_unit_pct=per_activity_room_pct,
             per_activity_unit_conf=per_activity_room_conf,
             per_activity_unit_evidence=per_activity_room_evidence,
+            per_activity_unit_evidence_text=per_activity_room_evidence_text,
             flat_room_rosters=flat_room_rosters or {},
         )
 
-        # "Determined" = actually assessed by at least one capture, distinct
-        # from the binary in_progress/completed status (an activity with zero
-        # evidence is still labelled "in_progress", but must not count toward
-        # the confidence average as if it had been genuinely evaluated).
         determined = [a for a in assessments if a.confidence_pct > 0]
-        # Overall progress is averaged across the FULL checklist, with any
-        # activity no photo could confirm counting as 0% — not just an
-        # average of the few activities that happened to be visible. A floor
-        # with 3 photos covering 6 of 49 activities is genuinely NOT "100%
-        # complete" just because those 6 looked finished; the other 43 are
-        # unknown, which must pull the overall number down, not be excluded
-        # from it entirely.
-        overall_progress_pct = round(sum(a.completion_pct for a in assessments) / len(assessments), 1) if assessments else 0.0
-        # Confidence is still averaged over only the DETERMINED activities —
-        # "how sure are we about what we DID assess" is a separate question
-        # from "how much of the checklist have we assessed at all" (that's
-        # imagesAnalyzedCount / activitiesNotStarted, shown separately).
+        overall_progress_pct = rollup_floor_finishing_progress(flat_progress, assessments)
         overall_confidence_pct = round(sum(a.confidence_pct for a in determined) / len(determined), 1) if determined else 0.0
 
         executive_summary = _build_executive_summary(assessments, overall_progress_pct, len(captures))
@@ -578,87 +891,160 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
             flat_progress=flat_progress,
         )
 
+    # ── Per-capture path (T4 + T7a/b) ──────────────────────────────────────
+
     async def _assess_capture(
         self,
         capture: CaptureRef,
-        checklist_text: str,
+        activities: list[ActivityDef],
         *,
-        previous: CaptureRef | None = None,
-        force_nonempty: bool = False,
+        context: dict[str, str] | None = None,
     ) -> dict[str, dict[str, Any]]:
-        image_bytes, mime = await download_image(capture.image_url, timeout=self._timeout)
-        image_bytes = resize_if_needed(image_bytes)
-        if _image_is_blank(image_bytes):
+        if not activities:
+            return {}
+
+        try:
+            views = await self._get_views(capture)
+        except Exception as exc:
             logger.warning(
-                "[construction-progress] capture={} ({}/{}) image is blank/near-blank "
-                "— skipping vision scoring (re-upload needed)",
+                "[construction-progress] view prep failed for capture={}: {}",
+                capture.capture_id, exc,
+            )
+            return {}
+        if not views:
+            return {}
+
+        # Skip a capture only if EVERY view is blank (T4 step 3). A single
+        # non-blank view is enough to run its surface group.
+        non_blank = [(spec, b) for spec, b in views if not _image_is_blank(b)]
+        if not non_blank:
+            logger.warning(
+                "[construction-progress] capture={} ({}/{}) — every view is blank; skipping",
                 capture.capture_id, capture.room_name, capture.flat_name,
             )
             return {}
-        image_b64 = base64.b64encode(image_bytes).decode("ascii")
 
-        content: list[dict[str, Any]] = []
-        prev_b64: str | None = None
-        prev_mime: str | None = None
-        if previous is not None and previous.image_url:
-            try:
-                prev_bytes, prev_mime = await download_image(previous.image_url, timeout=self._timeout)
-                prev_b64 = base64.b64encode(resize_if_needed(prev_bytes)).decode("ascii")
-            except Exception as exc:
-                logger.warning(
-                    "[construction-progress] could not load earlier capture={} for before/after "
-                    "context on capture={}: {}", previous.capture_id, capture.capture_id, exc,
-                )
+        # Group activities by surface_group; each group is one vision call.
+        by_group: dict[str, list[ActivityDef]] = {}
+        for a in activities:
+            by_group.setdefault(a.surface_group or "walls", []).append(a)
 
-        nonempty_nudge = ""
-        if force_nonempty:
-            nonempty_nudge = (
-                " CRITICAL: Your previous reply listed zero assessments. Look again carefully at "
-                "walls, ceiling, floor, and openings. If ANY finishing work is visible (plaster, "
-                "putty, paint, tiles, flooring, doors, skirting, electrical points), you MUST "
-                "return at least the matching checklist activities with your best completion_pct "
-                "and confidence_pct — never an empty assessments array for a finished or "
-                "partially finished interior."
-            )
-
-        # On empty retry, neutralize room-type labels — Gemma often returns []
-        # for Kitchen/Utility/etc. while scoring the same photo under a neutral label.
-        location_line = _pin_location_text(capture, neutralize=force_nonempty)
-
-        if prev_b64 and prev_mime:
-            user_text = (
-                f"{location_line}\n\n"
-                "You are given TWO photos of this SAME spot, taken at different times: an EARLIER "
-                "photo first, then the CURRENT (most recent) photo second. The earlier photo is "
-                "for context only — to help you see what has changed — but your assessment must "
-                "describe the CURRENT state shown in the second photo. Never score or report "
-                "evidence based on the earlier photo alone.\n\n"
-                f"{checklist_text}\n\n"
-                "Assess the CURRENT (second) photo against the checklist above per the system "
-                "instructions. If the space is already finished, report the completed finishing "
-                "activities you can see — do not return an empty assessments list."
-                f"{nonempty_nudge}"
-            )
-            content = [
-                {"type": "text", "text": user_text},
-                {"type": "text", "text": "EARLIER photo (context only):"},
-                {"type": "image_url", "image_url": {"url": f"data:{prev_mime};base64,{prev_b64}"}},
-                {"type": "text", "text": "CURRENT photo (assess this one):"},
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+        async def _call_group(group: str, acts: list[ActivityDef]) -> dict[str, dict[str, Any]]:
+            target_surfaces = _SURFACE_TO_VIEW_SURFACES.get(group, ("walls",))
+            # Phone photos carry a single view whose surface is "all";
+            # accept it for every group.
+            selected = [
+                (spec, b) for spec, b in non_blank
+                if spec.surface == "all" or spec.surface in target_surfaces
             ]
-        else:
-            user_text = (
-                f"{location_line}\n\n"
-                f"{checklist_text}\n\n"
-                "Assess this photo against the checklist above per the system instructions. "
-                "If the space is already finished, report the completed finishing activities "
-                "you can see — do not return an empty assessments list."
-                f"{nonempty_nudge}"
+            if not selected:
+                return {}
+            return await self._call_surface_group(
+                capture=capture,
+                surface_group=group,
+                activities=acts,
+                views=selected,
+                context=context,
             )
-            content = [
-                {"type": "text", "text": user_text},
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
-            ]
+
+        group_results = await asyncio.gather(*[
+            _call_group(g, acts) for g, acts in by_group.items()
+        ])
+
+        out: dict[str, dict[str, Any]] = {}
+        for res in group_results:
+            for aid, entry in res.items():
+                existing = out.get(aid)
+                if existing is None or entry["confidence_pct"] >= existing["confidence_pct"]:
+                    out[aid] = entry
+        return out
+
+    async def _get_views(self, capture: CaptureRef) -> list[tuple[ViewSpec, bytes]]:
+        """Return the 6 rig views for a panorama, or one 'photo' view for a phone shot."""
+        image_bytes, _mime = await download_image(capture.image_url, timeout=self._timeout)
+        dims = measure_image(image_bytes)
+        if dims and is_equirectangular(dims[0], dims[1]):
+            views: list[tuple[ViewSpec, bytes]] | None = None
+            if self._db is not None and self._org_id:
+                try:
+                    views = await get_or_render_views(
+                        self._db, capture.capture_id, self._org_id, image_bytes,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[construction-progress] derived_views cache path failed capture={} "
+                        "— falling back to render_rig: {}", capture.capture_id, exc,
+                    )
+                    views = None
+            if views is None:
+                equirect_bgr = _decode_equirect_bytes(image_bytes)
+                rendered = render_rig(equirect_bgr, DEFAULT_RIG)
+                views = []
+                for spec, bgr in rendered:
+                    try:
+                        views.append((spec, _encode_jpeg(bgr)))
+                    except Exception as exc:
+                        logger.warning(
+                            "[construction-progress] encode failed for view {} capture={}: {}",
+                            spec.name, capture.capture_id, exc,
+                        )
+            # 1280² q85 should already fit, but fold through the shared image
+            # budget so a caller with a smaller limit still works.
+            return [(spec, resize_if_needed(b)) for spec, b in views]
+
+        # Phone photo passes through unchanged (single image, single view).
+        single = resize_if_needed(image_bytes)
+        photo_spec = ViewSpec(
+            name="photo",
+            yaw_deg=0.0,
+            pitch_deg=0.0,
+            hfov_deg=0.0,
+            surface="all",
+        )
+        return [(photo_spec, single)]
+
+    async def _call_surface_group(
+        self,
+        *,
+        capture: CaptureRef,
+        surface_group: str,
+        activities: list[ActivityDef],
+        views: list[tuple[ViewSpec, bytes]],
+        context: dict[str, str] | None,
+    ) -> dict[str, dict[str, Any]]:
+        metadata_block = _factual_metadata_block(context, capture, surface_group)
+        location_line = _pin_location_text(capture)
+        checklist_text = _activities_checklist_text(activities, surface_group=surface_group)
+
+        text_intro = (
+            f"{metadata_block}\n\n"
+            f"{location_line}\n\n"
+            f"{checklist_text}\n\n"
+            f"Score each activity above using ONLY the {len(views)} photo(s) below. "
+            f"Return continuous completion_pct = (completed observable scope / "
+            f"total observable relevant scope) × 100. Prefer \"not_visible\" "
+            f"(completion_pct 0) when the activity's surface is not shown. "
+            f"Classify evidence_class first; score only this activity's observable "
+            f"completed scope (not how finished the room looks). "
+            f"Identify the actual finishing stage before scoring putty/paint. "
+            f"Do not infer, fill-forward, or use material presence as install. "
+            f"Evidence sentence must be factual production scope — no review commentary. "
+            f"Follow the JSON schema in the system message exactly."
+        )
+
+        content: list[dict[str, Any]] = [
+            {"type": "text", "text": text_intro},
+        ]
+        for spec, view_bytes in views:
+            b64 = base64.b64encode(view_bytes).decode("ascii")
+            content.append({
+                "type": "text",
+                "text": f"View: {spec.name} (surface={spec.surface}, yaw={spec.yaw_deg:.0f}°)",
+            })
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            })
 
         payload: dict[str, Any] = {
             "model": self._model,
@@ -666,33 +1052,77 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": content},
             ],
-            # Slightly higher temperature on empty retry reduces the model's
-            # habit of short-circuiting to {"assessments": []}.
-            "temperature": 0.35 if force_nonempty else 0.2,
-            "max_tokens": 4096,
+            "temperature": 0.1,
+            "max_tokens": 2048,
             "response_format": {"type": "json_object"},
         }
 
-        raw = await self._chat_completion(payload, log_label=f"construction-progress capture={capture.capture_id}")
+        raw = await self._chat_completion(
+            payload,
+            log_label=f"construction-progress capture={capture.capture_id} group={surface_group}",
+        )
+
+        valid_ids = {a.activity_id for a in activities}
         out: dict[str, dict[str, Any]] = {}
         for item in raw.get("assessments") or []:
             if not isinstance(item, dict):
                 continue
-            # Accept activity_id or legacy "id" / "name" keys the model sometimes emits.
             activity_id = str(
                 item.get("activity_id") or item.get("id") or item.get("activity") or item.get("name") or ""
             ).strip()
-            if not activity_id:
+            if not activity_id or activity_id not in valid_ids:
                 continue
-            try:
-                pct = max(0.0, min(100.0, float(item.get("completion_pct", item.get("completion", 0)))))
-                conf = max(0.0, min(100.0, float(item.get("confidence_pct", item.get("confidence", 0)))))
-            except (TypeError, ValueError):
+            state = str(item.get("state") or "").strip().lower()
+            evidence_class = str(
+                item.get("evidence_class") or item.get("evidenceClass") or ""
+            ).strip()
+            if state == "not_visible" or evidence_class.upper() == "NOT_OBSERVABLE":
                 continue
-            # Keep the highest-confidence read when the model repeats an activity.
+
+            confidence = str(item.get("confidence") or "").strip().lower()
+            conf_pct = _CONFIDENCE_TO_PCT.get(confidence, _CONFIDENCE_TO_PCT["low"])
+            evidence_text = str(item.get("evidence") or "").strip()[:400]
+
+            pct: float | None = None
+            raw_pct = item.get("completion_pct")
+            if raw_pct is None:
+                raw_pct = item.get("completionPct")
+            if raw_pct is not None:
+                try:
+                    pct = float(raw_pct)
+                except (TypeError, ValueError):
+                    pct = None
+                if pct is not None:
+                    pct = max(0.0, min(100.0, pct))
+
+            # Legacy / fallback: map discrete state buckets when no pct given.
+            if pct is None:
+                if state in _STATE_TO_PCT:
+                    pct = _STATE_TO_PCT[state]
+                elif state in ("", "scored"):
+                    # Scored without a number — cannot invent a percentage.
+                    continue
+                else:
+                    continue
+
+            pct = reconcile_pct_with_evidence(
+                activity_id, pct, evidence_text, evidence_class=evidence_class,
+            )
+
+            # Treat explicit 0 with "scored" / not_started as real evidence of
+            # incompleteness; skip only pure not_visible (handled above).
             prev = out.get(activity_id)
-            if prev is None or conf >= prev["confidence_pct"]:
-                out[activity_id] = {"completion_pct": pct, "confidence_pct": conf}
+            # Within one surface-group response, incompleteness wins (lower %).
+            if (
+                prev is None
+                or pct < prev["completion_pct"]
+                or (pct == prev["completion_pct"] and conf_pct > prev["confidence_pct"])
+            ):
+                out[activity_id] = {
+                    "completion_pct": pct,
+                    "confidence_pct": conf_pct,
+                    "evidence": evidence_text,
+                }
         return out
 
     def _headers(self) -> dict[str, str]:
@@ -740,30 +1170,115 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         raise RuntimeError(f"{log_label} failed after retries: {last_error}") from last_error
 
 
+# ── Free-function helpers ───────────────────────────────────────────────────
+
+def _dedupe_latest_per_pin(
+    captures: list[CaptureRef],
+) -> tuple[dict[str, CaptureRef], list[CaptureRef]]:
+    """Group by pin_id; keep the most recent capture per pin as scoring
+    evidence. Captures with no pin_id each stand alone (nothing to collapse).
+    """
+    latest_by_pin: dict[str, CaptureRef] = {}
+    standalone: list[CaptureRef] = []
+    for capture in captures:
+        if not capture.pin_id:
+            standalone.append(capture)
+            continue
+        current = latest_by_pin.get(capture.pin_id)
+        if current is None:
+            latest_by_pin[capture.pin_id] = capture
+            continue
+        new_is_later = (
+            capture.captured_at is not None
+            and (current.captured_at is None or capture.captured_at > current.captured_at)
+        )
+        if new_is_later:
+            latest_by_pin[capture.pin_id] = capture
+    return latest_by_pin, standalone
+
+
+def _apply_precedence_per_room(
+    per_unit_best: dict[tuple[str, str], dict[str, dict[str, Any]]],
+    activities_by_id: dict[str, ActivityDef],
+) -> None:
+    """Run precedence.apply_precedence for each (flat, room) unit in place.
+
+    Seeds wall-finish chain, MEP, door-shutter, common putty/paint, and
+    concealed activity ids at 0% so block-backward, paint⇒putty, and the
+    MEP↔door gate have anchors.
+    """
+    from app.services.construction_progress_providers.precedence import (
+        COMMON_PAINT_IDS,
+        COMMON_PUTTY_IDS,
+        PAINT_IMPLIES_PUTTY_EVIDENCE,
+    )
+
+    concealed_flat_ids = {
+        aid for aid, act in activities_by_id.items()
+        if act.observability == "concealed" and act.section == "flat"
+    }
+    seed_ids: set[str] = (
+        set(WALL_FINISH_CHAIN)
+        | {_MEP_CEILING_ACTIVITY_ID}
+        | set(_DOOR_SHUTTER_ACTIVITY_IDS)
+        | set(COMMON_PUTTY_IDS)
+        | set(COMMON_PAINT_IDS)
+        | concealed_flat_ids
+    )
+
+    for unit, act_map in per_unit_best.items():
+        room_input: dict[str, dict[str, Any]] = {}
+        for aid, e in act_map.items():
+            room_input[aid] = {
+                "completionPct": float(e["pct"]),
+                "confidencePct": float(e["conf"]),
+                "evidence": str(e.get("evidence") or ""),
+            }
+        for aid in seed_ids:
+            room_input.setdefault(aid, {"completionPct": 0.0, "confidencePct": 0.0})
+
+        adjusted = apply_precedence(room_input)
+        for aid, adj in adjusted.items():
+            raw_pct = adj.get("completionPct")
+            if raw_pct is None:
+                raw_pct = adj.get("completion_pct")
+            try:
+                new_pct = float(raw_pct or 0.0)
+            except (TypeError, ValueError):
+                continue
+            evidence_adj = str(adj.get("evidence") or "")
+            if aid in act_map:
+                act_map[aid]["pct"] = new_pct
+                if evidence_adj == PAINT_IMPLIES_PUTTY_EVIDENCE:
+                    act_map[aid]["evidence"] = evidence_adj
+            elif new_pct > 0.0:
+                act_map[aid] = {
+                    "pct": new_pct,
+                    "conf": _CONFIDENCE_TO_PCT["medium"],
+                    "capture_id": "",
+                    "evidence": evidence_adj or PAINT_IMPLIES_PUTTY_EVIDENCE,
+                }
+            # else: stayed at 0% and wasn't in the map — don't add noise.
+
+
 def _build_flat_progress(
     *,
     activities_by_id: dict[str, ActivityDef],
     per_activity_unit_pct: dict[str, dict[tuple[str, str], float]],
     per_activity_unit_conf: dict[str, dict[tuple[str, str], float]],
     per_activity_unit_evidence: dict[str, dict[tuple[str, str], str]],
+    per_activity_unit_evidence_text: dict[str, dict[tuple[str, str], str]],
     flat_room_rosters: dict[str, list[str]],
 ) -> list[FlatProgress]:
-    """
-    Builds the Flat Finishing Works breakdown: for each flat, for each of its
-    rooms, every "flat"-section activity that was confirmed there (post the
-    same confidence floor and MEP gate already applied upstream) — a room is
-    "complete" only if EVERY confirmed activity in it individually reached
-    the completion threshold. A room with zero confirmed activities is never
-    "complete" (there's nothing to confirm yet). The flat's own
-    completion_pct is (rooms complete) / (rooms total in its roster) — a flat
-    only reaches 100% once every one of its rooms is independently done, not
-    once any single room is photographed.
+    """Build Flat Finishing Works breakdown (v4.4 area-scoped).
+
+    Work progress uses **photographed** rooms only. A flat is fully complete
+    only when every required roster room is photographed and every scored
+    applicable activity in those rooms is at 100%.
     """
     flat_activity_ids = {aid for aid, a in activities_by_id.items() if a.section == "flat"}
     flats: list[FlatProgress] = []
     for flat_name, room_names in flat_room_rosters.items():
-        # Safety net: include any scored (flat, room) units missing from the
-        # roster (e.g. Toilet-04 kept as a pin label after roster bleed cull).
         room_list = list(room_names)
         seen = {str(r) for r in room_list}
         extras: set[str] = set()
@@ -773,57 +1288,109 @@ def _build_flat_progress(
                     extras.add(rname)
         if extras:
             room_list.extend(sorted(extras))
+        rooms_required = len(room_list)
         rooms: list[RoomProgress] = []
         rooms_complete = 0
+        photographed_room_names: list[str] = []
         for room_name in room_list:
             unit = (flat_name, room_name)
             room_activities: list[RoomActivityAssessment] = []
             for activity_id in flat_activity_ids:
+                act_def = activities_by_id[activity_id]
+                if not _activity_applies_to_room(act_def, room_name):
+                    continue
                 units_pct = per_activity_unit_pct.get(activity_id)
                 if not units_pct or unit not in units_pct:
                     continue
+                capture_id = per_activity_unit_evidence.get(activity_id, {}).get(unit) or ""
+                pct = units_pct[unit]
+                if act_def.observability == "concealed" or act_def.observability == "document_only":
+                    room_status: ActivityStatus = "not_observable"
+                elif pct >= COMPLETED_STATUS_PCT:
+                    room_status = "completed"
+                elif pct > 0 or bool(capture_id):
+                    room_status = "in_progress"
+                else:
+                    room_status = "no_evidence"
                 room_activities.append(
                     RoomActivityAssessment(
                         activity_id=activity_id,
-                        activity_name=activities_by_id[activity_id].name,
-                        completion_pct=units_pct[unit],
+                        activity_name=act_def.name,
+                        completion_pct=pct,
                         confidence_pct=per_activity_unit_conf.get(activity_id, {}).get(unit, 0.0),
-                        evidence_capture_ids=(
-                            [cid] if (cid := per_activity_unit_evidence.get(activity_id, {}).get(unit)) else []
-                        ),
+                        evidence_capture_ids=[capture_id] if capture_id else [],
+                        evidence=per_activity_unit_evidence_text.get(activity_id, {}).get(unit, ""),
+                        status=room_status,
                     )
                 )
             room_activities.sort(key=lambda a: activities_by_id[a.activity_id].sequence_index)
+            has_photo = bool(room_activities)
+            if has_photo:
+                photographed_room_names.append(room_name)
             is_complete = bool(room_activities) and all(
-                a.completion_pct >= COMPLETE_THRESHOLD for a in room_activities
+                a.completion_pct >= COMPLETED_STATUS_PCT for a in room_activities
             )
             if is_complete:
                 rooms_complete += 1
             rooms.append(RoomProgress(room_name=room_name, is_complete=is_complete, activities=room_activities))
-        rooms_total = len(room_list)
-        completion_pct = round((rooms_complete / rooms_total) * 100, 1) if rooms_total else 0.0
+
+        rooms_photographed = len(photographed_room_names)
+        # WIP % = mean of photographed rooms' activity scores (not only
+        # fully-complete room count — that read 1–7% while work was further along).
+        room_work_pcts: list[float] = []
+        for room in rooms:
+            if room.room_name not in photographed_room_names:
+                continue
+            if room.is_complete:
+                room_work_pcts.append(100.0)
+                continue
+            scorable = [a for a in room.activities if a.status != "not_observable"]
+            if not scorable:
+                room_work_pcts.append(0.0)
+                continue
+            avg = sum(a.completion_pct for a in scorable) / len(scorable)
+            room_work_pcts.append(min(avg, 99.0))
+        if room_work_pcts:
+            completion_pct = round(sum(room_work_pcts) / len(room_work_pcts), 1)
+        else:
+            completion_pct = 0.0
+        all_required_covered = rooms_photographed >= rooms_required and rooms_required > 0
+        is_fully_complete = all_required_covered and rooms_complete >= rooms_required
+        # Block 100% until every required area is photographed and complete.
+        if is_fully_complete:
+            completion_pct = 100.0
+        elif completion_pct >= 100.0 and not is_fully_complete:
+            completion_pct = 99.0
+
         flats.append(
             FlatProgress(
                 flat_name=flat_name,
                 completion_pct=completion_pct,
                 rooms_complete=rooms_complete,
-                rooms_total=rooms_total,
+                rooms_total=rooms_photographed if rooms_photographed else rooms_required,
                 rooms=rooms,
+                rooms_required=rooms_required,
+                rooms_photographed=rooms_photographed,
+                is_fully_complete=is_fully_complete,
             )
         )
     return flats
 
 
-def _status_for_pct(pct: float) -> ActivityStatus:
-    # Only called once real evidence exists somewhere for this activity (the
-    # caller handles the "nobody photographed this at all" case as
-    # "no_evidence" before reaching here). "completed" requires near-total,
-    # visible confirmation across every unit; anything short of that is
-    # "in_progress" — a wrong "completed" is worse than an honest "still in
-    # progress", so the bar stays high.
-    if pct >= COMPLETE_THRESHOLD:
+def _status_for_pct(pct: float, *, has_evidence: bool = False) -> ActivityStatus:
+    """Map completion % to status.
+
+    When relevant evidence captures exist, never return ``no_evidence``
+    ("No Photos Yet") — even at 0% completion (area photographed, work not
+    started / scored zero).
+    """
+    if pct >= COMPLETED_STATUS_PCT:
         return "completed"
-    return "in_progress"
+    if pct > 0:
+        return "in_progress"
+    if has_evidence:
+        return "in_progress"
+    return "no_evidence"
 
 
 def _parse_json_content(raw: str) -> dict[str, Any]:
@@ -841,9 +1408,6 @@ def _parse_json_content(raw: str) -> dict[str, Any]:
 
 
 def _build_executive_summary(assessments: list[ActivityAssessment], overall_pct: float, image_count: int) -> str:
-    # "Determined" = actually assessed by at least one capture (confidence_pct
-    # > 0); this naturally excludes every "no_evidence" activity, since those
-    # always carry confidence_pct == 0.0.
     determined = [a for a in assessments if a.confidence_pct > 0]
     if not determined:
         return (

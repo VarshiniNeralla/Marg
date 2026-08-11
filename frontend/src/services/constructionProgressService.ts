@@ -12,10 +12,16 @@ export interface ActivityDefinition {
 
 // A construction manager wants "is this done or not", not five shades of
 // maybe — "completed" requires near-total, visible confirmation, everything
-// short of that (but genuinely observed) is "in_progress". An activity
-// nobody has photographed anywhere gets its own "no_evidence" state — it is
-// NOT "in_progress", since that would falsely claim observed work.
-export type ActivityStatus = 'no_evidence' | 'in_progress' | 'completed';
+// short of that (but genuinely observed) is "in_progress".
+// not_assessed = no relevant area photographed yet (inactive; not incomplete).
+// no_evidence = applicable area photographed but no work evidence found.
+// not_observable = cannot be scored from photos (concealed / document-only).
+export type ActivityStatus =
+  | 'no_evidence'
+  | 'not_assessed'
+  | 'not_observable'
+  | 'in_progress'
+  | 'completed';
 
 export interface ActivityAssessment {
   activityId: string;
@@ -58,6 +64,10 @@ export interface RoomActivityAssessment {
   completionPct: number;
   confidencePct: number;
   evidenceCaptureIds: string[];
+  /** Short assessor rationale when present (T7). */
+  evidence?: string;
+  /** Optional per-room status; used to exclude not_observable from averages. */
+  status?: ActivityStatus;
 }
 
 export interface RoomProgress {
@@ -75,12 +85,14 @@ export interface RoomProgress {
 
 export interface FlatProgress {
   flatName: string;
-  // (rooms complete) / (rooms total in this flat's room-map roster) — a
-  // flat only reaches 100% once every one of its rooms is independently
-  // complete, not once any single room is photographed.
+  // v4.4: work progress over photographed rooms; 100% only when all required
+  // roster rooms are photographed and complete.
   completionPct: number;
   roomsComplete: number;
   roomsTotal: number;
+  roomsRequired?: number;
+  roomsPhotographed?: number;
+  isFullyComplete?: boolean;
   rooms: RoomProgress[];
 }
 
@@ -91,9 +103,14 @@ export interface SummaryCards {
   activitiesCompleted: number;
   activitiesInProgress: number;
   activitiesNotStarted: number;
+  /** Explicit not-assessed count (no relevant area captured). */
+  activitiesNotAssessed?: number;
+  activitiesNotObservable?: number;
   imagesAnalyzed: number;
   lastInspection: string | null;
   avgConfidencePct: number;
+  /** Rooms with ≥1 usable capture ÷ roster rooms — sibling of overall progress. */
+  coveragePct?: number;
 }
 
 export interface FloorProgressSnapshot {
@@ -148,6 +165,72 @@ export interface FloorComparison {
   newlyCompletedActivities: string[];
 }
 
+export type RoomCorrectVerdict = 'yes' | 'no';
+export type ProgressMappingVerdict = 'correct' | 'mostly_correct' | 'wrong';
+
+export interface ActivityCorrection {
+  activityId: string;
+  verdict: 'correct' | 'wrong';
+  /** Reviewer's estimate of the true completion %. */
+  correctPercentage?: number;
+  /** Why the reviewer marked this activity correct/wrong. */
+  note?: string;
+}
+
+/** Per-pin room-mapping judgment when multiple pins fall in one room. */
+export interface PinRoomVerdict {
+  pinNumber: number;
+  roomCorrect: RoomCorrectVerdict;
+  actualRoom?: string;
+}
+
+export interface ProgressReviewCreate {
+  snapshotId: string;
+  floorId: string;
+  flatName: string;
+  roomName: string;
+  pinNumbers?: number[];
+  roomCorrect: RoomCorrectVerdict;
+  actualRoom?: string;
+  /** When present, room-ID accuracy is scored per pin instead of per room. */
+  pinRoomVerdicts?: PinRoomVerdict[];
+  progressVerdict: ProgressMappingVerdict;
+  activityCorrections?: ActivityCorrection[];
+  note?: string;
+}
+
+export interface ProgressReview extends ProgressReviewCreate {
+  reviewId: string;
+  orgId: string;
+  reviewedBy: string;
+  model: string;
+  promptVersion: string;
+  rigVersion: number | null;
+  createdAt: string;
+}
+
+export interface ProgressReviewVersionSummary {
+  promptVersion: string;
+  rigVersion: number | null;
+  reviewCount: number;
+  roomIdentificationAccuracyPct: number | null;
+  roomCorrectYes: number;
+  roomCorrectNo: number;
+  progressMapping: {
+    correct: number;
+    mostly_correct: number;
+    wrong: number;
+    accuracyPct: number | null;
+  };
+  activityWrongCounts: Record<string, number>;
+}
+
+export interface ProgressReviewSummary {
+  floorId: string | null;
+  totalReviews: number;
+  byVersion: ProgressReviewVersionSummary[];
+}
+
 async function unwrap<T>(promise: Promise<{ data: ApiResponse<T> }>): Promise<T> {
   const { data } = await promise;
   return data.data as T;
@@ -199,10 +282,24 @@ export const constructionProgressService = {
   deleteFloorReports(floorId: string): Promise<{ deletedCount: number }> {
     return unwrap(apiClient.delete(`/construction-progress/floors/${floorId}`));
   },
+
+  createReview(payload: ProgressReviewCreate): Promise<ProgressReview> {
+    return unwrap(apiClient.post('/construction-progress/reviews', payload));
+  },
+
+  listReviews(params?: { floorId?: string; snapshotId?: string }): Promise<ProgressReview[]> {
+    return unwrap(apiClient.get('/construction-progress/reviews', { params }));
+  },
+
+  reviewSummary(params?: { floorId?: string }): Promise<ProgressReviewSummary> {
+    return unwrap(apiClient.get('/construction-progress/reviews/summary', { params }));
+  },
 };
 
 export const ACTIVITY_STATUS_LABELS: Record<ActivityStatus, string> = {
   no_evidence: 'No Photos Yet',
+  not_assessed: 'Not Assessed',
+  not_observable: 'Not Observable',
   in_progress: 'Work in Progress',
   completed: 'Completed',
 };

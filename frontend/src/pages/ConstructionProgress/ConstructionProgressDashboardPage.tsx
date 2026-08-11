@@ -110,11 +110,13 @@ export default function ConstructionProgressDashboardPage() {
       setNotAnalyzed(false);
       toast.success(isReanalysis ? 'Re-analysis complete' : 'Progress analysis complete');
     } catch {
-      // Client may have aborted while the backend was still finishing. Give the
-      // server a short window and adopt a newer snapshot if one appears.
+      // Long /analyze calls often fail at the browser (tunnel timeout / bogus
+      // CORS) while the backend is still finishing. Keep the overlay up and
+      // poll for a new snapshot for up to ~15 minutes before giving up.
       let recovered: FloorProgressSnapshot | null = null;
-      for (let i = 0; i < 6; i++) {
-        await new Promise(r => setTimeout(r, 5_000));
+      const maxAttempts = 90; // 90 × 10s ≈ 15 min
+      for (let i = 0; i < maxAttempts; i++) {
+        await new Promise(r => setTimeout(r, 10_000));
         try {
           const detail = await constructionProgressService.getFloorDetail(floorId);
           if (detail && detail.snapshotId !== previousSnapshotId) {
@@ -122,7 +124,7 @@ export default function ConstructionProgressDashboardPage() {
             break;
           }
         } catch {
-          /* keep waiting */
+          /* keep waiting — 404 until the first snapshot lands is expected */
         }
       }
       if (recovered) {
@@ -352,7 +354,10 @@ export default function ConstructionProgressDashboardPage() {
           </Box>
 
           <Box sx={{ mb: 3 }}>
-            <SummaryCardsRow cards={snapshot.summaryCards} />
+            <SummaryCardsRow
+              cards={snapshot.summaryCards}
+              overallProgressPct={snapshot.overallProgressPct}
+            />
           </Box>
 
           <Box sx={{ mb: 3 }}>

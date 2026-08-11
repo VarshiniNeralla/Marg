@@ -2,7 +2,7 @@ import React from 'react';
 import { Box, Typography } from '@mui/material';
 import {
   MeetingRoomRounded, TaskAltRounded, PhotoLibraryRounded,
-  EventAvailableRounded, VerifiedRounded,
+  EventAvailableRounded, VerifiedRounded, GridViewRounded,
 } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
 import type { SummaryCards } from '@/services/constructionProgressService';
@@ -28,15 +28,29 @@ function CardShell({ icon, label, accent, children }: {
   return (
     <Box
       sx={{
-        flex: '1 1 160px', minWidth: 148, p: 2, borderRadius: '14px',
-        backgroundColor: P.white, border: `1.5px solid ${P.border}`,
+        minWidth: 0,
+        px: 2,
+        py: 1.5,
+        borderRadius: '12px',
+        backgroundColor: P.white,
+        border: `1.5px solid ${P.border}`,
         borderTop: accent ? `3px solid ${accent}` : `1.5px solid ${P.border}`,
-        display: 'flex', flexDirection: 'column', gap: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 0.75,
       }}
     >
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, color: P.muted }}>
-        {icon}
-        <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.02em' }}>
+        <Box sx={{ display: 'flex', flexShrink: 0, lineHeight: 0 }}>{icon}</Box>
+        <Typography
+          sx={{
+            fontSize: '0.6875rem',
+            fontWeight: 600,
+            textTransform: 'uppercase',
+            letterSpacing: '0.03em',
+            lineHeight: 1.3,
+          }}
+        >
           {label}
         </Typography>
       </Box>
@@ -47,7 +61,7 @@ function CardShell({ icon, label, accent, children }: {
 
 function ProgressBar({ pct, color }: { pct: number; color: string }) {
   return (
-    <Box sx={{ height: 6, borderRadius: '999px', backgroundColor: colors.borderLight, overflow: 'hidden' }}>
+    <Box sx={{ height: 5, borderRadius: '999px', backgroundColor: colors.borderLight, overflow: 'hidden' }}>
       <Box
         sx={{
           height: '100%', width: `${Math.max(0, Math.min(100, pct))}%`,
@@ -68,7 +82,7 @@ function StackedBar({ completed, inProgress, notStarted }: {
   if (total === 0) return <ProgressBar pct={0} color={colors.borderLight} />;
   const seg = (n: number) => `${(n / total) * 100}%`;
   return (
-    <Box sx={{ height: 6, borderRadius: '999px', backgroundColor: colors.borderLight, overflow: 'hidden', display: 'flex' }}>
+    <Box sx={{ height: 5, borderRadius: '999px', backgroundColor: colors.borderLight, overflow: 'hidden', display: 'flex' }}>
       {completed > 0 && <Box sx={{ height: '100%', width: seg(completed), backgroundColor: colors.success }} />}
       {inProgress > 0 && <Box sx={{ height: '100%', width: seg(inProgress), backgroundColor: colors.warning }} />}
       {notStarted > 0 && <Box sx={{ height: '100%', width: seg(notStarted), backgroundColor: colors.borderLight }} />}
@@ -76,33 +90,54 @@ function StackedBar({ completed, inProgress, notStarted }: {
   );
 }
 
-function RatioCard({ icon, label, completed, inProgress, notStarted }: {
+function RatioCard({ icon, label, completed, inProgress, notStarted, notAssessed, notObservable }: {
   icon: React.ReactNode; label: string; completed: number; inProgress: number; notStarted: number;
+  notAssessed?: number; notObservable?: number;
 }) {
+  const assessed = completed + inProgress;
   const total = completed + inProgress + notStarted;
+  // Headline: assessed / total (not only completed) so "5 in progress" is visible.
+  const headlineLeft = assessed;
   const pct = total > 0 ? (completed / total) * 100 : 0;
-  const color = tierColor(pct);
+  const color = tierColor(assessed > 0 ? Math.max(pct, 5) : 0);
+  const na = notAssessed ?? 0;
+  const no = notObservable ?? 0;
   return (
     <CardShell icon={icon} label={label} accent={color}>
-      <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-        <Typography sx={{ fontSize: '1.375rem', fontWeight: 800, color: P.strong }}>
-          {completed}
-          <Typography component="span" sx={{ fontSize: '0.875rem', fontWeight: 600, color: P.muted }}>
-            {' '}/ {total}
+      <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 1 }}>
+        <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: P.strong, lineHeight: 1.2 }}>
+          {headlineLeft}
+          <Typography component="span" sx={{ fontSize: '0.8125rem', fontWeight: 600, color: P.muted }}>
+            {' '}assessed / {total}
           </Typography>
         </Typography>
-        <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color }}>
-          {Math.round(pct)}%
+        <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color, flexShrink: 0 }}>
+          {completed} done
         </Typography>
       </Box>
       <StackedBar completed={completed} inProgress={inProgress} notStarted={notStarted} />
-      <Box sx={{ display: 'flex', gap: 1.25, flexWrap: 'wrap' }}>
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', columnGap: 1.25, rowGap: 0.25 }}>
+        {completed > 0 && (
+          <Typography sx={{ fontSize: '0.6875rem', color: colors.success, fontWeight: 600 }}>
+            {completed} complete
+          </Typography>
+        )}
         {inProgress > 0 && (
           <Typography sx={{ fontSize: '0.6875rem', color: colors.warning, fontWeight: 600 }}>
             {inProgress} in progress
           </Typography>
         )}
-        {notStarted > 0 && (
+        {na > 0 && (
+          <Typography sx={{ fontSize: '0.6875rem', color: P.muted }}>
+            {na} not assessed
+          </Typography>
+        )}
+        {no > 0 && (
+          <Typography sx={{ fontSize: '0.6875rem', color: P.muted }}>
+            {no} not observable
+          </Typography>
+        )}
+        {na === 0 && no === 0 && notStarted > 0 && (
           <Typography sx={{ fontSize: '0.6875rem', color: P.muted }}>
             {notStarted} not started
           </Typography>
@@ -112,46 +147,95 @@ function RatioCard({ icon, label, completed, inProgress, notStarted }: {
   );
 }
 
-export default function SummaryCardsRow({ cards }: { cards: SummaryCards }) {
+export default function SummaryCardsRow({
+  cards,
+  overallProgressPct,
+}: {
+  cards: SummaryCards;
+  /** When provided, shown beside coverage so progress ≠ photo coverage. */
+  overallProgressPct?: number;
+}) {
   const confColor = tierColor(cards.avgConfidencePct);
+  const coveragePct = cards.coveragePct;
+  const progressPct = overallProgressPct;
+  const showProgressCoverage =
+    typeof coveragePct === 'number' || typeof progressPct === 'number';
+  const progressColor = tierColor(progressPct ?? 0);
+  const coverageColor = tierColor(coveragePct ?? 0);
+
   return (
-    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5 }}>
+    <Box
+      sx={{
+        display: 'grid',
+        // Wider cards (3 across) so labels/meta never need ellipsis; two tidy rows.
+        gridTemplateColumns: {
+          xs: 'repeat(1, minmax(0, 1fr))',
+          sm: 'repeat(2, minmax(0, 1fr))',
+          md: 'repeat(3, minmax(0, 1fr))',
+        },
+        gap: 1.25,
+        alignItems: 'start',
+      }}
+    >
+      {showProgressCoverage && (
+        <CardShell
+          icon={<GridViewRounded sx={{ fontSize: 15 }} />}
+          label="Progress / Coverage"
+          accent={progressColor}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 1.5 }}>
+            <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: P.strong, lineHeight: 1.2 }}>
+              {typeof progressPct === 'number' ? `${Math.round(progressPct)}%` : '—'}
+              <Typography component="span" sx={{ fontSize: '0.75rem', fontWeight: 600, color: P.muted }}>
+                {' '}progress
+              </Typography>
+            </Typography>
+            <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: coverageColor, flexShrink: 0 }}>
+              {typeof coveragePct === 'number' ? `${Math.round(coveragePct)}%` : '—'} coverage
+            </Typography>
+          </Box>
+          <ProgressBar pct={progressPct ?? 0} color={progressColor} />
+          <Typography sx={{ fontSize: '0.6875rem', color: P.muted, lineHeight: 1.35 }}>
+            Photo coverage ≠ finish %
+          </Typography>
+        </CardShell>
+      )}
       <RatioCard
-        icon={<MeetingRoomRounded sx={{ fontSize: 16 }} />}
+        icon={<MeetingRoomRounded sx={{ fontSize: 15 }} />}
         label="Rooms"
         completed={cards.roomsCompleted}
         inProgress={cards.roomsInProgress}
         notStarted={cards.roomsNotStarted}
       />
       <RatioCard
-        icon={<TaskAltRounded sx={{ fontSize: 16 }} />}
+        icon={<TaskAltRounded sx={{ fontSize: 15 }} />}
         label="Activities"
         completed={cards.activitiesCompleted}
         inProgress={cards.activitiesInProgress}
         notStarted={cards.activitiesNotStarted}
+        notAssessed={cards.activitiesNotAssessed}
+        notObservable={cards.activitiesNotObservable}
       />
-      <CardShell icon={<PhotoLibraryRounded sx={{ fontSize: 16 }} />} label="Images Analyzed">
-        <Typography sx={{ fontSize: '1.375rem', fontWeight: 800, color: P.strong }}>
+      <CardShell icon={<PhotoLibraryRounded sx={{ fontSize: 15 }} />} label="Images Analyzed">
+        <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: P.strong, lineHeight: 1.2 }}>
           {cards.imagesAnalyzed}
         </Typography>
-        <Typography sx={{ fontSize: '0.6875rem', color: P.muted }}>
+        <Typography sx={{ fontSize: '0.6875rem', color: P.muted, lineHeight: 1.35 }}>
           total captures reviewed
         </Typography>
       </CardShell>
-      <CardShell icon={<EventAvailableRounded sx={{ fontSize: 16 }} />} label="Last Inspection">
-        <Typography sx={{ fontSize: '1.375rem', fontWeight: 800, color: P.strong }}>
+      <CardShell icon={<EventAvailableRounded sx={{ fontSize: 15 }} />} label="Last Inspection">
+        <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: P.strong, lineHeight: 1.2 }}>
           {formatDate(cards.lastInspection)}
         </Typography>
-        <Typography sx={{ fontSize: '0.6875rem', color: P.muted }}>
+        <Typography sx={{ fontSize: '0.6875rem', color: P.muted, lineHeight: 1.35 }}>
           most recent AI analysis
         </Typography>
       </CardShell>
-      <CardShell icon={<VerifiedRounded sx={{ fontSize: 16 }} />} label="Avg. AI Confidence" accent={confColor}>
-        <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-          <Typography sx={{ fontSize: '1.375rem', fontWeight: 800, color: P.strong }}>
-            {Math.round(cards.avgConfidencePct)}%
-          </Typography>
-        </Box>
+      <CardShell icon={<VerifiedRounded sx={{ fontSize: 15 }} />} label="Avg. AI Confidence" accent={confColor}>
+        <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: P.strong, lineHeight: 1.2 }}>
+          {Math.round(cards.avgConfidencePct)}%
+        </Typography>
         <ProgressBar pct={cards.avgConfidencePct} color={confColor} />
       </CardShell>
     </Box>

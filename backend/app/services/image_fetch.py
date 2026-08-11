@@ -63,8 +63,8 @@ async def download_image(url: str, *, timeout: float) -> tuple[bytes, str]:
     return b"".join(chunks), content_type
 
 
-def resize_if_needed(image_bytes: bytes) -> bytes:
-    if len(image_bytes) <= MAX_IMAGE_BYTES:
+def resize_if_needed(image_bytes: bytes, *, max_bytes: int = MAX_IMAGE_BYTES) -> bytes:
+    if len(image_bytes) <= max_bytes:
         return image_bytes
 
     img = Image.open(io.BytesIO(image_bytes))
@@ -87,7 +87,7 @@ def resize_if_needed(image_bytes: bytes) -> bytes:
         current.save(buf, format="JPEG", quality=quality, optimize=True)
         result = buf.getvalue()
 
-        if len(result) <= MAX_IMAGE_BYTES:
+        if len(result) <= max_bytes:
             return result
 
         quality = max(50, quality - 8)

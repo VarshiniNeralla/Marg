@@ -14,19 +14,27 @@ const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#fff
 function statusColor(status: ActivityStatus): string {
   if (status === 'completed') return colors.success;
   if (status === 'in_progress') return colors.warning;
+  if (status === 'not_observable') return colors.info;
+  if (status === 'not_assessed') return colors.textSubdued;
   return colors.textSubdued;
 }
 
 function statusBg(status: ActivityStatus): string {
   if (status === 'completed') return colors.successBg;
   if (status === 'in_progress') return colors.warningBg;
+  if (status === 'not_observable') return colors.infoBg;
   return colors.bgDeep;
 }
 
 export default function ActivityCard({ activity }: { activity: ActivityAssessment }) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const hasEvidence = activity.evidenceCaptureIds.length > 0;
-  const noEvidence = activity.status === 'no_evidence';
+  // Defensive: never show "No Photos Yet" when evidence exists.
+  const displayStatus: ActivityStatus =
+    activity.status === 'no_evidence' && hasEvidence ? 'in_progress' : activity.status;
+  const noEvidence = displayStatus === 'no_evidence';
+  const notAssessed = displayStatus === 'not_assessed';
+  const notObservable = displayStatus === 'not_observable';
 
   return (
     <>
@@ -43,16 +51,24 @@ export default function ActivityCard({ activity }: { activity: ActivityAssessmen
           <Box
             sx={{
               px: 1, py: 0.25, borderRadius: '6px', flexShrink: 0,
-              backgroundColor: statusBg(activity.status), whiteSpace: 'nowrap',
+              backgroundColor: statusBg(displayStatus), whiteSpace: 'nowrap',
             }}
           >
-            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: statusColor(activity.status) }}>
-              {ACTIVITY_STATUS_LABELS[activity.status]}
+            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: statusColor(displayStatus) }}>
+              {ACTIVITY_STATUS_LABELS[displayStatus]}
             </Typography>
           </Box>
         </Box>
 
-        {noEvidence ? (
+        {notObservable ? (
+          <Typography sx={{ fontSize: '0.75rem', color: P.muted, mb: 0 }}>
+            Not visually observable from site photos — scored from documents or site records when available.
+          </Typography>
+        ) : notAssessed ? (
+          <Typography sx={{ fontSize: '0.75rem', color: P.muted, mb: 0 }}>
+            No relevant area photographed yet — this activity stays inactive until a matching room is captured.
+          </Typography>
+        ) : noEvidence ? (
           <Typography sx={{ fontSize: '0.75rem', color: P.muted, mb: 0 }}>
             No captures cover this activity yet — upload a photo of the relevant area to include it in scoring.
           </Typography>
@@ -69,7 +85,7 @@ export default function ActivityCard({ activity }: { activity: ActivityAssessmen
                 <Box
                   sx={{
                     height: '100%', width: `${activity.completionPct}%`,
-                    backgroundColor: statusColor(activity.status), borderRadius: '999px',
+                    backgroundColor: statusColor(displayStatus), borderRadius: '999px',
                     transition: `width ${motion.durationSlow} ${motion.easeOut}`,
                   }}
                 />

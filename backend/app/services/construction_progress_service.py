@@ -35,6 +35,9 @@ _PIN_HALO_HALF = 2.5  # % of floor-plan width/height for per-pin fallback boxes
 # Grow room AABBs just enough to enclose pins that locate_pin already attributed
 # via its edge-tolerance (pins often sit 1–3% outside coarse AI grid boxes).
 _ROOM_EXPAND_PAD = 0.75
+# Room AABBs thinner than this (full-image %) are treated as degenerate — expand
+# so the UI wash is actually visible (Floor-1 Living strips after Puja carve).
+_MIN_VISIBLE_ROOM_SPAN = 3.0
 
 
 def _utcnow() -> datetime:
@@ -128,16 +131,23 @@ def _align_heatmap_to_pins(
             continue
         # Start from capture attribution (same locate pass used for scoring),
         # then re-resolve against the current room map so labels stay in sync.
+        # Human review override always wins (Floor-1 pin room corrections).
         flat_name = pin_caps[0].flat_name
         room_name = pin_caps[0].room_name
-        located = locate_pin(flats, x, y)
-        resolved = located is not None
-        if located:
-            flat_name, room_name = located[0], located[1]
-            flat_name = _canonical_flat_label(flat_name)
+        resolved = True
+        if pin.get("correctedFlatName") and pin.get("correctedRoomName"):
+            flat_name = _canonical_flat_label(str(pin["correctedFlatName"]))
+            room_name = str(pin["correctedRoomName"])
+        else:
+            located = locate_pin(flats, x, y)
+            resolved = located is not None
+            if located:
+                flat_name, room_name = located[0], located[1]
+                flat_name = _canonical_flat_label(flat_name)
         state = state_by_room.get(_room_key(flat_name, room_name), "in_progress")
         if state in ("no_images", "uploaded"):
             state = "in_progress"
+        human_attributed = bool(pin.get("correctedFlatName") and pin.get("correctedRoomName"))
         heatmap_pins.append({
             "pinId": pin_id,
             "sequenceNumber": int(pin.get("sequenceNumber") or pin.get("sequence_number") or 0),
@@ -148,6 +158,7 @@ def _align_heatmap_to_pins(
             "state": state,
             "capturesCount": len(pin_caps),
             "resolved": resolved,
+            "humanAttributed": human_attributed,
         })
 
     pins_by_room: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -170,34 +181,43 @@ def _align_heatmap_to_pins(
         if not poly:
             continue
         room_pins = pins_by_room.get(key) or []
-        # Never paint a coarse AABB unless an attributed pin tip actually
-        # sits inside it — overlapping neighbour boxes were inventing
-        # "progress" wash on the wrong flat/room.
         pins_inside = [
             p for p in room_pins
             if _point_in_polygon(float(p["x"]), float(p["y"]), poly)
         ]
-        if room_pins and not pins_inside:
+        human_pins = [p for p in room_pins if p.get("humanAttributed")]
+        # Human room overrides may place the tip in a neighbour polygon (e.g. Puja
+        # tip labelled Living / Dining). Still draw this room's wash for those pins.
+        if room_pins and not pins_inside and not human_pins:
             continue
         if not room_pins:
-            # Colored without a resolved pin (should be rare) — skip wash.
             continue
+        draw_pins = room_pins if human_pins else pins_inside
         captures_count = max(
             int(room.get("capturesCount") or 0),
             sum(int(p["capturesCount"]) for p in room_pins),
         )
-        # Photographed rooms keep their original map polygon — never expand
-        # into neighbours. Pins are listed on the room via heatmapPins.
+        xs = [p["x"] for p in poly]
+        ys = [p["y"] for p in poly]
+        span_x = max(xs) - min(xs) if xs else 0.0
+        span_y = max(ys) - min(ys) if ys else 0.0
+        draw_poly = poly
+        if human_pins or span_x < _MIN_VISIBLE_ROOM_SPAN or span_y < _MIN_VISIBLE_ROOM_SPAN:
+            draw_poly = _expand_polygon_to_include(
+                poly,
+                [(float(p["x"]), float(p["y"])) for p in draw_pins],
+                pad=max(_ROOM_EXPAND_PAD, 2.0),
+            )
         aligned.append({
             **room,
-            "polygon": poly,
+            "polygon": draw_poly,
             "state": state,
             "capturesCount": captures_count,
             "pinNumbers": sorted(
-                {int(p["sequenceNumber"]) for p in pins_inside if p.get("sequenceNumber")}
+                {int(p["sequenceNumber"]) for p in draw_pins if p.get("sequenceNumber")}
             ),
         })
-        for p in pins_inside:
+        for p in draw_pins:
             covered_pin_ids.add(p["pinId"])
 
     # locate_pin miss (or name not on the room-map roster): personal halo so
@@ -216,6 +236,7 @@ def _align_heatmap_to_pins(
 
     for p in heatmap_pins:
         p.pop("resolved", None)
+        p.pop("humanAttributed", None)
     heatmap_pins.sort(key=lambda p: p["sequenceNumber"])
     return aligned, heatmap_pins
 
@@ -231,11 +252,31 @@ def _parse_dt(value: Any) -> datetime | None:
     return None
 
 
-def get_construction_progress_provider() -> ConstructionProgressProvider:
-    """Factory — mirrors `ai_progress_service.get_vision_provider()`'s
-    factory-swap pattern. Currently always the local vLLM-backed provider;
-    swap this one function to change models."""
-    return VllmConstructionProgressProvider()
+def get_construction_progress_provider(
+    db: AsyncIOMotorDatabase | None = None,
+) -> ConstructionProgressProvider:
+    """Factory — settings-driven (T11).
+
+    CONSTRUCTION_PROGRESS_PROVIDER:
+      vllm     — local Gemma only (default; fully restores prior behaviour)
+      hybrid   — local first, Claude escalation hooks available
+      anthropic — Claude-only (requires ANTHROPIC_API_KEY + anthropic package)
+    """
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    kind = (settings.CONSTRUCTION_PROGRESS_PROVIDER or "vllm").strip().lower()
+    if kind == "hybrid":
+        from app.services.construction_progress_providers.hybrid_provider import (
+            HybridConstructionProgressProvider,
+        )
+        return HybridConstructionProgressProvider(settings, db=db)
+    if kind == "anthropic":
+        from app.services.construction_progress_providers.anthropic_provider import (
+            AnthropicConstructionProgressProvider,
+        )
+        return AnthropicConstructionProgressProvider(settings, db=db)
+    return VllmConstructionProgressProvider(db=db)
 
 
 class ConstructionProgressService:
@@ -246,7 +287,9 @@ class ConstructionProgressService:
         provider: ConstructionProgressProvider | None = None,
     ) -> None:
         self._db = db
-        self._provider = provider or get_construction_progress_provider()
+        # Provider gets `db` so it can reuse cached derived rig views instead
+        # of reprojecting every panorama on every analyze run.
+        self._provider = provider or get_construction_progress_provider(db)
         self._room_maps = RoomMapService(db)
 
     # ── Floor + capture resolution ────────────────────────────────────────────
@@ -407,13 +450,18 @@ class ConstructionProgressService:
                     continue
             flat_name, room_name = _FALLBACK_LOCATION
             if pin and floor_plan_id:
-                flat_name, room_name = await self._room_maps.resolve_pin_location(
-                    floor_plan_id=floor_plan_id,
-                    org_id=org_id,
-                    pin_x=pin.get("x"),
-                    pin_y=pin.get("y"),
-                    fallback_pin_name=cap.get("roomName") or f"Pin {pin.get('sequenceNumber', '?')}",
-                )
+                # Human review override wins over geometry (Floor-1 pin corrections).
+                if pin.get("correctedFlatName") and pin.get("correctedRoomName"):
+                    flat_name = str(pin["correctedFlatName"])
+                    room_name = str(pin["correctedRoomName"])
+                else:
+                    flat_name, room_name = await self._room_maps.resolve_pin_location(
+                        floor_plan_id=floor_plan_id,
+                        org_id=org_id,
+                        pin_x=pin.get("x"),
+                        pin_y=pin.get("y"),
+                        fallback_pin_name=cap.get("roomName") or f"Pin {pin.get('sequenceNumber', '?')}",
+                    )
             image_url = str(
                 cap.get("processedPanoramaUrl")
                 or cap.get("original_url")
@@ -502,7 +550,14 @@ class ConstructionProgressService:
 
     # ── Snapshot generation ────────────────────────────────────────────────────
 
-    async def analyze_floor(self, org_id: str, floor_id: str, *, as_of: datetime | None = None) -> dict[str, Any]:
+    async def analyze_floor(
+        self,
+        org_id: str,
+        floor_id: str,
+        *,
+        as_of: datetime | None = None,
+        analyzed_by: str | None = None,
+    ) -> dict[str, Any]:
         context = await self._get_floor_context(org_id, floor_id)
         if not context:
             raise ValueError("Floor not found")
@@ -609,6 +664,16 @@ class ConstructionProgressService:
                 fname, flat_room_rosters[fname],
             )
 
+        # Factual site metadata — rendered into the vision prompt as facts
+        # (not instructions) so the model treats project/tower/floor as
+        # provenance context without letting it inflate confidence. T7e.
+        provider_context: dict[str, str] = {
+            "org_id": org_id,
+            "project_name": str(context.get("projectName") or ""),
+            "tower_name": str(context.get("towerName") or ""),
+            "floor_label": str(context.get("floorLabel") or ""),
+            "captured_at": as_of.isoformat() if as_of else "",
+        }
         result = await self._provider.assess_floor_progress(
             floor_id=floor_id,
             activities=ALL_ACTIVITIES,
@@ -617,6 +682,7 @@ class ConstructionProgressService:
             flat_units=flat_units or None,
             common_area_units=common_area_units or None,
             flat_room_rosters=flat_room_rosters or None,
+            context=provider_context,
         )
 
         # Built from each capture's OWN raw per-activity results, not from
@@ -687,12 +753,15 @@ class ConstructionProgressService:
         rooms_in_progress = sum(1 for r in room_heatmap if r["state"] in ("uploaded", "in_progress"))
         # Legacy snapshots may still carry "uploaded"; treat as in_progress for counts.
         rooms_not_started = sum(1 for r in room_heatmap if r["state"] == "no_images")
-        # ActivityStatus has its own explicit "no_evidence" state now — an
-        # activity nobody has photographed anywhere is never mislabelled
-        # "in_progress" (which would falsely claim observed work).
+        # Activity status buckets (v4.4):
         activities_completed = sum(1 for a in activity_docs if a["status"] == "completed")
-        activities_not_started = sum(1 for a in activity_docs if a["status"] == "no_evidence")
         activities_in_progress = sum(1 for a in activity_docs if a["status"] == "in_progress")
+        activities_not_assessed = sum(1 for a in activity_docs if a["status"] == "not_assessed")
+        activities_not_observable = sum(1 for a in activity_docs if a["status"] == "not_observable")
+        # Legacy "no_evidence" (should be rare after evidence-aware status) counts
+        # with not_assessed for summary totals.
+        activities_no_evidence = sum(1 for a in activity_docs if a["status"] == "no_evidence")
+        activities_not_started = activities_not_assessed + activities_not_observable + activities_no_evidence
         confident_docs = [a for a in activity_docs if a["confidencePct"] > 0]
         avg_confidence = (
             round(sum(a["confidencePct"] for a in confident_docs) / len(confident_docs), 1)
@@ -700,13 +769,18 @@ class ConstructionProgressService:
         )
         last_inspection = max((c.captured_at for c in captures if c.captured_at), default=None)
 
-        # Floor-level status: "Completed" only if EVERY activity that was
-        # genuinely assessed is "completed" — one confirmed in-progress
-        # activity (or one never confirmed at all) keeps the whole floor at
-        # "Work in Progress". An unassessed activity is treated as NOT
-        # complete (never silently excluded), so a floor with almost nothing
-        # photographed yet cannot read as "Completed" by default.
-        overall_status = "completed" if activities_completed == len(activity_docs) and activity_docs else "in_progress"
+        # Floor-level status: "Completed" only if EVERY scorable activity is
+        # "completed". not_observable is excluded (cannot finish from photos).
+        # not_assessed still blocks "Completed" — required areas without
+        # photos must not let the floor read as done.
+        scorable_activity_docs = [
+            a for a in activity_docs if a["status"] != "not_observable"
+        ]
+        overall_status = (
+            "completed"
+            if scorable_activity_docs and all(a["status"] == "completed" for a in scorable_activity_docs)
+            else "in_progress"
+        )
 
         flat_progress_docs = [
             {
@@ -714,6 +788,9 @@ class ConstructionProgressService:
                 "completionPct": fp.completion_pct,
                 "roomsComplete": fp.rooms_complete,
                 "roomsTotal": fp.rooms_total,
+                "roomsRequired": getattr(fp, "rooms_required", fp.rooms_total),
+                "roomsPhotographed": getattr(fp, "rooms_photographed", fp.rooms_total),
+                "isFullyComplete": getattr(fp, "is_fully_complete", False),
                 "rooms": [
                     {
                         "roomName": r.room_name,
@@ -725,6 +802,17 @@ class ConstructionProgressService:
                                 "completionPct": a.completion_pct,
                                 "confidencePct": a.confidence_pct,
                                 "evidenceCaptureIds": a.evidence_capture_ids,
+                                "evidence": a.evidence or "",
+                                "status": (
+                                    getattr(a, "status", None)
+                                    or (
+                                        "completed" if a.completion_pct >= 100.0
+                                        else "in_progress" if (
+                                            a.completion_pct > 0 or a.evidence_capture_ids
+                                        )
+                                        else "no_evidence"
+                                    )
+                                ),
                             }
                             for a in r.activities
                         ],
@@ -838,14 +926,80 @@ class ConstructionProgressService:
                         pin_nums = sorted(set(inside))
                 room["pinNumbers"] = pin_nums
                 room["capturesCount"] = int(caps_by_room_key.get(key, 0) or len(pin_nums))
-                if int(room["capturesCount"] or 0) <= 0:
-                    room["activities"] = []
+                # Do NOT wipe scored activities when capture matching fails —
+                # that was destroying evidence and resetting flat %. If AI
+                # scored the room, treat it as photographed.
+                if int(room["capturesCount"] or 0) <= 0 and room.get("activities"):
+                    room["capturesCount"] = 1
+                if int(room["capturesCount"] or 0) <= 0 and not room.get("activities"):
                     room["isComplete"] = False
-            complete = sum(1 for r in fp["rooms"] if r.get("isComplete"))
-            total = len(fp["rooms"])
+
+            # v4.4: recompute flat finishing from photographed rooms' work %.
+            photographed_rooms = [
+                r for r in fp["rooms"]
+                if int(r.get("capturesCount") or 0) >= 1 or (r.get("activities") or [])
+            ]
+            complete = sum(1 for r in photographed_rooms if r.get("isComplete"))
+            rooms_required = int(fp.get("roomsRequired") or len(fp["rooms"]) or 0)
+            rooms_photographed = len(photographed_rooms)
             fp["roomsComplete"] = complete
-            fp["roomsTotal"] = total
-            fp["completionPct"] = round((complete / total) * 100, 1) if total else 0.0
+            fp["roomsPhotographed"] = rooms_photographed
+            fp["roomsRequired"] = rooms_required
+            fp["roomsTotal"] = rooms_photographed if rooms_photographed else rooms_required
+
+            room_work_pcts: list[float] = []
+            for r in photographed_rooms:
+                if r.get("isComplete"):
+                    room_work_pcts.append(100.0)
+                    continue
+                acts = [
+                    a for a in (r.get("activities") or [])
+                    if a.get("status") != "not_observable"
+                ]
+                if not acts:
+                    room_work_pcts.append(0.0)
+                    continue
+                avg = sum(float(a.get("completionPct") or 0.0) for a in acts) / len(acts)
+                room_work_pcts.append(min(avg, 99.0))
+            if room_work_pcts:
+                completion_pct = round(sum(room_work_pcts) / len(room_work_pcts), 1)
+            else:
+                completion_pct = 0.0
+            is_fully = (
+                rooms_required > 0
+                and rooms_photographed >= rooms_required
+                and complete >= rooms_required
+            )
+            if is_fully:
+                completion_pct = 100.0
+            elif completion_pct >= 100.0 and not is_fully:
+                completion_pct = 99.0
+            fp["completionPct"] = completion_pct
+            fp["isFullyComplete"] = is_fully
+
+        # Floor finishing % from finalized flat + common scopes (not the
+        # legacy mean of only high-scoring activity cards).
+        from app.services.construction_progress_providers.vllm_provider import (
+            rollup_floor_finishing_progress,
+        )
+        from app.services.construction_progress_providers.base import FlatProgress as _FlatProgress
+
+        flat_for_rollup = [
+            _FlatProgress(
+                flat_name=str(fp["flatName"]),
+                completion_pct=float(fp.get("completionPct") or 0.0),
+                rooms_complete=int(fp.get("roomsComplete") or 0),
+                rooms_total=int(fp.get("roomsTotal") or 0),
+                rooms_required=int(fp.get("roomsRequired") or 0),
+                rooms_photographed=int(fp.get("roomsPhotographed") or 0),
+                is_fully_complete=bool(fp.get("isFullyComplete")),
+            )
+            for fp in flat_progress_docs
+            if str(fp.get("flatName") or "").lower() != "common area"
+        ]
+        overall_finishing_pct = rollup_floor_finishing_progress(
+            flat_for_rollup, result.activities,
+        )
 
         # Prefer residential flats first in the Flat Finishing dropdown.
         flat_progress_docs.sort(
@@ -853,6 +1007,22 @@ class ConstructionProgressService:
                 0 if str(d.get("flatName") or "").lower().startswith("flat") else 1,
                 str(d.get("flatName") or ""),
             )
+        )
+
+        # Coverage ≠ progress: rooms with ≥1 usable capture ÷ roster rooms.
+        # Progress (overallProgressPct) averages photographed rooms only;
+        # this sibling field is how sparse photo coverage is communicated.
+        roster_room_count = sum(len(fp.get("rooms") or []) for fp in flat_progress_docs)
+        photographed_room_count = sum(
+            1
+            for fp in flat_progress_docs
+            for r in (fp.get("rooms") or [])
+            if int(r.get("capturesCount") or 0) >= 1
+        )
+        coverage_pct = (
+            round((photographed_room_count / roster_room_count) * 100, 1)
+            if roster_room_count
+            else 0.0
         )
 
         doc = {
@@ -866,7 +1036,7 @@ class ConstructionProgressService:
             "floorPlanId": context["floorPlanId"],
             "floorPlanImageUrl": context["floorPlanImageUrl"],
             "snapshotDate": as_of,
-            "overallProgressPct": result.overall_progress_pct,
+            "overallProgressPct": overall_finishing_pct,
             "overallConfidencePct": result.overall_confidence_pct,
             "overallStatus": overall_status,
             "imagesAnalyzedCount": len(captures),
@@ -881,20 +1051,40 @@ class ConstructionProgressService:
                 "activitiesCompleted": activities_completed,
                 "activitiesInProgress": activities_in_progress,
                 "activitiesNotStarted": activities_not_started,
+                "activitiesNotAssessed": activities_not_assessed,
+                "activitiesNotObservable": activities_not_observable,
                 "imagesAnalyzed": len(captures),
                 "lastInspection": last_inspection,
                 "avgConfidencePct": avg_confidence,
+                "coveragePct": coverage_pct,
             },
             "executiveSummary": result.executive_summary,
             "model": result.model,
+            "analyzedBy": analyzed_by,
+            "promptVersion": _prompt_version(),
+            "rigVersion": _rig_version(),
             "createdAt": _utcnow(),
         }
         insert_result = await self._db[_COLLECTION].insert_one(doc)
         doc["_id"] = insert_result.inserted_id
         logger.info(
             "Construction progress snapshot created floor_id={} org_id={} overall={}%",
-            floor_id, org_id, result.overall_progress_pct,
+            floor_id, org_id, overall_finishing_pct,
         )
+        # Re-apply human pin + activity corrections onto the new snapshot so a
+        # fresh analyze does not wipe Floor-1 (and later) review fixes.
+        try:
+            from app.services.review_correction_applier import ReviewCorrectionApplier
+            applied = await ReviewCorrectionApplier(self._db).backfill_floor(
+                org_id=org_id, floor_id=floor_id,
+            )
+            logger.info("Re-applied review corrections after analyze: {}", applied)
+            # Reload so API response includes human-corrected flatProgress.
+            refreshed = await self._db[_COLLECTION].find_one({"_id": doc["_id"]})
+            if refreshed:
+                doc = refreshed
+        except Exception as exc:
+            logger.warning("Post-analyze review correction apply failed: {}", exc)
         return _serialize_snapshot(doc)
 
     # ── Reads ──────────────────────────────────────────────────────────────────
@@ -1098,5 +1288,18 @@ def _serialize_snapshot(doc: dict[str, Any] | None) -> dict[str, Any] | None:
         "summaryCards": doc.get("summaryCards", {}),
         "executiveSummary": doc.get("executiveSummary", ""),
         "model": doc.get("model", ""),
+        "analyzedBy": doc.get("analyzedBy") or doc.get("analyzed_by"),
+        "promptVersion": doc.get("promptVersion") or doc.get("prompt_version"),
+        "rigVersion": doc.get("rigVersion") if doc.get("rigVersion") is not None else doc.get("rig_version"),
         "createdAt": doc.get("createdAt"),
     }
+
+
+def _prompt_version() -> str:
+    from app.services.construction_progress_providers.vllm_provider import PROMPT_VERSION
+    return PROMPT_VERSION
+
+
+def _rig_version() -> int:
+    from app.services.panorama_views import RIG_VERSION
+    return RIG_VERSION

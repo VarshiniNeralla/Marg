@@ -22,3 +22,5 @@ python-multipart==0.0.9
 redis==5.0.3
 slowapi>=0.1.9
 uvicorn==0.28.0
+# T11 — Claude verification tier (optional; only needed for hybrid/anthropic provider)
+anthropic>=0.40.0

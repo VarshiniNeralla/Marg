@@ -27,6 +27,7 @@ export async function exportConstructionProgressExcel(
     ['Tower', snapshot.towerName],
     ['Floor', snapshot.floorName],
     ['Overall Progress', `${Math.round(snapshot.overallProgressPct)}%`],
+    ['Coverage %', typeof snapshot.summaryCards.coveragePct === 'number' ? `${Math.round(snapshot.summaryCards.coveragePct)}%` : ''],
     ['AI Confidence', `${Math.round(snapshot.overallConfidencePct)}%`],
     ['Images Analyzed', snapshot.imagesAnalyzedCount],
     ['Rooms Completed', snapshot.summaryCards.roomsCompleted],
@@ -63,11 +64,66 @@ export async function exportConstructionProgressExcel(
       activities.addRow({
         section: a.section === 'flat' ? 'Flat' : 'Common Area',
         name: a.name,
-        status: ACTIVITY_STATUS_LABELS[a.status],
+        status: ACTIVITY_STATUS_LABELS[a.status] ?? a.status,
         completion: Math.round(a.completionPct),
         confidence: a.confidencePct > 0 ? Math.round(a.confidencePct) : '',
       });
     });
+
+  // ── Flat Finishing sheet (per-room / per-activity) ─────────────────────────
+  const flatSheet = workbook.addWorksheet('Flat Finishing');
+  flatSheet.columns = [
+    { header: 'Flat', key: 'flat', width: 18 },
+    { header: 'Room', key: 'room', width: 22 },
+    { header: 'Room Complete', key: 'roomComplete', width: 14 },
+    { header: 'Room Progress %', key: 'roomPct', width: 14 },
+    { header: 'Pins', key: 'pins', width: 14 },
+    { header: 'Captures', key: 'captures', width: 10 },
+    { header: 'Activity', key: 'activity', width: 42 },
+    { header: 'Activity %', key: 'activityPct', width: 12 },
+    { header: 'Evidence', key: 'evidence', width: 48 },
+  ];
+  flatSheet.getRow(1).font = { bold: true };
+  flatSheet.getRow(1).eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F4F8' } };
+  });
+  (snapshot.flatProgress ?? []).forEach(flat => {
+    flat.rooms.forEach(room => {
+      const scorable = room.activities.filter(a => a.status !== 'not_observable');
+      const roomPct = room.isComplete
+        ? 100
+        : scorable.length === 0
+          ? (room.activities.length > 0 ? 100 : 0)
+          : Math.min(99, Math.round(scorable.reduce((n, a) => n + a.completionPct, 0) / scorable.length));
+      if (room.activities.length === 0) {
+        flatSheet.addRow({
+          flat: flat.flatName,
+          room: room.roomName,
+          roomComplete: room.isComplete ? 'Yes' : 'No',
+          roomPct,
+          pins: (room.pinNumbers ?? []).join(', '),
+          captures: room.capturesCount ?? 0,
+          activity: '',
+          activityPct: '',
+          evidence: '',
+        });
+        return;
+      }
+      room.activities.forEach(a => {
+        flatSheet.addRow({
+          flat: flat.flatName,
+          room: room.roomName,
+          roomComplete: room.isComplete ? 'Yes' : 'No',
+          roomPct,
+          pins: (room.pinNumbers ?? []).join(', '),
+          captures: room.capturesCount ?? 0,
+          activity: a.activityName,
+          activityPct: Math.round(a.completionPct),
+          evidence: a.evidence ?? '',
+        });
+      });
+    });
+  });
 
   // ── Timeline sheet ─────────────────────────────────────────────────────────
   const timelineSheet = workbook.addWorksheet('Timeline');

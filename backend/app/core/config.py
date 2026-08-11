@@ -69,6 +69,14 @@ class Settings(BaseSettings):
     VLLM_HTTP_TIMEOUT_S: int = 300
     VLLM_MAX_RETRIES: int = 2
 
+    # Construction-progress floor analysis (Flat Finishing). Default stays local
+    # vLLM; set to "hybrid" or "anthropic" once ANTHROPIC_API_KEY is configured.
+    CONSTRUCTION_PROGRESS_PROVIDER: str = "vllm"  # vllm | anthropic | hybrid
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_MODEL: str = "claude-opus-5"
+    ANTHROPIC_EFFORT: str = "high"  # low|medium|high|xhigh|max
+    ANTHROPIC_USE_BATCH: bool = True
+
     # ── Redis ─────────────────────────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379/0"
 

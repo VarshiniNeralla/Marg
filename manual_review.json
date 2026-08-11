@@ -1,0 +1,2510 @@
+{
+  "updatedAt": "2026-08-11T07:18:04.283449+00:00",
+  "reviewCount": 21,
+  "reviews": [
+    {
+      "reviewId": "bacbde4a-c6bb-4fba-ac85-26b30c27898c",
+      "when": "2026-08-11T04:55:00.639000",
+      "snapshotId": "6a79b9827188ee7d744a36c7",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 02",
+      "roomName": "Bedroom-2",
+      "pins": [
+        {
+          "pinNumber": 2,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "Slightly high — walls look largely finished, but some areas still show unevenness/unfinished patches."
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "wrong",
+          "correctPercentage": 40.0,
+          "reason": "Too high. Only limited areas have tiles; large portions are still unfinished and construction debris is present."
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct — visible openings do not show completed internal frames."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "wrong",
+          "correctPercentage": 40.0,
+          "reason": "Slightly high — some window/frame elements are visible, but the work is clearly incomplete."
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "wrong",
+          "correctPercentage": 10.0,
+          "reason": "Slightly low — a door shutter is visibly present on the left, although hardware/complete fixing is not evident."
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "wrong",
+          "correctPercentage": 40.0,
+          "reason": "Slightly high — electrical boxes/conduits are visible, but the actual wiring completion cannot be confirmed across the area."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "Slightly high — most walls have a putty-like finish, but some areas remain unfinished."
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct — the area is clearly not deep-cleaned."
+        },
+        {
+          "activityId": "flat.balcony_glass_railing_35",
+          "activityName": "Balcony Glass Railing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct — no glass panels are visible."
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct — no modular plates/switches are visible."
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct — substantial debris and dust remain."
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v2-surface-groups",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "3946b9d1-ecce-4b2b-860d-81649f9e21fc",
+      "when": "2026-08-11T05:00:51.114000",
+      "snapshotId": "6a79b9827188ee7d744a36c7",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 02",
+      "roomName": "Master Bedroom",
+      "pins": [
+        {
+          "pinNumber": 11,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "Slightly high. Most visible walls are smooth, but some edges/patches still appear unfinished."
+        },
+        {
+          "activityId": "flat.false_ceiling_framing_6",
+          "activityName": "False Ceiling Framing",
+          "verdict": "correct",
+          "correctPercentage": 50.0,
+          "reason": "Reasonable. GI framing is clearly visible in the open ceiling section."
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No vitrified tiles are installed."
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "wrong",
+          "correctPercentage": 10.0,
+          "reason": "Too low. A door/frame assembly is visible on the left, and another framed/covered opening is visible on the right. However, completion is clearly not full."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "wrong",
+          "correctPercentage": 20.0,
+          "reason": "Too high. The window/glass panel leaning against the wall is not evidence of fixing. The activity should only receive credit for components actually installed/fixed."
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "wrong",
+          "correctPercentage": 30.0,
+          "reason": "Too high. An electrical box/opening is visible, but the image doesn't show enough completed wiring work to justify 50%."
+        },
+        {
+          "activityId": "flat.false_ceiling_boxing_24",
+          "activityName": "False Ceiling Boxing",
+          "verdict": "wrong",
+          "correctPercentage": 35.0,
+          "reason": "Slightly high. Some gypsum/ceiling work is complete, but the large exposed opening means the overall scope is incomplete."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "Slightly high. Most walls have a finished-looking coating, but some areas around openings and edges remain rough."
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "wrong",
+          "correctPercentage": 70.0,
+          "reason": "Too high. The walls look smooth in many areas, but the image alone doesn't establish that a second coat has been completed across the entire scope."
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "Clearly too high. An empty gang box means the switch/socket installation itself has not happened."
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Significant dust and construction material remain."
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Definitely not ready for handover-level cleaning."
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v2-surface-groups",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "63f482e4-9c36-411d-b6d6-b50391bbfa49",
+      "when": "2026-08-11T05:05:39.029000",
+      "snapshotId": "6a79b9827188ee7d744a36c7",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 02",
+      "roomName": "Puja",
+      "pins": [
+        {
+          "pinNumber": 1,
+          "roomCorrect": "no",
+          "actualRoom": "Living / Dining"
+        },
+        {
+          "pinNumber": 6,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "Ceiling is largely smooth and finished, but visible cut-outs, holes and service points remain."
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "Walls are largely smooth, but some edges, openings and patches are still unfinished."
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No vitrified tiles are visible."
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "wrong",
+          "correctPercentage": 80.0,
+          "reason": "Frames are clearly installed in some openings, but the images don't establish that all required frames in the flat are complete."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "wrong",
+          "correctPercentage": 70.0,
+          "reason": "Windows are installed, but the combined activity includes utility door/SLD work that cannot be confirmed as fully completed."
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "wrong",
+          "correctPercentage": 30.0,
+          "reason": "A door shutter is visible in the second image, but hardware/completion of all shutters is not evident."
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "wrong",
+          "correctPercentage": 35.0,
+          "reason": "Wiring/conduits are clearly present, but exposed wires and unfinished points show the work is incomplete."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "Most walls have a consistent finish, but some areas still need finishing around openings and services."
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Construction debris and dust are clearly present."
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "Definitely too high. Empty boxes and loose wires mean switches/sockets have not been installed."
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No evidence of completed polishing."
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. The flat is still in active finishing/construction condition."
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v2-surface-groups",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "c18420f7-21fb-4945-9acf-b489c6a8f368",
+      "when": "2026-08-11T05:08:36.674000",
+      "snapshotId": "6a79b9827188ee7d744a36c7",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 02",
+      "roomName": "Sit-Out (Master Bedroom)",
+      "pins": [
+        {
+          "pinNumber": 10,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "Mostly complete and smooth, but service openings, exposed points and unfinished details remain."
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "Walls are largely smooth, but completion around openings/services cannot justify 100%."
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No vitrified tiles are installed."
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "wrong",
+          "correctPercentage": 80.0,
+          "reason": "Multiple frames are clearly installed, but the image cannot confirm every required frame is complete."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "wrong",
+          "correctPercentage": 70.0,
+          "reason": "Window/sliding-door elements appear installed, but the full combined activity cannot be confirmed at 100%."
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Frames are present, but no internal shutters/hardware are visibly installed."
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "wrong",
+          "correctPercentage": 35.0,
+          "reason": "Wiring/conduits are present, but many points remain open with loose/exposed wires."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "Most walls have a consistent finish, but some areas still require finishing."
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "wrong",
+          "correctPercentage": 70.0,
+          "reason": "Too high. Smooth walls alone don't prove the second coat is complete across the entire scope."
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Dust, debris and a large cable reel remain."
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "Definitely too high. Empty boxes and exposed wires mean the switches/sockets are not installed."
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No completed shutters are visible for polishing."
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. The space is far from handover-ready."
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v2-surface-groups",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "3ec6a85c-816f-4b2e-9ece-549d8a71ab45",
+      "when": "2026-08-11T05:12:28.352000",
+      "snapshotId": "6a79b9827188ee7d744a36c7",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 02",
+      "roomName": "Store",
+      "pins": [
+        {
+          "pinNumber": 7,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "Ceiling is mostly smooth, but there are multiple exposed electrical/service points and unfinished details."
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 60.0,
+          "reason": "Far too high. Large lower wall sections visibly have rough grey plaster/punning with uneven patches."
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No installed vitrified flooring is visible."
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "wrong",
+          "correctPercentage": 80.0,
+          "reason": "Frames are clearly installed in the visible openings, but 100% cannot be confirmed for the complete flat scope."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "wrong",
+          "correctPercentage": 70.0,
+          "reason": "Window frame/glass is installed, but the combined activity includes other components that aren't clearly completed."
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No shutters or hardware are visible."
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "wrong",
+          "correctPercentage": 40.0,
+          "reason": "Multiple wiring points are present, but exposed/unfinished electrical points remain."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 60.0,
+          "reason": "Too high. Upper walls look coated, but substantial lower sections remain rough and unfinished."
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Broken tiles, debris and dust are clearly present."
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "Definitely 0%. Empty gang boxes and exposed wires indicate that the switches/sockets haven't been installed."
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No completed shutters are present for polishing."
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Heavy construction debris remains."
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v2-surface-groups",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "2ce950be-b1d6-4727-968d-e9f0ea52d514",
+      "when": "2026-08-11T05:14:32.076000",
+      "snapshotId": "6a79b9827188ee7d744a36c7",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 02",
+      "roomName": "Utility",
+      "pins": [
+        {
+          "pinNumber": 9,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "wrong",
+          "correctPercentage": 85.0,
+          "reason": "Mostly smooth and white, but visible service openings, exposed wiring and unfinished details remain."
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 85.0,
+          "reason": "Walls are largely smooth, but there are visible unfinished/rough areas around openings and lower sections."
+        },
+        {
+          "activityId": "flat.toilet_utility_balcony_flooring_14",
+          "activityName": "Toilet, Utility & Balcony Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No finished tile flooring is visible."
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. The visible openings do not show installed internal door frames."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. The visible window opening has no installed frame/glass."
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "Far too high. Construction dust, debris, materials and active work are clearly present."
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Clearly not deep-cleaned."
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v2-surface-groups",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "fc857661-4044-4a9e-a8b8-a63fb72b3b2b",
+      "when": "2026-08-11T05:17:00.501000",
+      "snapshotId": "6a79b9827188ee7d744a36c7",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 01",
+      "roomName": "Handwash",
+      "pins": [
+        {
+          "pinNumber": 4,
+          "roomCorrect": "no",
+          "actualRoom": "Drawing Room"
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "wrong",
+          "correctPercentage": 85.0,
+          "reason": "Ceiling is largely smooth and white, but exposed service/wiring points and unfinished details remain."
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 85.0,
+          "reason": "Walls are mostly smooth, but there are visible rough areas, openings and unfinished edges."
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No vitrified flooring is installed."
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Openings are still without finished internal frames."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No completed frames/glass are visible."
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No shutters or hardware are installed."
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "wrong",
+          "correctPercentage": 30.0,
+          "reason": "Too high. Only limited exposed electrical points/wires are visible; there isn't enough evidence for 50% completion."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 80.0,
+          "reason": "Too high. Walls have a white finish, but the visible surface still has unfinished patches/marks and cannot confidently be called fully completed."
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. There is a large amount of rubble, debris and dust throughout the corridor."
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Empty boxes and exposed wires mean no switch/socket installation is evident."
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Clearly nowhere near handover-level cleanliness."
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v2-surface-groups",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "e1b35040-b2e6-4b2a-8f99-824af514045d",
+      "when": "2026-08-11T05:19:49.516000",
+      "snapshotId": "6a79b9827188ee7d744a36c7",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 01",
+      "roomName": "Kitchen",
+      "pins": [
+        {
+          "pinNumber": 3,
+          "roomCorrect": "no",
+          "actualRoom": "Living / Dining"
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "Mostly smooth and white, but there are visible service points, wiring and unfinished ceiling details."
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "correct",
+          "correctPercentage": 50.0,
+          "reason": "Reasonable. Significant portions are still rough/grey while other areas have received some finishing."
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No vitrified tiles are installed."
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. The visible openings do not show completed internal frames."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Temporary safety covers are not installed window units."
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "wrong",
+          "correctPercentage": 30.0,
+          "reason": "Too high. There are some electrical boxes and loose wires, but this is evidence of partial rough-in, not 50% completed wiring."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Walls are still largely at the punning/plaster stage."
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No evidence of second-coat putty."
+        },
+        {
+          "activityId": "flat.primer_1st_coat_paint_27",
+          "activityName": "Primer & 1st Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No primer/paint visible."
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Heavy construction dust and materials remain."
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Empty boxes and exposed wires; no installed switches/sockets."
+        },
+        {
+          "activityId": "flat.final_coat_paint_37",
+          "activityName": "Final Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. No final paint coat."
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Clearly not cleaned."
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v2-surface-groups",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "9f763207-7aa5-468a-9e49-7416b8ce0cbb",
+      "when": "2026-08-11T05:21:46.182000",
+      "snapshotId": "6a79b9827188ee7d744a36c7",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 01",
+      "roomName": "Lobby",
+      "pins": [
+        {
+          "pinNumber": 5,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "wrong",
+          "correctPercentage": 85.0,
+          "reason": "Ceiling is largely smooth/white, but several service openings and exposed wires remain."
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 80.0,
+          "reason": "Most wall surfaces are smooth, but the large central structural areas/edges still show unfinished concrete/plaster."
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Bare concrete floor; no installed vitrified tiles."
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Visible openings do not provide evidence of completed internal frames."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Large window opening has temporary protection/scaffolding rather than a completed window installation."
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "No completed internal shutters/hardware visible."
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "correct",
+          "correctPercentage": 30.0,
+          "reason": "A few electrical boxes/wires are visible, but this is only evidence that rough electrical work has started."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 75.0,
+          "reason": "Much of the wall appears coated, but unfinished/rough areas remain, especially around structural openings."
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "Clearly too high. Dust, construction materials, bags and active work remain throughout the area."
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "Empty boxes + exposed wires = no evidence of actual switch/socket installation."
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "No completed shutters available for polishing."
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Heavy construction dust/materials remain."
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v2-surface-groups",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "4369b90a-a3b6-4cb3-9569-cb45fb977405",
+      "when": "2026-08-11T05:23:18.505000",
+      "snapshotId": "6a79b9827188ee7d744a36c7",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 03",
+      "roomName": "Puja",
+      "pins": [
+        {
+          "pinNumber": 8,
+          "roomCorrect": "no",
+          "actualRoom": "Living / Dining"
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "wrong",
+          "correctPercentage": 85.0,
+          "reason": "Mostly smooth and white, but service openings/wires and unfinished details are visible."
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 85.0,
+          "reason": "Walls are largely smooth, but some areas around openings and lower sections still show unfinished/rough patches."
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Bare concrete/screed with no vitrified tiles."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. The visible opening has no completed window frame/glass."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 70.0,
+          "reason": "Too high. The white appearance suggests some finishing, but it cannot establish a complete first coat across the entire scope."
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "wrong",
+          "correctPercentage": 40.0,
+          "reason": "Far too high. A smooth white surface is not enough evidence of a completed second coat."
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "Clearly too high. Significant construction dust, materials and active work remain."
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct. Clearly not deep-cleaned."
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v2-surface-groups",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "f92f6f76-65d5-4002-9c41-e2b05e3c317a",
+      "when": "2026-08-11T06:30:47.127864+00:00",
+      "snapshotId": "6a7abc16e45dadf295203d05",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 02",
+      "roomName": "Bedroom-2",
+      "pins": [
+        {
+          "pinNumber": 2,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  Clearly not handover-clean."
+        },
+        {
+          "activityId": "flat.final_coat_paint_37",
+          "activityName": "Final Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No final paint evidence."
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No sufficient evidence of completed door polishing."
+        },
+        {
+          "activityId": "flat.balcony_glass_railing_35",
+          "activityName": "Balcony Glass Railing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No glass panels are installed."
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "This is exactly what we want v4 to do.  There are electrical boxes/wires, but no actual modular plates/switches/sockets.  Therefore:  0%"
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Definitely correct.  There is:  tile debris dust construction material unfinished work"
+        },
+        {
+          "activityId": "flat.primer_1st_coat_paint_27",
+          "activityName": "Primer & 1st Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No clear evidence of primer/paint."
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  There isn't sufficient direct evidence for a completed second coat."
+        },
+        {
+          "activityId": "flat.toilet_sitout_balcony_copings_17",
+          "activityName": "Toilet, Sitout & Balcony Copings",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  There is no clear evidence of completed coping installation."
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  There are openings, but the relevant internal frame installation isn't clearly established."
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 75.0,
+          "reason": "This is still too generous.  The walls do look largely finished, but there are visible areas around the openings and edges that are not fully finished. The model itself acknowledges:  \"some areas still show unevenness/unfinished patches\"  That alone means 90% is difficult to justify unless those unfinished areas are genuinely very small relative to the total observable wall surface.  Based on our previous review of this exact capture, I'd use:  Wall Punning: 75%"
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 40.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 40.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "This one should be corrected.  The model says:  \"a door shutter is visibly present on the left\"  But presence of a door slab is not sufficient evidence of shutter fixing with hardware.  Looking closely at the image, the large wooden panel at the right of the doorway is not enough to establish:  proper shutter installation hinges hardware completed fixing  And your rule explicitly says:  Door shutter leaning/present without evidence of fixing = 0%.  So:  Internal Door Shutter Fixing with Hardware = 0%  This is an important v4 failure because the model has correctly detected a physical door component but incorrectly converted component presence → activity completion.  That is exactly what your prompt says it must not do."
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "wrong",
+          "correctPercentage": 30.0,
+          "reason": "Again, the model's explanation actually contradicts its score:  \"electrical boxes/conduits are visible, but the actual wiring completion cannot be confirmed across the area.\"  If completion cannot be confirmed, 40% is too generous.  The visible evidence is mainly:  electrical boxes some exposed wiring unfinished electrical points  That is evidence that electrical work has started, but not evidence that 40% of the wiring scope is complete.  I'd use:  30–35%  I'd personally choose 30% for a conservative system."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 55.0,
+          "reason": "This is the biggest remaining issue in this output.  The model says:  \"most walls have a putty-like finish\"  But:  putty-like appearance is not enough to establish the completion percentage of Putty 1st Coat.  This is exactly the inference problem we've been trying to eliminate.  A smooth white wall can be:  punning first putty second putty primer paint some combination depending on the area  The image does not provide sufficient evidence for:  90% Putty 1st Coat  Based on our earlier correction:  Putty 1st Coat: ~55–60%  I'd use 60% if you want to recognize the visibly finished portions while remaining conservative."
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v4-evidence-engine",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "57c40214-13b0-4891-9dcb-ea57ac335e67",
+      "when": "2026-08-11T06:38:35.032112+00:00",
+      "snapshotId": "6a7abc16e45dadf295203d05",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 02",
+      "roomName": "Living / Dining",
+      "pins": [
+        {
+          "pinNumber": 1,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "I would keep this at 90%.  The visible ceiling is consistently:  smooth white continuous without significant raw concrete patches  There are electrical/service points, but those don't necessarily mean the punning itself is incomplete."
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "This is also much more defensible than the previous image.  The visible wall surfaces appear consistently smooth and pale across the room.  I would allow:  Wall Punning = 90%"
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Completely correct.  The floor is bare screed/concrete.  There are construction materials and debris, but no installed vitrified flooring."
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 100.0,
+          "reason": "For this individual capture, this can be accepted.  There is a visible internal door frame installed in the opening.  However, there is an important flat-level distinction:  One visible completed frame does NOT mean Internal Door Frames for the entire flat = 100%.  So:  Capture-level: 100% can be correct.  Flat-level: must depend on all observable internal door openings across the evidence set.  That distinction is crucial for your aggregation engine."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 66.0,
+          "reason": "This is actually quite reasonable.  The model identifies:  one window fully installed another partially installed  So the activity clearly has partial completion.  I wouldn't call 66% obviously wrong."
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  There is no properly installed internal door shutter with hardware.  The existence of a frame does not change this."
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "wrong",
+          "correctPercentage": 55.0,
+          "reason": "This is the biggest issue in this capture.  The model says:  \"All visible gang boxes are populated with pulled conductors ready for termination.\"  But that is not sufficient evidence for 100% completed Electrical Wiring.  What we can see is:  electrical boxes exposed/pulled conductors unfinished electrical points wiring awaiting termination  The model has effectively done:  All visible boxes have wires         ↓ Electrical Wiring = 100%  That's too aggressive.  The important question is:  Does the image prove the required wiring scope is completely installed?  No.  At most, it demonstrates substantial rough wiring progress.  I'd use:  Electrical Wiring: 50–60%  I'd choose:  55%  for this capture.  And this is a rule worth adding explicitly:  \"All visible electrical boxes containing wires\" must NOT automatically equal 100% Electrical Wiring. The model must assess whether the complete observable wiring scope is visibly installed, routed and finished."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 60.0,
+          "reason": "This is the other major problem.  The model says:  \"Walls show a full, uniform white coat across all visible planes.\"  But this violates one of the most important rules we established:  A white-looking surface does not automatically prove a specific finishing stage.  From this image, we can confidently say:  The walls have a smooth white-looking finish.  But can we prove:  This is specifically Putty 1st Coat?  Not with enough certainty to give 100%.  There could be:  punning first putty second putty another white finishing layer  The visual appearance alone doesn't establish the exact coat.  So I'd retain:  Putty 1st Coat: ~60%  This is consistent with our earlier calibration."
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  There isn't sufficient direct evidence to establish a completed second coat."
+        },
+        {
+          "activityId": "flat.primer_1st_coat_paint_27",
+          "activityName": "Primer & 1st Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No clear visual evidence of primer or paint."
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Definitely correct.  There is a lot of:  construction debris material dust cable/material bundles"
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Excellent.  This is another strong v4 result.  We have:  Electrical boxes + Exposed wires + No switch plates/modules  Therefore:  Modular Switches & Sockets = 0%  This exactly follows your rule:  Empty boxes + exposed wires = no evidence of actual switch/socket installation."
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No installed shutters that provide evidence of completed polishing."
+        },
+        {
+          "activityId": "flat.final_coat_paint_37",
+          "activityName": "Final Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No final paint finish is visible."
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  The room is nowhere near handover-level cleanliness."
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v4-evidence-engine",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "3f210f4f-ccd6-49b8-a61f-db26355e9fd5",
+      "when": "2026-08-11T06:45:09.646800+00:00",
+      "snapshotId": "6a7abc16e45dadf295203d05",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 02",
+      "roomName": "Master Bedroom",
+      "pins": [
+        {
+          "pinNumber": 11,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "wrong",
+          "correctPercentage": 90.0,
+          "reason": "This is too low.  There is a large amount of visible smooth white ceiling around the room. The central opening exposes GI framing, but that does not mean the entire ceiling punning is absent.  The model has confused:  \"False ceiling work is happening\"  with:  \"Ceiling punning has not been completed.\"  Those are separate activities.  I'd put this around:  90%  There is a visible unfinished/open section, so I would not give 100%."
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 80.0,
+          "reason": "90% is a little generous.  The curved/white wall surfaces are largely finished, but the large exposed concrete/plaster section around the right-side opening is significant.  Because your rule says:  Significant visible unfinished portions must reduce the score.  I'd use:  75–80%  I'd choose 80% if we're being slightly generous, or 75% for strict scoring.  For your model, I'd recommend 80% as the benchmark."
+        },
+        {
+          "activityId": "flat.false_ceiling_framing_6",
+          "activityName": "False Ceiling Framing",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "The ceiling is mostly a finished/punned slab. There is an open rectangular section in the ceiling. I can see the underside/open structural area, but I do not see a clear GI false-ceiling framing grid/channel system being installed there. Therefore, there is no direct evidence of False Ceiling Framing completion."
+        },
+        {
+          "activityId": "flat.toilet_utility_balcony_flooring_14",
+          "activityName": "Toilet, Utility & Balcony Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Both flooring activities are correctly scored at 0%.  There are:  bare concrete floors dust construction material  No installed vitrified/finished flooring."
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Both flooring activities are correctly scored at 0%.  There are:  bare concrete floors dust construction material  No installed vitrified/finished flooring."
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "I actually disagree with the model's comment:  \"Too low. A door/frame assembly is visible...\"  The left blue assembly does not provide reliable evidence of an installed internal door frame. It looks more like a service/electrical enclosure than a normal internal door frame.  The right-side opening also does not give strong evidence of a properly installed internal door frame.  Under your rule:  If the frame is not clearly installed/fixed in the actual door opening, don't give credit.  Therefore:  Internal Door Frames = 0%  This is an important correction because the model is currently interpreting any door-like structure as a door frame."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "This should definitely be:  0%  The rectangular window/glass unit on the floor is leaning against the wall.  Your rule explicitly says:  Frame lying nearby = 0%.  There is no visible evidence that it has been fixed into the opening.  So this is a direct violation of the evidence rule.  Correct: 0%"
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No clearly installed internal shutter with hardware is visible.  0%"
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "wrong",
+          "correctPercentage": 5.0,
+          "reason": "I'd make this much stricter.  The image shows electrical points/boxes, but that isn't enough to establish completed wiring.  We don't have enough visible evidence of:  complete cable routing completed wiring scope termination coverage across the observable area  Therefore:  0–10%  I'd use:  0%  if we're applying your \"direct evidence only\" rule strictly.  The model should not think:  Electrical point exists         ↓ Wiring must have been done         ↓ 30%  Instead:  Actual completed wiring visibly confirmed?         ↓ No         ↓ 0%"
+        },
+        {
+          "activityId": "flat.false_ceiling_boxing_24",
+          "activityName": "False Ceiling Boxing",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "This is another important one.  The image clearly shows GI framing, but I don't see convincing evidence of completed gypsum boxing/boards in the open section.  And this is exactly why you separated:  False Ceiling Framing False Ceiling Boxing  The model is currently bleeding evidence from one activity into another.  So:  False Ceiling Framing → 50%  but  False Ceiling Boxing → 0%  This distinction should be hard-coded into the prompt."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 60.0,
+          "reason": "This is still one of the recurring problems.  The model sees white walls and assumes:  white wall = completed putty  But your rule specifically says that appearance alone cannot establish the exact finishing stage.  There are also visibly rough areas.  I'd use:  ~60%  This is consistent with the calibration we've been doing across the previous captures."
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "This is far too high.  There is no direct evidence that a second coat has been completed.  The model is again interpreting smooth/white walls as evidence of a second coat.  That is exactly what we don't want.  Correct: 0%  Unless the visual evidence clearly demonstrates a distinct completed second-coat surface, don't award it."
+        },
+        {
+          "activityId": "flat.primer_1st_coat_paint_27",
+          "activityName": "Primer & 1st Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.final_coat_paint_37",
+          "activityName": "Final Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v4-evidence-engine",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "27f73dab-db87-4a81-a24f-710a5d0cef02",
+      "when": "2026-08-11T06:48:50.376297+00:00",
+      "snapshotId": "6a7abc16e45dadf295203d05",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 02",
+      "roomName": "Puja",
+      "pins": [
+        {
+          "pinNumber": 6,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "correct",
+          "correctPercentage": 90.0,
+          "reason": "Reasonable"
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "correct",
+          "correctPercentage": 90.0,
+          "reason": "Reasonable"
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "wrong",
+          "correctPercentage": 10.0,
+          "reason": "This is far too high based on the visible evidence.  This is another case where the model appears to be confusing door/shutter presence with door frame completion.  Look carefully at the right side: there is a wooden door/shutter visible, but that does not automatically prove that the required internal door frames across the observable scope are completed.  The left-side openings also don't give us sufficient evidence to say that 80% of the required frames are installed.  Your rule says:  A frame must be visibly installed and fixed in the actual opening.  So I would score this much lower:  0–20%  For this capture alone, I'd lean toward:  10%  If the system has other evidence images proving additional frames, those can increase the flat-level score. But this image itself does not justify 80%."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "wrong",
+          "correctPercentage": 50.0,
+          "reason": "This is also too high.  There is a clearly installed window in the centre, which is good evidence for that window component.  But the activity is:  Window W3A + Utility Door + SLD Fixing  Those are multiple components.  The model cannot do:  One visible installed window         ↓ 70% of entire activity  unless the observable scope establishes that relationship.  I'd use:  ~50%  because there is strong evidence for the visible window, but the utility door/SLD portions aren't adequately demonstrated.  This is exactly where scope-based aggregation matters."
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 30.0,
+          "reason": "This one is much more reasonable.  There is an actual door shutter visible in the right-side opening.  So there is direct evidence that shutter installation has started.  However:  hardware isn't clearly established all required shutters aren't visible complete fixing scope isn't demonstrated  So:  20–30%  is reasonable.  I'd keep 30% for now."
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "correct",
+          "correctPercentage": 35.0,
+          "reason": "This is closer to reality than the earlier 100%/40% results.  There are clearly visible electrical wires/conduits and electrical points.  So unlike the window sitting on the floor, there is direct evidence of some wiring work.  However, the image doesn't prove the complete wiring scope.  I'd use:  25–30%  I'd choose 30%.  So the current 35% isn't terrible, but it is slightly generous."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "correct",
+          "correctPercentage": 65.0,
+          "reason": "This remains one of the biggest recurring problems.  The model is still doing:  smooth white wall → Putty 1st Coat = 90%  That's not enough.  The image gives us evidence of a finished-looking wall surface, but it doesn't establish the exact coat with enough certainty.  And there are some areas that aren't uniformly finished.  I'd use:  60–70%  I'd set the benchmark at:  65%  This is much more consistent with your evidence-first approach."
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Good.  There is no sufficiently direct evidence for a completed second coat."
+        },
+        {
+          "activityId": "flat.primer_1st_coat_paint_27",
+          "activityName": "Primer & 1st Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No direct evidence of primer or paint."
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  Construction material and dust are clearly visible."
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Score is correct.  Again, the explanation should be fixed because it currently says:  \"Definitely too high.\"  That is obviously wrong when the score is already 0%.  The correct explanation should be:  \"0% — Empty electrical boxes and exposed wires are visible, but no switches, sockets or modular plates are installed.\""
+        },
+        {
+          "activityId": "flat.fa_fixing_32",
+          "activityName": "FA Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "No visible fire alarm devices.  0%  Good."
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "No evidence of completed polishing.  0%"
+        },
+        {
+          "activityId": "flat.final_coat_paint_37",
+          "activityName": "Final Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No final paint finish.  0%"
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  Definitely not handover-ready.  0%"
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v4-evidence-engine",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "39023ad1-0c0d-4f85-8e19-0fda01b06845",
+      "when": "2026-08-11T06:52:02.160524+00:00",
+      "snapshotId": "6a7abc16e45dadf295203d05",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 02",
+      "roomName": "Sit-Out (Master Bedroom)",
+      "pins": [
+        {
+          "pinNumber": 10,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "correct",
+          "correctPercentage": 90.0,
+          "reason": "Reasonable"
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "correct",
+          "correctPercentage": 90.0,
+          "reason": "Reasonable"
+        },
+        {
+          "activityId": "flat.false_ceiling_framing_6",
+          "activityName": "False Ceiling Framing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "This is an important correction from the previous image.  What we see across the ceiling is mainly MEP services/conduits/cable trays, not a clearly identifiable GI false-ceiling framing system.  So:  False Ceiling Framing = 0%  The model is now correctly distinguishing service infrastructure from false-ceiling framing. Good."
+        },
+        {
+          "activityId": "flat.toilet_utility_balcony_flooring_14",
+          "activityName": "Toilet, Utility & Balcony Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 80.0,
+          "reason": "Reasonable"
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 70.0,
+          "reason": "Reasonable"
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "correct",
+          "correctPercentage": 30.0,
+          "reason": "There is definitely evidence of wiring/conduit work.  However, there are still exposed/unfinished points.  I'd reduce this to:  25–30%  I'd use 30% as the benchmark."
+        },
+        {
+          "activityId": "flat.false_ceiling_boxing_24",
+          "activityName": "False Ceiling Boxing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 70.0,
+          "reason": "This is still one of v4's recurring problems.  The walls are white and smooth-looking, but:  white/smooth ≠ automatically 90% Putty 1st Coat  There are unfinished areas around openings/services, and the image doesn't establish the exact finishing stage across the entire observable wall scope.  I'd use:  65–70%  I'd choose 70% here."
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "This should be:  0%  There is no direct visual evidence that a second putty coat has been completed.  The model itself says:  \"Smooth walls alone don't prove the second coat...\"  But then gives 70%.  That's a direct contradiction.  The correct logic is:  Smooth/white wall         ↓ Does NOT prove 2nd coat         ↓ No direct evidence of 2nd coat         ↓ 0%  This needs to be fixed in the prompt/parser/scoring logic."
+        },
+        {
+          "activityId": "flat.primer_1st_coat_paint_27",
+          "activityName": "Primer & 1st Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.false_ceiling_in_toilets_sitouts_utilities_28",
+          "activityName": "False Ceiling in Toilets, Sitouts & Utilities",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.balcony_glass_railing_35",
+          "activityName": "Balcony Glass Railing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.final_coat_paint_37",
+          "activityName": "Final Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v4-evidence-engine",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "d18778a8-c2af-47b1-9f54-4a4fe2f99e70",
+      "when": "2026-08-11T06:56:44.319461+00:00",
+      "snapshotId": "6a7abc16e45dadf295203d05",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 02",
+      "roomName": "Store",
+      "pins": [
+        {
+          "pinNumber": 7,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "correct",
+          "correctPercentage": 90.0,
+          "reason": "Reasonable"
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 50.0,
+          "reason": "Look at the wall below the horizontal transition line. There are large areas of visibly rough grey unfinished surface.  So the model's 60% is still generous.  I'd put this around:  Wall Punning = 50%  The important rule here should be:  Do not calculate based on how much of the wall is white. Calculate based on how much of the relevant wall surface is demonstrably finished with the required punning.  The lower grey sections are strong negative evidence."
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 80.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 70.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "wrong",
+          "correctPercentage": 25.0,
+          "reason": "We can see electrical boxes, conduits and loose wires.  But this is exactly the situation your rule is designed to prevent:  Visible electrical infrastructure ≠ completed electrical wiring.  There are multiple exposed/unfinished points. The image does not demonstrate that a substantial portion of the required wiring scope is actually completed.  I'd use:  Electrical Wiring = 25–30%  I'd probably benchmark it at 25%."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 50.0,
+          "reason": "There is clearly a white finished-looking upper section, but the lower wall areas are visibly unfinished.  So 60% is not crazy, but given your conservative rules, I'd bring it down to:  Putty 1st Coat = ~50%  And importantly, the model should not say:  \"Upper walls look coated → therefore 60%.\"  It should estimate the visible completed surface proportion."
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "This is a good correction from the earlier outputs.  There is no direct evidence that a second coat has been applied.  Therefore:  Putty 2nd Coat = 0%  Even though the upper walls look smooth/white.  This is the behaviour we want the model to learn."
+        },
+        {
+          "activityId": "flat.primer_1st_coat_paint_27",
+          "activityName": "Primer & 1st Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.final_coat_paint_37",
+          "activityName": "Final Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v4-evidence-engine",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "d71eb7e9-320c-4d27-bebc-de08c892966d",
+      "when": "2026-08-11T06:59:22.732490+00:00",
+      "snapshotId": "6a7abc16e45dadf295203d05",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 02",
+      "roomName": "Utility",
+      "pins": [
+        {
+          "pinNumber": 9,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "correct",
+          "correctPercentage": 85.0,
+          "reason": "Reasonable"
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "correct",
+          "correctPercentage": 80.0,
+          "reason": "The walls are substantially finished, so 85% isn't wildly wrong, but I'd bring it down slightly.  There are unfinished areas around:  openings lower edges transitions portions where the surface isn't uniformly finished  I'd benchmark:  Wall Punning: 75–80%  I'd probably use 80% as the clean benchmark."
+        },
+        {
+          "activityId": "flat.false_ceiling_framing_6",
+          "activityName": "False Ceiling Framing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.ms_railing_for_utility_13",
+          "activityName": "MS Railing for Utility",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.toilet_utility_balcony_flooring_14",
+          "activityName": "Toilet, Utility & Balcony Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.false_ceiling_boxing_24",
+          "activityName": "False Ceiling Boxing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 85.0,
+          "reason": "I would not allow 100% here.  The model says:  \"Walls show a full, uniform white coat covering all observable surfaces.\"  But that's exactly the kind of reasoning we are trying to eliminate.  There are visible rough/unfinished portions around the openings, lower wall edges and some transitions. More importantly, white appearance alone is not proof of a completed first putty coat.  I'd use roughly:  Putty 1st Coat: 85%  The rule should be:  A surface that looks white is not automatically 100% putty. Inspect the entire observable surface and deduct for visible rough, patchy, grey, exposed or unfinished areas."
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.primer_1st_coat_paint_27",
+          "activityName": "Primer & 1st Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.false_ceiling_in_toilets_sitouts_utilities_28",
+          "activityName": "False Ceiling in Toilets, Sitouts & Utilities",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.final_coat_paint_37",
+          "activityName": "Final Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v4-evidence-engine",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "84f1f294-e664-4855-b317-7d7ca641924f",
+      "when": "2026-08-11T07:01:33.635526+00:00",
+      "snapshotId": "6a7abc16e45dadf295203d05",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 01",
+      "roomName": "Drawing Room",
+      "pins": [
+        {
+          "pinNumber": 4,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "correct",
+          "correctPercentage": 85.0,
+          "reason": "Reasonable"
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 80.0,
+          "reason": "The walls are predominantly white and smooth-looking, but we shouldn't let that automatically become 85%.  There are:  unfinished openings rough edges visible construction areas sections where the actual surface condition cannot be confidently verified  I'd put this around:  Wall Punning = 75–80%  I'd use 80% as the benchmark.  The model's explanation:  \"Walls are mostly smooth...\"  isn't sufficient by itself.  It needs to estimate:  finished visible wall surface / total relevant visible wall surface"
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "wrong",
+          "correctPercentage": 10.0,
+          "reason": "This is the clearest correction.  I can see some electrical points/conduits and exposed wires, but that is not enough to establish that 30% of the wiring scope is completed.  Under your rules:  Visible electrical infrastructure ≠ completed wiring.  The image doesn't give us enough evidence to measure a meaningful completed wiring scope.  I'd therefore use:  Electrical Wiring = 0–10%  For your conservative engine, I'd actually choose 0% unless there is clearly visible installed/pulled wiring across a measurable portion of the required scope.  This is important because otherwise the model will keep doing:  \"I see wires → 30%.\"  We don't want that."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "correct",
+          "correctPercentage": 80.0,
+          "reason": "This one is much more reasonable than the previous 100%.  There is a lot of white finished-looking wall surface, but some portions around openings and edges aren't cleanly finished.  I'd say:  Putty 1st Coat = 75–80%  So 80% is acceptable, though I'd prefer the model to be slightly conservative."
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.primer_1st_coat_paint_27",
+          "activityName": "Primer & 1st Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.final_coat_paint_37",
+          "activityName": "Final Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v4-evidence-engine",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "05ceb161-82b9-4fb7-ad95-6a283a661c67",
+      "when": "2026-08-11T07:10:13.437029+00:00",
+      "snapshotId": "6a7abc16e45dadf295203d05",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 01",
+      "roomName": "Living / Dining",
+      "pins": [
+        {
+          "pinNumber": 3,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.false_ceiling_boxing_24",
+          "activityName": "False Ceiling Boxing",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "The ceiling appears to be a continuous white finished/punned ceiling/slab.  I do not see direct evidence of:  ❌ Gypsum boards ❌ A gypsum board grid ❌ Metal/GI framing ❌ Suspended ceiling channels ❌ Board joints/seams typical of installed false-ceiling boards ❌ A lowered false-ceiling plane ❌ False-ceiling boxing/enclosure  The curved bands visible on the ceiling should not be interpreted as false-ceiling boxing merely because they create a shape/edge. They appear to be part of the finished ceiling/architectural surface.the ceiling being white does NOT mean false ceiling."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.primer_1st_coat_paint_27",
+          "activityName": "Primer & 1st Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.final_coat_paint_37",
+          "activityName": "Final Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "correct",
+          "correctPercentage": 90.0,
+          "reason": "Correct"
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v4-evidence-engine",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "28f27e29-76d9-4c2e-b16f-d63152a5f680",
+      "when": "2026-08-11T07:14:37.567483+00:00",
+      "snapshotId": "6a7abc16e45dadf295203d05",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 01",
+      "roomName": "Lobby",
+      "pins": [
+        {
+          "pinNumber": 5,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "correct",
+          "correctPercentage": 85.0,
+          "reason": "Reasonable"
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 60.0,
+          "reason": "80% is too generous.  Look carefully at the large central structural portions and around the openings. There are substantial areas that are still visibly rough/grey/uniformly unfinished.  So I would put this around:  Wall Punning = 60%  The important thing is that the model should calculate the finished wall surface proportion, rather than saying:  \"Most walls look white → 80%.\""
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Absolutely correct.  There are no installed vitrified tiles.  The debris/material on the floor doesn't count.  0%."
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  There are openings, but I don't see evidence of properly installed internal door frames.  0%."
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  The large opening has construction protection/scaffolding, but that isn't an installed window system.  This is exactly your rule:  Temporary protection ≠ installed window.  0%."
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No completed shutter + hardware installation is visible.  0%."
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "correct",
+          "correctPercentage": 15.0,
+          "reason": "I would reduce this substantially.  There are some electrical points and exposed wires, but that doesn't demonstrate that 30% of the wiring scope is completed.  This is a rough-in indication, not completed wiring evidence.  I'd use:  Electrical Wiring ≈ 10–15%  And potentially 0% if your definition of this activity requires actual completed/pulled wiring rather than isolated visible wires."
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "This is the biggest problem in this output.  The model sees the white walls and is effectively saying:  white/smooth wall = putty.  But based on the progression we've established from these images, white punning/plaster is not enough evidence for Putty 1st Coat.  There needs to be visual evidence that the surface has actually moved into the putty stage.  Here, I don't think we have sufficient evidence.  Therefore:  Putty 1st Coat = 0%  This is exactly the type of inference we want to eliminate."
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No direct evidence.  0%."
+        },
+        {
+          "activityId": "flat.primer_1st_coat_paint_27",
+          "activityName": "Primer & 1st Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No visible primer/paint.  0%."
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  There is construction material, dust, bags and active work.  0%."
+        },
+        {
+          "activityId": "flat.modular_switches_sockets_signal_booster_fixing_31",
+          "activityName": "Modular Switches & Sockets, Signal Booster Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  This is an important success of v4.  We can see electrical boxes/wires, but no actual switches or socket modules.  Therefore:  0%."
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No completed door shutter available for polishing.  0%."
+        },
+        {
+          "activityId": "flat.final_coat_paint_37",
+          "activityName": "Final Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  No evidence of final paint.  0%."
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  Clearly not handover-ready.  0%."
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v4-evidence-engine",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    },
+    {
+      "reviewId": "71f2f481-4e18-4c00-8736-395fc078a6eb",
+      "when": "2026-08-11T07:18:04.223634+00:00",
+      "snapshotId": "6a7abc16e45dadf295203d05",
+      "floorId": "t72554-f1-f72555",
+      "flatName": "Flat 03",
+      "roomName": "Living / Dining",
+      "pins": [
+        {
+          "pinNumber": 8,
+          "roomCorrect": "yes",
+          "actualRoom": null
+        }
+      ],
+      "progressVerdict": "mostly_correct",
+      "activities": [
+        {
+          "activityId": "flat.ceiling_punning_2",
+          "activityName": "Ceiling Punning",
+          "verdict": "correct",
+          "correctPercentage": 85.0,
+          "reason": "Reasonable"
+        },
+        {
+          "activityId": "flat.wall_punning_4",
+          "activityName": "Wall Punning",
+          "verdict": "wrong",
+          "correctPercentage": 65.0,
+          "reason": "This is still being scored too generously.  There are clearly rough/grey unfinished areas, especially around the lower wall sections and openings. The model should measure the actual finished wall surface, not the percentage of the room that looks generally white.  I'd use approximately:  Wall Punning = 60–65%"
+        },
+        {
+          "activityId": "flat.false_ceiling_framing_6",
+          "activityName": "False Ceiling Framing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct.  There is no visible false-ceiling framing/grid.  The ceiling is the existing slab. The curved/arched architectural portions should not be interpreted as false-ceiling framing.  0%"
+        },
+        {
+          "activityId": "flat.vitrified_flooring_16",
+          "activityName": "Vitrified Flooring",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.internal_door_frames_18",
+          "activityName": "Internal Door Frames",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.window_w3a_utility_door_sld_fixing_20",
+          "activityName": "Window W3A, Utility Door & SLD Fixing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.internal_door_shutter_fixing_with_hardware_22",
+          "activityName": "Internal Door Shutter Fixing with Hardware",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.electrical_wiring_23",
+          "activityName": "Electrical Wiring",
+          "verdict": "correct",
+          "correctPercentage": 10.0,
+          "reason": "I wouldn't use 0% because there are visible electrical points/wires.  But this is very limited evidence. We cannot see enough completed wiring scope to justify 30–50%.  So:  Electrical Wiring = ~10%  If your definition requires completed observable wiring rather than rough electrical points, then even 0% is defensible."
+        },
+        {
+          "activityId": "flat.false_ceiling_boxing_24",
+          "activityName": "False Ceiling Boxing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.putty_1st_coat_25",
+          "activityName": "Putty 1st Coat",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "Putty 1st Coat → 0%  The model is still doing:  white wall → putty  That needs to stop.  This image does not provide sufficient direct evidence that Putty 1st Coat has been completed.  The visible smooth/white wall can be the result of punning/plaster finishing.  Therefore:  Putty 1st Coat = 0%"
+        },
+        {
+          "activityId": "flat.putty_2nd_coat_26",
+          "activityName": "Putty 2nd Coat",
+          "verdict": "wrong",
+          "correctPercentage": 0.0,
+          "reason": "Definitely not 40%.  There is no direct evidence of a second putty coat.  And importantly:  Putty 2nd Coat must never receive a percentage merely because the wall looks smooth or white.  So:  Putty 2nd Coat = 0%"
+        },
+        {
+          "activityId": "flat.primer_1st_coat_paint_27",
+          "activityName": "Primer & 1st Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.normal_cleaning_29",
+          "activityName": "Normal Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.main_door_internal_door_polishing_36",
+          "activityName": "Main Door & Internal Door Polishing",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.final_coat_paint_37",
+          "activityName": "Final Coat Paint",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        },
+        {
+          "activityId": "flat.deep_cleaning_38",
+          "activityName": "Deep Cleaning",
+          "verdict": "correct",
+          "correctPercentage": 0.0,
+          "reason": "Correct"
+        }
+      ],
+      "note": "",
+      "model": "gemma4-31b",
+      "promptVersion": "v4-evidence-engine",
+      "rigVersion": 1,
+      "reviewedBy": "6a3a28dd0915399ba5cb6923"
+    }
+  ]
+}

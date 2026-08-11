@@ -1,4 +1,12 @@
-import type { ActivityAssessment, ActivityStatus, FloorProgressSnapshot, RoomHeatmapEntry, RoomHeatmapState } from '@/services/constructionProgressService';
+import type {
+  ActivityAssessment,
+  ActivityStatus,
+  FlatProgress,
+  FloorProgressSnapshot,
+  RoomHeatmapEntry,
+  RoomHeatmapState,
+  RoomProgress,
+} from '@/services/constructionProgressService';
 import { ACTIVITY_STATUS_LABELS } from '@/services/constructionProgressService';
 import { exportHtmlToPdf } from '@/utils/htmlToPdf';
 
@@ -7,6 +15,8 @@ const BRAND_TAGLINE = 'AI Construction Intelligence';
 
 const STATUS_COLOR: Record<ActivityStatus, string> = {
   no_evidence: '#94a3b8',
+  not_assessed: '#94a3b8',
+  not_observable: '#0891b2',
   in_progress: '#d97706',
   completed: '#16a34a',
 };
@@ -93,6 +103,10 @@ function buildCoverPage(snapshot: FloorProgressSnapshot, generatedAt: string): s
       <div class="finding-card">
         <h3>Activities</h3>
         <p>${snapshot.summaryCards.activitiesCompleted} completed / ${snapshot.summaryCards.activitiesInProgress} in progress / ${snapshot.summaryCards.activitiesNotStarted} not started</p>
+      </div>
+      <div class="finding-card">
+        <h3>Coverage</h3>
+        <p>${typeof snapshot.summaryCards.coveragePct === 'number' ? `${Math.round(snapshot.summaryCards.coveragePct)}%` : '—'} of roster rooms photographed</p>
       </div>
       <div class="finding-card">
         <h3>Images Analyzed</h3>
@@ -209,44 +223,86 @@ function buildActivitiesPage(title: string, activities: ActivityAssessment[], se
   `;
 }
 
-// ── Room-by-room status page (per flat) ───────────────────────────────────────
+// ── Flat Finishing Works page (per-room / per-activity from flatProgress) ─────
 
-function buildRoomStatusPage(snapshot: FloorProgressSnapshot): string | null {
-  const coloredRooms = snapshot.roomHeatmap.filter(r => r.state !== 'no_images');
-  if (coloredRooms.length === 0) return null;
-  const byFlat = new Map<string, RoomHeatmapEntry[]>();
-  coloredRooms.forEach(r => {
-    const list = byFlat.get(r.flatName) ?? [];
-    list.push(r);
-    byFlat.set(r.flatName, list);
-  });
+function roomExportPct(room: RoomProgress): number {
+  if (room.isComplete) return 100;
+  const scorable = room.activities.filter(a => a.status !== 'not_observable');
+  if (scorable.length === 0) return room.activities.length > 0 ? 100 : 0;
+  return Math.min(99, Math.round(scorable.reduce((n, a) => n + a.completionPct, 0) / scorable.length));
+}
 
-  const sections = Array.from(byFlat.entries()).map(([flatName, rooms]) => `
-    <div class="flat-block avoid-break">
-      <h3 class="flat-title">${escapeHtml(flatName)}</h3>
-      <div class="room-grid">
-        ${rooms.map(r => `
-          <div class="room-chip">
-            <span class="room-dot" style="background:${HEATMAP_COLOR[r.state]}"></span>
-            <span class="room-name">${escapeHtml(r.roomName)}</span>
-            <span class="room-state" style="color:${HEATMAP_COLOR[r.state]}">${escapeHtml(HEATMAP_LABEL[r.state])}</span>
+function roomExportState(room: RoomProgress): { label: string; color: string } {
+  if (room.isComplete) return { label: 'Completed', color: HEATMAP_COLOR.completed };
+  if (room.activities.length > 0 || (room.capturesCount ?? 0) > 0 || (room.pinNumbers?.length ?? 0) > 0) {
+    return { label: 'Work in Progress', color: HEATMAP_COLOR.in_progress };
+  }
+  return { label: 'No Photos Yet', color: HEATMAP_COLOR.no_images };
+}
+
+function buildFlatProgressPage(snapshot: FloorProgressSnapshot): string | null {
+  const flats: FlatProgress[] = snapshot.flatProgress ?? [];
+  if (flats.length === 0) return null;
+  const coverageLabel = typeof snapshot.summaryCards.coveragePct === 'number'
+    ? `${Math.round(snapshot.summaryCards.coveragePct)}% coverage`
+    : null;
+
+  const sections = flats.map(flat => {
+    const roomsHtml = flat.rooms.map(room => {
+      const state = roomExportState(room);
+      const pct = roomExportPct(room);
+      const pinLabel = room.pinNumbers?.length
+        ? `Pins ${room.pinNumbers.join(', ')}`
+        : '';
+      const activityRows = room.activities.length === 0
+        ? `<tr><td colspan="3" class="muted">No scored activities for this room.</td></tr>`
+        : room.activities.map(a => `
+            <tr>
+              <td>${escapeHtml(a.activityName)}</td>
+              <td>${Math.round(a.completionPct)}%</td>
+              <td>${a.evidence ? escapeHtml(a.evidence) : '—'}</td>
+            </tr>
+          `).join('');
+      return `
+        <div class="room-block avoid-break">
+          <div class="room-head">
+            <span class="room-dot" style="background:${state.color}"></span>
+            <span class="room-name">${escapeHtml(room.roomName)}</span>
+            <span class="room-meta">${pct}% · <span style="color:${state.color}">${escapeHtml(state.label)}</span>${pinLabel ? ` · ${escapeHtml(pinLabel)}` : ''}${(room.capturesCount ?? 0) > 0 ? ` · ${room.capturesCount} capture${room.capturesCount === 1 ? '' : 's'}` : ''}</span>
           </div>
-        `).join('')}
+          <table class="room-activity-table">
+            <thead><tr><th>Activity</th><th>Completion</th><th>Evidence</th></tr></thead>
+            <tbody>${activityRows}</tbody>
+          </table>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="flat-block">
+        <h3 class="flat-title">${escapeHtml(flat.flatName)} — ${Math.round(flat.completionPct)}% (${flat.roomsComplete}/${flat.roomsTotal} rooms complete)</h3>
+        ${roomsHtml}
       </div>
-    </div>
-  `).join('');
+    `;
+  }).join('');
 
   return `
     <style>
-      .flat-block { margin-bottom: 16px; }
-      .flat-title { font-size: 11px; font-weight: 700; color: #1a2332; margin: 0 0 8px; }
-      .room-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-      .room-chip { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid #e4e8ee; border-radius: 6px; font-size: 8.5px; }
+      .flat-block { margin-bottom: 18px; }
+      .flat-title { font-size: 11px; font-weight: 700; color: #1a2332; margin: 0 0 10px; }
+      .coverage-note { font-size: 9px; color: #6b7280; margin: 0 0 12px; }
+      .room-block { margin-bottom: 10px; padding: 8px; border: 1px solid #e4e8ee; border-radius: 6px; }
+      .room-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 9px; }
       .room-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-      .room-name { flex: 1; color: #1a2332; font-weight: 600; }
-      .room-state { font-weight: 700; font-size: 7.5px; }
+      .room-name { font-weight: 700; color: #1a2332; }
+      .room-meta { color: #6b7280; font-weight: 600; }
+      table.room-activity-table { width: 100%; border-collapse: collapse; font-size: 8.5px; }
+      table.room-activity-table th { text-align: left; padding: 4px 6px; background: #f1f4f8; color: #4a5568; font-weight: 700; text-transform: uppercase; font-size: 7.5px; }
+      table.room-activity-table td { padding: 4px 6px; border-bottom: 1px solid #eef1f5; color: #1a2332; vertical-align: top; }
+      table.room-activity-table td.muted { color: #94a3b8; font-style: italic; }
     </style>
-    <h2 class="section-title page-intro">Room-by-Room Status</h2>
+    <h2 class="section-title page-intro">Flat Finishing — Room Detail</h2>
+    ${coverageLabel ? `<p class="coverage-note">Floor photo coverage: ${escapeHtml(coverageLabel)} (rooms with ≥1 capture ÷ roster). Progress below is independent of coverage.</p>` : ''}
     ${sections}
   `;
 }
@@ -263,8 +319,8 @@ export async function buildConstructionProgressPdfHtml(snapshot: FloorProgressSn
   const heatmapPage = buildHeatmapPage(snapshot);
   if (heatmapPage) pages.push(heatmapPage);
 
-  const roomStatusPage = buildRoomStatusPage(snapshot);
-  if (roomStatusPage) pages.push(roomStatusPage);
+  const flatProgressPage = buildFlatProgressPage(snapshot);
+  if (flatProgressPage) pages.push(flatProgressPage);
 
   pages.push(buildActivitiesPage('Flat Finishing Works', snapshot.activities, 'flat'));
   pages.push(buildActivitiesPage('Common Area Finishing Works', snapshot.activities, 'common'));
@@ -274,7 +330,7 @@ export async function buildConstructionProgressPdfHtml(snapshot: FloorProgressSn
     <div class="disclaimer avoid-break">
       <p>This report was generated automatically using AI-assisted construction image analysis under the ${escapeHtml(BRAND_NAME)} platform.</p>
       <p>Completion percentages are estimates derived from uploaded 360° photo evidence; verify critical milestones on-site before commercial or safety decisions.</p>
-      <p>Only rooms with at least one uploaded photo appear on the heatmap and room-status pages; rooms with no photos yet are omitted rather than shown as an unscored gap.</p>
+      <p>Coverage % is rooms with at least one usable capture divided by the room-map roster — it is not the same as finishing progress. Flat Finishing detail rows include per-room activity scores and evidence notes when available.</p>
     </div>
   `;
   pages.push(disclaimerPage);

@@ -21,12 +21,20 @@ from app.services.construction_progress_providers.activities import ActivityDef
 
 # A construction manager wants a binary read ("is this done or not"), not
 # five shades of maybe — so "mostly_complete" collapses into "in_progress":
-# nothing is "completed" until it's visibly, confidently finished. But an
-# activity NOBODY has photographed anywhere on the floor is not "in
-# progress" (that would claim work has been observed starting, which is
-# false) — it gets its own "no_evidence" state, distinct from a genuinely
-# observed partial/incomplete finish.
-ActivityStatus = Literal["no_evidence", "in_progress", "completed"]
+# nothing is "completed" until it's visibly, confidently finished.
+#
+# Status distinctions (v4.4):
+# - not_assessed — no relevant area photographed yet; inactive, excluded from %
+# - no_evidence — applicable area was photographed but no work evidence found
+# - not_observable — cannot be scored from photos (concealed / document-only)
+# - in_progress / completed — scored from relevant visual evidence
+ActivityStatus = Literal[
+    "no_evidence",
+    "not_assessed",
+    "not_observable",
+    "in_progress",
+    "completed",
+]
 
 
 @dataclass(frozen=True)
@@ -67,6 +75,13 @@ class RoomActivityAssessment:
     completion_pct: float
     confidence_pct: float
     evidence_capture_ids: list[str] = field(default_factory=list)
+    # Short free-text evidence the model returned for this activity in this
+    # room (why it scored the way it did). Kept in the snapshot so a reviewer
+    # can see the model's own justification without re-fetching photos. May
+    # be a synthetic string like "Inferred from downstream completion" if
+    # fill-forward is re-enabled (off by default in v4).
+    evidence: str = ""
+    status: ActivityStatus = "in_progress"
 
 
 @dataclass(frozen=True)
@@ -84,16 +99,23 @@ class RoomProgress:
 
 @dataclass(frozen=True)
 class FlatProgress:
-    """A physical flat's own finishing status, for the Flat Finishing Works
-    view: `completion_pct` = (rooms complete) / (total rooms in the flat's
-    room-map roster) — a flat only reaches 100% once every one of its rooms
-    is independently complete, not once any single room is photographed."""
+    """A physical flat's own finishing status, for the Flat Finishing Works view.
+
+    v4.4: `completion_pct` is work progress over **photographed** rooms only
+    (applicable scored activities). A flat only reaches 100% when every
+    **required** roster room is photographed and complete — missing areas
+    are not treated as incomplete work, but they also block full completion.
+    """
 
     flat_name: str
     completion_pct: float
     rooms_complete: int
     rooms_total: int
     rooms: list[RoomProgress] = field(default_factory=list)
+    # Roster size (required areas). rooms_total is photographed count for WIP %.
+    rooms_required: int = 0
+    rooms_photographed: int = 0
+    is_fully_complete: bool = False
 
 
 @dataclass(frozen=True)
@@ -133,6 +155,7 @@ class ConstructionProgressProvider(ABC):
         flat_units: list[str] | None = None,
         common_area_units: list[str] | None = None,
         flat_room_rosters: dict[str, list[str]] | None = None,
+        context: dict[str, str] | None = None,
     ) -> FloorProgressResult:
         """
         Assess every activity in `activities` against the evidence available in
@@ -158,4 +181,9 @@ class ConstructionProgressProvider(ABC):
         activity's completion_pct falls back to a plain average across
         whatever captures reported on it (the old behaviour), and
         `flat_progress` is left empty.
+
+        `context` carries factual site metadata (project name, tower name,
+        floor label, as-of date) the provider can render into the vision
+        prompt as facts — not instructions — so the model treats them as
+        provenance, not as directives that inflate confidence.
         """
