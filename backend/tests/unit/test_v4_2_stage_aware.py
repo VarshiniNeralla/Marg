@@ -38,6 +38,49 @@ def test_b_room_complete_plus_incomplete_cannot_be_100():
     assert rolled < 100.0
 
 
+def test_activity_full_roster_blocks_false_100():
+    """Uncaptured applicable rooms count as 0% — cannot Completeness-gate to 100%."""
+    from app.services.construction_progress_providers.vllm_provider import (
+        rollup_activity_over_roster,
+    )
+    units = {
+        ("Flat 01", "Bedroom-1"): 100.0,
+        ("Flat 01", "Bedroom-2"): 100.0,
+    }
+    roster = [
+        ("Flat 01", "Bedroom-1"),
+        ("Flat 01", "Bedroom-2"),
+        ("Flat 01", "Bedroom-3"),
+        ("Flat 01", "Kitchen"),
+    ]
+    avg, photographed, fully = rollup_activity_over_roster(
+        applicable_units=roster,
+        units_pct=units,
+    )
+    assert len(photographed) == 2
+    assert fully is False
+    assert avg == 50.0
+    assert avg < 100.0
+
+
+def test_activity_full_roster_100_only_when_all_complete():
+    from app.services.construction_progress_providers.vllm_provider import (
+        rollup_activity_over_roster,
+    )
+    units = {
+        ("Flat 01", "Toilet-1"): 100.0,
+        ("Flat 01", "Toilet-2"): 100.0,
+    }
+    roster = [("Flat 01", "Toilet-1"), ("Flat 01", "Toilet-2")]
+    avg, photographed, fully = rollup_activity_over_roster(
+        applicable_units=roster,
+        units_pct=units,
+    )
+    assert fully is True
+    assert avg == 100.0
+    assert len(photographed) == 2
+
+
 def test_c_combined_window_one_of_three_is_proportional():
     """C: 1 of 3 components ≈ 33% — criteria encodes combined counting."""
     criteria = VISUAL_CRITERIA["flat.window_w3a_utility_door_sld_fixing_20"]

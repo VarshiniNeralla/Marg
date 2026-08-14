@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Typography, CircularProgress, Button, LinearProgress } from '@mui/material';
-import { ArrowBackRounded, RefreshRounded, PictureAsPdfRounded, TableChartRounded, AutoAwesomeRounded, ApartmentRounded } from '@mui/icons-material';
+import { ArrowBackRounded, RefreshRounded, PictureAsPdfRounded, TableChartRounded, AutoAwesomeRounded, ApartmentRounded, MeetingRoomRounded } from '@mui/icons-material';
 import { Link, useParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { colors, shadows } from '@theme/tokens';
@@ -60,12 +60,22 @@ export default function ConstructionProgressDashboardPage() {
     setNotAnalyzed(false);
     try {
       const detail = await constructionProgressService.getFloorDetail(floorId);
-      setSnapshot(detail);
+      if (!detail) {
+        setSnapshot(null);
+        setNotAnalyzed(true);
+      } else {
+        setSnapshot(detail);
+        setNotAnalyzed(false);
+      }
     } catch (err: unknown) {
       const status = (err as { status?: number; response?: { status?: number } })?.status
         ?? (err as { response?: { status?: number } })?.response?.status;
+      // Legacy servers still return 404 for "not analyzed".
       if (status === 404) {
+        setSnapshot(null);
         setNotAnalyzed(true);
+      } else if (status === 401) {
+        toast.error('Your session has expired. Please log in again.');
       } else {
         toast.error('Failed to load progress data');
       }
@@ -124,7 +134,7 @@ export default function ConstructionProgressDashboardPage() {
             break;
           }
         } catch {
-          /* keep waiting — 404 until the first snapshot lands is expected */
+          /* keep waiting — empty/null until the first snapshot lands is expected */
         }
       }
       if (recovered) {
@@ -300,6 +310,18 @@ export default function ConstructionProgressDashboardPage() {
                 }}
               >
                 Flat Finishing Works
+              </Button>
+              <Button
+                component={Link}
+                to={`/construction-progress/${floorId}/common`}
+                startIcon={<MeetingRoomRounded sx={{ fontSize: 18 }} />}
+                sx={{
+                  border: `1.5px solid ${P.border}`, color: P.strong, px: 2, py: 0.75, borderRadius: '10px',
+                  fontWeight: 600, textTransform: 'none', fontSize: '0.8125rem',
+                  '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+                }}
+              >
+                Common Area Finishing
               </Button>
               <Button
                 onClick={() => setConfirmReanalyzeOpen(true)}

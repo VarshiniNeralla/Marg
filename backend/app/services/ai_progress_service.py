@@ -13,6 +13,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.core.config import Settings, get_settings
 from app.services.image_fetch import download_image, resize_if_needed, validate_image_url
 from app.services.vision_providers.base import VisionProvider
+from app.services.vision_providers.compare_progress_prompt import COMPARE_ANALYSIS_PROMPT_VERSION
 from app.services.vision_providers.groq_provider import GroqVisionProvider
 from app.services.vision_providers.vllm_provider import VllmVisionProvider
 
@@ -208,7 +209,15 @@ class AIProgressService:
             cached_after = str(
                 cached_doc.get("after_image_url") or cached_doc.get("after_image") or ""
             )
-            if cached_before == before_url and cached_after == after_url:
+            cached_version = str(
+                cached_doc.get("prompt_version")
+                or cached_doc.get("promptVersion")
+                or ""
+            )
+            version_ok = cached_version == COMPARE_ANALYSIS_PROMPT_VERSION
+            if cached_before == before_url and cached_after == after_url and version_ok:
+                # Re-normalize so older-shaped payloads still expose new fields.
+                analysis = _normalize_analysis(cached_doc.get("analysis") or {})
                 await self._backfill_report_metadata(
                     org_id,
                     before_timeline_id,
@@ -225,10 +234,11 @@ class AIProgressService:
                     **visual_kwargs,
                 )
                 logger.info(
-                    "Progress analysis cache hit org={} before={} after={}",
+                    "Progress analysis cache hit org={} before={} after={} version={}",
                     org_id,
                     before_timeline_id,
                     after_timeline_id,
+                    cached_version,
                 )
                 return {
                     "status": _JOB_STATUS_COMPLETED,
@@ -236,8 +246,18 @@ class AIProgressService:
                     "reportId": str(cached_doc["_id"]),
                     "saved": bool(cached_doc.get("saved")),
                     "cached": True,
-                    "analysis": cached_doc["analysis"],
+                    "analysis": analysis,
                 }
+            if cached_before == before_url and cached_after == after_url and not version_ok:
+                logger.info(
+                    "Progress analysis cache bypassed — prompt version mismatch "
+                    "org={} before={} after={} cached={} current={}",
+                    org_id,
+                    before_timeline_id,
+                    after_timeline_id,
+                    cached_version or "(none)",
+                    COMPARE_ANALYSIS_PROMPT_VERSION,
+                )
 
         if cached_doc and cached_doc.get("analysis"):
             logger.info(
@@ -674,6 +694,8 @@ class AIProgressService:
         job = await self.get_job(org_id, job_id)
         if not job:
             return None
+        if job.get("analysis"):
+            job["analysis"] = _normalize_analysis(job.get("analysis") or {})
         if job.get("status") == _JOB_STATUS_COMPLETED:
             cache = await self._get_cached_doc(
                 org_id,
@@ -683,6 +705,8 @@ class AIProgressService:
             if cache:
                 job["reportId"] = str(cache["_id"])
                 job["saved"] = bool(cache.get("saved"))
+                if cache.get("analysis") and not job.get("analysis"):
+                    job["analysis"] = _normalize_analysis(cache.get("analysis") or {})
             elif job.get("report_id"):
                 job["reportId"] = str(job["report_id"])
         return job
@@ -732,7 +756,7 @@ class AIProgressService:
                 context=context,
             )
 
-            analysis = _normalize_analysis(result.content)
+            analysis = _normalize_analysis(result.content if isinstance(result.content, dict) else {})
             completed_at = _utcnow()
 
             cache_doc = {
@@ -756,6 +780,7 @@ class AIProgressService:
                 "before_timeline_id": job["before_timeline_id"],
                 "after_timeline_id": job["after_timeline_id"],
                 "analysis": analysis,
+                "prompt_version": COMPARE_ANALYSIS_PROMPT_VERSION,
                 "model": result.model,
                 "latency_ms": result.latency_ms,
                 "prompt_tokens": result.prompt_tokens,
@@ -845,23 +870,158 @@ def _flatten_list_entry(item: Any) -> str | None:
     return text or None
 
 
-def _normalize_analysis(raw: dict[str, Any]) -> dict[str, Any]:
-    """Ensure the analysis dict conforms to the expected schema."""
-    overall = raw.get("overallProgress") or {}
-    if not isinstance(overall, dict):
-        overall = {}
-
-    percentage = overall.get("percentage", 0)
+def _clamp_pct(value: Any, default: int = 0) -> int:
     try:
-        percentage = max(0, min(100, int(percentage)))
+        return max(0, min(100, int(float(value))))
     except (TypeError, ValueError):
-        percentage = 0
+        return default
 
-    confidence = raw.get("confidence", 0)
-    try:
-        confidence = max(0, min(100, int(confidence)))
-    except (TypeError, ValueError):
-        confidence = 0
+
+_ALLOWED_CHANGE_TYPES = {
+    "completed",
+    "partially_completed",
+    "installed",
+    "added",
+    "removed",
+    "modified",
+    "relocated",
+    "damaged",
+    "unchanged",
+    "unable_to_confirm",
+}
+
+_ALLOWED_VIEW = {"good", "fair", "poor"}
+_ALLOWED_IMPACT = {"High", "Medium", "Low"}
+
+
+def _normalize_comparison(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raw = {}
+    view = str(raw.get("viewConsistency") or raw.get("view_consistency") or "fair").lower()
+    if view not in _ALLOWED_VIEW:
+        view = "fair"
+    visibility = str(raw.get("visibility") or "fair").lower()
+    if visibility not in _ALLOWED_VIEW:
+        visibility = "fair"
+    same = raw.get("sameLocation", raw.get("same_location", True))
+    return {
+        "sameLocation": bool(same) if not isinstance(same, str) else same.strip().lower() in {"1", "true", "yes"},
+        "viewConsistency": view,
+        "visibility": visibility,
+        "comparisonConfidence": _clamp_pct(
+            raw.get("comparisonConfidence", raw.get("comparison_confidence", 0))
+        ),
+    }
+
+
+def _change_to_legacy(change: dict[str, Any]) -> dict[str, str]:
+    impact = str(change.get("impact") or "Medium")
+    if impact not in _ALLOWED_IMPACT:
+        impact = "Medium"
+    before = str(change.get("beforeState") or "").strip()
+    after = str(change.get("afterState") or "").strip()
+    change_type = str(change.get("changeType") or "").strip()
+    area = str(change.get("area") or "").strip()
+    parts: list[str] = []
+    if area:
+        parts.append(f"{area}:")
+    if before and after:
+        parts.append(f"{before} → {after}")
+    elif after:
+        parts.append(after)
+    elif before:
+        parts.append(before)
+    if change_type and change_type != "unable_to_confirm":
+        parts.append(f"({change_type.replace('_', ' ')})")
+    text = " ".join(parts).strip() or str(change.get("change") or change.get("description") or "").strip()
+    return {
+        "category": str(change.get("category") or "General") or "General",
+        "change": text,
+        "importance": impact,
+    }
+
+
+def _normalize_structured_change(item: Any) -> dict[str, Any] | None:
+    if isinstance(item, str):
+        text = item.strip()
+        if not text:
+            return None
+        return {
+            "category": "General",
+            "area": "",
+            "changeType": "modified",
+            "beforeState": "",
+            "afterState": text,
+            "impact": "Medium",
+            "confidence": 50,
+        }
+    if not isinstance(item, dict):
+        return None
+
+    # Legacy changesDetected row
+    if "change" in item and "beforeState" not in item and "before_state" not in item:
+        change_text = str(
+            item.get("change") or item.get("observation") or item.get("description") or ""
+        ).strip()
+        if not change_text:
+            return None
+        impact = str(item.get("importance") or item.get("impact") or "Medium")
+        if impact not in _ALLOWED_IMPACT:
+            impact = "Medium"
+        return {
+            "category": str(item.get("category") or "General") or "General",
+            "area": str(item.get("area") or "").strip(),
+            "changeType": "modified",
+            "beforeState": "",
+            "afterState": change_text,
+            "impact": impact,
+            "confidence": _clamp_pct(item.get("confidence", 60), 60),
+        }
+
+    change_type = str(item.get("changeType") or item.get("change_type") or "modified").strip().lower()
+    if change_type not in _ALLOWED_CHANGE_TYPES:
+        change_type = "modified"
+    impact = str(item.get("impact") or item.get("importance") or "Medium")
+    if impact not in _ALLOWED_IMPACT:
+        impact = "Medium"
+    before = str(item.get("beforeState") or item.get("before_state") or "").strip()
+    after = str(item.get("afterState") or item.get("after_state") or "").strip()
+    category = str(item.get("category") or "General").strip() or "General"
+    area = str(item.get("area") or "").strip()
+    if not before and not after and not area:
+        # Nothing useful
+        flat = _flatten_list_entry(item)
+        if not flat:
+            return None
+        after = flat
+    return {
+        "category": category,
+        "area": area,
+        "changeType": change_type,
+        "beforeState": before,
+        "afterState": after,
+        "impact": impact,
+        "confidence": _clamp_pct(item.get("confidence", 50), 50),
+    }
+
+
+def _normalize_analysis(raw: dict[str, Any] | None) -> dict[str, Any]:
+    """Ensure the analysis dict conforms to the expected schema (new + legacy fields)."""
+    if not isinstance(raw, dict):
+        raw = {}
+
+    # Prefer new `progress`; fall back to legacy `overallProgress`.
+    progress_raw = raw.get("progress")
+    if not isinstance(progress_raw, dict):
+        progress_raw = raw.get("overallProgress") or {}
+    if not isinstance(progress_raw, dict):
+        progress_raw = {}
+
+    percentage = _clamp_pct(progress_raw.get("percentage", 0))
+    description = str(progress_raw.get("description", "") or "")
+
+    confidence = _clamp_pct(raw.get("confidence", 0))
+    comparison = _normalize_comparison(raw.get("comparison"))
 
     def _as_str_list(value: Any) -> list[str]:
         if not isinstance(value, list):
@@ -873,43 +1033,28 @@ def _normalize_analysis(raw: dict[str, Any]) -> dict[str, Any]:
                 out.append(text)
         return out
 
-    changes = raw.get("changesDetected") or []
-    normalized_changes: list[dict[str, str]] = []
-    if isinstance(changes, list):
-        for item in changes:
-            if not isinstance(item, dict):
-                flat = _flatten_list_entry(item)
-                if flat:
-                    normalized_changes.append({
-                        "category": "General",
-                        "change": flat,
-                        "importance": "Medium",
-                    })
-                continue
-            importance = str(item.get("importance", "Medium"))
-            if importance not in {"High", "Medium", "Low"}:
-                importance = "Medium"
-            change_text = str(
-                item.get("change")
-                or item.get("observation")
-                or item.get("description")
-                or ""
-            ).strip()
-            if not change_text:
-                continue
-            normalized_changes.append({
-                "category": str(item.get("category", "General") or "General"),
-                "change": change_text,
-                "importance": importance,
-            })
+    structured: list[dict[str, Any]] = []
+    # Prefer new `changes`; fall back to legacy `changesDetected`.
+    source_changes = raw.get("changes")
+    if not isinstance(source_changes, list) or not source_changes:
+        source_changes = raw.get("changesDetected") or []
+    if isinstance(source_changes, list):
+        for item in source_changes:
+            normalized = _normalize_structured_change(item)
+            if normalized:
+                structured.append(normalized)
 
+    legacy_changes = [_change_to_legacy(c) for c in structured]
+
+    progress = {"percentage": percentage, "description": description}
     return {
-        "summary": str(raw.get("summary", "")),
-        "overallProgress": {
-            "percentage": percentage,
-            "description": str(overall.get("description", "")),
-        },
-        "changesDetected": normalized_changes,
+        "summary": str(raw.get("summary", "") or ""),
+        "comparison": comparison,
+        "progress": progress,
+        # Legacy alias — existing clients / PDF / library summaries.
+        "overallProgress": progress,
+        "changes": structured,
+        "changesDetected": legacy_changes,
         "completedWork": _as_str_list(raw.get("completedWork")),
         "newlyAdded": _as_str_list(raw.get("newlyAdded")),
         "removedItems": _as_str_list(raw.get("removedItems")),
@@ -960,8 +1105,8 @@ def _report_metadata_fields(
 
 
 def _serialize_report_summary(doc: dict[str, Any]) -> dict[str, Any]:
-    analysis = doc.get("analysis") or {}
-    overall = analysis.get("overallProgress") or {}
+    analysis = _normalize_analysis(doc.get("analysis") or {})
+    progress = analysis.get("progress") or analysis.get("overallProgress") or {}
     return {
         "reportId": str(doc["_id"]),
         "beforeTimelineId": doc.get("before_timeline_id", ""),
@@ -975,7 +1120,7 @@ def _serialize_report_summary(doc: dict[str, Any]) -> dict[str, Any]:
         "afterDate": doc.get("after_date", ""),
         "captureType": doc.get("capture_type", "360"),
         "summary": analysis.get("summary", ""),
-        "overallProgressPercentage": int(overall.get("percentage") or 0),
+        "overallProgressPercentage": int(progress.get("percentage") or 0),
         "confidence": int(analysis.get("confidence") or 0),
         "createdAt": doc.get("created_at"),
         "savedAt": doc.get("saved_at"),
@@ -985,12 +1130,13 @@ def _serialize_report_summary(doc: dict[str, Any]) -> dict[str, Any]:
         "pinX": doc.get("pin_x"),
         "pinY": doc.get("pin_y"),
         "saved": bool(doc.get("saved")),
+        "promptVersion": doc.get("prompt_version") or None,
     }
 
 
 def _serialize_report_detail(doc: dict[str, Any]) -> dict[str, Any]:
     summary = _serialize_report_summary(doc)
-    summary["analysis"] = doc.get("analysis") or {}
+    summary["analysis"] = _normalize_analysis(doc.get("analysis") or {})
     summary["model"] = doc.get("model")
     summary["latencyMs"] = doc.get("latency_ms")
     summary["promptTokens"] = doc.get("prompt_tokens")

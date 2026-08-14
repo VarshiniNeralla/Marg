@@ -3,6 +3,7 @@ import { workflowApiService } from '@/services/workflowApiService';
 import { useAuthStore } from './authStore';
 import { useWorkflowStore } from './workflowStore';
 import type { WorkflowDataState } from './workflowStore';
+import { useFavoriteToursStore } from './favoriteToursStore';
 import { flushWriteQueue } from './writeQueue';
 import { flushFileUploadQueue } from './fileUploadQueue';
 
@@ -78,6 +79,10 @@ export default function WorkflowApiBootstrap() {
     // an auth/refresh, but its /uploads/captures POST never being sent at all).
     flushWriteQueue();
     flushFileUploadQueue();
+
+    // Favorites live on the user document so they survive logout, device
+    // switches, and localStorage quota loss — sync after auth is ready.
+    void useFavoriteToursStore.getState().syncFromServer(user.id);
 
     workflowApiService
       .snapshot()

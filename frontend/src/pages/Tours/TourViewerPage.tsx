@@ -7,7 +7,7 @@ import {
   LayersRounded, NavigateNextRounded, NavigateBefore,
   CameraAltRounded, ThreeSixtyRounded, PlayArrowRounded, PauseRounded,
   CheckCircleRounded, PublishRounded, HomeRounded, MeetingRoomRounded,
-  EventRounded, MapRounded, CompareRounded, CloseRounded,
+  MapRounded, CompareRounded, CloseRounded,
   HistoryRounded, AutoAwesomeRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
@@ -21,10 +21,11 @@ import ProgressAnalysisDrawer from '@/pages/Tours/ProgressAnalysisDrawer';
 import PreviousReportsPanel from '@/pages/Tours/PreviousReportsPanel';
 import { progressAnalysisService, type ProgressAnalysisReport, type ProgressReportSummary, type ProgressReportVisualMeta } from '@/services/progressAnalysisService';
 import { formatReportDate, formatReportDateRange, formatCapturePreviewDate, orderCapturesChronologically, parseCaptureTimestamp } from '@/utils/reportFormat';
+import { formatPinLocationLabel, formatCaptureDateTime } from '@/utils/pinLabels';
 import { toast } from 'react-toastify';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getFloorPlanByFloor, getCapturePinsByFloorPlan } from '@store/workflowSelectors';
-import { useAuthStore, isManagerOrAdmin } from '@store/authStore';
+import { useAuthStore, isManagerOrAdmin, isManager } from '@store/authStore';
 import type { MockCapture } from '@/data/mockData';
 
 // Placeholder equirectangular panoramas — one per tour, keyed by tourId.
@@ -599,6 +600,10 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, pan
   // The adapter identity the current viewer was built with — a switch between
   // equirectangular and dual-fisheye needs a full rebuild (adapters differ).
   const builtProjectionRef = useRef<Projection | null>(null);
+  // Keep latest auto-rotate intent for the viewer `ready` handler (viewer rebuilds
+  // when the panorama changes; the button state must still apply after ready).
+  const autoRotateRef = useRef(autoRotate);
+  autoRotateRef.current = autoRotate;
 
   // Probe the image (dimensions + corner darkness) before deciding how to render.
   useEffect(() => {
@@ -639,6 +644,7 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, pan
 
       try {
         const { Viewer, DualFisheyeAdapter } = await import('@photo-sphere-viewer/core');
+        const { AutorotatePlugin } = await import('@photo-sphere-viewer/autorotate-plugin');
 
         if (destroyed || !containerRef.current) return;
 
@@ -687,13 +693,27 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, pan
           navbar: false,
           loadingTxt: '',
           loadingImg: '',
+          plugins: [
+            // Official plugin: continuous yaw at a stable rpm (no RAF / before-rotate fights).
+            AutorotatePlugin.withConfig({
+              autostartDelay: 0,
+              autostartOnIdle: false,
+              autorotateSpeed: '1.5rpm',
+            }),
+          ],
         });
 
         viewerRef.current = viewer;
         builtProjectionRef.current = currentProjection;
 
         viewer.addEventListener('ready', () => {
-          if (!destroyed) setLoading(false);
+          if (destroyed) return;
+          setLoading(false);
+          if (autoRotateRef.current) {
+            try {
+              viewer.getPlugin(AutorotatePlugin)?.start();
+            } catch { /* plugin not ready */ }
+          }
         });
 
         viewer.addEventListener('error' as never, () => {
@@ -723,47 +743,24 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, pan
     };
   }, [panoramaUrl, projection, is360, panoOrientation]);
 
-  // Auto-rotate: advance yaw a small step each frame ONLY while enabled and the
-  // user isn't interacting. Two correctness points learned the hard way:
-  //   • PSV v5 has NO 'move-start'/'move-end' events (that was a silent no-op, so
-  //     the loop never paused). The real pre-interaction event is 'before-rotate';
-  //     we pause on it and resume shortly after the last one fires.
-  //   • We write yaw directly via setOption-free `rotate()` with the CURRENT
-  //     pitch so we never touch pitch/roll — no gimbal/tumble.
-  const rafRef = useRef<number>(0);
-  const lastUserInteractRef = useRef(0);
+  // Drive the official AutorotatePlugin from the toolbar button.
+  // (Previous custom RAF + before-rotate pause fought itself: each programmatic
+  // rotate looked like a user drag, so motion became a tiny jerk every ~400ms.)
   useEffect(() => {
     const viewer = viewerRef.current;
-    if (!viewer || !autoRotate) {
-      cancelAnimationFrame(rafRef.current);
-      return;
-    }
-    // 'before-rotate' fires for BOTH programmatic and user rotation. We only want
-    // to detect USER drags, so we stamp the time and treat any rotation within a
-    // short window as "user active" — our own tiny auto-steps don't refresh it
-    // because they happen on the next frame, well within the debounce.
-    const onBeforeRotate = () => { lastUserInteractRef.current = performance.now(); };
-    viewer.addEventListener('before-rotate' as never, onBeforeRotate);
-
-    let last = performance.now();
-    const tick = () => {
-      const now = performance.now();
-      // Pause while the user was rotating in the last 400ms.
-      if (now - lastUserInteractRef.current > 400) {
-        try {
-          const pos = viewer.getPosition();
-          viewer.rotate({ yaw: pos.yaw + 0.12 * ((now - last) / 1000), pitch: pos.pitch });
-        } catch { /* mid-transition */ }
-      }
-      last = now;
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => {
-      cancelAnimationFrame(rafRef.current);
-      viewer.removeEventListener('before-rotate' as never, onBeforeRotate);
-    };
-  }, [autoRotate]);
+    if (!viewer || loading) return;
+    let cancelled = false;
+    void import('@photo-sphere-viewer/autorotate-plugin').then(({ AutorotatePlugin }) => {
+      if (cancelled) return;
+      const plugin = viewer.getPlugin(AutorotatePlugin);
+      if (!plugin) return;
+      try {
+        if (autoRotate) plugin.start();
+        else plugin.stop();
+      } catch { /* viewer tearing down */ }
+    });
+    return () => { cancelled = true; };
+  }, [autoRotate, loading, panoramaUrl]);
 
   if (error) {
     return (
@@ -885,7 +882,8 @@ export default function TourViewerPage() {
   const floorPlans = useWorkflowStore(s => s.floorPlans);
 
   const [fullscreen, setFullscreen] = useState(false);
-  const [showFloorPlan, setShowFloorPlan] = useState(false);
+  // Floor-plan navigator stays available in normal and fullscreen view.
+  const [showFloorPlan, setShowFloorPlan] = useState(true);
   const [autoRotate, setAutoRotate] = useState(false);
   const [stepIdx, setStepIdx] = useState(0);
   const [isMarkedDone, setIsMarkedDone] = useState(false);
@@ -913,11 +911,6 @@ export default function TourViewerPage() {
     setAnalysisSaved(false);
   }, [stepIdx, tourId]);
 
-  useEffect(() => {
-    if (!fullscreen) setShowFloorPlan(false);
-  }, [fullscreen]);
-
-  const currentIdx = tourId ? tours.findIndex(t => t.id === tourId) : 0;
   const tourMedia = tour as typeof tour & {
     processedPanoramaUrl?: string | null;
     processed_panorama_url?: string | null;
@@ -926,11 +919,9 @@ export default function TourViewerPage() {
     steps?: import('@/data/mockData').TourStep[];
   };
 
-  // Sequential walkthrough: one stop per pin (Pin 1 → 2 → 3 …). Prev/next arrows
+  // Sequential walkthrough: one stop per pin in sequence order. Prev/next arrows
   // step through these. Falls back to a single-panorama tour for legacy tours.
-  // tourMedia.steps is only populated in-memory after publishFloorPlanTour(); after a
-  // page refresh the store rehydrates from the API without steps, so we derive them
-  // live from capturePins whenever the stored array is absent.
+  // Prefer live derivation from capturePins after refresh (API may omit steps).
   const derivedSteps = useMemo(() => {
     const tourFloorPlanId = (tourMedia as unknown as Record<string, unknown>)?.floorPlanId as string | undefined;
     if (!tourFloorPlanId) return [];
@@ -947,17 +938,38 @@ export default function TourViewerPage() {
         pinId: pin.id,
         captureId: latestCaptureId,
         sequenceNumber: pin.sequenceNumber,
-        label: `Pin ${pin.sequenceNumber}`,
+        label: formatPinLocationLabel(pin, `Stop ${pin.sequenceNumber}`),
         panoramaUrl,
         thumbnailUrl: (mediaAssets[0]?.thumbnail_url ?? (cap?.thumbnailUrl as string | undefined)) ?? null,
       }];
     });
   }, [tourMedia, capturePins, captures]);
 
-  const steps = (tourMedia?.steps && tourMedia.steps.length > 0) ? tourMedia.steps : derivedSteps;
+  const steps = useMemo(() => {
+    // Prefer live pin-derived steps so add/remove pins stays accurate; stored
+    // tour.steps can be stale after captures/pins change without a republish.
+    const raw = derivedSteps.length > 0
+      ? derivedSteps
+      : (tourMedia?.steps && tourMedia.steps.length > 0 ? tourMedia.steps : []);
+    // Remap stored "Pin N" labels to live Flat · Room.
+    return raw.map(s => {
+      const pin = capturePins.find(p => p.id === s.pinId)
+        ?? (s.captureId ? capturePins.find(p => p.captureIds.includes(s.captureId)) : undefined);
+      return { ...s, label: formatPinLocationLabel(pin, s.label || `Stop ${s.sequenceNumber}`) };
+    });
+  }, [tourMedia, derivedSteps, capturePins]);
+  // Chevrons navigate between PINS (walkthrough stops), not temporal visits on
+  // the same pin — those use the capture timeline below the viewer.
   const isWalkthrough = steps.length > 1;
   const clampedStep = Math.min(stepIdx, Math.max(0, steps.length - 1));
   const currentStep = steps[clampedStep];
+  const currentStepPin = currentStep
+    ? (capturePins.find(p => p.id === currentStep.pinId)
+      ?? (currentStep.captureId ? capturePins.find(p => p.captureIds.includes(currentStep.captureId)) : undefined))
+    : undefined;
+  const currentPinLabel = currentStep
+    ? formatPinLocationLabel(currentStepPin, currentStep.label || tour?.roomName)
+    : (tour?.roomName ?? '');
 
   // Real URLs only. This chain previously ended in DEMO_PANORAMAS/PANORAMA_MAP/
   // FALLBACK_PANORAMA, which meant a capture with no panorama yet (e.g. one
@@ -1002,7 +1014,7 @@ export default function TourViewerPage() {
       const capIndex = pin?.captureIds.indexOf(id) ?? 0;
       const uploadedAt = (cap?.uploadedAt as string | undefined) ?? '';
       const capturedAt = (cap?.capturedAt as string | undefined) ?? '';
-      const dateLabel = uploadedAt ? uploadedAt.split(',')[0] : `Visit ${capIndex + 1}`;
+      const dateLabel = formatCaptureDateTime(capturedAt, uploadedAt) || `Visit ${capIndex + 1}`;
       return {
         id,
         baseCaptureId: id,
@@ -1156,9 +1168,7 @@ export default function TourViewerPage() {
       return;
     }
 
-    const pinLabel = currentStep
-      ? `Pin ${currentStep.sequenceNumber}`
-      : tour.roomName;
+    const pinLabel = currentPinLabel;
 
     const activePin = currentStep?.pinId
       ? capturePins.find(p => p.id === currentStep.pinId)
@@ -1315,15 +1325,25 @@ export default function TourViewerPage() {
       ?? null;
   }, [floorPlan]);
 
+  // Navigation map: prefer walkthrough stop pins (captured only) so clicks jump to 360s.
   const tourPins = useMemo(() => {
+    if (steps.length > 0) {
+      const byId = new Map(capturePins.map(p => [p.id, p]));
+      const fromSteps = steps
+        .map(s => byId.get(s.pinId))
+        .filter((p): p is NonNullable<typeof p> => Boolean(p) && p.captureIds.length > 0);
+      if (fromSteps.length > 0) return fromSteps;
+    }
     if (!floorPlan) return [];
-    const byPlan = getCapturePinsByFloorPlan(capturePins, floorPlan.id);
+    const byPlan = getCapturePinsByFloorPlan(capturePins, floorPlan.id)
+      .filter(p => p.captureIds.length > 0);
     if (byPlan.length > 0) return byPlan;
     if (resolvedFloorId) {
-      return [...capturePins.filter(p => p.floorId === resolvedFloorId)].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+      return [...capturePins.filter(p => p.floorId === resolvedFloorId && p.captureIds.length > 0)]
+        .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
     }
     return [];
-  }, [floorPlan, capturePins, resolvedFloorId]);
+  }, [steps, floorPlan, capturePins, resolvedFloorId]);
 
   const handleFloorPlanPinClick = useCallback((pinId: string) => {
     const stepIndex = steps.findIndex(s => s.pinId === pinId);
@@ -1365,14 +1385,12 @@ export default function TourViewerPage() {
   );
 
   const ts = (statusConfig.tour as Record<string, { label: string; color: string; bg: string }>)[tour.status] ?? statusConfig.tour.draft;
-  const prevTour = currentIdx > 0 ? tours[currentIdx - 1] : null;
-  const nextTour = currentIdx < tours.length - 1 ? tours[currentIdx + 1] : null;
   const capture = captures.find(c => c.id === tour.captureId) ?? mockCaptures.find(c => c.id === tour.captureId);
   const floorId = resolvedFloorId;
   const floorPlanLink = floorId
     ? `/floor-plans/${tour.projectId}/${tour.towerId}/${floorId}?pinsOnly=1&returnTo=/tours/${tour.id}`
     : null;
-  const canReviewTour = isManagerOrAdmin(user);
+  const canReviewTour = isManager(user);
 
   const breadcrumb: { label: string; to?: string }[] = [
     { label: listBackLabel, to: listBackTo },
@@ -1387,12 +1405,12 @@ export default function TourViewerPage() {
       borderRadius: fullscreen ? 0 : { xs: '16px', md: '20px' },
       width: '100%',
       height: fullscreen ? '100vh' : {
-        xs: 'clamp(320px, 58vw, 420px)',
-        sm: 'clamp(400px, 52vw, 500px)',
-        md: 'clamp(480px, 48vw, 560px)',
-        lg: 'clamp(520px, 44vw, 680px)',
+        xs: 'clamp(320px, 62vw, 420px)',
+        sm: 'clamp(380px, 54vw, 500px)',
+        md: 'clamp(440px, 48vw, 600px)',
+        lg: 'clamp(480px, 44vw, 680px)',
       },
-      minHeight: fullscreen ? '100vh' : { xs: 320, md: 480 },
+      minHeight: fullscreen ? '100vh' : { xs: 320, md: 440 },
       position: 'relative',
       overflow: 'hidden',
       backgroundColor: '#0f1929',
@@ -1444,7 +1462,7 @@ export default function TourViewerPage() {
 
       {/* Top-right controls */}
       <Box sx={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 0.75, zIndex: 10 }}>
-        {fullscreen && floorPlanImageUrl && tourPins.length > 0 && (
+        {floorPlanImageUrl && tourPins.length > 0 && (
           <Tooltip title={showFloorPlan ? 'Hide floor plan' : 'Open floor plan'}>
             <IconButton
               onClick={() => setShowFloorPlan(v => !v)}
@@ -1460,8 +1478,19 @@ export default function TourViewerPage() {
             </IconButton>
           </Tooltip>
         )}
-        <Tooltip title={autoRotate ? 'Stop rotation' : 'Auto rotate'}>
-          <IconButton onClick={() => setAutoRotate(v => !v)} size="small" sx={{ backgroundColor: 'rgba(0,0,0,0.45)', color: autoRotate ? '#fbbf24' : '#fff', backdropFilter: 'blur(8px)', '&:hover': { backgroundColor: 'rgba(0,0,0,0.6)' } }}>
+        <Tooltip title={autoRotate ? 'Stop auto rotate' : 'Auto rotate smoothly'}>
+          <IconButton
+            onClick={() => setAutoRotate(v => !v)}
+            size="small"
+            aria-pressed={autoRotate}
+            sx={{
+              backgroundColor: autoRotate ? 'rgba(37,99,235,0.9)' : 'rgba(0,0,0,0.45)',
+              color: '#fff',
+              backdropFilter: 'blur(8px)',
+              boxShadow: autoRotate ? '0 0 0 2px rgba(37,99,235,0.35)' : 'none',
+              '&:hover': { backgroundColor: autoRotate ? 'rgba(37,99,235,1)' : 'rgba(0,0,0,0.6)' },
+            }}
+          >
             {autoRotate ? <PauseRounded sx={{ fontSize: 16 }} /> : <PlayArrowRounded sx={{ fontSize: 16 }} />}
           </IconButton>
         </Tooltip>
@@ -1499,11 +1528,11 @@ export default function TourViewerPage() {
         </Box>
       )}
 
-      {/* Walkthrough step indicator (Pin N of M) */}
+      {/* Walkthrough step indicator (Flat · Room) */}
       {isWalkthrough && currentStep && (
-        <Box sx={{ position: 'absolute', bottom: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 10, px: 2, py: 0.875, borderRadius: '999px', backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: '#fff' }}>{currentStep.label}</Typography>
-          <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)' }}>{clampedStep + 1} of {steps.length}</Typography>
+        <Box sx={{ position: 'absolute', bottom: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 10, px: 2, py: 0.875, borderRadius: '999px', backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', gap: 1, maxWidth: '90%' }}>
+          <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: '#fff' }} noWrap>{currentPinLabel}</Typography>
+          <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)', flexShrink: 0 }}>{clampedStep + 1} of {steps.length}</Typography>
         </Box>
       )}
 
@@ -1516,12 +1545,10 @@ export default function TourViewerPage() {
         </Box>
       )}
 
-      {/* Prev/Next navigation — moved to the BOTTOM-LEFT corner (away from the
-          left/right vertical-centre edges) so they no longer intercept the
-          horizontal drag needed to rotate the 360 panorama. The full-height
-          centre-edge buttons previously swallowed every left/right drag, making
-          the sphere feel like it only moved vertically. */}
-      {isWalkthrough ? (
+      {/* Prev/Next between pins only — never for a single-pin tour (even when that
+          pin has multiple visits over time; the timeline handles those). Also do
+          not fall back to hopping between unrelated tours in the catalog. */}
+      {isWalkthrough && (
         <Box sx={{ position: 'absolute', bottom: 12, right: 12, display: 'flex', gap: 0.75, zIndex: 12 }}>
           <Box onClick={() => setStepIdx(i => Math.max(0, i - 1))} sx={{ visibility: clampedStep > 0 ? 'visible' : 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', color: '#fff', cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0,0,0,0.7)' } }}>
             <NavigateBefore sx={{ fontSize: 22 }} />
@@ -1530,22 +1557,9 @@ export default function TourViewerPage() {
             <NavigateNextRounded sx={{ fontSize: 22 }} />
           </Box>
         </Box>
-      ) : (
-        <Box sx={{ position: 'absolute', bottom: 12, right: 12, display: 'flex', gap: 0.75, zIndex: 12 }}>
-          {prevTour && (
-            <Box component={Link} to={`/tours/${prevTour.id}`} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(0,0,0,0.65)' } }}>
-              <NavigateBefore sx={{ fontSize: 20 }} />
-            </Box>
-          )}
-          {nextTour && (
-            <Box component={Link} to={`/tours/${nextTour.id}`} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(8px)', color: '#fff', textDecoration: 'none', '&:hover': { backgroundColor: 'rgba(0,0,0,0.65)' } }}>
-              <NavigateNextRounded sx={{ fontSize: 20 }} />
-            </Box>
-          )}
-        </Box>
       )}
 
-      {fullscreen && showFloorPlan && floorPlanImageUrl && (
+      {showFloorPlan && floorPlanImageUrl && tourPins.length > 0 && (
         <TourFloorPlanPanel
           imageUrl={floorPlanImageUrl}
           floorLabel={tour.floorLabel}
@@ -1631,301 +1645,177 @@ export default function TourViewerPage() {
         </Box>
       )}
 
-      {/* ── Viewer + right rail ───────────────────────────────────────────── */}
-      <Box sx={{ display: 'flex', gap: 2.5, alignItems: 'stretch', flexDirection: { xs: 'column', lg: 'row' } }}>
-        {/* Viewer — dominant */}
-        <Box sx={{ flex: 1, minWidth: 0 }}>{viewer}</Box>
+      {/* ── Full-width viewer + capture timeline below ───────────────────── */}
+      <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+        {viewer}
 
-        {/* Right rail — hidden on mobile, shown on lg+ */}
-        <Box sx={{ width: { xs: '100%', lg: 320 }, flexShrink: 0, display: { xs: 'none', lg: 'flex' }, flexDirection: 'column', gap: 2 }}>
-
-          {/* Progress Timeline — real pin history, inline panorama switching */}
-          {pinTimeline.length > 0 && (() => {
-            // Use timeline-validated selections so stale state from a previously
-            // viewed pin never highlights the wrong nodes.
-            const compareIds = validCompareIds;
-            const activeSnapId = validActiveSnapId;
-            const isComparing = !!(compareIds[0] || compareIds[1]);
-            const bothSelected = !!(compareIds[0] && compareIds[1]);
-            const latestSnap = pinTimeline[pinTimeline.length - 1];
-            const isViewingHistory = !!(activeSnapId && activeSnapId !== latestSnap?.id);
-            const viewingSnap = isViewingHistory ? pinTimeline.find(s => s.id === activeSnapId) : null;
-            const pinLabel = currentStep ? `Pin ${currentStep.sequenceNumber}` : tour.roomName;
-
-            return (
-              <SidePanel
-                title="Progress Timeline"
-                icon={<HistoryRounded sx={{ fontSize: 15 }} />}
-                action={
-                  pinTimeline.length > 1 ? (
-                    <Box
-                      onClick={() => setCompareIds(isComparing ? [null, null] : [latestSnap.id, null])}
-                      sx={{
-                        display: 'inline-flex', alignItems: 'center', gap: 0.5,
-                        px: 1.25, py: 0.375, borderRadius: '6px', cursor: 'pointer',
-                        fontSize: '0.6875rem', fontWeight: 600,
-                        backgroundColor: isComparing ? 'rgba(124,58,237,0.1)' : colors.bg,
-                        color: isComparing ? '#7c3aed' : colors.textMuted,
-                        border: `1px solid ${isComparing ? '#7c3aed' : colors.borderLight}`,
-                        transition: `all ${motion.durationFast}`,
-                        '&:hover': { borderColor: '#7c3aed', color: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.08)' },
-                      }}
-                    >
-                      {isComparing ? <CloseRounded sx={{ fontSize: 12 }} /> : <CompareRounded sx={{ fontSize: 12 }} />}
-                      {isComparing ? 'Cancel' : 'Compare'}
-                    </Box>
-                  ) : undefined
-                }
-              >
-                {/* Capture count — light context under the scrubber */}
-                <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, mb: 1.25 }}>
-                  {latestSnap.dateLabel} · {pinTimeline.length} visit{pinTimeline.length !== 1 ? 's' : ''}
-                </Typography>
-
-                {/* Timeline scrubber */}
-                <CaptureTimeline
-                  series={pinTimeline}
-                  activeId={effectiveSnapId}
-                  onSelect={handleSnapSelect}
-                  compareIds={isComparing ? compareIds : undefined}
-                  compareMode={isComparing}
-                />
-
-                {/* Compare UI */}
-                {isComparing && (
-                  <Box sx={{ mt: 1.5, display: 'flex', flexDirection: 'column', gap: 1.25 }}>
-                    {!bothSelected && (
-                      <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, fontWeight: 500 }}>
-                        {!compareIds[0]
-                          ? 'Select two visits on the timeline'
-                          : 'Select a second visit'}
-                      </Typography>
-                    )}
-
-                    {!bothSelected && (
-                      <CompareSlotRow
-                        compareIds={compareIds}
-                        pinTimeline={pinTimeline}
-                        onView={(id) => { setActiveSnapId(id); setPanoramaOverride(resolvePanorama(id)); }}
-                      />
-                    )}
-
-                    {bothSelected && orderedComparePreview && (
-                      <CompareWillAnalyzePreview
-                        key={`${orderedComparePreview.beforeCaptureId}-${orderedComparePreview.afterCaptureId}`}
-                        before={{
-                          label: orderedComparePreview.beforeLabel,
-                          date: orderedComparePreview.beforeDate,
-                          imageUrl: orderedComparePreview.beforeImageUrl,
-                          captureId: orderedComparePreview.beforeCaptureId,
-                        }}
-                        after={{
-                          label: orderedComparePreview.afterLabel,
-                          date: orderedComparePreview.afterDate,
-                          imageUrl: orderedComparePreview.afterImageUrl,
-                          captureId: orderedComparePreview.afterCaptureId,
-                        }}
-                      />
-                    )}
-
-                    {bothSelected && (
-                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-                        <CompareAnalyzeButton
-                          loading={analysisLoading}
-                          onClick={handleAnalyzeProgress}
-                        />
-                        <Box
-                          onClick={() => setCompareIds([null, null])}
-                          sx={{
-                            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5,
-                            py: 0.5, color: colors.textMuted, fontSize: '0.6875rem', fontWeight: 600,
-                            cursor: 'pointer', '&:hover': { color: colors.danger },
-                          }}
-                        >
-                          <CloseRounded sx={{ fontSize: 13 }} /> Clear selection
-                        </Box>
-                      </Box>
-                    )}
-
-                    {canViewPreviousReports && (
-                      <PreviousReportsPanel
-                        projectId={tour.projectId}
-                        pinName={pinLabel}
-                        validTimelineIds={pinTimeline.map(s => s.id)}
-                        onSelect={handleOpenPreviousReport}
-                      />
-                    )}
-                  </Box>
-                )}
-
-                {/* Viewing history indicator */}
-                {isViewingHistory && !isComparing && (
-                  <Box sx={{ mt: 1.25, display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1.25, py: 0.75, borderRadius: '8px', backgroundColor: colors.warningBg, border: `1px solid rgba(217,119,6,0.2)` }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
-                      <HistoryRounded sx={{ fontSize: 13, color: colors.warning, flexShrink: 0 }} />
-                      <Typography sx={{ fontSize: '0.6875rem', color: colors.warning, fontWeight: 600 }} noWrap>
-                        {viewingSnap?.dateLabel ?? 'Historical view'}
-                      </Typography>
-                    </Box>
-                    <Box
-                      onClick={() => { setActiveSnapId(null); setPanoramaOverride(null); }}
-                      sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.25, fontSize: '0.6875rem', fontWeight: 600, color: colors.primary, cursor: 'pointer', flexShrink: 0, ml: 1, '&:hover': { opacity: 0.75 } }}
-                    >
-                      <CloseRounded sx={{ fontSize: 11 }} /> Latest
-                    </Box>
-                  </Box>
-                )}
-              </SidePanel>
-            );
-          })()}
-
-          {/* Tour Metadata */}
-          <SidePanel title="Tour Details" icon={<EventRounded sx={{ fontSize: 15 }} />}>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
-              {([
-                { label: 'Captures', value: `${tour.captures} panoramas` },
-                { label: 'Capture date', value: capture?.uploadedAt ?? tour.lastCapture },
-              ] as const).map(({ label, value }) => (
-                <Box key={label} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <Typography sx={{ fontSize: '0.75rem', color: colors.textSubdued }}>{label}</Typography>
-                  <Typography sx={{ fontSize: '0.8125rem', color: colors.textStrong, fontWeight: 600, textAlign: 'right' }}>{value}</Typography>
-                </Box>
-              ))}
-            </Box>
-          </SidePanel>
-
-        </Box>
-      </Box>
-
-      {/* ── Mobile-only panel strip (lg+ hides this; right rail shows instead) ── */}
-      <Box sx={{ display: { xs: 'flex', lg: 'none' }, flexDirection: 'column', gap: 1.5, mt: 2 }}>
-
-        {/* Progress Timeline — full width card on mobile */}
         {pinTimeline.length > 0 && (() => {
-          // Timeline-validated selections (see desktop rail note above).
-          const compareIds = validCompareIds;
-          const activeSnapId = validActiveSnapId;
-          const isComparing = !!(compareIds[0] || compareIds[1]);
-          const bothSelected = !!(compareIds[0] && compareIds[1]);
-          const latestSnap = pinTimeline[pinTimeline.length - 1];
-          const isViewingHistory = !!(activeSnapId && activeSnapId !== latestSnap?.id);
-          const viewingSnap = isViewingHistory ? pinTimeline.find(s => s.id === activeSnapId) : null;
-          const pinLabel = currentStep ? `Pin ${currentStep.sequenceNumber}` : tour.roomName;
-          return (
-            <Box sx={{ borderRadius: '14px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', overflow: 'hidden' }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1.25, borderBottom: `1px solid ${colors.borderLight}` }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                  <HistoryRounded sx={{ fontSize: 14, color: colors.textMuted }} />
-                  <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: colors.textStrong }}>Progress Timeline</Typography>
-                  <Typography sx={{ fontSize: '0.625rem', fontWeight: 600, color: colors.textMuted, ml: 0.5 }}>
-                    {pinTimeline.length} visit{pinTimeline.length !== 1 ? 's' : ''}
-                  </Typography>
-                </Box>
-                {pinTimeline.length > 1 && (
+              // Use timeline-validated selections so stale state from a previously
+              // viewed pin never highlights the wrong nodes.
+              const compareIds = validCompareIds;
+              const activeSnapId = validActiveSnapId;
+              const isComparing = !!(compareIds[0] || compareIds[1]);
+              const bothSelected = !!(compareIds[0] && compareIds[1]);
+              const latestSnap = pinTimeline[pinTimeline.length - 1];
+              const isViewingHistory = !!(activeSnapId && activeSnapId !== latestSnap?.id);
+              const viewingSnap = isViewingHistory ? pinTimeline.find(s => s.id === activeSnapId) : null;
+
+              return (
+                <Box
+                  sx={{
+                    mt: 2,
+                    borderRadius: '16px',
+                    backgroundColor: colors.card,
+                    boxShadow: '0 2px 8px rgba(15,23,42,0.05)',
+                    overflow: 'hidden',
+                    width: '100%',
+                  }}
+                >
                   <Box
-                    onClick={() => setCompareIds(isComparing ? [null, null] : [latestSnap.id, null])}
-                    sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1, py: 0.25, borderRadius: '6px', cursor: 'pointer', fontSize: '0.625rem', fontWeight: 600, backgroundColor: isComparing ? 'rgba(124,58,237,0.1)' : colors.bg, color: isComparing ? '#7c3aed' : colors.textMuted, border: `1px solid ${isComparing ? '#7c3aed' : colors.borderLight}` }}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 1,
+                      px: 2,
+                      py: 1.25,
+                      borderBottom: `1px solid ${colors.borderLight}`,
+                    }}
                   >
-                    {isComparing ? <CloseRounded sx={{ fontSize: 11 }} /> : <CompareRounded sx={{ fontSize: 11 }} />}
-                    {isComparing ? 'Cancel' : 'Compare'}
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+                      <Box
+                        sx={{
+                          width: 30, height: 30, borderRadius: '9px', flexShrink: 0,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          backgroundColor: colors.primarySoft,
+                        }}
+                      >
+                        <HistoryRounded sx={{ fontSize: 16, color: colors.primary }} />
+                      </Box>
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: colors.textStrong, lineHeight: 1.25 }}>
+                          Capture timeline
+                        </Typography>
+                        <Typography noWrap sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textMuted, lineHeight: 1.3, mt: '1px' }}>
+                          {currentPinLabel} · {pinTimeline.length} visit{pinTimeline.length !== 1 ? 's' : ''}
+                        </Typography>
+                      </Box>
+                    </Box>
+                    {pinTimeline.length > 1 && (
+                      <Box
+                        onClick={() => setCompareIds(isComparing ? [null, null] : [latestSnap.id, null])}
+                        sx={{
+                          display: 'inline-flex', alignItems: 'center', gap: 0.5,
+                          px: 1.25, py: 0.375, borderRadius: '8px', cursor: 'pointer',
+                          fontSize: '0.6875rem', fontWeight: 600, flexShrink: 0,
+                          backgroundColor: isComparing ? 'rgba(124,58,237,0.1)' : colors.bg,
+                          color: isComparing ? '#7c3aed' : colors.textMuted,
+                          border: `1px solid ${isComparing ? '#7c3aed' : colors.borderLight}`,
+                          transition: `all ${motion.durationFast}`,
+                          '&:hover': { borderColor: '#7c3aed', color: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.08)' },
+                        }}
+                      >
+                        {isComparing ? <CloseRounded sx={{ fontSize: 12 }} /> : <CompareRounded sx={{ fontSize: 12 }} />}
+                        {isComparing ? 'Cancel' : 'Compare'}
+                      </Box>
+                    )}
                   </Box>
-                )}
-              </Box>
-              <Box sx={{ p: 1.5 }}>
-                <CaptureTimeline
-                  series={pinTimeline}
-                  activeId={effectiveSnapId}
-                  onSelect={handleSnapSelect}
-                  compareIds={isComparing ? compareIds : undefined}
-                  compareMode={isComparing}
-                />
-                {isComparing && (
-                  <Box sx={{ mt: 1.25, display: 'flex', flexDirection: 'column', gap: 1.125 }}>
-                    {!bothSelected && (
-                      <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, fontWeight: 500 }}>
-                        {!compareIds[0] ? 'Select two visits on the timeline' : 'Select a second visit'}
-                      </Typography>
+
+                  <Box sx={{ p: 1.5 }}>
+                    <CaptureTimeline
+                      series={pinTimeline}
+                      activeId={effectiveSnapId}
+                      onSelect={handleSnapSelect}
+                      compareIds={isComparing ? compareIds : undefined}
+                      compareMode={isComparing}
+                    />
+
+                    {isComparing && (
+                      <Box sx={{ mt: 1.5, display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+                        {!bothSelected && (
+                          <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, fontWeight: 500 }}>
+                            {!compareIds[0]
+                              ? 'Select two visits on the timeline'
+                              : 'Select a second visit'}
+                          </Typography>
+                        )}
+
+                        {!bothSelected && (
+                          <CompareSlotRow
+                            compareIds={compareIds}
+                            pinTimeline={pinTimeline}
+                            onView={(id) => { setActiveSnapId(id); setPanoramaOverride(resolvePanorama(id)); }}
+                          />
+                        )}
+
+                        {bothSelected && orderedComparePreview && (
+                          <CompareWillAnalyzePreview
+                            key={`${orderedComparePreview.beforeCaptureId}-${orderedComparePreview.afterCaptureId}`}
+                            before={{
+                              label: orderedComparePreview.beforeLabel,
+                              date: orderedComparePreview.beforeDate,
+                              imageUrl: orderedComparePreview.beforeImageUrl,
+                              captureId: orderedComparePreview.beforeCaptureId,
+                            }}
+                            after={{
+                              label: orderedComparePreview.afterLabel,
+                              date: orderedComparePreview.afterDate,
+                              imageUrl: orderedComparePreview.afterImageUrl,
+                              captureId: orderedComparePreview.afterCaptureId,
+                            }}
+                          />
+                        )}
+
+                        {bothSelected && (
+                          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                            <CompareAnalyzeButton
+                              loading={analysisLoading}
+                              onClick={handleAnalyzeProgress}
+                            />
+                            <Box
+                              onClick={() => setCompareIds([null, null])}
+                              sx={{
+                                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5,
+                                py: 0.5, color: colors.textMuted, fontSize: '0.6875rem', fontWeight: 600,
+                                cursor: 'pointer', '&:hover': { color: colors.danger },
+                              }}
+                            >
+                              <CloseRounded sx={{ fontSize: 13 }} /> Clear selection
+                            </Box>
+                          </Box>
+                        )}
+
+                        {canViewPreviousReports && (
+                          <PreviousReportsPanel
+                            projectId={tour.projectId}
+                            pinName={currentPinLabel}
+                            validTimelineIds={pinTimeline.map(s => s.id)}
+                            onSelect={handleOpenPreviousReport}
+                          />
+                        )}
+                      </Box>
                     )}
-                    {!bothSelected && (
-                      <CompareSlotRow
-                        compareIds={compareIds}
-                        pinTimeline={pinTimeline}
-                        onView={(id) => { setActiveSnapId(id); setPanoramaOverride(resolvePanorama(id)); }}
-                      />
-                    )}
-                    {bothSelected && orderedComparePreview && (
-                      <CompareWillAnalyzePreview
-                        key={`${orderedComparePreview.beforeCaptureId}-${orderedComparePreview.afterCaptureId}`}
-                        before={{
-                          label: orderedComparePreview.beforeLabel,
-                          date: orderedComparePreview.beforeDate,
-                          imageUrl: orderedComparePreview.beforeImageUrl,
-                          captureId: orderedComparePreview.beforeCaptureId,
-                        }}
-                        after={{
-                          label: orderedComparePreview.afterLabel,
-                          date: orderedComparePreview.afterDate,
-                          imageUrl: orderedComparePreview.afterImageUrl,
-                          captureId: orderedComparePreview.afterCaptureId,
-                        }}
-                      />
-                    )}
-                    {bothSelected && (
-                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.625 }}>
-                        <CompareAnalyzeButton
-                          loading={analysisLoading}
-                          onClick={handleAnalyzeProgress}
-                        />
+
+                    {isViewingHistory && !isComparing && (
+                      <Box sx={{ mt: 1.25, display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1.25, py: 0.75, borderRadius: '8px', backgroundColor: colors.warningBg, border: `1px solid rgba(217,119,6,0.2)` }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
+                          <HistoryRounded sx={{ fontSize: 13, color: colors.warning, flexShrink: 0 }} />
+                          <Typography sx={{ fontSize: '0.6875rem', color: colors.warning, fontWeight: 600 }} noWrap>
+                            {viewingSnap?.dateLabel ?? 'Historical view'}
+                          </Typography>
+                        </Box>
                         <Box
-                          onClick={() => setCompareIds([null, null])}
-                          sx={{
-                            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5,
-                            py: 0.5, color: colors.textMuted, fontSize: '0.625rem', fontWeight: 600, cursor: 'pointer',
-                          }}
+                          onClick={() => { setActiveSnapId(null); setPanoramaOverride(null); }}
+                          sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.25, fontSize: '0.6875rem', fontWeight: 600, color: colors.primary, cursor: 'pointer', flexShrink: 0, ml: 1, '&:hover': { opacity: 0.75 } }}
                         >
-                          <CloseRounded sx={{ fontSize: 11 }} /> Clear
+                          <CloseRounded sx={{ fontSize: 11 }} /> Latest
                         </Box>
                       </Box>
                     )}
-                    {canViewPreviousReports && (
-                      <PreviousReportsPanel
-                        projectId={tour.projectId}
-                        pinName={pinLabel}
-                        validTimelineIds={pinTimeline.map(s => s.id)}
-                        onSelect={handleOpenPreviousReport}
-                      />
-                    )}
                   </Box>
-                )}
-                {isViewingHistory && !isComparing && (
-                  <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1, py: 0.625, borderRadius: '7px', backgroundColor: colors.warningBg, border: '1px solid rgba(217,119,6,0.2)' }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                      <HistoryRounded sx={{ fontSize: 12, color: colors.warning }} />
-                      <Typography sx={{ fontSize: '0.625rem', color: colors.warning, fontWeight: 600 }} noWrap>{viewingSnap?.dateLabel ?? 'Historical view'}</Typography>
-                    </Box>
-                    <Box onClick={() => { setActiveSnapId(null); setPanoramaOverride(null); }} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.25, fontSize: '0.625rem', fontWeight: 600, color: colors.primary, cursor: 'pointer', ml: 1 }}>
-                      <CloseRounded sx={{ fontSize: 10 }} /> Latest
-                    </Box>
-                  </Box>
-                )}
-              </Box>
-            </Box>
-          );
-        })()}
-
-        {/* Tour meta */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0, px: 1.5, py: 1.125, borderRadius: '12px', backgroundColor: colors.card, border: `1px solid ${colors.borderLight}`, justifyContent: 'space-between' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.625, flexShrink: 0 }}>
-            <CameraAltRounded sx={{ fontSize: 14, color: colors.textSubdued }} />
-            <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: colors.textStrong }}>{tour.captures}</Typography>
-            <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>captures</Typography>
-          </Box>
-          <Box sx={{ flexShrink: 0, width: '1px', height: 14, backgroundColor: colors.borderLight, mx: 1.5 }} />
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.625, minWidth: 0 }}>
-            <EventRounded sx={{ fontSize: 14, color: colors.textSubdued, flexShrink: 0 }} />
-            <Typography noWrap sx={{ fontSize: '0.8125rem', color: colors.textMuted }}>{capture?.uploadedAt ?? tour.lastCapture}</Typography>
-          </Box>
-        </Box>
+                </Box>
+              );
+            })()}
       </Box>
 
       <ProgressAnalysisDrawer

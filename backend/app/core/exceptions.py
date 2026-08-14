@@ -188,12 +188,17 @@ async def validation_exception_handler(
         field = " → ".join(str(loc) for loc in error["loc"] if loc != "body")
         errors.append({"field": field, "message": error["msg"]})
 
+    logger.warning(
+        "Request validation failed on {} {}: {}",
+        request.method, request.url.path, errors,
+    )
+
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
             "success": False,
             "error": "VALIDATION_ERROR",
-            "message": "Request validation failed",
+            "message": errors[0]["message"] if errors else "Request validation failed",
             "detail": errors,
         },
     )

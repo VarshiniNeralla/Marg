@@ -43,19 +43,52 @@ class ProgressAnalysisRequest(BaseModel):
 
 
 class OverallProgress(BaseModel):
+    """Visible progress change between BEFORE and AFTER (not room/flat completion)."""
+
     percentage: int = 0
     description: str = ""
 
 
+class ComparisonMeta(BaseModel):
+    same_location: bool = Field(default=True, alias="sameLocation")
+    view_consistency: Literal["good", "fair", "poor"] = Field(
+        default="fair", alias="viewConsistency"
+    )
+    visibility: Literal["good", "fair", "poor"] = "fair"
+    comparison_confidence: int = Field(default=0, alias="comparisonConfidence")
+
+    model_config = {"populate_by_name": True}
+
+
 class ChangeDetected(BaseModel):
+    """Legacy flat change row — kept for older saved reports / UI fallbacks."""
+
     category: str = ""
     change: str = ""
     importance: Literal["High", "Medium", "Low"] = "Medium"
 
 
+class StructuredChange(BaseModel):
+    category: str = ""
+    area: str = ""
+    change_type: str = Field(default="", alias="changeType")
+    before_state: str = Field(default="", alias="beforeState")
+    after_state: str = Field(default="", alias="afterState")
+    impact: Literal["High", "Medium", "Low"] = "Medium"
+    confidence: int = 0
+
+    model_config = {"populate_by_name": True}
+
+
 class ProgressAnalysisReport(BaseModel):
     summary: str = ""
+    comparison: Optional[ComparisonMeta] = None
+    # Preferred field for visible between-visit progress.
+    progress: Optional[OverallProgress] = None
+    # Legacy alias — always populated by normalizer for backward compatibility.
     overall_progress: OverallProgress = Field(default_factory=OverallProgress, alias="overallProgress")
+    changes: list[StructuredChange] = Field(default_factory=list)
+    # Legacy list derived from `changes` (or older model output).
     changes_detected: list[ChangeDetected] = Field(default_factory=list, alias="changesDetected")
     completed_work: list[str] = Field(default_factory=list, alias="completedWork")
     newly_added: list[str] = Field(default_factory=list, alias="newlyAdded")
@@ -115,6 +148,7 @@ class ProgressReportSummary(BaseModel):
     pin_x: Optional[float] = Field(default=None, alias="pinX")
     pin_y: Optional[float] = Field(default=None, alias="pinY")
     saved: bool = False
+    prompt_version: Optional[str] = Field(default=None, alias="promptVersion")
 
     model_config = {"populate_by_name": True}
 

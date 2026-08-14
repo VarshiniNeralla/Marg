@@ -1,5 +1,8 @@
 import apiClient from './apiClient';
+import { useAuthStore } from '@store/authStore';
+import { API_V1_URL } from '@/config/env';
 import type { ApiResponse } from '@/types/dto';
+import { compressImageForUpload } from '@/utils/compressImage';
 
 export interface ImageUploadResponse {
   url: string;
@@ -8,25 +11,69 @@ export interface ImageUploadResponse {
   height?: number;
 }
 
+/**
+ * Upload a single image (project cover / avatar).
+ *
+ * Uses fetch — not axios — because apiClient defaults to Content-Type:
+ * application/json. Axios often keeps that (or a bare multipart/form-data
+ * without a boundary) on FormData posts, and FastAPI then returns 422
+ * "file field required". fetch leaves Content-Type unset so the browser
+ * adds the correct multipart boundary.
+ *
+ * Large photos are compressed client-side first (server limit is 5 MB).
+ */
 export async function uploadImage(
   file: File,
   folder = 'thumbnails',
-  onProgress?: (percent: number) => void,
+  _onProgress?: (percent: number) => void,
 ): Promise<ImageUploadResponse> {
+  const compressed = await compressImageForUpload(file);
   const form = new FormData();
-  form.append('file', file);
-  const { data } = await apiClient.post<ApiResponse<ImageUploadResponse>>(
-    `/uploads/image?folder=${encodeURIComponent(folder)}`,
-    form,
+  form.append('file', compressed, compressed.name || 'thumbnail.jpg');
+
+  const token = useAuthStore.getState().accessToken;
+  const headers: Record<string, string> = {
+    'ngrok-skip-browser-warning': 'true',
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(
+    `${API_V1_URL}/uploads/image?folder=${encodeURIComponent(folder)}`,
     {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      onUploadProgress: event => {
-        if (!event.total || !onProgress) return;
-        onProgress(Math.round((event.loaded / event.total) * 100));
-      },
+      method: 'POST',
+      headers,
+      body: form,
+      credentials: 'include',
     },
   );
-  return data.data!;
+
+  let body: ApiResponse<ImageUploadResponse> & {
+    detail?: unknown;
+    error?: string;
+    message?: string;
+  } = {};
+  try {
+    body = await res.json();
+  } catch {
+    /* non-JSON error body */
+  }
+
+  if (!res.ok) {
+    const detail = body.detail;
+    let message = body.message || `Upload failed (${res.status})`;
+    if (typeof detail === 'string') {
+      message = detail;
+    } else if (Array.isArray(detail) && detail.length) {
+      const first = detail[0] as { message?: string; msg?: string };
+      message = first.message || first.msg || message;
+    }
+    throw { status: res.status, message, detail };
+  }
+
+  if (!body.data?.url) {
+    throw { status: res.status, message: 'Upload succeeded but no image URL was returned.' };
+  }
+  return body.data;
 }
 
 export interface UploadedFileResponse {
@@ -152,7 +199,8 @@ async function uploadMediaFiles(
 
   const { data } = await apiClient.post<ApiResponse<UploadCaptureFilesResponse>>(endpoint, form, {
     params,
-    headers: { 'Content-Type': 'multipart/form-data' },
+    // Let the browser set multipart boundary; clearing apiClient's JSON default.
+    headers: { 'Content-Type': undefined as unknown as string },
     signal,
     onUploadProgress: event => {
       if (!event.total || !onProgress) return;

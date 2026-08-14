@@ -66,7 +66,8 @@ _PERMISSIONS: dict[str, dict[Module, set[Action]]] = {
         "rooms":         {"view"},
         "captures":      {"view", "approve", "reject"},
         "tours":         {"view", "publish"},
-        "floorPlans":    {"view"},
+        # Managers annotate, import, replace, and delete floor plans (same as admin for this module).
+        "floorPlans":    {"view", "create", "edit", "delete", "upload"},
         "defects":       {"view", "create", "edit"},
         "analytics":     {"view"},
         "notifications": {"view", "create", "edit", "delete"},

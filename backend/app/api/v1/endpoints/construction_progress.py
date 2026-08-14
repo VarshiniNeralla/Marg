@@ -53,12 +53,18 @@ async def list_floors(ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAd
 
 @router.get("/floors/{floor_id}", summary="Get latest progress snapshot for a floor")
 async def get_floor_detail(floor_id: str, ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
+    """Return the latest snapshot, or null when the floor has never been analyzed.
+
+    Historically this raised 404 for "not analyzed yet", which the UI treated as
+    a normal empty state but browsers still logged as Failed to load resource —
+    noisy during analyze polling and easy to confuse with a real missing floor.
+    """
     service = ConstructionProgressService(db)
     snapshot = await service.get_latest_snapshot(ctx.org_id, floor_id)
     if not snapshot:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="This floor has not been analyzed yet. Run analyze to generate its first report.",
+        return success_response(
+            data=None,
+            message="This floor has not been analyzed yet. Run analyze to generate its first report.",
         )
     return success_response(data=snapshot)
 

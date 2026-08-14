@@ -1,9 +1,9 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Box, Typography, InputBase, Menu, MenuItem, Pagination, useMediaQuery, useTheme } from '@mui/material';
+import { Box, Typography, Menu, MenuItem, Pagination, useMediaQuery, useTheme } from '@mui/material';
 import {
   ViewInArRounded, PlayArrowRounded, CameraAltRounded,
-  KeyboardArrowDownRounded, CheckRounded, SearchRounded, ArrowBackRounded, DeleteRounded,
+  KeyboardArrowDownRounded, CheckRounded, ArrowBackRounded, DeleteRounded,
   BusinessRounded, LayersRounded, SortRounded, ArrowDownwardRounded, ArrowUpwardRounded,
   StarRounded, StarBorderRounded,
 } from '@mui/icons-material';
@@ -16,6 +16,7 @@ import { useAuthStore , getRoleLandingPath } from '@store/authStore';
 import { useFavoriteToursStore, EMPTY_FAVORITES } from '@store/favoriteToursStore';
 import { buildFloorOptions, floorSelectionLabel, locationFilterMenuPaperSx, locationFilterToolbarSx, type FloorOption } from '@/utils/locationFilters';
 import { resolveTourThumbnailUrl } from '@/utils/captureMedia';
+import { formatTowerLabel } from '@/utils/pinLabels';
 
 const STATUS_DOT: Record<string, string> = {
   published:  colors.success,
@@ -71,11 +72,12 @@ function TourCard({
   const dot = STATUS_DOT[tour.status] ?? P.subtle;
   const projectShort = tour.projectName.replace(/^My Home\s+/i, '');
   const title = compact ? tour.floorLabel : tour.roomName;
+  const towerLabel = formatTowerLabel(tour.towerName);
   const locationLabel = compact && showProjectName
-    ? `${projectShort} · ${tour.towerName}`
+    ? `${projectShort} · ${towerLabel}`
     : showProjectName
-      ? `${tour.projectName} · ${tour.towerName} · ${tour.floorLabel}`
-      : `${tour.towerName} · ${tour.floorLabel}`;
+      ? `${tour.projectName} · ${towerLabel} · ${tour.floorLabel}`
+      : `${towerLabel} · ${tour.floorLabel}`;
 
   return (
     <Box
@@ -196,7 +198,6 @@ export default function ToursPage() {
   const [towerId, setTowerId]     = useState<string>(() => sessionStorage.getItem(`tours_towerId_${role}`) || '');
   const [floorId, setFloorId]     = useState<string>(() => sessionStorage.getItem(`tours_floorId_${role}`) || '');
   
-  const [query, setQuery]             = useState('');
   const [sortOrder, setSortOrder]     = useState<'latest' | 'oldest'>('latest');
   const [viewMode, setViewMode]       = useState<'all' | 'favorites'>('all');
   const [menuAnchor, setMenuAnchor]   = useState<null | HTMLElement>(null);
@@ -253,16 +254,9 @@ export default function ToursPage() {
 
   const filtered = useMemo(() => {
     const list = allTours.filter(t => {
-      const q = query.trim().toLowerCase();
-      const matchQuery = !q
-        || t.roomName.toLowerCase().includes(q)
-        || t.projectName.toLowerCase().includes(q)
-        || t.towerName.toLowerCase().includes(q)
-        || t.floorLabel.toLowerCase().includes(q);
-
       // Favorites is a cross-project shelf — ignore leftover session location filters.
       if (viewMode === 'favorites') {
-        return favoriteIds.has(t.id) && matchQuery;
+        return favoriteIds.has(t.id);
       }
 
       const matchProject = !projectId || projectId === 'all' || t.projectId === projectId;
@@ -270,11 +264,11 @@ export default function ToursPage() {
       const floorLabel   = floorSelectionLabel(floorId, availableFloors);
       const matchFloor   = !floorId || floorId === 'all' || (floorLabel !== null && t.floorLabel === floorLabel);
 
-      return matchProject && matchTower && matchFloor && matchQuery;
+      return matchProject && matchTower && matchFloor;
     });
     const dir = sortOrder === 'oldest' ? 1 : -1;
     return [...list].sort((a, b) => dir * String(a.lastCapture ?? '').localeCompare(String(b.lastCapture ?? '')));
-  }, [allTours, projectId, towerId, floorId, availableFloors, query, sortOrder, viewMode, favoriteIds]);
+  }, [allTours, projectId, towerId, floorId, availableFloors, sortOrder, viewMode, favoriteIds]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / toursPerPage));
   const paginatedTours = useMemo(
@@ -284,7 +278,7 @@ export default function ToursPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [projectId, towerId, floorId, query, sortOrder, viewMode]);
+  }, [projectId, towerId, floorId, sortOrder, viewMode]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -488,18 +482,6 @@ export default function ToursPage() {
                 ? <ArrowDownwardRounded sx={{ fontSize: 14, color: P.muted }} />
                 : <ArrowUpwardRounded sx={{ fontSize: 14, color: P.muted }} />}
             </Box>
-
-            {/* Search */}
-            <Box sx={{
-              display: 'flex', alignItems: 'center', gap: 0.75,
-              flex: { xs: 1, md: 'initial' }, width: { xs: 'auto', md: 220 }, minWidth: 0,
-              px: 1.25, py: 0.75, borderRadius: '10px', backgroundColor: P.white,
-              border: `1.5px solid ${P.border}`, transition: T,
-              '&:focus-within': { borderColor: P.blue },
-            }}>
-              <SearchRounded sx={{ fontSize: 16, color: P.subtle, flexShrink: 0 }} />
-              <InputBase placeholder="Search tours…" value={query} onChange={e => setQuery(e.target.value)} sx={{ flex: 1, fontSize: '0.8125rem', '& input::placeholder': { color: P.subtle, opacity: 1 } }} />
-            </Box>
           </Box>
         )}
       </Box>
@@ -668,7 +650,7 @@ export default function ToursPage() {
             <>
               <ViewInArRounded sx={{ fontSize: 44, color: P.subtle, mb: 1.5 }} />
               <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>No tours found</Typography>
-              <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Try a different search or filter.</Typography>
+              <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Try a different filter.</Typography>
             </>
           )}
         </Box>

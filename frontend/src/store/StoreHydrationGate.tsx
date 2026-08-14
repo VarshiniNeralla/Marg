@@ -30,6 +30,11 @@ function waitForHydration(store: PersistStore): Promise<void> {
       unsub();
       resolve();
     });
+    // Rehydration can finish between the check above and subscribe — resolve now.
+    if (store.persist.hasHydrated()) {
+      unsub();
+      resolve();
+    }
   });
 }
 

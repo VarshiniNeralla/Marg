@@ -23,7 +23,9 @@ router = APIRouter(prefix="/progress-analysis", tags=["Progress Analysis"])
 def _to_report(data: dict | None) -> ProgressAnalysisReport | None:
     if not data:
         return None
-    return ProgressAnalysisReport.model_validate(data)
+    from app.services.ai_progress_service import _normalize_analysis
+
+    return ProgressAnalysisReport.model_validate(_normalize_analysis(data))
 
 
 @router.get(

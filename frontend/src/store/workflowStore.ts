@@ -13,8 +13,16 @@ import { createSafeStorage } from './safeStorage';
 import { addTombstones, tombstoneMap, tombstoneSet, clearTombstones } from './tombstones';
 import { useAuthStore } from './authStore';
 import { pendingUploadPins, removePendingUploadPin } from './pendingUploadRegistry';
-import { enqueueWrite, isCreatePending, cancelWritesForEntityIds, SYNC_ERROR_EVENT as WRITE_QUEUE_SYNC_ERROR_EVENT, type WriteOpName } from './writeQueue';
+import { enqueueWrite, isCreatePending, cancelWritesForEntityIds, cancelPendingDeletesForEntityIds, SYNC_ERROR_EVENT as WRITE_QUEUE_SYNC_ERROR_EVENT, type WriteOpName } from './writeQueue';
 import { isLiveUploadedTour } from './tourFilters';
+import { formatPinLocationLabel } from '@/utils/pinLabels';
+
+/** Real signed-in name for capture / floor-plan attribution (never the placeholder "You"). */
+function currentUploaderName(): string {
+  const actor = useAuthStore.getState().user;
+  const name = actor?.name?.trim() || actor?.email?.trim();
+  return name || 'Unknown user';
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction Workflow Store
@@ -167,6 +175,13 @@ export interface WfCapturePin {
   createdBy: string;
   createdAt: string;
   captureIds: string[];      // capture timeline, newest last
+  /** Semantic location for progress (predefined / copied / nearest freeplace). */
+  flatName?: string;
+  roomName?: string;
+  label?: string;
+  source?: 'predefined' | 'copied' | 'freeplace';
+  isPredefined?: boolean;
+  inheritedFromPinId?: string;
 }
 
 export type WorkflowDataState = Pick<WorkflowState,
@@ -318,9 +333,32 @@ interface WorkflowState {
 
   // ── Floor Plans ──
   uploadFloorPlan: (payload: Omit<MockFloorPlan, 'id' | 'uploadedAt' | 'uploadedBy'> & { uploadedBy?: string; mediaAssets?: UploadedFileResponse[] }) => string;
+  /** Remove a floor-plan drawing and its capture pins (admin/manager). */
+  deleteFloorPlan: (id: string) => void;
 
   // ── Capture Pins ──
-  createCapturePin: (args: { floorPlanId: string; floorId: string; towerId: string; projectId: string; x: number; y: number; createdBy?: string }) => string;
+  createCapturePin: (args: {
+    floorPlanId: string;
+    floorId: string;
+    towerId: string;
+    projectId: string;
+    x: number;
+    y: number;
+    createdBy?: string;
+    flatName?: string;
+    roomName?: string;
+    label?: string;
+    isPredefined?: boolean;
+    source?: WfCapturePin['source'];
+  }) => string;
+  updateCapturePinLocal: (id: string, patch: Partial<WfCapturePin>) => void;
+  copyPinsFromFloor: (args: {
+    targetFloorId: string;
+    sourceFloorId: string;
+    targetFloorPlanId?: string;
+    sourceFloorPlanId?: string;
+  }) => Promise<number>;
+  setFloorPlanPinsVisible: (floorPlanId: string, visible: boolean) => void;
   attachCaptureToPin: (pinId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => string;
   /**
    * Drop a capture that was attached when upload was accepted (202) but whose
@@ -329,7 +367,9 @@ interface WorkflowState {
    */
   discardStitchFailedCapture: (pinId: string, stitchJobId: string) => void;
   deleteCapturePin: (id: string) => void;
-  publishFloorPlanTour: (floorPlanId: string, pinIds?: string[]) => string[];
+  /** Drop empty free-place pins on a floor (accidental plan taps), keep labeled layout. */
+  pruneEmptyFreeplacePinsOnFloor: (floorId: string) => number;
+  publishFloorPlanTour: (floorPlanId: string, pinIds?: string[], opts?: { silent?: boolean }) => string[];
 
   // ── Captures ──
   uploadCapture: (roomId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => string;
@@ -566,7 +606,7 @@ function pushAudit(
   const auditLog = {
       id,
       actorId: actor?.id ?? 'unknown',
-      actorName: actor?.name || actor?.email || 'Unknown user',
+      actorName: currentUploaderName(),
       eventType, entityType,
       entityId, entityName, projectId, description,
       createdAt: new Date().toISOString(),
@@ -725,7 +765,7 @@ export const useWorkflowStore = create<WorkflowState>()(
               );
             })()
           : [];
-        const basePins = (
+        const basePinsRaw = (
           replace
             ? [...(apiPins ?? []), ...keepLocalPins]
             : mergeById(apiPins, localPins, 'createCapturePin')
@@ -735,6 +775,15 @@ export const useWorkflowStore = create<WorkflowState>()(
           // case apiPins is undefined (failed request) and falls back to raw
           // localPins.
           .filter(p => !hiddenByTombstone(p.id, p, tombstonedAt));
+        // Union captureIds with local — API pin replace must not wipe older visits
+        // when a stale short captureIds list wins the merge (Compare/timeline bug).
+        const localPinById = new Map(localPins.map(p => [p.id, p]));
+        const basePins = basePinsRaw.map(p => {
+          const local = localPinById.get(p.id);
+          if (!local?.captureIds?.length) return p;
+          const captureIds = [...new Set([...(p.captureIds ?? []), ...local.captureIds])];
+          return captureIds.length === (p.captureIds?.length ?? 0) ? p : { ...p, captureIds };
+        });
         // Deduplicate captureIds within each pin.
         const deduped = basePins.map(p => ({
           ...p,
@@ -1317,9 +1366,34 @@ export const useWorkflowStore = create<WorkflowState>()(
     // non-empty id as "attached" and the file queue deletes local bytes.
     // Returning '' forces a retry (status 0) until hydrate restores the room.
     if (!room) return '';
-    const project = get().projects.find(p => p.id === room.projectId);
-    const tower = get().towers.find(t => t.id === room.towerId);
-    const floor = get().floors.find(f => f.id === room.floorId);
+    // Predefined-pin rooms historically lacked projectId/towerId. Prefer the
+    // owning capture pin's hierarchy so Capture History never shows "· · Floor".
+    const ownerPin = get().capturePins.find(p => p.roomId === roomId);
+    const projectId = room.projectId || ownerPin?.projectId || '';
+    const towerId = room.towerId || ownerPin?.towerId || '';
+    const floorId = room.floorId || ownerPin?.floorId || '';
+    const project = get().projects.find(p => p.id === projectId);
+    const tower = get().towers.find(t => t.id === towerId);
+    const floor = get().floors.find(f => f.id === floorId);
+    if ((projectId && projectId !== room.projectId)
+      || (towerId && towerId !== room.towerId)
+      || (floorId && floorId !== room.floorId)) {
+      set(s => ({
+        rooms: s.rooms.map(r => r.id === roomId
+          ? {
+              ...r,
+              projectId: projectId || r.projectId,
+              towerId: towerId || r.towerId,
+              floorId: floorId || r.floorId,
+            }
+          : r),
+      }));
+      mirrorApi('updateRoom', [roomId, {
+        ...(projectId ? { projectId } : {}),
+        ...(towerId ? { towerId } : {}),
+        ...(floorId ? { floorId } : {}),
+      }]);
+    }
     const flat = get().flats.find(f => f.id === room.flatId);
     const firstAsset = mediaAssets[0];
     const now = new Date();
@@ -1331,11 +1405,11 @@ export const useWorkflowStore = create<WorkflowState>()(
       id, roomId, roomName: room.name,
       flatId: room.flatId, flatNumber: flat?.number ?? 'Flat A', flatType: flat?.type ?? '1 BHK',
       flat_id: room.flatId, flat_number: flat?.number ?? 'Flat A', flat_type: flat?.type ?? '1 BHK',
-      projectId: room.projectId, projectName: project?.name ?? '',
-      towerId: room.towerId, towerName: tower?.name ?? '',
+      projectId, projectName: project?.name ?? '',
+      towerId, towerName: tower?.name ?? '',
       floorLabel: floor?.label ?? '',
       status: 'review', reviewStatus: 'uploaded',
-      uploadedBy: 'You', uploadedAt: uploadedAtLabel, capturedAt, captured_at: capturedAt,
+      uploadedBy: currentUploaderName(), uploadedAt: uploadedAtLabel, capturedAt, captured_at: capturedAt,
       reviewedBy: null, reviewNotes: null, assignedTo: null,
       fileCount,
       sizeMb: mediaAssets.length ? +(mediaAssets.reduce((sum, asset) => sum + (asset.size || 0), 0) / 1024 / 1024).toFixed(1) : fileCount * 4,
@@ -1362,12 +1436,12 @@ export const useWorkflowStore = create<WorkflowState>()(
       // Deduplicate by id so a double-call (camera double-fire, double-tap race) never
       // produces two store entries with the same key, which would cause React key warnings.
       captures: [capture, ...s.captures.filter(c => c.id !== id)],
-      towers: s.towers.map(t => t.id === room.towerId ? { ...t, captures: t.captures + 1 } : t),
+      towers: s.towers.map(t => t.id === towerId ? { ...t, captures: t.captures + 1 } : t),
       projects: project ? s.projects.map(p => p.id === project.id ? { ...p, captures: p.captures + 1, lastUpdated: 'Just now' } : p) : s.projects,
     }));
     mirrorApi('createCapture', [capture]);
     pushNotif(set, 'capture_uploaded', 'New capture uploaded', `Uploaded ${fileCount} files for ${flat?.number ?? 'Flat A'} · ${room.name}`, `/captures/${id}`);
-    pushAudit(set, 'capture_uploaded', 'capture', id, capture.roomName, room.projectId, `Uploaded ${fileCount} images for ${flat?.number ?? 'Flat A'} · ${capture.roomName}`);
+    pushAudit(set, 'capture_uploaded', 'capture', id, capture.roomName, projectId, `Uploaded ${fileCount} images for ${flat?.number ?? 'Flat A'} · ${capture.roomName}`);
     return id;
   },
   finalizeCaptureMedia(captureId, fileCount, mediaAssets = []) {
@@ -1412,9 +1486,27 @@ export const useWorkflowStore = create<WorkflowState>()(
     const emptiedPinIds = affectedPins
       .filter(p => p.captureIds.filter(cid => cid !== id).length === 0)
       .map(p => p.id);
+    // Floor plans whose walkthrough may need rebuilding (pin timeline or tour.captureId).
+    const floorPlansToRefresh = new Set<string>(
+      affectedPins.map(p => p.floorPlanId).filter(Boolean),
+    );
+    for (const t of get().tours) {
+      const rec = t as MockTour & { floorPlanId?: string; steps?: TourStep[] };
+      if (!rec.floorPlanId) continue;
+      if (t.captureId === id || (rec.steps ?? []).some(s => s.captureId === id)) {
+        floorPlansToRefresh.add(rec.floorPlanId);
+      }
+    }
     set(s => ({
       captures: s.captures.filter(c => c.id !== id),
-      tours: s.tours.filter(t => t.captureId !== id),
+      // Keep floor-plan walkthroughs even when tour.captureId matched the deleted
+      // visit — that field is only the first step's capture, not the tour itself.
+      // Legacy single-capture tours (no floorPlanId) are still dropped.
+      tours: s.tours.filter(t => {
+        const fpId = (t as MockTour & { floorPlanId?: string }).floorPlanId;
+        if (fpId) return true;
+        return t.captureId !== id;
+      }),
       capturePins: s.capturePins.map(p =>
         p.captureIds.includes(id) ? { ...p, captureIds: p.captureIds.filter(cid => cid !== id) } : p
       ),
@@ -1440,6 +1532,22 @@ export const useWorkflowStore = create<WorkflowState>()(
     }
     // Remove any now-empty pins from the floor plan and resequence the rest to 1..N.
     emptiedPinIds.forEach(pinId => get().deleteCapturePin(pinId));
+
+    // Rebuild (or remove) walkthroughs so captureId/steps stay valid after refresh.
+    floorPlansToRefresh.forEach(fpId => {
+      const existing = get().tours.find(
+        t => (t as MockTour & { floorPlanId?: string }).floorPlanId === fpId,
+      );
+      if (!existing) return;
+      const stillHasCaptures = get().capturePins.some(
+        p => p.floorPlanId === fpId && p.captureIds.length > 0,
+      );
+      if (!stillHasCaptures) {
+        get().deleteTour(existing.id);
+      } else {
+        get().publishFloorPlanTour(fpId, undefined, { silent: true });
+      }
+    });
   },
   replaceCapture(id, fileCount) {
     const patch = { fileCount, sizeMb: fileCount * 4, status: 'review' as const, reviewStatus: 'uploaded' as const, uploadedAt: 'Just now', reviewNotes: null, processingStatus: 'uploaded', processing_status: 'uploaded' };
@@ -1549,11 +1657,17 @@ export const useWorkflowStore = create<WorkflowState>()(
     const id = get().nextId('fp');
     const mediaAssets = payload.mediaAssets ?? [];
     const firstAsset = mediaAssets[0];
+    // Capture superseded plans before creating the new one.
+    const supersededPlanIds = get().floorPlans
+      .filter(fp => fp.towerId === payload.towerId && fp.floorId === payload.floorId)
+      .map(fp => fp.id);
+    const superseded = new Set(supersededPlanIds);
+    const isReplace = supersededPlanIds.length > 0;
     const plan = {
       ...payload,
       id,
       uploadedAt: 'Just now',
-      uploadedBy: payload.uploadedBy ?? 'You',
+      uploadedBy: payload.uploadedBy?.trim() || currentUploaderName(),
       mediaAssets,
       media_assets: mediaAssets,
       file_url: firstAsset?.original_url,
@@ -1568,23 +1682,37 @@ export const useWorkflowStore = create<WorkflowState>()(
       dimensions: firstAsset?.width && firstAsset?.height ? { width: firstAsset.width, height: firstAsset.height } : null,
       raw_pdf_url: firstAsset?.raw_pdf_url ?? null,
       rawPdfUrl: firstAsset?.raw_pdf_url ?? null,
+      pinsVisible: true,
+      pinLayoutStatus: 'draft' as const,
+      needsReannotate: isReplace,
     } as MockFloorPlan & Record<string, unknown>;
     // Re-uploading a plan for a floor used to leave the OLD floor-plan record on
     // the backend (only local state dropped it), so a freshly-hydrated device saw
     // duplicate plans — and pins/tours stayed attached to the now-orphaned old id.
     // Capture those superseded ids so we can re-point pins onto the new plan and
     // delete the stale records, keeping exactly one canonical plan per floor.
-    const supersededPlanIds = get().floorPlans
-      .filter(fp => fp.towerId === payload.towerId && fp.floorId === payload.floorId)
-      .map(fp => fp.id);
-    const superseded = new Set(supersededPlanIds);
 
     set(s => ({
       floorPlans: [...s.floorPlans.filter(fp => !(fp.towerId === payload.towerId && fp.floorId === payload.floorId)), plan],
       floors: s.floors.map(f => f.id === payload.floorId ? { ...f, floorPlanId: id } : f),
-      // Move existing pins (and any published walkthrough) onto the new plan so
-      // numbering, "view on floor plan" and re-publishing all stay consistent.
-      capturePins: s.capturePins.map(p => superseded.has(p.floorPlanId) ? { ...p, floorPlanId: id } : p),
+      // Move existing pins onto the new plan; strip labels when replacing the drawing
+      // so admin must re-annotate (coords may no longer match rooms).
+      capturePins: s.capturePins.map(p => {
+        if (!superseded.has(p.floorPlanId)) return p;
+        if (isReplace && p.captureIds.length === 0) {
+          return {
+            ...p,
+            floorPlanId: id,
+            flatName: undefined,
+            roomName: undefined,
+            label: undefined,
+            isPredefined: false,
+            source: 'freeplace' as const,
+            inheritedFromPinId: undefined,
+          };
+        }
+        return { ...p, floorPlanId: id };
+      }),
       tours: s.tours.map(t => {
         const fpId = (t as MockTour & { floorPlanId?: string }).floorPlanId;
         return fpId && superseded.has(fpId) ? ({ ...t, floorPlanId: id } as MockTour) : t;
@@ -1605,8 +1733,44 @@ export const useWorkflowStore = create<WorkflowState>()(
     return id;
   },
 
+  deleteFloorPlan(id) {
+    const plan = get().floorPlans.find(fp => fp.id === id);
+    if (!plan) return;
+
+    const pinsOnPlan = get().capturePins.filter(p => p.floorPlanId === id);
+    // Remove pins first so resequence/API mirrors stay consistent.
+    pinsOnPlan.forEach(p => get().deleteCapturePin(p.id));
+
+    addTombstones(id);
+    set(s => ({
+      floorPlans: s.floorPlans.filter(fp => fp.id !== id),
+      floors: s.floors.map(f =>
+        f.id === plan.floorId || f.floorPlanId === id
+          ? { ...f, floorPlanId: undefined }
+          : f
+      ),
+    }));
+    mirrorApi('deleteFloorPlan', [id]);
+    pushAudit(
+      set,
+      'floor_plan_deleted',
+      'floor_plan',
+      id,
+      plan.floorLabel,
+      plan.projectId,
+      `Deleted floor plan for ${plan.floorLabel}`,
+    );
+    pushNotif(
+      set,
+      'floor_plan_deleted',
+      'Floor plan deleted',
+      `${plan.floorLabel} plan removed`,
+      `/floor-plans?project=${plan.projectId}&tower=${plan.towerId}`,
+    );
+  },
+
   // ── Capture Pins ────────────────────────────────────────────────────────────
-  createCapturePin({ floorPlanId, floorId, towerId, projectId, x, y, createdBy }) {
+  createCapturePin({ floorPlanId, floorId, towerId, projectId, x, y, createdBy, flatName, roomName, label, isPredefined, source }) {
     const id = get().nextId('pin');
     // Sequence number is scoped to the floor plan and always the next available.
     const existingOnPlan = get().capturePins.filter(p => p.floorPlanId === floorPlanId);
@@ -1614,10 +1778,31 @@ export const useWorkflowStore = create<WorkflowState>()(
       ? Math.max(...existingOnPlan.map(p => p.sequenceNumber)) + 1
       : 1;
 
-    // Each pin owns a backing room so the existing capture → review → tour
-    // pipeline works unchanged. The room is an implementation detail — its name
-    // ("Pin N") is never surfaced as a separate concept to the engineer.
-    const roomId = get().createRoom(defaultFlatId(floorId), `Pin ${sequenceNumber}`, 'custom');
+    // Inherit nearest labeled predefined point for free-place pins.
+    let resolvedFlat = flatName?.trim() || '';
+    let resolvedRoom = roomName?.trim() || '';
+    let inheritedFromPinId: string | undefined;
+    let resolvedSource: WfCapturePin['source'] = source;
+    if (!resolvedFlat || !resolvedRoom) {
+      const labeled = existingOnPlan.filter(p => p.flatName && p.roomName);
+      let best: WfCapturePin | null = null;
+      let bestD = Infinity;
+      for (const p of labeled) {
+        const d = Math.hypot(p.x - x, p.y - y);
+        if (d < bestD) { bestD = d; best = p; }
+      }
+      if (best) {
+        resolvedFlat = best.flatName!;
+        resolvedRoom = best.roomName!;
+        inheritedFromPinId = best.id;
+        resolvedSource = 'freeplace';
+      }
+    } else if (isPredefined) {
+      resolvedSource = source ?? 'predefined';
+    }
+
+    const displayName = resolvedRoom || `Pin ${sequenceNumber}`;
+    const roomId = get().createRoom(defaultFlatId(floorId), displayName, 'custom');
 
     const pin: WfCapturePin = {
       id, floorPlanId, floorId, towerId, projectId, roomId,
@@ -1625,11 +1810,146 @@ export const useWorkflowStore = create<WorkflowState>()(
       createdBy: createdBy ?? 'You',
       createdAt: 'Just now',
       captureIds: [],
+      flatName: resolvedFlat || undefined,
+      roomName: resolvedRoom || undefined,
+      label: label || resolvedRoom || undefined,
+      isPredefined: Boolean(isPredefined && resolvedFlat && resolvedRoom),
+      source: resolvedSource,
+      inheritedFromPinId,
     };
     set(s => ({ capturePins: [...s.capturePins, pin] }));
     mirrorApi('createCapturePin', [pin]);
-    pushAudit(set, 'floor_plan_uploaded', 'floor_plan', id, `Pin ${sequenceNumber}`, projectId, `Placed capture pin ${sequenceNumber}`);
+    // Mark floor plan ready when predefined labels exist.
+    if (pin.isPredefined) {
+      set(s => ({
+        floorPlans: s.floorPlans.map(fp =>
+          fp.id === floorPlanId
+            ? { ...fp, pinLayoutStatus: 'ready', needsReannotate: false }
+            : fp
+        ),
+      }));
+    }
+    pushAudit(set, 'floor_plan_uploaded', 'floor_plan', id, displayName, projectId, `Placed capture pin ${sequenceNumber}`);
     return id;
+  },
+
+  updateCapturePinLocal(id, patch) {
+    set(s => ({
+      capturePins: s.capturePins.map(p => (p.id === id ? { ...p, ...patch } : p)),
+    }));
+    mirrorApi('updateCapturePin', [id, patch]);
+  },
+
+  async copyPinsFromFloor({ targetFloorId, sourceFloorId, targetFloorPlanId, sourceFloorPlanId }) {
+    const { workflowApiService } = await import('@/services/workflowApiService');
+    // Server copy-from deletes empty target pins. Drop any pending client deletes
+    // for those pins so we don't spam DELETE → 404 after the import.
+    const pendingIds = get().capturePins
+      .filter(p =>
+        p.floorId === targetFloorId
+        && (p.captureIds?.length ?? 0) === 0
+        && (p.isPredefined || (p.flatName && p.roomName)),
+      )
+      .map(p => p.id);
+    if (pendingIds.length) cancelPendingDeletesForEntityIds(...pendingIds);
+
+    const result = await workflowApiService.copyPinsFromFloor(targetFloorId, sourceFloorId, {
+      targetFloorPlanId,
+      sourceFloorPlanId,
+    });
+    const pins = (result?.pins ?? []) as WfCapturePin[];
+    const copied = result?.copiedCount ?? pins.length;
+    if (!copied || !pins.length) {
+      throw new Error('No annotations were imported. The source floor may have no labeled points.');
+    }
+
+    // Always attach imported pins to the plan the viewer is showing when provided.
+    const mergePlanId = targetFloorPlanId || result.targetFloorPlanId
+      || get().floors.find(f => f.id === targetFloorId)?.floorPlanId
+      || '';
+
+    // Tombstone empty labeled pins we are about to replace so a laggy hydrate
+    // cannot resurrect them beside the newly imported copies.
+    const dropIds = get().capturePins
+      .filter(p => {
+        if ((p.captureIds?.length ?? 0) > 0) return false;
+        if (mergePlanId && p.floorPlanId === mergePlanId && (p.isPredefined || (p.flatName && p.roomName))) {
+          return true;
+        }
+        return p.floorId === targetFloorId && !!(p.isPredefined || (p.flatName && p.roomName));
+      })
+      .map(p => p.id);
+    if (dropIds.length) addTombstones(...dropIds);
+
+    set(s => {
+      const withoutEmptyPredef = s.capturePins.filter(p => {
+        // Drop empty labeled/predefined pins on the target plan/floor so import replaces them.
+        if ((p.captureIds?.length ?? 0) > 0) return true;
+        if (mergePlanId && p.floorPlanId === mergePlanId && (p.isPredefined || (p.flatName && p.roomName))) {
+          return false;
+        }
+        if (p.floorId === targetFloorId && (p.isPredefined || (p.flatName && p.roomName))) {
+          return false;
+        }
+        return true;
+      });
+      const targetFloor = s.floors.find(f => f.id === targetFloorId);
+      const targetTower = targetFloor ? s.towers.find(t => t.id === targetFloor.towerId) : undefined;
+      const mapped = pins.map((p, index) => ({
+        ...p,
+        id: p.id,
+        floorPlanId: mergePlanId || p.floorPlanId || result.targetFloorPlanId || '',
+        floorId: p.floorId || targetFloorId,
+        towerId: p.towerId || targetFloor?.towerId || '',
+        projectId: p.projectId || targetTower?.projectId || '',
+        captureIds: p.captureIds ?? [],
+        sequenceNumber: p.sequenceNumber ?? index + 1,
+        flatName: p.flatName,
+        roomName: p.roomName,
+        label: p.label || p.roomName,
+        isPredefined: true as const,
+        source: (p.source as WfCapturePin['source']) || 'copied',
+        createdBy: p.createdBy ?? 'You',
+        createdAt: typeof p.createdAt === 'string' ? p.createdAt : 'Just now',
+      }));
+      const byId = new Map<string, WfCapturePin>();
+      for (const p of withoutEmptyPredef) byId.set(p.id, p);
+      for (const p of mapped) {
+        const prev = byId.get(p.id);
+        if (prev && (prev.captureIds?.length ?? 0) > 0) {
+          // Keep the live timeline; refresh layout fields from the import payload.
+          byId.set(p.id, { ...p, captureIds: prev.captureIds });
+        } else {
+          byId.set(p.id, p);
+        }
+      }
+      return {
+        capturePins: [...byId.values()],
+        floorPlans: s.floorPlans.map(fp =>
+          (mergePlanId && fp.id === mergePlanId) || fp.floorId === targetFloorId
+            ? {
+                ...fp,
+                pinLayoutStatus: 'ready' as const,
+                needsReannotate: false,
+                pinsVisible: true,
+                copiedFromFloorPlanId: result.sourceFloorPlanId,
+              }
+            : fp
+        ),
+      };
+    });
+    return copied;
+  },
+
+  setFloorPlanPinsVisible(floorPlanId, visible) {
+    set(s => ({
+      floorPlans: s.floorPlans.map(fp =>
+        fp.id === floorPlanId ? { ...fp, pinsVisible: visible } : fp
+      ),
+    }));
+    // Go through the write queue (not fire-and-forget) so this runs AFTER any
+    // pending createFloorPlan for the same id — otherwise PATCH races and 422s.
+    mirrorApi('setPinsVisibility', [floorPlanId, visible]);
   },
   attachCaptureToPin(pinId, fileCount, mediaAssets = []) {
     const pin = get().capturePins.find(p => p.id === pinId);
@@ -1715,21 +2035,30 @@ export const useWorkflowStore = create<WorkflowState>()(
     mirrorApi('deleteCapture', [captureId]);
     mirrorApi('updateCapturePin', [pinId, { captureIds: remaining }]);
   },
-  publishFloorPlanTour(floorPlanId, pinIds) {
+  publishFloorPlanTour(floorPlanId, pinIds, opts) {
     // Build ONE sequential walkthrough tour for the whole floor: each pin's latest
     // capture becomes a step, ordered by pin sequence (1 → 2 → 3 …). The viewer
     // steps through these with prev/next arrows. Re-publishing replaces the
     // existing walkthrough for this floor plan rather than duplicating it.
-    // When `pinIds` is provided, only those pins are included (still in sequence order).
+    // When `pinIds` is provided, those pins win (even if floorPlanId drifted after
+    // a plan re-upload). Otherwise collect every pin on this plan or its floor.
     const selected = pinIds ? new Set(pinIds) : null;
-    const pins = get().capturePins
-      .filter(p => p.floorPlanId === floorPlanId)
-      .filter(p => !selected || selected.has(p.id))
-      .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+    const plan = get().floorPlans.find(fp => fp.id === floorPlanId);
+    const floorId = plan?.floorId ?? '';
+    const pins = (
+      selected
+        ? get().capturePins.filter(p => selected.has(p.id))
+        : get().capturePins.filter(p =>
+          p.floorPlanId === floorPlanId || (!!floorId && p.floorId === floorId),
+        )
+    ).sort((a, b) => a.sequenceNumber - b.sequenceNumber);
 
     const steps: TourStep[] = [];
     for (const pin of pins) {
-      const latestCaptureId = pin.captureIds[pin.captureIds.length - 1];
+      // Prefer the newest id that still has a live capture document.
+      const latestCaptureId = [...pin.captureIds]
+        .reverse()
+        .find(id => get().captures.some(c => c.id === id));
       if (!latestCaptureId) continue; // pin still waiting for a capture
       const cap = get().captures.find(c => c.id === latestCaptureId) as (MockCapture & Record<string, unknown>) | undefined;
       if (!cap) continue;
@@ -1739,14 +2068,16 @@ export const useWorkflowStore = create<WorkflowState>()(
         pinId: pin.id,
         captureId: latestCaptureId,
         sequenceNumber: pin.sequenceNumber,
-        label: `Pin ${pin.sequenceNumber}`,
+        label: formatPinLocationLabel(pin, `Stop ${pin.sequenceNumber}`),
         panoramaUrl,
         thumbnailUrl: (mediaAssets[0]?.thumbnail_url ?? (cap.thumbnailUrl as string | undefined)) ?? null,
       });
     }
     if (!steps.length) return [];
 
-    const allFloorPins = get().capturePins.filter(p => p.floorPlanId === floorPlanId);
+    const allFloorPins = get().capturePins.filter(
+      p => p.floorPlanId === floorPlanId || (!!floorId && p.floorId === floorId),
+    );
     const metaPin = pins[0] ?? allFloorPins[0];
     if (!metaPin) return [];
 
@@ -1786,8 +2117,10 @@ export const useWorkflowStore = create<WorkflowState>()(
     set(s => ({ tours: [tour, ...s.tours.filter(t => t.id !== id)] }));
     if (existing) mirrorApi('updateTour', [id, tour]);
     else mirrorApi('createTour', [tour]);
-    pushNotif(set, 'tour_published', 'Walkthrough published', `${tour.roomName} · ${steps.length} stops is live`, `/tours/${id}`);
-    pushAudit(set, 'tour_published', 'tour', id, tour.roomName, tour.projectId, `Published walkthrough (${steps.length} pins) for ${tour.floorLabel}`);
+    if (!opts?.silent) {
+      pushNotif(set, 'tour_published', 'Walkthrough published', `${tour.roomName} · ${steps.length} stops is live`, `/tours/${id}`);
+      pushAudit(set, 'tour_published', 'tour', id, tour.roomName, tour.projectId, `Published walkthrough (${steps.length} pins) for ${tour.floorLabel}`);
+    }
     return [id];
   },
   deleteCapturePin(id) {
@@ -1796,15 +2129,16 @@ export const useWorkflowStore = create<WorkflowState>()(
     // Tombstone FIRST so any concurrent file-queue flush refuses to POST for
     // this pin (isTombstoned check). Then cancel leftover create/update writes
     // and drop the pending-upload registry entry synchronously.
-    addTombstones(id);
+    addTombstones(id, ...pin.captureIds);
     cancelWritesForEntityIds(id, pin.roomId);
     removePendingUploadPin(id);
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('workflow:capture-pin-deleted', { detail: { pinId: id } }));
     }
-    // Remove the pin, its backing room (cascades captures via deleteRoom), then
-    // resequence the remaining pins on the same floor plan so numbering stays 1..N.
-    get().deleteRoom(pin.roomId);
+
+    // Server DELETE /pins/{id} already cascades the backing room + resequences
+    // the plan. Do NOT mirror updateRoom / updateCapturePin for every sibling
+    // — that flooded the API with hundreds of PUTs (and wiped Flat · Room names).
     set(s => {
       const remaining = s.capturePins
         .filter(p => p.id !== id)
@@ -1815,42 +2149,70 @@ export const useWorkflowStore = create<WorkflowState>()(
         seq += 1;
         return p.sequenceNumber === seq ? p : { ...p, sequenceNumber: seq };
       });
-
-      // Build a map of roomId → new pin name for all resequenced pins on this plan.
-      const roomRename = new Map<string, string>();
-      resequenced.forEach(p => {
-        if (p.floorPlanId === pin.floorPlanId) {
-          roomRename.set(p.roomId, `Pin ${p.sequenceNumber}`);
-        }
-      });
-
       return {
         capturePins: resequenced,
-        // Rename the backing rooms so the room name stays in sync.
-        rooms: s.rooms.map(r => {
-          const newName = roomRename.get(r.id);
-          return newName && newName !== r.name ? { ...r, name: newName } : r;
-        }),
-        // Update the denormalized roomName on every capture that belongs to a renamed room.
-        captures: s.captures.map(c => {
-          const newName = roomRename.get(c.roomId);
-          return newName && newName !== c.roomName ? { ...c, roomName: newName } : c;
+        rooms: s.rooms.filter(r => r.id !== pin.roomId),
+        captures: s.captures.filter(c => c.roomId !== pin.roomId),
+        tours: s.tours.filter(t => {
+          const cap = s.captures.find(c => c.id === t.captureId);
+          return !(cap && cap.roomId === pin.roomId);
         }),
       };
     });
     mirrorApi('deleteCapturePin', [id]);
-    // Mirror any sequence changes for pins on the same plan.
-    get().capturePins
-      .filter(p => p.floorPlanId === pin.floorPlanId)
-      .forEach(p => {
-        mirrorApi('updateCapturePin', [p.id, { sequenceNumber: p.sequenceNumber }]);
-        mirrorApi('updateRoom', [p.roomId, { name: `Pin ${p.sequenceNumber}` }]);
-      });
     pushAudit(
       set, 'capture_pin_deleted', 'capture_pin', id, `Pin ${pin.sequenceNumber}`, pin.projectId ?? null,
       `Deleted pin ${pin.sequenceNumber} (${id}) on floor plan ${pin.floorPlanId}` +
         (pin.captureIds.length ? ` with capture(s) ${pin.captureIds.join(', ')}` : ' (no captures)'),
     );
+  },
+
+  pruneEmptyFreeplacePinsOnFloor(floorId) {
+    const state = get();
+    const onFloor = state.capturePins.filter(p => p.floorId === floorId);
+    const hasLabeled = onFloor.some(
+      p => p.flatName && p.roomName && p.source !== 'freeplace',
+    );
+    if (!hasLabeled) return 0;
+    const accidents = onFloor.filter(
+      p => p.source === 'freeplace' && (p.captureIds?.length ?? 0) === 0,
+    );
+    if (accidents.length === 0) return 0;
+
+    const removeIds = new Set(accidents.map(p => p.id));
+    const removeRoomIds = new Set(accidents.map(p => p.roomId));
+    const planIds = new Set(accidents.map(p => p.floorPlanId));
+
+    for (const p of accidents) {
+      addTombstones(p.id);
+      cancelWritesForEntityIds(p.id, p.roomId);
+      removePendingUploadPin(p.id);
+      // One DELETE per pin — server cascades room delete + resequence.
+      // Do not also DELETE rooms (404 spam) or PUT every remaining pin.
+      mirrorApi('deleteCapturePin', [p.id]);
+    }
+
+    set(s => {
+      let pins = s.capturePins.filter(p => !removeIds.has(p.id));
+      for (const planId of planIds) {
+        const onPlan = pins
+          .filter(p => p.floorPlanId === planId)
+          .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+        const seqById = new Map(onPlan.map((p, i) => [p.id, i + 1]));
+        pins = pins.map(p => {
+          const next = seqById.get(p.id);
+          return next != null && next !== p.sequenceNumber
+            ? { ...p, sequenceNumber: next }
+            : p;
+        });
+      }
+      return {
+        capturePins: pins,
+        rooms: s.rooms.filter(r => !removeRoomIds.has(r.id)),
+        captures: s.captures.filter(c => !removeRoomIds.has(c.roomId)),
+      };
+    });
+    return accidents.length;
   },
 
   createDefect(d) {

@@ -1,13 +1,30 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Box, Typography, CircularProgress, MenuItem, Select, type SelectChangeEvent, Collapse, IconButton } from '@mui/material';
+import { Box, Typography, CircularProgress, MenuItem, Select, type SelectChangeEvent, Collapse } from '@mui/material';
 import {
   ArrowBackRounded,
   PhotoLibraryRounded,
   CheckCircleRounded,
   HourglassTopRounded,
   ExpandMoreRounded,
+  NoPhotographyRounded,
+  PushPinRounded,
+  InfoRounded,
+  BedroomParentRounded,
+  KitchenRounded,
+  WcRounded,
+  BalconyRounded,
+  WeekendRounded,
+  DoorFrontRounded,
+  Inventory2Rounded,
+  CheckroomRounded,
+  SelfImprovementRounded,
+  DeckRounded,
+  LocalLaundryServiceRounded,
+  HomeRounded,
+  TableRestaurantRounded,
+  ElectricalServicesRounded,
 } from '@mui/icons-material';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { colors, motion } from '@theme/tokens';
 import {
@@ -15,11 +32,9 @@ import {
   type FloorProgressSnapshot,
   type FlatProgress,
   type RoomProgress,
-  type ProgressReview,
 } from '@/services/constructionProgressService';
 import ProgressRing from '@/components/ConstructionProgress/ProgressRing';
 import EvidenceLightbox from '@/components/ConstructionProgress/EvidenceLightbox';
-import ProgressReviewDialog, { type ReviewTarget } from '@/components/ConstructionProgress/ProgressReviewDialog';
 
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#ffffff', bg: '#f7f8fa' };
 
@@ -29,6 +44,34 @@ function roomStatusColor(room: RoomProgress): string {
     return colors.warning;
   }
   return colors.textSubdued;
+}
+
+type RoomStatusLabel = 'Completed' | 'Work in Progress' | 'No Photos Yet';
+
+function roomStatusLabel(room: RoomProgress): RoomStatusLabel {
+  if (room.isComplete) return 'Completed';
+  const hasEvidence = room.activities.length > 0;
+  const hasCaptures = (room.capturesCount ?? 0) > 0 || (room.pinNumbers?.length ?? 0) > 0;
+  return hasEvidence || hasCaptures ? 'Work in Progress' : 'No Photos Yet';
+}
+
+/** Maps a room name to a representative icon — gives each card a distinct silhouette at a glance. */
+function roomTypeIcon(roomName: string) {
+  const n = roomName.toLowerCase();
+  if (n.includes('dress')) return CheckroomRounded;
+  if (n.includes('bedroom')) return BedroomParentRounded;
+  if (n.includes('kitchen')) return KitchenRounded;
+  if (n.includes('pdr')) return ElectricalServicesRounded;
+  if (n.includes('toilet') || n.includes('wc')) return WcRounded;
+  if (n.includes('balcony')) return BalconyRounded;
+  if (n.includes('sit-out') || n.includes('sit out') || n.includes('sitout') || n.includes('deck')) return DeckRounded;
+  if (n.includes('drawing') || n.includes('living')) return WeekendRounded;
+  if (n.includes('dining')) return TableRestaurantRounded;
+  if (n.includes('lobby') || n.includes('foyer')) return DoorFrontRounded;
+  if (n.includes('store')) return Inventory2Rounded;
+  if (n.includes('puja')) return SelfImprovementRounded;
+  if (n.includes('utility')) return LocalLaundryServiceRounded;
+  return HomeRounded;
 }
 
 function roomCompletionPct(room: RoomProgress): number | null {
@@ -48,187 +91,192 @@ function roomCompletionPct(room: RoomProgress): number | null {
   return Math.min(avg, 99);
 }
 
-function reviewKey(flatName: string, roomName: string) {
-  return `${flatName}::${roomName}`;
-}
-
-/** Mean per-room work progress over photographed rooms only (v4.4). */
+/** Mean per-room work progress over the FULL roster; uncaptured rooms = 0%. */
 function flatWorkProgressPct(flat: FlatProgress): number {
   if (flat.isFullyComplete) return 100;
-  const photographed = flat.rooms.filter(
-    (r) =>
+  // Prefer server rollup (already full-roster) when present.
+  if (typeof flat.completionPct === 'number' && Number.isFinite(flat.completionPct)) {
+    return Math.round(flat.completionPct);
+  }
+  const rooms = flat.rooms;
+  if (rooms.length === 0) return 0;
+  const sum = rooms.reduce((n, r) => {
+    const hasCap =
       r.activities.length > 0
       || (r.capturesCount ?? 0) > 0
       || (r.pinNumbers?.length ?? 0) > 0
-      || r.isComplete,
-  );
-  if (photographed.length === 0) return 0;
-  const sum = photographed.reduce((n, r) => {
+      || r.isComplete;
+    if (!hasCap) return n;
     const p = roomCompletionPct(r);
     return n + (p ?? 0);
   }, 0);
-  const avg = Math.round(sum / photographed.length);
-  const required = flat.roomsRequired ?? flat.rooms.length;
-  const covered = flat.roomsPhotographed ?? photographed.length;
-  // Cannot read fully complete until all required areas are covered.
+  const required = flat.roomsRequired ?? rooms.length;
+  const avg = Math.round(sum / Math.max(required, rooms.length));
+  const covered = flat.roomsPhotographed ?? rooms.filter(
+    r => r.activities.length > 0 || (r.capturesCount ?? 0) > 0 || (r.pinNumbers?.length ?? 0) > 0,
+  ).length;
   if (covered < required && avg >= 100) return 99;
   return avg;
 }
 
+function statusIcon(statusLabel: RoomStatusLabel) {
+  if (statusLabel === 'Completed') return CheckCircleRounded;
+  if (statusLabel === 'Work in Progress') return HourglassTopRounded;
+  return NoPhotographyRounded;
+}
+
 function RoomCard({
   room,
-  flatName,
-  reviewed,
   onOpenEvidence,
-  onReview,
 }: {
   room: RoomProgress;
   flatName: string;
-  reviewed: boolean;
   onOpenEvidence: (activityName: string, captureIds: string[]) => void;
-  onReview: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const color = roomStatusColor(room);
   const hasEvidence = room.activities.length > 0;
   const hasCaptures = (room.capturesCount ?? 0) > 0 || (room.pinNumbers?.length ?? 0) > 0;
+  const isActive = hasEvidence || hasCaptures || room.isComplete;
   const pinLabel = room.pinNumbers?.length
     ? `Pin${room.pinNumbers.length === 1 ? '' : 's'} ${room.pinNumbers.join(', ')}`
     : null;
   const pct = roomCompletionPct(room);
-  const statusLabel = room.isComplete
-    ? 'Completed'
-    : hasEvidence || hasCaptures
-      ? 'Work in Progress'
-      : 'No Photos Yet';
+  const RoomIcon = roomTypeIcon(room.roomName);
   const canExpand = hasEvidence;
+  const unscoredCaptureCount = room.capturesCount ?? room.pinNumbers?.length ?? 0;
 
   return (
     <Box
       sx={{
-        p: 1.75,
-        borderRadius: '12px',
-        backgroundColor: P.white,
-        border: `1.5px solid ${reviewed ? colors.success : P.border}`,
+        display: 'flex',
+        flexDirection: 'column',
+        borderRadius: '16px',
+        backgroundColor: isActive ? P.white : P.bg,
+        border: `1px solid ${isActive ? P.border : colors.borderLight}`,
+        borderStyle: isActive ? 'solid' : 'dashed',
+        overflow: 'hidden',
         // Expanded cards take the full row so the neighbour isn't left with a hole.
         gridColumn: expanded ? '1 / -1' : 'auto',
-        opacity: reviewed ? 1 : hasCaptures || hasEvidence ? 1 : 0.92,
-        boxShadow: reviewed ? 'none' : (hasCaptures || hasEvidence ? '0 0 0 1px rgba(37,99,235,0.08)' : 'none'),
+        transition: `box-shadow ${motion.durationFast} ${motion.easeOut}, transform ${motion.durationFast} ${motion.easeOut}`,
+        '&:hover': isActive ? { boxShadow: '0 6px 18px rgba(15,23,42,0.07)', transform: 'translateY(-1px)' } : undefined,
       }}
     >
-      <Box
-        onClick={canExpand ? () => setExpanded(v => !v) : undefined}
-        sx={{
-          display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1,
-          cursor: canExpand ? 'pointer' : 'default',
-          userSelect: canExpand ? 'none' : 'auto',
-        }}
-      >
-        <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong, lineHeight: 1.35 }}>
-            {room.roomName}
-          </Typography>
-          {pinLabel && (
-            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.primary, mt: 0.25 }}>
-              {pinLabel}
+      <Box sx={{ p: { xs: 1.5, sm: 1.75 }, pb: 1.25 }}>
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.25 }}>
+          <Box
+            sx={{
+              width: 38, height: 38, borderRadius: '11px', flexShrink: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              backgroundColor: `${color}15`,
+            }}
+          >
+            <RoomIcon sx={{ fontSize: 20, color }} />
+          </Box>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong, lineHeight: 1.35 }}>
+              {room.roomName}
+            </Typography>
+            {pinLabel && (
+              <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.25, mt: 0.375 }}>
+                <PushPinRounded sx={{ fontSize: 12, color: colors.primary }} />
+                <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.primary }}>
+                  {pinLabel}
+                </Typography>
+              </Box>
+            )}
+            <Box
+              sx={{
+                display: 'inline-flex', alignItems: 'center', gap: 0.5, mt: 0.75,
+                px: 0.875, py: 0.25, borderRadius: '999px', backgroundColor: `${color}18`,
+              }}
+            >
+              <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: color }} />
+              <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color }}>
+                {roomStatusLabel(room)}
+              </Typography>
+            </Box>
+          </Box>
+        </Box>
+
+        {/* Collapsed summary: overall room progress */}
+        <Box sx={{ mt: 1.25 }}>
+          {(hasEvidence || hasCaptures || room.isComplete) ? (
+            <>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 0.5 }}>
+                <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
+                  Room progress
+                  {hasEvidence ? ` · ${room.activities.length} activit${room.activities.length === 1 ? 'y' : 'ies'}` : ''}
+                </Typography>
+                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 800, color: P.strong }}>
+                  {pct == null ? 'N/A' : `${pct}%`}
+                </Typography>
+              </Box>
+              <Box sx={{ height: 6, borderRadius: '999px', backgroundColor: colors.borderLight, overflow: 'hidden' }}>
+                <Box
+                  sx={{
+                    height: '100%',
+                    width: `${pct ?? 0}%`,
+                    backgroundImage: pct == null
+                      ? 'none'
+                      : `linear-gradient(90deg, ${pct >= 92 ? colors.success : pct > 0 ? colors.warning : colors.borderLight}cc, ${pct >= 92 ? colors.success : pct > 0 ? colors.warning : colors.borderLight})`,
+                    backgroundColor: pct == null ? colors.borderLight : undefined,
+                    borderRadius: '999px',
+                    transition: `width ${motion.durationSlow} ${motion.easeOut}`,
+                  }}
+                />
+              </Box>
+              {!hasEvidence && hasCaptures && (
+                <Box sx={{ display: 'flex', gap: 0.625, mt: 0.875, p: 0.75, borderRadius: '8px', backgroundColor: `${colors.warning}12` }}>
+                  <InfoRounded sx={{ fontSize: 14, color: colors.warning, flexShrink: 0, mt: '1px' }} />
+                  <Typography sx={{ fontSize: '0.6875rem', color: P.muted, lineHeight: 1.4 }}>
+                    {unscoredCaptureCount} capture{unscoredCaptureCount === 1 ? '' : 's'} mapped — photo could not be
+                    scored (blank/corrupt image, or finishing finishes not confidently visible). Re-upload a clear
+                    photo or re-analyze if needed.
+                  </Typography>
+                </Box>
+              )}
+            </>
+          ) : (
+            <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
+              No captures cover this room yet.
             </Typography>
           )}
         </Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
-          {reviewed ? (
-            <Box sx={{ px: 1, py: 0.25, borderRadius: '6px', backgroundColor: `${colors.success}18` }}>
-              <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: colors.success }}>Reviewed</Typography>
-            </Box>
-          ) : (
-            <Box sx={{ px: 1, py: 0.25, borderRadius: '6px', backgroundColor: `${colors.primary}12` }}>
-              <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: colors.primary }}>Unreviewed</Typography>
-            </Box>
-          )}
-          <Box sx={{ px: 1, py: 0.25, borderRadius: '6px', backgroundColor: `${color}18`, whiteSpace: 'nowrap' }}>
-            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color }}>
-              {statusLabel}
+      </Box>
+
+      {/* Footer: expand toggle only (review hidden for now) */}
+      {(canExpand) && (
+        <Box
+          sx={{
+            mt: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.75,
+            px: { xs: 1.5, sm: 1.75 }, py: 1, borderTop: `1px solid ${isActive ? colors.borderLight : 'transparent'}`,
+          }}
+        >
+          <Box
+            onClick={() => setExpanded(v => !v)}
+            sx={{
+              display: 'inline-flex', alignItems: 'center', gap: 0.25, cursor: 'pointer', userSelect: 'none',
+              color: P.muted, '&:hover': { color: colors.primary },
+            }}
+          >
+            <Typography sx={{ fontSize: '0.75rem', fontWeight: 600 }}>
+              {expanded ? 'Hide details' : 'Show details'}
             </Typography>
-          </Box>
-          {canExpand && (
-            <IconButton
-              size="small"
-              aria-label={expanded ? 'Hide activity details' : 'Show activity details'}
-              onClick={e => {
-                e.stopPropagation();
-                setExpanded(v => !v);
-              }}
+            <ExpandMoreRounded
               sx={{
-                p: 0.25,
-                color: P.muted,
+                fontSize: 18,
                 transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
                 transition: `transform ${motion.durationFast} ${motion.easeOut}`,
               }}
-            >
-              <ExpandMoreRounded sx={{ fontSize: 20 }} />
-            </IconButton>
-          )}
+            />
+          </Box>
         </Box>
-      </Box>
-
-      {/* Collapsed summary: overall room progress */}
-      <Box sx={{ mt: 1.25 }}>
-        {(hasEvidence || hasCaptures || room.isComplete) ? (
-          <>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 0.5 }}>
-              <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
-                Room progress
-                {hasEvidence ? ` · ${room.activities.length} activit${room.activities.length === 1 ? 'y' : 'ies'}` : ''}
-              </Typography>
-              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 800, color: P.strong }}>
-                {pct == null ? 'N/A' : `${pct}%`}
-              </Typography>
-            </Box>
-            <Box sx={{ height: 6, borderRadius: '999px', backgroundColor: colors.borderLight, overflow: 'hidden' }}>
-              <Box
-                sx={{
-                  height: '100%',
-                  width: `${pct ?? 0}%`,
-                  backgroundColor: pct == null ? colors.borderLight : pct >= 92 ? colors.success : pct > 0 ? colors.warning : colors.borderLight,
-                  borderRadius: '999px',
-                  transition: `width ${motion.durationSlow} ${motion.easeOut}`,
-                }}
-              />
-            </Box>
-          </>
-        ) : (
-          <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
-            No captures cover this room yet.
-          </Typography>
-        )}
-        {!hasEvidence && hasCaptures && (
-          <Typography sx={{ fontSize: '0.6875rem', color: P.muted, mt: 0.75 }}>
-            {(room.capturesCount ?? room.pinNumbers?.length ?? 0)} capture
-            {(room.capturesCount ?? room.pinNumbers?.length ?? 0) === 1 ? '' : 's'} mapped
-            — photo could not be scored (blank/corrupt image, or finishing finishes not
-            confidently visible). Re-upload a clear photo or re-analyze if needed.
-          </Typography>
-        )}
-      </Box>
-
-      <Box sx={{ mt: 1.25, display: 'flex', gap: 0.75 }}>
-        <Box
-          onClick={e => {
-            e.stopPropagation();
-            onReview();
-          }}
-          sx={{
-            display: 'inline-flex', alignItems: 'center', px: 1.25, py: 0.5, borderRadius: '8px',
-            border: `1.5px solid ${P.border}`, fontSize: '0.75rem', fontWeight: 600, color: P.muted,
-            cursor: 'pointer', '&:hover': { borderColor: colors.primary, color: colors.primary },
-          }}
-        >
-          Review
-        </Box>
-      </Box>
+      )}
 
       {/* Expanded: per-activity bars */}
       <Collapse in={expanded && canExpand} timeout={200}>
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75, mt: 1.5, pt: 1.25, borderTop: `1px solid ${P.border}` }}>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75, px: { xs: 1.5, sm: 1.75 }, pb: 1.75, pt: 1.25, borderTop: `1px solid ${P.border}` }}>
           <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: P.muted, textTransform: 'uppercase', letterSpacing: '0.04em', mb: 0.25 }}>
             Activity detail
           </Typography>
@@ -252,10 +300,7 @@ function RoomCard({
                 </Typography>
                 {a.evidenceCaptureIds.length > 0 && (
                   <Box
-                    onClick={e => {
-                      e.stopPropagation();
-                      onOpenEvidence(a.activityName, a.evidenceCaptureIds);
-                    }}
+                    onClick={() => onOpenEvidence(a.activityName, a.evidenceCaptureIds)}
                     sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', color: colors.primary, '&:hover': { opacity: 0.75 } }}
                   >
                     <PhotoLibraryRounded sx={{ fontSize: 15 }} />
@@ -275,18 +320,53 @@ function RoomCard({
   );
 }
 
+type IconComponent = ReturnType<typeof statusIcon>;
+
+function StatPill({ icon: Icon, count, label, color }: { icon: IconComponent; count: number; label: string; color: string }) {
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, px: 1.25, py: 0.625, borderRadius: '10px', backgroundColor: `${color}12` }}>
+      <Icon sx={{ fontSize: 15, color }} />
+      <Typography sx={{ fontSize: '0.75rem', fontWeight: 800, color }}>{count}</Typography>
+      <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: P.muted }}>{label}</Typography>
+    </Box>
+  );
+}
+
+function SectionHeader({ label, count, color, icon: Icon }: { label: string; count: number; color: string; icon: IconComponent }) {
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.875, mb: 1.25 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+        <Icon sx={{ fontSize: 16, color }} />
+        <Typography sx={{ fontSize: '0.75rem', fontWeight: 800, color: P.strong, textTransform: 'uppercase', letterSpacing: '0.06em', whiteSpace: 'nowrap' }}>
+          {label}
+        </Typography>
+        <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: P.muted }}>
+          {count}
+        </Typography>
+      </Box>
+      <Box sx={{ flex: 1, height: '1px', backgroundColor: colors.borderLight }} />
+    </Box>
+  );
+}
+
 function FlatOverview({
   flat,
-  reviewedKeys,
   onOpenEvidence,
-  onReviewRoom,
 }: {
   flat: FlatProgress;
-  reviewedKeys: Set<string>;
   onOpenEvidence: (activityName: string, captureIds: string[]) => void;
-  onReviewRoom: (room: RoomProgress) => void;
 }) {
   const workPct = flatWorkProgressPct(flat);
+
+  const sections: { label: RoomStatusLabel; color: string; rooms: RoomProgress[] }[] = [
+    { label: 'Work in Progress', color: colors.warning, rooms: [] },
+    { label: 'Completed', color: colors.success, rooms: [] },
+    { label: 'No Photos Yet', color: colors.textSubdued, rooms: [] },
+  ];
+  const sectionByLabel = new Map(sections.map(s => [s.label, s]));
+  flat.rooms.forEach(room => sectionByLabel.get(roomStatusLabel(room))?.rooms.push(room));
+  const activeSections = sections.filter(s => s.rooms.length > 0);
+
   return (
     <Box>
       <Box sx={{
@@ -310,14 +390,14 @@ function FlatOverview({
             )}
             <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
               {flat.roomsComplete} of {flat.roomsTotal} rooms fully complete
-              {workPct > 0 && flat.roomsComplete === 0
-                ? ' · ring shows average room progress (none fully done yet)'
+              {(flat.roomsPhotographed ?? 0) > 0
+                ? ` · ${flat.roomsPhotographed} photographed`
                 : ''}
             </Typography>
           </Box>
           <Typography sx={{ fontSize: '0.75rem', color: P.muted, mt: 0.5 }}>
-            A room counts as fully complete only once every finishing activity confirmed in it
-            individually reaches completion — one finished room does not mark the whole flat done.
+            Progress averages every room on the roster — rooms with no photos count as 0%.
+            A room is fully complete only when every confirmed finishing activity in it reaches completion.
           </Typography>
         </Box>
       </Box>
@@ -327,48 +407,72 @@ function FlatOverview({
       </Typography>
       <Typography sx={{ fontSize: '0.8125rem', color: P.muted, mb: 1.5 }}>
         Showing all {flat.rooms.length} rooms in {flat.flatName}
-        {' '}({flat.rooms.filter(r => (r.capturesCount ?? 0) > 0 || (r.pinNumbers?.length ?? 0) > 0).length} with captures)
-        {' · '}{flat.rooms.filter(r => reviewedKeys.has(reviewKey(flat.flatName, r.roomName))).length} reviewed
       </Typography>
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.25, alignItems: 'start' }}>
-        {flat.rooms.map((room, idx) => (
-          <RoomCard
-            key={`${room.roomName}-${idx}`}
-            room={room}
-            flatName={flat.flatName}
-            reviewed={reviewedKeys.has(reviewKey(flat.flatName, room.roomName))}
-            onOpenEvidence={onOpenEvidence}
-            onReview={() => onReviewRoom(room)}
-          />
+
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 3 }}>
+        {activeSections.map(section => (
+          <StatPill key={section.label} icon={statusIcon(section.label)} count={section.rooms.length} label={section.label} color={section.color} />
         ))}
       </Box>
+
+      {activeSections.map((section, sIdx) => (
+        <Box key={section.label} sx={{ mt: sIdx === 0 ? 0 : 3.5 }}>
+          <SectionHeader label={section.label} count={section.rooms.length} color={section.color} icon={statusIcon(section.label)} />
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', md: 'repeat(3, 1fr)' },
+              gap: { xs: 1, sm: 1.25 },
+              alignItems: 'stretch',
+            }}
+          >
+            {section.rooms.map((room, idx) => (
+              <RoomCard
+                key={`${room.roomName}-${idx}`}
+                room={room}
+                flatName={flat.flatName}
+                onOpenEvidence={onOpenEvidence}
+              />
+            ))}
+          </Box>
+        </Box>
+      ))}
     </Box>
   );
 }
 
 export default function FlatFinishingWorksPage() {
   const { floorId } = useParams<{ floorId: string }>();
+  const location = useLocation();
+  const scope: 'flat' | 'common' = location.pathname.endsWith('/common') ? 'common' : 'flat';
+  const isCommon = scope === 'common';
   const [loading, setLoading] = useState(true);
   const [snapshot, setSnapshot] = useState<FloorProgressSnapshot | null>(null);
   const [selectedFlat, setSelectedFlat] = useState<string>('');
   const [evidence, setEvidence] = useState<{ activityName: string; captureIds: string[] } | null>(null);
-  const [reviews, setReviews] = useState<ProgressReview[]>([]);
-  const [reviewTarget, setReviewTarget] = useState<ReviewTarget | null>(null);
+
+  const scopedProgress = useMemo(() => {
+    const all = snapshot?.flatProgress ?? [];
+    return isCommon
+      ? all.filter(f => f.flatName === 'Common Area')
+      : all.filter(f => f.flatName !== 'Common Area');
+  }, [snapshot, isCommon]);
 
   const load = useCallback(async () => {
     if (!floorId) return;
     setLoading(true);
     try {
-      const [detail, existingReviews] = await Promise.all([
-        constructionProgressService.getFloorDetail(floorId),
-        constructionProgressService.listReviews({ floorId }),
-      ]);
+      const detail = await constructionProgressService.getFloorDetail(floorId);
       setSnapshot(detail);
-      setReviews(existingReviews);
-      if (detail.flatProgress.length > 0) {
-        // Prefer the flat with the most mapped captures (Floor 4 → Flat 04),
-        // otherwise first residential flat in the list.
-        const scored = detail.flatProgress.map(f => ({
+      if (!detail) {
+        setSelectedFlat('');
+        return;
+      }
+      const pool = isCommon
+        ? detail.flatProgress.filter(f => f.flatName === 'Common Area')
+        : detail.flatProgress.filter(f => f.flatName !== 'Common Area');
+      if (pool.length > 0) {
+        const scored = pool.map(f => ({
           name: f.flatName,
           score: f.rooms.reduce(
             (n, r) => n + (r.capturesCount ?? 0) + (r.pinNumbers?.length ?? 0),
@@ -376,36 +480,36 @@ export default function FlatFinishingWorksPage() {
           ),
         }));
         scored.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
-        setSelectedFlat(scored[0]?.name || detail.flatProgress[0].flatName);
+        setSelectedFlat(scored[0]?.name || pool[0].flatName);
+      } else {
+        setSelectedFlat('');
       }
-    } catch {
-      toast.error('Failed to load flat finishing works');
+    } catch (err: unknown) {
+      const status = (err as { status?: number })?.status;
+      if (status === 404) {
+        setSnapshot(null);
+        setSelectedFlat('');
+      } else {
+        toast.error(isCommon
+          ? 'Failed to load common area finishing works'
+          : 'Failed to load flat finishing works');
+      }
     } finally {
       setLoading(false);
     }
-  }, [floorId]);
+  }, [floorId, isCommon]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  const flat = snapshot?.flatProgress.find(f => f.flatName === selectedFlat) ?? null;
-  const reviewedKeys = useMemo(() => {
-    const keys = new Set<string>();
-    for (const r of reviews) {
-      if (snapshot && r.snapshotId === snapshot.snapshotId) {
-        keys.add(reviewKey(r.flatName, r.roomName));
-      }
-    }
-    return keys;
-  }, [reviews, snapshot]);
-
-  const reviewRoomOptions = useMemo(() => {
-    if (!snapshot) return [];
-    return snapshot.flatProgress.flatMap(f =>
-      f.rooms.map(r => ({ flatName: f.flatName, roomName: r.roomName })),
-    );
-  }, [snapshot]);
+  const flat = scopedProgress.find(f => f.flatName === selectedFlat) ?? null;
+  const pageTitle = isCommon ? 'Common Area Finishing Works' : 'Flat Finishing Works';
+  const pageSubtitle = snapshot
+    ? isCommon
+      ? `${snapshot.floorName} — marked common areas and their finishing status.`
+      : `${snapshot.floorName} — select a flat to see its own completion status.`
+    : 'Loading…';
 
   return (
     <Box sx={{ maxWidth: 1080, mx: 'auto', px: { xs: 2, sm: 3 }, py: 4 }}>
@@ -422,10 +526,10 @@ export default function FlatFinishingWorksPage() {
           <ArrowBackRounded sx={{ fontSize: 15 }} /> Floor Overview
         </Box>
         <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontSize: { xs: '1.5rem', md: '2rem' }, fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.05em', lineHeight: 1.05, mb: 0.5 }}>
-          Flat Finishing Works
+          {pageTitle}
         </Typography>
         <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>
-          {snapshot ? `${snapshot.floorName} — select a flat to see its own completion status.` : 'Loading…'}
+          {pageSubtitle}
         </Typography>
       </Box>
 
@@ -433,45 +537,42 @@ export default function FlatFinishingWorksPage() {
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 10 }}>
           <CircularProgress size={28} sx={{ color: colors.primary }} />
         </Box>
-      ) : !snapshot || snapshot.flatProgress.length === 0 ? (
+      ) : !snapshot || scopedProgress.length === 0 ? (
         <Box sx={{ textAlign: 'center', py: 8 }}>
           <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 1 }}>
-            No flat data available yet
+            {isCommon ? 'No common area data available yet' : 'No flat data available yet'}
           </Typography>
           <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>
-            Run the AI progress analysis for this floor first — flat-by-flat detail appears once a room map and captures exist.
+            {isCommon
+              ? 'Mark Common Area capture points (Lobby, Corridor, …) and re-analyze this floor to see room-level common finishing.'
+              : 'Run the AI progress analysis for this floor first — flat-by-flat detail appears once a room map and captures exist.'}
           </Typography>
         </Box>
       ) : (
         <>
-          <Select
-            value={selectedFlat}
-            onChange={(e: SelectChangeEvent) => setSelectedFlat(e.target.value)}
-            sx={{
-              mb: 3, minWidth: 220, borderRadius: '10px', backgroundColor: P.white,
-              fontSize: '0.875rem', fontWeight: 600,
-            }}
-            size="small"
-          >
-            {snapshot.flatProgress.map(f => (
-              <MenuItem key={f.flatName} value={f.flatName}>
-                {f.flatName} — {flatWorkProgressPct(f)}% · {f.roomsTotal} rooms
-                {f.roomsComplete > 0 ? ` · ${f.roomsComplete} complete` : ''}
-              </MenuItem>
-            ))}
-          </Select>
+          {!isCommon && (
+            <Select
+              value={selectedFlat}
+              onChange={(e: SelectChangeEvent) => setSelectedFlat(e.target.value)}
+              sx={{
+                mb: 3, minWidth: 220, borderRadius: '10px', backgroundColor: P.white,
+                fontSize: '0.875rem', fontWeight: 600,
+              }}
+              size="small"
+            >
+              {scopedProgress.map(f => (
+                <MenuItem key={f.flatName} value={f.flatName}>
+                  {f.flatName} — {flatWorkProgressPct(f)}% · {f.roomsTotal} rooms
+                  {f.roomsComplete > 0 ? ` · ${f.roomsComplete} complete` : ''}
+                </MenuItem>
+              ))}
+            </Select>
+          )}
 
           {flat && (
             <FlatOverview
               flat={flat}
-              reviewedKeys={reviewedKeys}
               onOpenEvidence={(activityName, captureIds) => setEvidence({ activityName, captureIds })}
-              onReviewRoom={(room) => setReviewTarget({
-                snapshotId: snapshot.snapshotId,
-                floorId: snapshot.floorId,
-                flatName: flat.flatName,
-                room,
-              })}
             />
           )}
         </>
@@ -484,34 +585,6 @@ export default function FlatFinishingWorksPage() {
           onClose={() => setEvidence(null)}
         />
       )}
-
-      <ProgressReviewDialog
-        open={!!reviewTarget}
-        target={reviewTarget}
-        liveSnapshotId={snapshot?.snapshotId}
-        roomOptions={reviewRoomOptions}
-        onClose={() => setReviewTarget(null)}
-        onSubmitted={(key) => {
-          setReviews(prev => [
-            ...prev,
-            {
-              reviewId: `local-${key}`,
-              orgId: '',
-              snapshotId: snapshot?.snapshotId ?? '',
-              floorId: snapshot?.floorId ?? '',
-              flatName: key.split('::')[0] ?? '',
-              roomName: key.split('::')[1] ?? '',
-              roomCorrect: 'yes',
-              progressVerdict: 'correct',
-              reviewedBy: '',
-              model: '',
-              promptVersion: '',
-              rigVersion: null,
-              createdAt: new Date().toISOString(),
-            },
-          ]);
-        }}
-      />
     </Box>
   );
 }

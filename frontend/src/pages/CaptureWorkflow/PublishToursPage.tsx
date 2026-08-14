@@ -9,7 +9,7 @@ import {
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
-import { getFloorsByTower, getFloorPlanByFloor, getCapturePinsByFloorPlan } from '@store/workflowSelectors';
+import { getFloorsByTower, resolveFloorPlanForFloor, getCapturePinsForFloor } from '@store/workflowSelectors';
 import { resolveCaptureThumbnailUrl } from '@/utils/captureMedia';
 import type { MockCapture } from '@/data/mockData';
 
@@ -73,9 +73,12 @@ export default function PublishToursPage() {
   const myTowers = [...towers.filter(t => t.projectId === projectId)].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const myFloors = [...getFloorsByTower(floors, towerId)].sort((a, b) => a.number - b.number);
 
-  const floorPlan = getFloorPlanByFloor(floorPlans, towerId, floorId);
-  const pins = floorPlan ? getCapturePinsByFloorPlan(allPins, floorPlan.id) : [];
-  const pinsWithCapture = pins.filter(p => p.captureIds.length > 0);
+  const floorPlan = resolveFloorPlanForFloor(floorPlans, allPins, towerId, floorId);
+  const pins = floorId ? getCapturePinsForFloor(allPins, floorId, floorPlan?.id) : [];
+  // Ready = has at least one live capture document (not just a dangling captureIds entry).
+  const pinsWithCapture = pins.filter(p =>
+    p.captureIds.some(id => captures.some(c => c.id === id)),
+  );
   const readyIds = useMemo(() => pinsWithCapture.map(p => p.id), [pinsWithCapture]);
   const readyKey = readyIds.join('|');
   const floorPlanId = floorPlan?.id ?? '';
@@ -95,10 +98,10 @@ export default function PublishToursPage() {
   const someReadySelected = readyIds.some(id => selectedIds.has(id));
   const canPublish = selectedCount > 0 && !publishing;
 
-  const totalPinPages = Math.ceil(pins.length / PAGE_SIZE);
+  const totalPinPages = Math.ceil(pinsWithCapture.length / PAGE_SIZE);
   const visiblePins = useMemo(
-    () => pins.slice(pinPage * PAGE_SIZE, (pinPage + 1) * PAGE_SIZE),
-    [pins, pinPage],
+    () => pinsWithCapture.slice(pinPage * PAGE_SIZE, (pinPage + 1) * PAGE_SIZE),
+    [pinsWithCapture, pinPage],
   );
 
   function toggleSelectAll() {
@@ -117,9 +120,18 @@ export default function PublishToursPage() {
   }
 
   function handlePublish() {
-    if (!floorPlan || !canPublish) return;
+    if (!canPublish) return;
+    // Prefer the resolved plan; if pins drifted onto another plan id, stamp the
+    // tour with a plan those pins actually belong to so the viewer can resolve media.
+    const publishPlanId = floorPlan?.id
+      ?? selectedReady[0]?.floorPlanId
+      ?? '';
+    if (!publishPlanId) {
+      setToast('No floor plan available to publish this walkthrough');
+      return;
+    }
     setPublishing(true);
-    const tourIds = publishFloorPlanTour(floorPlan.id, [...selectedIds]);
+    const tourIds = publishFloorPlanTour(publishPlanId, [...selectedIds]);
     setPublishing(false);
     if (tourIds.length) {
       setToast(`Walkthrough published · ${selectedCount} stop${selectedCount !== 1 ? 's' : ''} in pin order`);
@@ -130,7 +142,7 @@ export default function PublishToursPage() {
   }
 
   function pinThumbUrl(pin: { captureIds: string[] }): string | null {
-    const latestId = pin.captureIds[pin.captureIds.length - 1];
+    const latestId = [...pin.captureIds].reverse().find(id => captures.some(c => c.id === id));
     if (!latestId) return null;
     const cap = captures.find(c => c.id === latestId);
     if (!cap) return null;
@@ -215,7 +227,7 @@ export default function PublishToursPage() {
           <ViewInArRounded sx={{ fontSize: { xs: 34, sm: 44 }, color: P.subtle, mb: 1 }} />
           <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Pick a project, tower and floor above.</Typography>
         </Box>
-      ) : !floorPlan ? (
+      ) : !floorPlan && pins.length === 0 ? (
         <Box sx={{ py: { xs: 5, sm: 8 }, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>
           <LayersRounded sx={{ fontSize: { xs: 34, sm: 44 }, color: P.subtle, mb: 1 }} />
           <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong }}>No floor plan for this floor</Typography>
@@ -226,6 +238,14 @@ export default function PublishToursPage() {
           <ViewInArRounded sx={{ fontSize: { xs: 34, sm: 44 }, color: P.subtle, mb: 1 }} />
           <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong }}>No capture pins placed yet</Typography>
           <Typography sx={{ fontSize: '0.875rem', color: P.muted, mt: 0.5 }}>Place pins and attach captures from Capture Workflow first.</Typography>
+        </Box>
+      ) : pinsWithCapture.length === 0 ? (
+        <Box sx={{ py: { xs: 5, sm: 8 }, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>
+          <ViewInArRounded sx={{ fontSize: { xs: 34, sm: 44 }, color: P.subtle, mb: 1 }} />
+          <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong }}>No uploaded captures on this floor yet</Typography>
+          <Typography sx={{ fontSize: '0.875rem', color: P.muted, mt: 0.5 }}>
+            {pins.length} annotated pin{pins.length !== 1 ? 's' : ''} found — upload photos from Capture Workflow to publish a tour.
+          </Typography>
         </Box>
       ) : (
         <Box>
@@ -252,7 +272,7 @@ export default function PublishToursPage() {
                     Walkthrough order
                   </Typography>
                   <Typography sx={{ fontSize: '0.6875rem', color: P.muted, fontWeight: 600 }}>
-                    {readyIds.length ? (allReadySelected ? 'Deselect all' : 'Select all ready') : 'No ready pins'}
+                    {readyIds.length ? (allReadySelected ? 'Deselect all' : 'Select all') : 'No captures'}
                   </Typography>
                 </Box>
               </Box>
@@ -269,11 +289,15 @@ export default function PublishToursPage() {
             {/* Pin list — paginated */}
             <Box>
               {visiblePins.map((pin, i) => {
-                const ready = pin.captureIds.length > 0;
+                const liveCaptureCount = pin.captureIds.filter(id => captures.some(c => c.id === id)).length;
+                const ready = liveCaptureCount > 0;
                 const selected = selectedIds.has(pin.id);
-                const latestCaptureId = pin.captureIds[pin.captureIds.length - 1];
+                const latestCaptureId = [...pin.captureIds].reverse().find(id => captures.some(c => c.id === id));
                 const thumbUrl = pinThumbUrl(pin);
                 const isLast = i === visiblePins.length - 1 && totalPinPages <= 1;
+                const pinTitle = pin.flatName && pin.roomName
+                  ? `${pin.flatName} · ${pin.roomName}`
+                  : pin.roomName || pin.label || `Pin ${pin.sequenceNumber}`;
                 return (
                   <Box
                     key={pin.id}
@@ -326,11 +350,13 @@ export default function PublishToursPage() {
                     </Box>
 
                     <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' }, fontWeight: 600, color: P.strong, lineHeight: 1.3 }}>
-                        Pin {pin.sequenceNumber}
+                      <Typography sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' }, fontWeight: 600, color: P.strong, lineHeight: 1.3 }} noWrap>
+                        {pinTitle}
                       </Typography>
                       <Typography sx={{ fontSize: '0.6875rem', color: ready ? P.muted : P.subtle, lineHeight: 1.3 }}>
-                        {ready ? `${pin.captureIds.length} capture${pin.captureIds.length !== 1 ? 's' : ''}` : 'No capture yet'}
+                        {ready
+                          ? `Stop #${pin.sequenceNumber} · ${liveCaptureCount} capture${liveCaptureCount !== 1 ? 's' : ''}`
+                          : `Stop #${pin.sequenceNumber} · No capture yet`}
                       </Typography>
                     </Box>
 
@@ -366,7 +392,7 @@ export default function PublishToursPage() {
                 </Box>
 
                 <Typography sx={{ fontSize: '0.75rem', color: P.muted, fontWeight: 500 }}>
-                  Pins {pinPage * PAGE_SIZE + 1}–{Math.min((pinPage + 1) * PAGE_SIZE, pins.length)} of {pins.length}
+                  Pins {pinPage * PAGE_SIZE + 1}–{Math.min((pinPage + 1) * PAGE_SIZE, pinsWithCapture.length)} of {pinsWithCapture.length}
                 </Typography>
 
                 <Box
@@ -410,11 +436,11 @@ export default function PublishToursPage() {
                 ? `Generate & Publish Tour (${selectedCount} pin${selectedCount !== 1 ? 's' : ''})`
                 : 'Select pins to publish'}
           </Box>
-          <Typography sx={{ mt: 1, fontSize: '0.75rem', color: P.subtle, textAlign: 'center' }}>
-            {selectedCount > 0
-              ? `Tour follows selected pin order (${selectedReady.map(p => p.sequenceNumber).join(' → ')}).`
-              : 'Pins without captures cannot be selected. Choose at least one ready pin.'}
-          </Typography>
+          {selectedCount === 0 && (
+            <Typography sx={{ mt: 1, fontSize: '0.75rem', color: P.subtle, textAlign: 'center' }}>
+              Select at least one uploaded room to publish.
+            </Typography>
+          )}
 
           {/* Already published tours for this floor */}
           {(() => {

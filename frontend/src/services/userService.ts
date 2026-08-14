@@ -47,4 +47,17 @@ export const userService = {
     );
     return data.data?.assigned_project_ids ?? [];
   },
+
+  async getFavoriteTours(): Promise<string[]> {
+    const { data } = await apiClient.get<ApiResponse<{ tour_ids: string[] }>>('/users/me/favorite-tours');
+    return data.data?.tour_ids ?? [];
+  },
+
+  async setFavoriteTours(tourIds: string[]): Promise<string[]> {
+    const { data } = await apiClient.put<ApiResponse<{ tour_ids: string[] }>>(
+      '/users/me/favorite-tours',
+      { tour_ids: tourIds },
+    );
+    return data.data?.tour_ids ?? tourIds;
+  },
 };

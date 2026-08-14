@@ -17,7 +17,8 @@ T4/T7 design change (v2-surface-groups):
 * The prompt asks for continuous completion_pct (0–100) + confidence +
   evidence from direct visual scope coverage (v4.3-visual-scope).
 * Per-room precedence (precedence.apply_precedence) runs BEFORE the roster
-  rollup: fill-forward off; block-backward + MEP↔door-shutter gate remain.
+  rollup: later⇒earlier finish-chain fill (paint⇒primer/putty/punning);
+  block-backward + MEP↔door-shutter gate remain.
 * Per-unit capture merge uses incompleteness-wins (min); evidence_class +
   evidence text that admit insufficiency/material-only force 0 or low %.
 """
@@ -309,46 +310,75 @@ def prefer_lower_unit_evidence(
 
 
 def rollup_photographed_unit_pcts(pcts: list[float]) -> float:
-    """Floor/flat rollup across photographed rooms — mean of unit scores.
+    """Mean of unit scores. Empty list → 0.
 
-    One complete room + one incomplete room cannot become 100% (mean < 100).
-    Empty list → 0.
+    Callers that want floor-complete semantics must pass a score for EVERY
+    applicable roster unit (use 0.0 for uncaptured / unscored rooms). Averaging
+    only photographed rooms is what previously produced false 100% cards.
     """
     if not pcts:
         return 0.0
     return float(sum(pcts) / len(pcts))
 
 
+def rollup_activity_over_roster(
+    *,
+    applicable_units: list[tuple[str, str]],
+    units_pct: dict[tuple[str, str], float],
+) -> tuple[float, list[tuple[str, str]], bool]:
+    """Full-roster activity %: every applicable unit counts; missing → 0%.
+
+    Returns ``(avg_pct, photographed_units, is_fully_complete)``.
+    ``is_fully_complete`` is True only when every applicable unit is present in
+    ``units_pct`` and scored ≥ COMPLETED_STATUS_PCT.
+    """
+    if not applicable_units:
+        return 0.0, [], False
+    photographed = [u for u in applicable_units if u in units_pct]
+    pcts = [float(units_pct.get(u, 0.0)) for u in applicable_units]
+    avg = rollup_photographed_unit_pcts(pcts)
+    fully = (
+        len(photographed) >= len(applicable_units)
+        and all(float(units_pct.get(u, 0.0)) >= COMPLETED_STATUS_PCT for u in applicable_units)
+    )
+    if fully:
+        return 100.0, photographed, True
+    if avg >= COMPLETED_STATUS_PCT and not fully:
+        avg = 99.0
+    return avg, photographed, False
+
+
 def rollup_floor_finishing_progress(
     flat_progress: list[FlatProgress],
     assessments: list[ActivityAssessment],
 ) -> float:
-    """Floor finishing % from flat + common finishing scopes (v4.4).
+    """Floor finishing % from flat + common finishing scopes.
 
-    Does NOT average only high-scoring activity cards (that inflated overall
-    to ~60% while flats sat at 1–7%). Instead:
-      mean(photographed flat finishing %, …, common finishing %)
-    Flats with zero photographed rooms are omitted (not incomplete).
+    Mean of every residential flat's finishing % (uncaptured flats / rooms
+    already contribute 0% inside each flat). When a Common Area FlatProgress
+    entry exists, its roster % is included; otherwise fall back to the mean of
+    common activity cards that already have evidence.
     """
     parts: list[float] = []
+    common_fp: list[FlatProgress] = []
     for fp in flat_progress:
-        if getattr(fp, "rooms_photographed", 0) > 0:
+        if fp.flat_name == _COMMON_AREA_FLAT:
+            common_fp.append(fp)
+        else:
             parts.append(float(fp.completion_pct))
-    common = [
-        a for a in assessments
-        if a.activity.section == "common" and a.status in ("in_progress", "completed")
-    ]
-    if common:
-        parts.append(sum(float(a.completion_pct) for a in common) / len(common))
-    if not parts:
-        assessed = [
+    if common_fp:
+        parts.extend(float(fp.completion_pct) for fp in common_fp)
+    else:
+        common = [
             a for a in assessments
-            if a.status in ("in_progress", "completed")
+            if a.activity.section == "common" and a.status in ("in_progress", "completed")
         ]
-        if not assessed:
-            return 0.0
-        return round(sum(float(a.completion_pct) for a in assessed) / len(assessed), 1)
+        if common:
+            parts.append(sum(float(a.completion_pct) for a in common) / len(common))
+    if not parts:
+        return 0.0
     return round(sum(parts) / len(parts), 1)
+
 
 # Which view surfaces to include with each surface_group call. Openings and
 # fixtures both live on walls; cleanliness reads across both walls and floor.
@@ -394,8 +424,9 @@ AREA SCOPE (mandatory):
   activities as incomplete. Absence of toilet/kitchen/balcony work in a
   bedroom photo is not evidence those activities are incomplete — they are
   simply out of scope for this image.
-  Completed paint finish can support that underlying putty is done; the
-  server enforces paint⇒putty. Putty alone must NEVER invent paint completion.
+  Completed paint finish supports that underlying primer/putty/punning is done
+  for the same covered wall area; the server enforces later⇒earlier inference
+  (never invent paint from putty/punning alone).
 
 Order (mandatory):
   1) Identify the physical object/surface/work for the activity
@@ -432,16 +463,19 @@ Return ONLY JSON:
 }
 
 completion_pct = (visibly completed required scope / total observable relevant scope)×100
-Continuous 0–100. No default 50%. No fill-forward. No sequence inference.
+Continuous 0–100. No default 50%. No inventing later stages from earlier ones.
+Server applies later⇒earlier finish-chain inference after scoring.
 Confidence ≠ completion. High confidence + low % is valid.
 
 state not_visible → omit or completion_pct 0. Prefer omit over inventing.
 
 HARD RULES:
 1. Direct visual evidence only — no likely/probably/expected/sequence.
-2. Activities independent — never use one activity as proof of another
-   (punning≠putty; putty≠paint; wiring≠switches; GI≠boxing; frame≠shutter;
-    shutter≠polish; material≠install).
+2. Score each activity from direct visual evidence for THAT stage. The server
+   may infer earlier finish stages from a confirmed later paint stage on the
+   same surface — do NOT invent later stages (paint) from punning/putty alone.
+   Keep other pairs independent (wiring≠switches; GI≠boxing; frame≠shutter;
+   shutter≠polish; material≠install).
 3. Material present only (leaning/stacked/on floor) = 0%.
 4. Negative evidence: ask what COMPLETE would look like; if missing, lower/zero.
 5. One component ≠ entire activity — count openings/components/surfaces.
@@ -771,10 +805,10 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                     evidence=evidence_text,
                 )
 
-        # ── Precedence per room (T7h / v4.4) ────────────────────────────────
-        # Paint⇒putty fills required putty when paint is complete. Block-backward
-        # zeros mid-chain claims but does not erase evidenced paint. MEP↔door
-        # gate zeros MEP without confirmed door shutters.
+        # ── Precedence per room (T7h / v4.5) ────────────────────────────────
+        # Later⇒earlier finish chain: confirmed paint raises primer/putty/wall
+        # punning up to the same coverage %. Never invent paint from putty.
+        # Block-backward + MEP↔door gate still apply after that fill.
         _apply_precedence_per_room(per_unit_best, activities_by_id)
 
         # ── Split into strict / lenient dicts by confidence ────────────────
@@ -831,8 +865,32 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                 continue
 
             roster = flat_room_roster if activity.section == "flat" else common_room_roster
-            valid_units = set(roster) if roster else set(units_pct.keys())
-            photographed = [u for u in units_pct if u in valid_units] if valid_units else list(units_pct.keys())
+            # Full applicable roster (not only photographed rooms). Uncaptured
+            # rooms count as 0% so a few finished photos cannot read as 100%.
+            if roster:
+                applicable = [
+                    u for u in roster
+                    if _activity_applies_to_room(activity, u[1])
+                ]
+            else:
+                applicable = list(units_pct.keys())
+
+            if not applicable:
+                empty_status = (
+                    "not_observable" if activity.observability != "observable" else "not_assessed"
+                )
+                assessments.append(
+                    ActivityAssessment(
+                        activity=activity, status=empty_status,
+                        completion_pct=0.0, confidence_pct=0.0, evidence_capture_ids=[],
+                    )
+                )
+                continue
+
+            avg_pct, photographed, fully_complete = rollup_activity_over_roster(
+                applicable_units=applicable,
+                units_pct=units_pct,
+            )
             if not photographed:
                 empty_status = (
                     "not_observable" if activity.observability != "observable" else "not_assessed"
@@ -844,20 +902,20 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                     )
                 )
                 continue
-            pcts = [units_pct[u] for u in photographed]
-            avg_pct = rollup_photographed_unit_pcts(pcts)
 
             units_conf = per_activity_unit_conf.get(activity.activity_id, {})
             confs = [units_conf[u] for u in photographed if u in units_conf]
             avg_conf = sum(confs) / len(confs) if confs else 0.0
 
             units_evidence = per_activity_unit_evidence.get(activity.activity_id, {})
-            candidate_units = [u for u in units_evidence if u in valid_units and units_evidence[u]]
+            candidate_units = [u for u in photographed if units_evidence.get(u)]
             evidence = [
                 units_evidence[u] for u in sorted(candidate_units, key=lambda u: -units_pct.get(u, 0.0))
             ][:3]
-            # Photographed applicable units exist → never "No Photos Yet".
-            status = _status_for_pct(avg_pct, has_evidence=True)
+            status: ActivityStatus = (
+                "completed" if fully_complete
+                else _status_for_pct(avg_pct, has_evidence=True)
+            )
             assessments.append(
                 ActivityAssessment(
                     activity=activity, status=status,
@@ -873,7 +931,20 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
             per_activity_unit_evidence=per_activity_room_evidence,
             per_activity_unit_evidence_text=per_activity_room_evidence_text,
             flat_room_rosters=flat_room_rosters or {},
+            section="flat",
         )
+        # Common Area Finishing Works — same room-level roster breakdown as flats.
+        if common_area_units:
+            common_progress = _build_flat_progress(
+                activities_by_id=activities_by_id,
+                per_activity_unit_pct=per_activity_room_pct,
+                per_activity_unit_conf=per_activity_room_conf,
+                per_activity_unit_evidence=per_activity_room_evidence,
+                per_activity_unit_evidence_text=per_activity_room_evidence_text,
+                flat_room_rosters={_COMMON_AREA_FLAT: list(common_area_units)},
+                section="common",
+            )
+            flat_progress = list(flat_progress) + list(common_progress)
 
         determined = [a for a in assessments if a.confidence_pct > 0]
         overall_progress_pct = rollup_floor_finishing_progress(flat_progress, assessments)
@@ -1247,15 +1318,27 @@ def _apply_precedence_per_room(
             except (TypeError, ValueError):
                 continue
             evidence_adj = str(adj.get("evidence") or "")
+            inferred = evidence_adj.startswith("Inferred from")
+            capture_adj = str(adj.get("capture_id") or "")
+            if not capture_adj:
+                ids = adj.get("evidenceCaptureIds") or []
+                if isinstance(ids, list) and ids:
+                    capture_adj = str(ids[0] or "")
             if aid in act_map:
                 act_map[aid]["pct"] = new_pct
-                if evidence_adj == PAINT_IMPLIES_PUTTY_EVIDENCE:
+                if inferred:
                     act_map[aid]["evidence"] = evidence_adj
+                    # Floor rollups require conf >= 50; keep inferred fills visible.
+                    act_map[aid]["conf"] = float(
+                        adj.get("confidencePct") or _CONFIDENCE_TO_PCT["medium"]
+                    )
+                    if capture_adj and not act_map[aid].get("capture_id"):
+                        act_map[aid]["capture_id"] = capture_adj
             elif new_pct > 0.0:
                 act_map[aid] = {
                     "pct": new_pct,
-                    "conf": _CONFIDENCE_TO_PCT["medium"],
-                    "capture_id": "",
+                    "conf": float(adj.get("confidencePct") or _CONFIDENCE_TO_PCT["medium"]),
+                    "capture_id": capture_adj,
                     "evidence": evidence_adj or PAINT_IMPLIES_PUTTY_EVIDENCE,
                 }
             # else: stayed at 0% and wasn't in the map — don't add noise.
@@ -1269,14 +1352,17 @@ def _build_flat_progress(
     per_activity_unit_evidence: dict[str, dict[tuple[str, str], str]],
     per_activity_unit_evidence_text: dict[str, dict[tuple[str, str], str]],
     flat_room_rosters: dict[str, list[str]],
+    section: str = "flat",
 ) -> list[FlatProgress]:
-    """Build Flat Finishing Works breakdown (v4.4 area-scoped).
+    """Build Flat / Common Finishing Works breakdown.
 
-    Work progress uses **photographed** rooms only. A flat is fully complete
-    only when every required roster room is photographed and every scored
-    applicable activity in those rooms is at 100%.
+    Work progress uses the FULL room roster; uncaptured rooms contribute 0%.
+    A scope is fully complete only when every required roster room is
+    photographed and every scored applicable activity in those rooms is 100%.
     """
-    flat_activity_ids = {aid for aid, a in activities_by_id.items() if a.section == "flat"}
+    section_activity_ids = {
+        aid for aid, a in activities_by_id.items() if a.section == section
+    }
     flats: list[FlatProgress] = []
     for flat_name, room_names in flat_room_rosters.items():
         room_list = list(room_names)
@@ -1295,7 +1381,7 @@ def _build_flat_progress(
         for room_name in room_list:
             unit = (flat_name, room_name)
             room_activities: list[RoomActivityAssessment] = []
-            for activity_id in flat_activity_ids:
+            for activity_id in section_activity_ids:
                 act_def = activities_by_id[activity_id]
                 if not _activity_applies_to_room(act_def, room_name):
                     continue
@@ -1335,11 +1421,12 @@ def _build_flat_progress(
             rooms.append(RoomProgress(room_name=room_name, is_complete=is_complete, activities=room_activities))
 
         rooms_photographed = len(photographed_room_names)
-        # WIP % = mean of photographed rooms' activity scores (not only
-        # fully-complete room count — that read 1–7% while work was further along).
+        # WIP % = mean across the FULL roster; uncaptured rooms contribute 0%
+        # so sparse photo coverage cannot read as 80%+ flat progress.
         room_work_pcts: list[float] = []
         for room in rooms:
             if room.room_name not in photographed_room_names:
+                room_work_pcts.append(0.0)
                 continue
             if room.is_complete:
                 room_work_pcts.append(100.0)
@@ -1367,7 +1454,7 @@ def _build_flat_progress(
                 flat_name=flat_name,
                 completion_pct=completion_pct,
                 rooms_complete=rooms_complete,
-                rooms_total=rooms_photographed if rooms_photographed else rooms_required,
+                rooms_total=rooms_required,
                 rooms=rooms,
                 rooms_required=rooms_required,
                 rooms_photographed=rooms_photographed,

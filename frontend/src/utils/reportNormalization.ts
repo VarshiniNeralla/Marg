@@ -1,4 +1,9 @@
-import type { ChangeDetected, ProgressAnalysisReport } from '@/services/progressAnalysisService';
+import type {
+  ChangeDetected,
+  ProgressAnalysisReport,
+  StructuredChange,
+  ComparisonMeta,
+} from '@/services/progressAnalysisService';
 import {
   polishExecutiveSummary,
   polishFallbackSummary,
@@ -23,9 +28,21 @@ export interface NormalizedChange {
   category: string;
 }
 
+export interface NormalizedStructuredChange {
+  category: string;
+  area: string;
+  changeType: string;
+  beforeState: string;
+  afterState: string;
+  impact: ImportanceLevel;
+  confidence: number;
+}
+
 export interface NormalizedProgressReport {
   summary: string;
   overallProgress: { percentage: number; description: string };
+  comparison: ComparisonMeta | null;
+  changes: NormalizedStructuredChange[];
   changesDetected: NormalizedChange[];
   completedWork: string[];
   newlyAdded: string[];
@@ -207,20 +224,62 @@ function normalizeStringArray(raw: unknown): string[] {
 }
 
 export function normalizeProgressReport(report: ProgressAnalysisReport): NormalizedProgressReport {
-  const pct = Math.max(0, Math.min(100, Number(report.overallProgress?.percentage) || 0));
+  const progressBlock = report.progress ?? report.overallProgress;
+  const pct = Math.max(0, Math.min(100, Number(progressBlock?.percentage) || 0));
   const summaryRaw = extractTextFromItem(report.summary) ?? report.summary ?? '';
   const summary = summaryRaw
     ? polishExecutiveSummary(summaryRaw, pct)
     : polishFallbackSummary();
 
-  const progressDesc = extractTextFromItem(report.overallProgress?.description)
-    ?? report.overallProgress?.description
+  const progressDesc = extractTextFromItem(progressBlock?.description)
+    ?? progressBlock?.description
     ?? '';
 
+  const structured: NormalizedStructuredChange[] = [];
+  const rawChanges = (report.changes?.length ? report.changes : null) as StructuredChange[] | null;
+  if (rawChanges) {
+    for (const c of rawChanges) {
+      const impact = normalizeImportance(c.impact);
+      structured.push({
+        category: (c.category || 'General').trim() || 'General',
+        area: (c.area || '').trim(),
+        changeType: (c.changeType || '').trim(),
+        beforeState: (c.beforeState || '').trim(),
+        afterState: (c.afterState || '').trim(),
+        impact,
+        confidence: Math.max(0, Math.min(100, Number(c.confidence) || 0)),
+      });
+    }
+  }
+
   const changes: NormalizedChange[] = [];
-  for (const item of report.changesDetected ?? []) {
-    const normalized = normalizeChangeItem(item);
-    if (normalized) changes.push(normalized);
+  if (structured.length) {
+    for (const c of structured) {
+      const text = humanizeChange(
+        c.category,
+        [c.area, c.beforeState && c.afterState ? `${c.beforeState} → ${c.afterState}` : (c.afterState || c.beforeState)]
+          .filter(Boolean)
+          .join(' — '),
+      );
+      if (text) changes.push({ text, importance: c.impact, category: c.category });
+    }
+  } else {
+    for (const item of report.changesDetected ?? []) {
+      const normalized = normalizeChangeItem(item);
+      if (normalized) changes.push(normalized);
+    }
+  }
+
+  let comparison: ComparisonMeta | null = null;
+  if (report.comparison) {
+    const view = report.comparison.viewConsistency;
+    const vis = report.comparison.visibility;
+    comparison = {
+      sameLocation: Boolean(report.comparison.sameLocation),
+      viewConsistency: view === 'good' || view === 'poor' ? view : 'fair',
+      visibility: vis === 'good' || vis === 'poor' ? vis : 'fair',
+      comparisonConfidence: Math.max(0, Math.min(100, Number(report.comparison.comparisonConfidence) || 0)),
+    };
   }
 
   return {
@@ -229,6 +288,8 @@ export function normalizeProgressReport(report: ProgressAnalysisReport): Normali
       percentage: pct,
       description: polishProgressDescription(progressDesc, pct),
     },
+    comparison,
+    changes: structured,
     changesDetected: changes,
     completedWork: normalizeStringArray(report.completedWork),
     newlyAdded: normalizeStringArray(report.newlyAdded),

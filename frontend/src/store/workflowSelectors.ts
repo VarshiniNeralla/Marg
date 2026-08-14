@@ -62,6 +62,25 @@ export function getFloorPlanByFloor(floorPlans: MockFloorPlan[], towerId: string
   return floorPlans.find(fp => fp.towerId === towerId && fp.floorId === floorId);
 }
 
+/**
+ * Pick the floor-plan record that actually owns pins / captures for this floor.
+ * Re-uploads leave multiple plan rows; the first match is often an empty newer plan.
+ */
+export function resolveFloorPlanForFloor(
+  floorPlans: MockFloorPlan[],
+  pins: WfCapturePin[],
+  towerId: string,
+  floorId: string,
+): MockFloorPlan | undefined {
+  const forFloor = floorPlans.filter(fp => fp.towerId === towerId && fp.floorId === floorId);
+  return (
+    forFloor.find(fp => pins.some(p => p.floorPlanId === fp.id && (p.captureIds?.length ?? 0) > 0))
+    ?? forFloor.find(fp => pins.some(p => p.floorPlanId === fp.id))
+    ?? forFloor[0]
+    ?? getFloorPlanByFloor(floorPlans, towerId, floorId)
+  );
+}
+
 /** Floors on a tower that have an uploaded floor plan (capture workflow, floor plans page). */
 export function getFloorsWithPlanByTower(
   floors: WfFloor[],
@@ -94,6 +113,19 @@ export function countFloorsWithPlanByTower(
 
 export function getCapturePinsByFloorPlan(pins: WfCapturePin[], floorPlanId: string) {
   return [...pins.filter(p => p.floorPlanId === floorPlanId)].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+}
+
+/** Pins for a floor: prefer the plan id, then any pin on that floorId (plan-id drift). */
+export function getCapturePinsForFloor(
+  pins: WfCapturePin[],
+  floorId: string,
+  floorPlanId?: string | null,
+): WfCapturePin[] {
+  if (floorPlanId) {
+    const byPlan = getCapturePinsByFloorPlan(pins, floorPlanId);
+    if (byPlan.length > 0) return byPlan;
+  }
+  return [...pins.filter(p => p.floorId === floorId)].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
 }
 
 export function getPinForCapture(pins: WfCapturePin[], captureId: string) {

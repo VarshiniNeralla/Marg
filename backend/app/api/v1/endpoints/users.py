@@ -82,6 +82,46 @@ async def get_me(
     return ApiResponse(success=True, data=user)
 
 
+class FavoriteToursPayload(BaseModel):
+    tour_ids: list[str] = Field(default_factory=list)
+
+
+@router.get(
+    "/me/favorite-tours",
+    response_model=ApiResponse[dict],
+    summary="List the caller's favorited virtual tour ids",
+)
+async def get_my_favorite_tours(
+    current_user: UserDocument = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+) -> ApiResponse[dict]:
+    service = UserService(db)
+    tour_ids = await service.get_favorite_tour_ids(
+        user_id=str(current_user.id),
+        org_id=str(current_user.org_id),
+    )
+    return ApiResponse(success=True, data={"tour_ids": tour_ids})
+
+
+@router.put(
+    "/me/favorite-tours",
+    response_model=ApiResponse[dict],
+    summary="Replace the caller's favorited virtual tour ids",
+)
+async def set_my_favorite_tours(
+    payload: FavoriteToursPayload,
+    current_user: UserDocument = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+) -> ApiResponse[dict]:
+    service = UserService(db)
+    tour_ids = await service.set_favorite_tour_ids(
+        user_id=str(current_user.id),
+        org_id=str(current_user.org_id),
+        tour_ids=payload.tour_ids,
+    )
+    return ApiResponse(success=True, data={"tour_ids": tour_ids})
+
+
 @router.get(
     "/{user_id}",
     response_model=ApiResponse[UserDetailResponse],

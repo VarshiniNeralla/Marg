@@ -1,14 +1,15 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { Box, Typography } from '@mui/material';
 import {
   ArrowBackRounded, CameraAltRounded, LayersRounded, EventRounded, AccessTimeRounded,
-  DeleteOutlineRounded,
+  DeleteOutlineRounded, MapRounded,
 } from '@mui/icons-material';
 import { getCaptureById, getPinForCapture, getPinCaptureTimeline } from '@store/workflowSelectors';
 import type { MockCapture } from '@/data/mockData';
 import { useWorkflowStore } from '@store/workflowStore';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
+import { formatPinLocationLabel, formatTowerLabel } from '@/utils/pinLabels';
 
 const P = {
   border: '#e4e7ec', muted: '#6b7280', subtle: '#9ca3af', strong: '#111827',
@@ -52,22 +53,55 @@ export default function CaptureDetailPage() {
   const deleteCapture = useWorkflowStore(s => s.deleteCapture);
   const [deleteTarget, setDeleteTarget] = useState<MockCapture | null>(null);
 
+  const navigate = useNavigate();
+  // Which capture in the timeline is being previewed (default: the one in the URL).
+  const [activeId, setActiveId] = useState<string | null>(captureId ?? null);
+
+  useEffect(() => {
+    if (captureId) setActiveId(captureId);
+  }, [captureId]);
+
   const capture = getCaptureById(captures, captureId ?? '');
 
   // Real timeline: every capture attached to this pin, oldest → newest.
-  const timeline = useMemo(
-    () => getPinCaptureTimeline(pins, captures, captureId ?? ''),
-    [pins, captures, captureId],
-  );
-  const pin = useMemo(() => getPinForCapture(pins, captureId ?? ''), [pins, captureId]);
+  // Fall back to activeId so deleting the URL visit does not flash a 404
+  // before navigate() lands on the next remaining visit.
+  const timeline = useMemo(() => {
+    const byUrl = getPinCaptureTimeline(pins, captures, captureId ?? '');
+    if (byUrl.length) return byUrl;
+    if (activeId) return getPinCaptureTimeline(pins, captures, activeId);
+    return [];
+  }, [pins, captures, captureId, activeId]);
 
-  // Which capture in the timeline is being previewed (default: the one in the URL).
-  const [activeId, setActiveId] = useState<string | null>(captureId ?? null);
-  const active = (timeline.find(c => c.id === activeId) ?? capture) as MockCapture | undefined;
+  const pin = useMemo(() => {
+    return getPinForCapture(pins, captureId ?? '')
+      ?? (activeId ? getPinForCapture(pins, activeId) : undefined)
+      ?? (timeline[0] ? getPinForCapture(pins, timeline[0].id) : undefined);
+  }, [pins, captureId, activeId, timeline]);
 
-  const navigate = useNavigate();
+  const active = (
+    timeline.find(c => c.id === activeId)
+    ?? timeline.find(c => c.id === captureId)
+    ?? timeline[timeline.length - 1]
+    ?? capture
+  ) as MockCapture | undefined;
 
-  if (!capture || !active) return (
+  const confirmDelete = (target: MockCapture) => {
+    const remaining = timeline.filter(c => c.id !== target.id);
+    if (remaining.length > 0) {
+      const next = remaining[remaining.length - 1];
+      setActiveId(next.id);
+      // Route first so the page stays on a live visit after the store update.
+      navigate(`/captures/${next.id}`, { replace: true });
+      deleteCapture(target.id);
+    } else {
+      deleteCapture(target.id);
+      navigate(-1);
+    }
+    setDeleteTarget(null);
+  };
+
+  if (!active) return (
     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '50vh', gap: 2 }}>
       <Typography sx={{ fontSize: '2rem', fontWeight: 700, color: P.border }}>404</Typography>
       <Typography sx={{ color: P.muted }}>Capture not found</Typography>
@@ -75,9 +109,15 @@ export default function CaptureDetailPage() {
     </Box>
   );
 
-  const title = pin ? `Pin ${pin.sequenceNumber}` : active.roomName;
+  const title = formatPinLocationLabel(pin, active.roomName);
   const imageUrl = captureImageUrl(active);
   const activeWhen = fmtDateTime(active);
+  const isOnlyVisit = timeline.length <= 1;
+  const deleteDescription = deleteTarget
+    ? (timeline.filter(c => c.id !== deleteTarget.id).length === 0
+      ? 'This is the only visit on this pin. Deleting it will also remove the pin from the floor plan. This cannot be undone.'
+      : 'This visit will be removed. Other visits on this pin will stay. This cannot be undone.')
+    : '';
 
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6 }}>
@@ -112,7 +152,7 @@ export default function CaptureDetailPage() {
         }}>{title}</Typography>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', color: P.muted, fontSize: '0.875rem' }}>
           <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
-            <LayersRounded sx={{ fontSize: 15 }} /> {active.towerName} · {active.floorLabel}
+            <LayersRounded sx={{ fontSize: 15 }} /> {formatTowerLabel(active.towerName)} · {active.floorLabel}
           </Box>
           <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
             <EventRounded sx={{ fontSize: 15 }} /> {activeWhen.date}
@@ -120,6 +160,21 @@ export default function CaptureDetailPage() {
           {activeWhen.time && (
             <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
               <AccessTimeRounded sx={{ fontSize: 15 }} /> {activeWhen.time}
+            </Box>
+          )}
+          {pin?.projectId && pin?.towerId && pin?.floorId && (
+            <Box
+              component={Link}
+              to={`/floor-plans/${pin.projectId}/${pin.towerId}/${pin.floorId}?pinsOnly=1&returnTo=${encodeURIComponent(`/captures/${active.id}`)}`}
+              sx={{
+                display: 'inline-flex', alignItems: 'center', gap: 0.5,
+                px: 1, py: 0.375, borderRadius: '7px',
+                border: `1.5px solid ${P.border}`, color: P.muted,
+                fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none',
+                transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft },
+              }}
+            >
+              <MapRounded sx={{ fontSize: 14 }} /> View on Floor Plan
             </Box>
           )}
         </Box>
@@ -182,7 +237,29 @@ export default function CaptureDetailPage() {
                     Visit {i + 1} · {c.fileCount} file{c.fileCount !== 1 ? 's' : ''}
                   </Typography>
                 </Box>
-                {isActive && <Box sx={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: P.blue, flexShrink: 0 }} />}
+                {/* Per-visit delete — older visits included, not only the top button / latest */}
+                {!isOnlyVisit && (
+                  <Box
+                    component="button"
+                    type="button"
+                    aria-label={`Delete visit ${i + 1}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeleteTarget(c);
+                    }}
+                    sx={{
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      width: 32, height: 32, borderRadius: '8px', flexShrink: 0,
+                      border: `1.5px solid ${P.border}`, backgroundColor: P.white,
+                      color: P.muted, cursor: 'pointer', p: 0, fontFamily: 'inherit',
+                      transition: T,
+                      '&:hover': { borderColor: '#ef4444', color: '#ef4444', backgroundColor: 'rgba(239,68,68,0.05)' },
+                    }}
+                  >
+                    <DeleteOutlineRounded sx={{ fontSize: 16 }} />
+                  </Box>
+                )}
+                {isActive && isOnlyVisit && <Box sx={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: P.blue, flexShrink: 0 }} />}
               </Box>
             );
           })}
@@ -192,21 +269,11 @@ export default function CaptureDetailPage() {
       <ConfirmDialog
         open={!!deleteTarget}
         title="Delete this capture?"
-        description="This photo capture will be permanently removed. This cannot be undone."
+        description={deleteDescription}
         confirmLabel="Delete capture"
         destructive
         onConfirm={() => {
-          if (deleteTarget) {
-            const remaining = timeline.filter(c => c.id !== deleteTarget.id);
-            deleteCapture(deleteTarget.id);
-            if (remaining.length > 0) {
-              // Show the next-most-recent remaining capture instead of a dead id.
-              setActiveId(remaining[remaining.length - 1].id);
-            } else {
-              navigate(-1);
-            }
-          }
-          setDeleteTarget(null);
+          if (deleteTarget) confirmDelete(deleteTarget);
         }}
         onCancel={() => setDeleteTarget(null)}
       />

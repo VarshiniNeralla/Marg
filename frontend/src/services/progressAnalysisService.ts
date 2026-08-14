@@ -6,15 +6,37 @@ export interface OverallProgress {
   description: string;
 }
 
+export interface ComparisonMeta {
+  sameLocation: boolean;
+  viewConsistency: 'good' | 'fair' | 'poor';
+  visibility: 'good' | 'fair' | 'poor';
+  comparisonConfidence: number;
+}
+
 export interface ChangeDetected {
   category: string;
   change: string;
   importance: 'High' | 'Medium' | 'Low';
 }
 
+export interface StructuredChange {
+  category: string;
+  area: string;
+  changeType: string;
+  beforeState: string;
+  afterState: string;
+  impact: 'High' | 'Medium' | 'Low';
+  confidence: number;
+}
+
 export interface ProgressAnalysisReport {
   summary: string;
+  comparison?: ComparisonMeta | null;
+  /** Preferred: visible progress between visits. */
+  progress?: OverallProgress | null;
+  /** Legacy alias — still populated by the backend. */
   overallProgress: OverallProgress;
+  changes?: StructuredChange[];
   changesDetected: ChangeDetected[];
   completedWork: string[];
   newlyAdded: string[];

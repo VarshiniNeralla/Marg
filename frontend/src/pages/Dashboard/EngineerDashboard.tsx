@@ -9,6 +9,7 @@ import { Link } from 'react-router-dom';
 import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
 import DashboardHero from '@shared/components/DashboardHero/DashboardHero';
+import { filterGalleryCaptures } from '@/utils/captureGallery';
 
 /* ─── palette ────────────────────────────────────────────────────────────── */
 const P = {
@@ -36,15 +37,20 @@ export default function EngineerDashboard() {
   const user     = useAuthStore(s => s.user);
   const projects = useWorkflowStore(s => s.projects);
   const captures = useWorkflowStore(s => s.captures);
+  const capturePins = useWorkflowStore(s => s.capturePins);
   const tours    = useWorkflowStore(s => s.tours);
 
-  const assignedIds = new Set(user?.assignedProjectIds ?? []);
-  const myProjects  = assignedIds.size
-    ? projects.filter(p => assignedIds.has(p.id) && !p.archived)
-    : projects.filter(p => !p.archived).slice(0, 3);
+  // Same project scope as Capture History (/my-captures): assigned projects when
+  // set, otherwise every active project (do not slice to 3 — that under-counted uploads).
+  const assignedIds = user?.assignedProjectIds ?? [];
+  const assignedSet = assignedIds.length > 0 ? new Set(assignedIds) : null;
+  const myProjects = assignedSet
+    ? projects.filter(p => assignedSet.has(p.id) && !p.archived)
+    : projects.filter(p => !p.archived);
 
+  // Same count as Capture History cards: one per pin (latest visit), not every visit.
+  const myCaptures = filterGalleryCaptures(captures, capturePins, assignedSet);
   const myProjectIds = new Set(myProjects.map(p => p.id));
-  const myCaptures    = captures.filter(c => myProjectIds.has(c.projectId));
   const pendingTours  = tours.filter(t => myProjectIds.has(t.projectId) && t.status === 'published' && !(t as any).managerReviewed);
   const reviewedTours = tours.filter(t => myProjectIds.has(t.projectId) && (t as any).managerReviewed);
 

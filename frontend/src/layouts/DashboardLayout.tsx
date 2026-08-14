@@ -9,13 +9,14 @@ import {
   LogoutRounded, PersonRounded, MenuRounded,
   CloudUploadRounded, StorageRounded, RateReviewRounded,
   PhotoCameraRounded, ChevronLeftRounded, ChevronRightRounded, HistoryRounded,
-  AutoAwesomeRounded, InsightsRounded,
+  AutoAwesomeRounded, InsightsRounded, ChatBubbleOutlineRounded,
 } from '@mui/icons-material';
 import { useTheme } from '@mui/material/styles';
 import { colors, motion, zIndex } from '@theme/tokens';
 import { useAuthStore, isAdmin, isManager, isFieldEngineer, getRoleLabel } from '@store/authStore';
 import { authService } from '@features/auth/services/authService';
 import NotificationCenter from '@/shared/components/NotificationCenter/NotificationCenter';
+import DrishtiFloatingLauncher from '@/components/drishti/DrishtiFloatingLauncher';
 
 const SIDEBAR_W = 248;
 const SIDEBAR_W_COLLAPSED = 60;
@@ -42,6 +43,7 @@ const ADMIN_NAV: NavSection[] = [
       { label: 'Tours',       path: '/tours',       icon: <ViewInArRounded /> },
       { label: 'Progress Reports', path: '/progress-reports', icon: <AutoAwesomeRounded /> },
       { label: 'Construction Progress', path: '/construction-progress', icon: <InsightsRounded /> },
+      { label: 'Drishti',     path: '/drishti',     icon: <ChatBubbleOutlineRounded /> },
       { label: 'Analytics',   path: '/analytics',   icon: <BarChartRounded /> },
     ],
   },
@@ -50,7 +52,6 @@ const ADMIN_NAV: NavSection[] = [
     items: [
       { label: 'Users',    path: '/users',    icon: <PeopleRounded /> },
       { label: 'Media',         path: '/admin/media',   icon: <StorageRounded /> },
-      { label: 'Audit',         path: '/admin/audit',   icon: <HistoryRounded /> },
       { label: 'Settings',      path: '/settings',      icon: <TuneRounded /> },
     ],
   },
@@ -71,6 +72,7 @@ const MANAGER_NAV: NavSection[] = [
       { label: 'Virtual Tours', path: '/tours',  icon: <ViewInArRounded /> },
       { label: 'Progress Reports', path: '/progress-reports', icon: <AutoAwesomeRounded /> },
       { label: 'Construction Progress', path: '/construction-progress', icon: <InsightsRounded /> },
+      { label: 'Drishti',     path: '/drishti',     icon: <ChatBubbleOutlineRounded /> },
     ],
   },
   {
@@ -480,6 +482,8 @@ export default function DashboardLayout() {
           </MenuItem>
         </Box>
       </Menu>
+
+      {(isAdmin(user) || isManager(user)) && <DrishtiFloatingLauncher />}
     </Box>
   );
 }

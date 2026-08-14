@@ -506,6 +506,7 @@ export type NotifTypeDTO =
   | 'tour_published'
   | 'defect_assigned'
   | 'floor_plan_uploaded'
+  | 'floor_plan_deleted'
   | 'review_approved'
   | 'review_rejected';
 

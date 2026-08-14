@@ -33,7 +33,7 @@ export function safeParseJson<T>(raw: string | null): T | null {
   }
 }
 
-/** Remove every persisted key (Zustand + legacy). */
+/** Remove every persisted key (Zustand + legacy). Used by Reset Application Data. */
 export function clearAllPersistedStorage(): void {
   localStorage.removeItem(AUTH_STORE_KEY);
   localStorage.removeItem(WORKFLOW_STORE_KEY);

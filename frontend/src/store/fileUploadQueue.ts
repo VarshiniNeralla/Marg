@@ -970,6 +970,16 @@ export function queuedPinStatuses(): Record<string, FileUploadStatus> {
   return out;
 }
 
+/** Earliest enqueue time for a pin's pending file(s) — used for upload-order numbering. */
+export function fileUploadCreatedAtForPin(pinId: string): number | undefined {
+  let earliest: number | undefined;
+  for (const entry of queue) {
+    if (entry.pinId !== pinId) continue;
+    if (earliest === undefined || entry.createdAt < earliest) earliest = entry.createdAt;
+  }
+  return earliest;
+}
+
 /**
  * Every pin id with a pending upload right now, keyed to its status. Used to
  * SEED a freshly-mounted page's local status state — without this, a pin

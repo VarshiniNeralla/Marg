@@ -139,7 +139,7 @@ export default function AdminDashboard() {
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
               <ActionCard label="Projects"    desc="View and manage all projects"   path="/projects"    color="#2563eb" icon={<FolderRounded />} />
               <ActionCard label="Floor Plans" desc="Browse uploaded site blueprints" path="/floor-plans" color="#7c3aed" icon={<MapRounded />} />
-              <ActionCard label="Analytics"   desc="KPIs and team metrics"           path="/analytics"   color="#059669" icon={<BarChartRounded />} />
+              <ActionCard label="Analytics"   desc="Coverage, reviews & site progress" path="/analytics"   color="#059669" icon={<BarChartRounded />} />
             </Box>
           </Box>
         </Grid>

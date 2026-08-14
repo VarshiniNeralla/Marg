@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Box, Typography, Modal, IconButton, CircularProgress } from '@mui/material';
 import { MapRounded, CloseRounded, ImageNotSupportedRounded } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
@@ -34,10 +34,6 @@ const LEGEND_STATES: Array<Exclude<RoomHeatmapState, 'uploaded' | 'no_images'>> 
   'completed',
 ];
 
-function polygonToPoints(polygon: RoomHeatmapEntry['polygon']): string {
-  return polygon.map(p => `${p.x},${p.y}`).join(' ');
-}
-
 function pointInPolygon(x: number, y: number, polygon: RoomHeatmapEntry['polygon']): boolean {
   let inside = false;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -52,7 +48,7 @@ function pointInPolygon(x: number, y: number, polygon: RoomHeatmapEntry['polygon
   return inside;
 }
 
-/** Only keep colored rooms that belong to at least one photographed pin tip. */
+/** Rooms used only for pin-click fallback when a snapshot lacks pin attribution. */
 function roomsAlignedToPins(
   rooms: RoomHeatmapEntry[],
   pins: Array<{ x: number; y: number }>,
@@ -60,8 +56,6 @@ function roomsAlignedToPins(
 ): RoomHeatmapEntry[] {
   const colored = rooms.filter(r => displayState(r.state) !== 'no_images' && r.polygon?.length);
   if (heatmapPins && heatmapPins.length > 0) {
-    // Name match alone is not enough — overlapping AABBs from neighbour flats
-    // must not paint wash unless the attributed pin tip is inside the box.
     return colored.filter(room => {
       if (/^Pin\s+\d+$/i.test(room.roomName)) {
         const seq = Number(room.roomName.replace(/^Pin\s+/i, ''));
@@ -80,6 +74,32 @@ function roomsAlignedToPins(
   }
   if (pins.length === 0) return colored;
   return colored.filter(room => pins.some(p => pointInPolygon(p.x, p.y, room.polygon)));
+}
+
+/** Upload/capture order 1..N — same rule as Capture Workflow (not layout stop #). */
+function uploadSequenceByPinId(
+  pins: Array<{ id: string; sequenceNumber: number; captureIds: string[] }>,
+  captures: Array<{ id: string; capturedAt?: string; uploadedAt?: string }>,
+): Map<string, number> {
+  const captureTime = (captureIds: string[]) => {
+    let earliest = Number.POSITIVE_INFINITY;
+    for (const cid of captureIds) {
+      const c = captures.find(x => x.id === cid);
+      if (!c) continue;
+      const ms = Date.parse(c.capturedAt || c.uploadedAt || '');
+      if (Number.isFinite(ms) && ms < earliest) earliest = ms;
+    }
+    return earliest;
+  };
+  const numbered = [...pins]
+    .filter(p => p.captureIds.length > 0)
+    .sort((a, b) => {
+      const ta = captureTime(a.captureIds);
+      const tb = captureTime(b.captureIds);
+      if (ta !== tb) return ta - tb;
+      return a.sequenceNumber - b.sequenceNumber;
+    });
+  return new Map(numbered.map((p, i) => [p.id, i + 1]));
 }
 
 type RoomPanelInfo = {
@@ -147,10 +167,15 @@ export default function FloorPlanHeatmapOverlay({
   const [selectedRoom, setSelectedRoom] = useState<RoomPanelInfo | null>(null);
   const [imgLoaded, setImgLoaded] = useState(false);
   const allPins = useWorkflowStore(s => s.capturePins);
+  const allCaptures = useWorkflowStore(s => s.captures);
   const livePins = floorPlanId ? getCapturePinsByFloorPlan(allPins, floorPlanId) : [];
+  const uploadSeq = useMemo(
+    () => uploadSequenceByPinId(livePins, allCaptures),
+    [livePins, allCaptures],
+  );
 
-  // Snapshot pins keep markers glued to the boxes from the same analysis.
-  // Live pins are a fallback for older snapshots that predate heatmapPins.
+  // Snapshot pins keep markers at analysis positions; numbers follow engineer
+  // upload order (live when available, else snapshot sequence after re-analyze).
   const pins: Array<{
     id: string;
     sequenceNumber: number;
@@ -162,22 +187,34 @@ export default function FloorPlanHeatmapOverlay({
     capturesCount?: number;
   }> =
     heatmapPins && heatmapPins.length > 0
-      ? heatmapPins.map(p => ({
-          id: p.pinId,
-          sequenceNumber: p.sequenceNumber,
-          x: p.x,
-          y: p.y,
-          roomName: p.roomName,
-          flatName: p.flatName,
-          state: p.state,
-          capturesCount: p.capturesCount,
-        }))
-      : livePins.map(p => ({
-          id: p.id,
-          sequenceNumber: p.sequenceNumber,
-          x: p.x,
-          y: p.y,
-        }));
+      ? (() => {
+          const mapped = heatmapPins.map(p => ({
+            id: p.pinId,
+            sequenceNumber: uploadSeq.get(p.pinId) ?? p.sequenceNumber,
+            x: p.x,
+            y: p.y,
+            roomName: p.roomName,
+            flatName: p.flatName,
+            state: p.state,
+            capturesCount: p.capturesCount,
+          }));
+          // If live upload order covers every snapshot pin, re-index 1..N tightly.
+          if (mapped.every(p => uploadSeq.has(p.id))) {
+            return [...mapped]
+              .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
+              .map((p, i) => ({ ...p, sequenceNumber: i + 1 }));
+          }
+          return mapped;
+        })()
+      : (() => {
+          const withCaptures = livePins.filter(p => p.captureIds.length > 0);
+          return withCaptures.map(p => ({
+            id: p.id,
+            sequenceNumber: uploadSeq.get(p.id) ?? p.sequenceNumber,
+            x: p.x,
+            y: p.y,
+          }));
+        })();
 
   const visibleRooms = roomsAlignedToPins(rooms, pins, heatmapPins);
 
@@ -262,29 +299,6 @@ export default function FloorPlanHeatmapOverlay({
               onLoad={() => setImgLoaded(true)}
               sx={{ width: '100%', display: 'block' }}
             />
-            <svg
-              viewBox="0 0 100 100"
-              preserveAspectRatio="none"
-              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
-            >
-              {/* Room progress wash — visual only. Room identity comes from
-                  clicking a pin (heatmapPins attribution), not overlapping boxes. */}
-              {visibleRooms.map((room, i) => {
-                const state = displayState(room.state);
-                return (
-                  <polygon
-                    key={i}
-                    points={polygonToPoints(room.polygon)}
-                    fill={STATE_COLOR[state]}
-                    fillOpacity={0.12}
-                    stroke={STATE_COLOR[state]}
-                    strokeOpacity={0.45}
-                    strokeWidth={0.2}
-                  />
-                );
-              })}
-            </svg>
-
             {/* Pin markers — clickable; open the attributed room panel. */}
             {pins.map(pin => (
               <Box

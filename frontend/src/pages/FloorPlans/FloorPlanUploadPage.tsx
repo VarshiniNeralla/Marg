@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Box, Typography, LinearProgress } from '@mui/material';
-import { UploadFileRounded, CheckCircleRounded, ArrowBackRounded, InsertDriveFileRounded } from '@mui/icons-material';
+import { Box, Typography, LinearProgress, Button } from '@mui/material';
+import { UploadFileRounded, CheckCircleRounded, ArrowBackRounded, InsertDriveFileRounded, EditLocationAltRounded, ContentCopyRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import { uploadFloorPlanFiles } from '@/services/uploadService';
@@ -23,6 +23,8 @@ export default function FloorPlanUploadPage() {
   const project = useWorkflowStore(s => s.projects.find(p => p.id === projectId));
   const tower = useWorkflowStore(s => s.towers.find(t => t.id === towerId));
   const floor = useWorkflowStore(s => s.floors.find(f => f.id === floorId));
+  const floorPlans = useWorkflowStore(s => s.floorPlans);
+  const allPins = useWorkflowStore(s => s.capturePins);
   const uploadFloorPlan = useWorkflowStore(s => s.uploadFloorPlan);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -32,8 +34,18 @@ export default function FloorPlanUploadPage() {
   const [progress, setProgress] = useState(0);
   const [done, setDone] = useState(false);
   const [error, setError] = useState('');
+  const [wasReplace, setWasReplace] = useState(false);
+  const [canCopyFromSibling, setCanCopyFromSibling] = useState(false);
 
   const backUrl = `/floor-plans?project=${projectId ?? ''}&tower=${towerId ?? ''}`;
+  const viewerUrl = `/floor-plans/${projectId}/${towerId}/${floorId}`;
+
+  const existingPlanForFloor = floorPlans.some(
+    fp => fp.towerId === towerId && fp.floorId === floorId,
+  );
+  const siblingHasLabeledPins = allPins.some(
+    p => p.towerId === towerId && p.floorId !== floorId && p.flatName && p.roomName,
+  );
 
   if (!project || !tower || !floor) {
     return (
@@ -71,6 +83,8 @@ export default function FloorPlanUploadPage() {
     setUploading(true);
     setProgress(0);
     setError('');
+    const replacing = existingPlanForFloor;
+    const offerCopy = !replacing && siblingHasLabeledPins;
     try {
       const result = await uploadFloorPlanFiles([file], setProgress, `fp-${towerId}-${floorId}`);
       const ext = file.type === 'application/pdf' ? 'pdf' : file.type === 'image/png' ? 'png' : 'jpg';
@@ -85,9 +99,10 @@ export default function FloorPlanUploadPage() {
         rooms: [],
         mediaAssets: result.files,
       });
+      setWasReplace(replacing);
+      setCanCopyFromSibling(offerCopy);
       setUploading(false);
       setDone(true);
-      setTimeout(() => navigate(backUrl), 1200);
     } catch (err) {
       console.error('[floor-plan-upload]', err);
       setUploading(false);
@@ -119,6 +134,16 @@ export default function FloorPlanUploadPage() {
         <Typography sx={{ fontSize: '0.9375rem', color: P.muted }}>
           {project.name} · {tower.name} · {floor.label}
         </Typography>
+        {existingPlanForFloor && !done && (
+          <Typography sx={{ mt: 1.25, fontSize: '0.8125rem', color: '#b45309', fontWeight: 600 }}>
+            Replacing the drawing requires re-annotating capture points — previous X/Y positions may not match the new image.
+          </Typography>
+        )}
+        {!existingPlanForFloor && siblingHasLabeledPins && !done && (
+          <Typography sx={{ mt: 1.25, fontSize: '0.8125rem', color: P.muted }}>
+            After upload you can copy labeled capture points from another floor in this tower.
+          </Typography>
+        )}
       </Box>
 
       <Box sx={{ maxWidth: 600, mx: 'auto' }}>
@@ -191,7 +216,40 @@ export default function FloorPlanUploadPage() {
           <Box sx={{ textAlign: 'center', py: 6 }}>
             <CheckCircleRounded sx={{ fontSize: 56, color: '#16a34a', mb: 2 }} />
             <Typography sx={{ fontSize: '1.25rem', fontWeight: 700, color: colors.textStrong, mb: 0.5 }}>Upload Complete</Typography>
-            <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted }}>Redirecting to floor plan viewer…</Typography>
+            <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted, mb: 3, maxWidth: 360, mx: 'auto' }}>
+              {wasReplace
+                ? 'Re-annotate labeled capture points on the new drawing before field capture.'
+                : canCopyFromSibling
+                  ? 'Annotate points on this plan, or import annotations (coordinates + names) from another floor in this tower.'
+                  : 'Next: annotate labeled capture points (Flat + Room) on the plan.'}
+            </Typography>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25, alignItems: 'center' }}>
+              <Button
+                variant="contained"
+                startIcon={<EditLocationAltRounded />}
+                onClick={() => navigate(`${viewerUrl}?annotate=1`)}
+                sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px', px: 2.5 }}
+              >
+                Annotate capture points
+              </Button>
+              {canCopyFromSibling && (
+                <Button
+                  variant="outlined"
+                  startIcon={<ContentCopyRounded />}
+                  onClick={() => navigate(`${viewerUrl}?annotate=1&copy=1`)}
+                  sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px', px: 2.5 }}
+                >
+                  Import annotations
+                </Button>
+              )}
+              <Button
+                variant="text"
+                onClick={() => navigate(viewerUrl)}
+                sx={{ textTransform: 'none', color: P.muted }}
+              >
+                Open floor plan
+              </Button>
+            </Box>
           </Box>
         )}
       </Box>

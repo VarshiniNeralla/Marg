@@ -157,6 +157,12 @@ export interface MockFloorPlan {
   fileName: string;
   fileSizeMb: number;
   rooms: MockRoomMarker[];
+  /** Show capture points on the plan (default true). */
+  pinsVisible?: boolean;
+  /** draft until ≥1 labeled predefined pin exists. */
+  pinLayoutStatus?: 'draft' | 'ready';
+  needsReannotate?: boolean;
+  copiedFromFloorPlanId?: string;
 }
 
 export interface MockRoomMarker {
@@ -202,7 +208,7 @@ export interface MockDefect {
 export const mockDefects: MockDefect[] = [];
 
 // ── Notifications ─────────────────────────────────────────────────────────────
-export type NotifType = 'capture_uploaded' | 'review_requested' | 'tour_published' | 'defect_assigned' | 'floor_plan_uploaded' | 'review_approved' | 'review_rejected';
+export type NotifType = 'capture_uploaded' | 'review_requested' | 'tour_published' | 'defect_assigned' | 'floor_plan_uploaded' | 'floor_plan_deleted' | 'review_approved' | 'review_rejected';
 
 export interface MockNotification {
   id: string;

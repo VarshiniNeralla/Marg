@@ -50,6 +50,56 @@ class UserService:
         )
         return [self._to_list_response(u) for u in users], total
 
+    # ── Favorite tours (persist until user clears) ────────────────────────────
+
+    async def get_favorite_tour_ids(self, user_id: str, org_id: str) -> list[str]:
+        doc = await self._find_user_doc(user_id, org_id)
+        if not doc:
+            raise NotFoundException("User", user_id)
+        raw = doc.get("favorite_tour_ids") or []
+        return [str(x).strip() for x in raw if str(x).strip()]
+
+    async def set_favorite_tour_ids(
+        self, user_id: str, org_id: str, tour_ids: list[str]
+    ) -> list[str]:
+        doc = await self._find_user_doc(user_id, org_id)
+        if not doc:
+            raise NotFoundException("User", user_id)
+
+        seen: set[str] = set()
+        clean: list[str] = []
+        for tid in tour_ids:
+            s = str(tid or "").strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            clean.append(s)
+            if len(clean) >= 500:
+                break
+
+        await self._db.users.update_one(
+            {"_id": doc["_id"]},
+            {
+                "$set": {
+                    "favorite_tour_ids": clean,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+        return clean
+
+    async def _find_user_doc(self, user_id: str, org_id: str) -> Optional[dict]:
+        def _variants(v: str) -> list:
+            out: list = [v]
+            if ObjectId.is_valid(v):
+                out.append(ObjectId(v))
+            return out
+
+        return await self._db.users.find_one({
+            "_id": {"$in": _variants(user_id)},
+            "org_id": {"$in": _variants(org_id)},
+        })
+
     # ── GET /users/:id ────────────────────────────────────────────────────────
 
     async def get_user(

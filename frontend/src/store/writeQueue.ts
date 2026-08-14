@@ -325,6 +325,37 @@ export function enqueueWrite<K extends WriteOpName>(
     return;
   }
 
+  // updateCapturePin({ captureIds }) must not FIFO-replay a shorter list after a
+  // longer one — that wiped pin timelines (second visit / Compare vanished).
+  // Keep only the newest captureIds patch per pin.
+  if (op === 'updateCapturePin') {
+    const pinId = args[0] as string | undefined;
+    const patch = args[1] as { captureIds?: string[] } | undefined;
+    if (pinId && Array.isArray(patch?.captureIds)) {
+      queue = queue.filter(e => {
+        if (e.op !== 'updateCapturePin') return true;
+        if (e.args[0] !== pinId) return true;
+        const prev = e.args[1] as { captureIds?: string[] } | undefined;
+        return !Array.isArray(prev?.captureIds);
+      });
+    }
+  }
+
+  // Deleting the same pin/floor-plan/capture twice (replace + copy-from races)
+  // only produces 404 spam. Keep a single pending delete per id.
+  if (
+    op === 'deleteCapturePin'
+    || op === 'deleteFloorPlan'
+    || op === 'deleteCapture'
+    || op === 'deleteRoom'
+    || op === 'deleteTour'
+  ) {
+    const id = args[0] as string | undefined;
+    if (id) {
+      queue = queue.filter(e => !(e.op === op && e.args[0] === id));
+    }
+  }
+
   if (queue.length >= MAX_QUEUE) {
     // Safety valve: never let the queue grow unbounded. Drop the oldest and
     // warn — the API snapshot rehydrates the full dataset on next load anyway.
@@ -416,6 +447,30 @@ export function cancelWritesForEntityIds(...ids: string[]): void {
       return !id || !idSet.has(id);
     }
     return true;
+  });
+  if (queue.length !== before) save();
+}
+
+/**
+ * Drop pending DELETE writes for ids the server already removed (e.g. copy-from
+ * cleared empty target pins). Prevents DELETE → 404 spam in the API log.
+ */
+export function cancelPendingDeletesForEntityIds(...ids: string[]): void {
+  const idSet = new Set(ids.filter(Boolean));
+  if (!idSet.size) return;
+  const before = queue.length;
+  queue = queue.filter(e => {
+    if (
+      e.op !== 'deleteCapturePin'
+      && e.op !== 'deleteRoom'
+      && e.op !== 'deleteCapture'
+      && e.op !== 'deleteTour'
+      && e.op !== 'deleteFloorPlan'
+    ) {
+      return true;
+    }
+    const id = e.args[0] as string | undefined;
+    return !id || !idSet.has(id);
   });
   if (queue.length !== before) save();
 }

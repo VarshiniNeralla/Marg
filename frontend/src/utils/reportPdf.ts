@@ -202,7 +202,7 @@ export function buildReportPdfHtml(
     <div class="hero-card avoid-break">
       <div class="hero-progress">
         <div class="hero-pct">${pct}<span>%</span></div>
-        <div class="hero-progress-label">Overall Progress</div>
+        <div class="hero-progress-label">Visible Progress Change</div>
       </div>
       <div class="hero-body">
         <p class="hero-summary">${escapeHtml(normalized.overallProgress.description)}</p>
@@ -777,7 +777,7 @@ export function formatReportAsText(
   lines.push(n.summary);
   lines.push('');
 
-  lines.push(`OVERALL PROGRESS: ${n.overallProgress.percentage}%`);
+  lines.push(`VISIBLE PROGRESS CHANGE: ${n.overallProgress.percentage}%`);
   lines.push(n.overallProgress.description);
   lines.push('');
 

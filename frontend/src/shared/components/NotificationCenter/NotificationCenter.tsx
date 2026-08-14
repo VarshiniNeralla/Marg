@@ -20,6 +20,7 @@ const notifIcon: Record<NotifType, React.ReactNode> = {
   tour_published:      <ViewInArRounded sx={{ fontSize: 15 }} />,
   defect_assigned:     <BugReportRounded sx={{ fontSize: 15 }} />,
   floor_plan_uploaded: <UploadFileRounded sx={{ fontSize: 15 }} />,
+  floor_plan_deleted:  <DeleteOutlineRounded sx={{ fontSize: 15 }} />,
   review_approved:     <CheckCircleRounded sx={{ fontSize: 15 }} />,
   review_rejected:     <CloseRounded sx={{ fontSize: 15 }} />,
 };
@@ -29,6 +30,7 @@ const notifColor: Record<NotifType, string> = {
   tour_published:      '#16a34a',
   defect_assigned:     '#dc2626',
   floor_plan_uploaded: '#0891b2',
+  floor_plan_deleted:  '#dc2626',
   review_approved:     '#16a34a',
   review_rejected:     '#dc2626',
 };

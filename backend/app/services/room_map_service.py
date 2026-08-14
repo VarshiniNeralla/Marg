@@ -350,7 +350,7 @@ def _parse_rooms(
 
 _SPECIALIZED_ROOM_TOKENS = (
     "puja", "store", "utility", "dress", "toilet", "kitchen", "maid",
-    "pdr", "handwash", "hand wash", "sit-out", "sit out", "balcony",
+    "pdr", "handwash", "hand wash", "sit-out", "sit out", "sitout", "balcony",
 )
 
 
@@ -450,6 +450,7 @@ def _room_type_key(name: str) -> str:
     n = re.sub(r"\s*\([^)]*\)\s*$", "", n).strip()
     n = re.sub(r"\s+", " ", n)
     n = n.replace("sit out", "sit-out")
+    n = n.replace("sitout", "sit-out")
     return n
 
 

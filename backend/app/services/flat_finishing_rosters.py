@@ -63,6 +63,7 @@ def _norm(name: str) -> str:
     n = n.replace("master toilet", "m. toilet")
     n = n.replace("m toilet", "m. toilet")
     n = n.replace("sit out", "sit-out")
+    n = n.replace("sitout", "sit-out")
     n = n.replace("multi purpose", "multi-purpose")
     n = n.replace("multipurpose", "multi-purpose")
     return n
@@ -95,13 +96,10 @@ def template_for_flat(flat_name: str, existing: list[str] | None = None) -> tupl
 
 def _is_bleed_for_layout(name: str, template: tuple[str, ...]) -> bool:
     base = _base(name)
-    compact = base.replace(" ", "")
-    # Toilet-04 / Maid-04 are neighbour OCR junk on 3BHK wings only.
-    # On 4BHK flats (Flat 02 / 04) Toilet-04 is often the real fourth toilet
-    # label on the floor plan — dropping it orphans scored captures.
-    if template == _LAYOUT_3BHK and re.match(
-        r"^(toilet-?0?4|maid-?0?4|maid|bedroom-4|toilet-4)$", compact
-    ):
+    compact = base.replace(" ", "").replace("-", "")
+    # Bedroom-4 on a 3BHK wing is usually OCR bleed from the neighbour flat.
+    # Toilet-4 / Maid rooms are real annotated spaces — keep them.
+    if template == _LAYOUT_3BHK and re.match(r"^bedroom4$", compact):
         return True
     return False
 
@@ -222,6 +220,70 @@ def complete_flat_room_roster(flat_name: str, existing: list[str]) -> list[str]:
         if b in base_rank:
             return (0, base_rank[b], nn)
         return (1, 0, nn)
+
+    out.sort(key=sort_key)
+    return out
+
+
+# Canonical common-area labels (aligned with PREDEF_ROOM_OPTIONS_COMMON).
+_COMMON_AREA_CANONICAL = [
+    "Corridor",
+    "Entrance Lobby",
+    "Fire Lift",
+    "Fire Shaft",
+    "Lift Lobby",
+    "Lobby",
+    "Passage",
+    "Service Lift",
+    "Shaft",
+    "Staircase",
+]
+
+
+def complete_common_area_roster(existing: list[str]) -> list[str]:
+    """Union map/pin common rooms; keep marked spaces, never invent a full floor.
+
+    Unlike flats (BHK templates), common areas only appear when the room map
+    or a capture pin marked them. Deduplicate by normalized name and prefer
+    canonical labels when a near-match exists.
+    """
+    existing = [str(r).strip() for r in existing if str(r).strip()]
+    if not existing:
+        return []
+
+    canon_by_norm = {_norm(n): n for n in _COMMON_AREA_CANONICAL}
+    out: list[str] = []
+    used: set[str] = set()
+    for name in existing:
+        nn = _norm(name)
+        if nn in used:
+            continue
+        # Prefer the canonical spelling when the pin/map used a close label.
+        chosen = canon_by_norm.get(nn, name)
+        # Soft aliases
+        if nn in {"lift lobby", "liftlobby", "elevator lobby"}:
+            chosen = "Lift Lobby"
+        elif nn in {"entrance lobby", "main lobby"}:
+            chosen = "Entrance Lobby"
+        elif nn in {"stair", "stairs", "stair case", "stairwell"}:
+            chosen = "Staircase"
+        elif nn in {"common corridor", "corridor lobby"}:
+            chosen = "Corridor"
+        elif nn in {"fire lift", "firelift", "fire elevator"}:
+            chosen = "Fire Lift"
+        elif nn in {"service lift", "servicelift", "service elevator"}:
+            chosen = "Service Lift"
+        elif nn in {"fire shaft", "fireshaft", "fire duct"}:
+            chosen = "Fire Shaft"
+        out.append(chosen)
+        used.add(_norm(chosen))
+        used.add(nn)
+
+    rank = {_norm(n): i for i, n in enumerate(_COMMON_AREA_CANONICAL)}
+
+    def sort_key(n: str) -> tuple[int, str]:
+        nn = _norm(n)
+        return (rank.get(nn, 100), nn)
 
     out.sort(key=sort_key)
     return out

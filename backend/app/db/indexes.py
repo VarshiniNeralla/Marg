@@ -91,6 +91,10 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         [("orgId", ASCENDING), ("floorPlanId", ASCENDING), ("sequenceNumber", ASCENDING)],
         name="pin_floorplan_sequence",
     )
+    await db.capture_pins.create_index(
+        [("orgId", ASCENDING), ("floorId", ASCENDING), ("isPredefined", ASCENDING)],
+        name="pin_floor_predefined",
+    )
 
     # ── floor_plan_room_maps ──────────────────────────────────────────────────
     # Keyed by floor_plan_id (_id) — one cached AI room map per floor plan,
@@ -304,6 +308,16 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         [("stitchJobId", ASCENDING), ("orgId", ASCENDING)],
         name="captures_stitch_job",
         sparse=True,
+    )
+
+    # ── drishti_conversations (AI assistant chat history) ─────────────────────
+    await db.drishti_conversations.create_index(
+        [("orgId", ASCENDING), ("userId", ASCENDING), ("updatedAt", DESCENDING)],
+        name="drishti_conversations_user_recent",
+    )
+    await db.drishti_conversations.create_index(
+        [("orgId", ASCENDING), ("projectId", ASCENDING), ("updatedAt", DESCENDING)],
+        name="drishti_conversations_project_recent",
     )
 
     logger.info("All MongoDB indexes created successfully.")

@@ -10,6 +10,10 @@ import { useAuthStore , getRoleLandingPath } from '@store/authStore';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { buildFloorOptions, floorSelectionLabel, locationFilterMenuPaperSx, locationFilterToolbarSx, type FloorOption } from '@/utils/locationFilters';
 import { resolveCaptureThumbnailUrl } from '@/utils/captureMedia';
+import { formatPinLocationLabel, formatTowerLabel, enrichCaptureLocation } from '@/utils/pinLabels';
+import {
+  filterGalleryCaptures,
+} from '@/utils/captureGallery';
 
 // Capture gallery — project-wise selection, calm minimal cards.
 
@@ -29,18 +33,17 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
   const dot = STATUS_DOT[capture.status] ?? colors.textSubdued;
   const thumbUrl = resolveCaptureThumbnailUrl(capture as MockCapture & Record<string, unknown>);
   const projectShort = capture.projectName.replace(/^My Home\s+/i, '');
-  // capture.roomName is frozen at capture-creation time (e.g. "Pin 8") and never
-  // updates when pins are later renumbered/deleted — confirmed on real data where
-  // a capture still read "Pin 8" long after that pin had been renumbered to 6.
-  // The pin's own current sequenceNumber (looked up live) can't go stale.
+  // Prefer live Flat · Room from the pin — capture.roomName is frozen at create
+  // time and may still say "Pin N" for older uploads.
   const pins = useWorkflowStore(s => s.capturePins);
   const pin = getPinForCapture(pins, capture.id);
-  const displayName = pin ? `Pin ${pin.sequenceNumber}` : capture.roomName;
+  const displayName = formatPinLocationLabel(pin, capture.roomName);
+  const towerLabel = formatTowerLabel(capture.towerName);
   const locationLabel = compact && showProjectName
-    ? `${projectShort} · ${capture.floorLabel}`
+    ? `${(projectShort || 'Project').trim()} · ${capture.floorLabel || 'Floor'}`
     : showProjectName
-      ? `${capture.projectName} · ${capture.towerName} · ${capture.floorLabel}`
-      : `${capture.towerName} · ${capture.floorLabel}`;
+      ? [capture.projectName, towerLabel, capture.floorLabel].filter(Boolean).join(' · ') || capture.floorLabel
+      : [towerLabel, capture.floorLabel].filter(Boolean).join(' · ') || capture.floorLabel;
 
   return (
     <Box
@@ -137,27 +140,6 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
   );
 }
 
-function isGalleryVisibleCapture(
-  c: MockCapture,
-  allPinCaptureIds: Set<string>,
-  latestPinCaptureIds: Set<string>,
-): boolean {
-  // Older visits in a pin's timeline stay collapsed behind the pin's latest one.
-  if (allPinCaptureIds.has(c.id) && !latestPinCaptureIds.has(c.id)) return false;
-
-  // A capture that no pin references used to be hidden here when its roomName
-  // looked like "Pin N", on the assumption it was debris left behind by a
-  // deleted pin. That assumption is wrong in the case that matters: if the link
-  // between a real photo and its pin is ever lost, the photo is silently erased
-  // from the gallery even though it uploaded fine and is still in Cloudinary —
-  // indistinguishable from data loss, and it sent us hunting a deletion bug that
-  // did not exist. Pin deletion already cascades its captures server-side, and
-  // tombstoned ids never reach this component, so genuine debris is handled
-  // elsewhere. An unlinked capture is now SHOWN, so it can be seen and dealt
-  // with instead of disappearing.
-  return true;
-}
-
 const CAPTURES_PAGE_SIZE_MOBILE = 9;  // 3 columns × 3 rows
 const CAPTURES_PAGE_SIZE_TABLET = 6;  // 3 columns × 2 rows
 const CAPTURES_PAGE_SIZE_DESKTOP = 8; // 4 columns × 2 rows
@@ -197,45 +179,21 @@ export default function CapturesPage() {
   const allPins = useWorkflowStore(s => s.capturePins);
   const tours = useWorkflowStore(s => s.tours);
   const deleteCapture = useWorkflowStore(s => s.deleteCapture);
-
-  // Set of capture IDs that are the LATEST capture for their pin.
-  // Non-latest captures in a pin's history should not appear as standalone gallery cards.
-  const latestPinCaptureIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const pin of allPins) {
-      if (pin.captureIds.length > 0) {
-        ids.add(pin.captureIds[pin.captureIds.length - 1]);
-      }
-    }
-    return ids;
-  }, [allPins]);
-
-  // Set of ALL capture IDs that belong to any pin (including non-latest history entries).
-  const allPinCaptureIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const pin of allPins) {
-      for (const id of pin.captureIds) ids.add(id);
-    }
-    return ids;
-  }, [allPins]);
   const [deleteTarget, setDeleteTarget] = useState<MockCapture | null>(null);
   const tourCaptureIds = useMemo(() => new Set(tours.map(t => t.captureId)), [tours]);
   // Same stale-roomName concern as CaptureCard's displayName — resolve the live pin label here too.
   const deleteTargetLabel = deleteTarget
     ? (() => {
         const pin = allPins.find(p => p.captureIds.includes(deleteTarget.id));
-        return pin ? `Pin ${pin.sequenceNumber}` : deleteTarget.roomName;
+        return formatPinLocationLabel(pin, deleteTarget.roomName);
       })()
     : 'this point';
 
-  // Gallery shows one card per pin (latest only). Deleting that card must remove the
-  // whole pin timeline — otherwise the previous visit becomes the new latest and
-  // reappears in the same slot (looks stacked; requires multiple deletes).
+  // Gallery shows one card per pin (latest only). Deleting that card removes
+  // only that visit — older captures stay on the pin timeline for Compare.
   const confirmDeleteCapture = () => {
     if (!deleteTarget) return;
-    const pin = allPins.find(p => p.captureIds.includes(deleteTarget.id));
-    const idsToDelete = pin ? [...pin.captureIds] : [deleteTarget.id];
-    idsToDelete.forEach(id => deleteCapture(id));
+    deleteCapture(deleteTarget.id);
     setDeleteTarget(null);
   };
 
@@ -259,10 +217,15 @@ export default function CapturesPage() {
     return buildFloorOptions(allFloors, towerId, towerIds);
   }, [allFloors, projectId, towerId, availableTowers]);
 
-  const galleryCaptures = useMemo(() => mockCaptures.filter(c => {
-    if (assignedProjectIds && !assignedProjectIds.has(c.projectId)) return false;
-    return isGalleryVisibleCapture(c, allPinCaptureIds, latestPinCaptureIds);
-  }), [mockCaptures, assignedProjectIds, allPinCaptureIds, latestPinCaptureIds]);
+  const galleryCaptures = useMemo(() => {
+    const enriched = mockCaptures.map(c => enrichCaptureLocation(c, {
+      pins: allPins,
+      projects: allProjects,
+      towers: allTowers,
+      floors: allFloors,
+    }));
+    return filterGalleryCaptures(enriched, allPins, assignedProjectIds);
+  }, [mockCaptures, allPins, assignedProjectIds, allProjects, allTowers, allFloors]);
 
   const filtered = useMemo(() => {
     const list = galleryCaptures.filter(c => {
@@ -288,8 +251,19 @@ export default function CapturesPage() {
     for (const c of captures) {
       const key = `${c.projectId}::${c.towerId}::${c.floorLabel}`;
       if (!map.has(key)) {
-        const floor = allFloors.find(f => f.towerId === c.towerId && f.label === c.floorLabel);
-        map.set(key, { projectId: c.projectId, towerId: c.towerId, floorId: floor?.id ?? '', towerName: c.towerName, floorLabel: c.floorLabel, projectName: c.projectName, captures: [] });
+        const pin = getPinForCapture(allPins, c.id);
+        const floor =
+          allFloors.find(f => f.id === pin?.floorId)
+          ?? allFloors.find(f => f.towerId === c.towerId && f.label === c.floorLabel);
+        map.set(key, {
+          projectId: c.projectId,
+          towerId: c.towerId,
+          floorId: floor?.id ?? pin?.floorId ?? '',
+          towerName: c.towerName,
+          floorLabel: c.floorLabel,
+          projectName: c.projectName,
+          captures: [],
+        });
       }
       map.get(key)!.captures.push(c);
     }
@@ -299,12 +273,11 @@ export default function CapturesPage() {
     );
   };
 
-  const groupedByFloor = useMemo(() => buildFloorGroups(filtered), [filtered, allFloors]);
+  const groupedByFloor = useMemo(() => buildFloorGroups(filtered), [filtered, allFloors, allPins]);
 
-  // Engineer view paginates whole floor-groups per page — a floor's captures
-  // never split across pages, even if that makes a page larger/smaller than
-  // itemsPerPage. Packing stops as soon as adding the next group would exceed
-  // the target, unless the page is still empty (then it takes that one group).
+  // Paginate whole floor-groups per page — a floor's captures never split across
+  // pages. Packing stops when adding the next group would exceed the target,
+  // unless the page is still empty (then it takes that one group).
   const floorGroupPages = useMemo(() => {
     const pages: (typeof groupedByFloor)[] = [];
     let current: typeof groupedByFloor = [];
@@ -322,8 +295,7 @@ export default function CapturesPage() {
     return pages.length > 0 ? pages : [[]];
   }, [groupedByFloor, itemsPerPage]);
 
-  const totalPages = isEngineerView ? floorGroupPages.length : Math.max(1, Math.ceil(filtered.length / itemsPerPage));
-  const paginatedFiltered = useMemo(() => filtered.slice((page - 1) * itemsPerPage, page * itemsPerPage), [filtered, page, itemsPerPage]);
+  const totalPages = Math.max(1, floorGroupPages.length);
   const paginatedGroupedByFloor = floorGroupPages[Math.min(page, floorGroupPages.length) - 1] ?? [];
 
   React.useEffect(() => {
@@ -342,17 +314,14 @@ export default function CapturesPage() {
     return map;
   }, [groupedByFloor]);
 
-  const pageCapturesCount = isEngineerView
-    ? paginatedGroupedByFloor.reduce((sum, g) => sum + g.captures.length, 0)
-    : paginatedFiltered.length;
-  const pageStart = filtered.length === 0 ? 0 : isEngineerView
-    ? floorGroupPages.slice(0, page - 1).reduce((sum, grp) => sum + grp.reduce((s, g) => s + g.captures.length, 0), 0) + 1
-    : (page - 1) * itemsPerPage + 1;
+  const pageCapturesCount = paginatedGroupedByFloor.reduce((sum, g) => sum + g.captures.length, 0);
+  const pageStart = filtered.length === 0 ? 0 :
+    floorGroupPages.slice(0, page - 1).reduce((sum, grp) => sum + grp.reduce((s, g) => s + g.captures.length, 0), 0) + 1;
   const pageEnd = pageStart === 0 ? 0 : pageStart - 1 + pageCapturesCount;
 
   const showProjectName = !projectId || projectId === 'all';
 
-  const pendingCount = mockCaptures.filter(c => c.status === 'review').length;
+  const pendingCount = galleryCaptures.filter(c => c.status === 'review').length;
 
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [towerMenuAnchor, setTowerMenuAnchor] = useState<null | HTMLElement>(null);
@@ -447,7 +416,7 @@ export default function CapturesPage() {
           {isEngineerView ? 'Capture History' : 'Capture Gallery'}
         </Typography>
         <Typography sx={{ fontSize: '0.9375rem', color: P.muted }}>
-          {mockCaptures.length} captures · {PROJECTS_WITH_CAPTURES.length} projects · {pendingCount} pending review
+          {galleryCaptures.length} captures · {PROJECTS_WITH_CAPTURES.length} projects · {pendingCount} pending review
         </Typography>
       </Box>
 
@@ -682,8 +651,8 @@ export default function CapturesPage() {
           <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, mb: 0.5 }}>No captures found</Typography>
           <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>Try a different project, tower, or floor.</Typography>
         </Box>
-      ) : isEngineerView ? (
-        /* Engineer history — grouped by floor, paginated to limit vertical scroll */
+      ) : (
+        /* Gallery + History — grouped by floor, with View Floor Plan for pin locations */
         <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: { xs: 2, sm: 3 }, width: '100%', minWidth: 0 }}>
           <Box sx={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 3.5 }}>
             {paginatedGroupedByFloor.map(group => {
@@ -692,6 +661,7 @@ export default function CapturesPage() {
               const captureLabel = group.captures.length === floorTotal
                 ? `${floorTotal} capture${floorTotal !== 1 ? 's' : ''}`
                 : `${group.captures.length} of ${floorTotal} captures`;
+              const returnTo = isEngineerView ? '/my-captures' : '/captures';
 
               return (
               <Box key={`${group.projectName}-${group.towerName}-${group.floorLabel}`}>
@@ -702,7 +672,9 @@ export default function CapturesPage() {
                   </Box>
                   <Box sx={{ minWidth: 0, mr: { xs: 'auto', sm: 0 } }}>
                     <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: P.strong, letterSpacing: '-0.02em', lineHeight: 1.2 }} noWrap>
-                      {showProjectName ? `${group.projectName} · ` : ''}{group.towerName} · {group.floorLabel}
+                      {[showProjectName ? group.projectName : '', formatTowerLabel(group.towerName), group.floorLabel]
+                        .filter(Boolean)
+                        .join(' · ') || group.floorLabel}
                     </Typography>
                     <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
                       {captureLabel}
@@ -712,15 +684,24 @@ export default function CapturesPage() {
                   {group.floorId && (
                     <Box
                       component={Link}
-                      to={`/floor-plans/${group.projectId}/${group.towerId}/${group.floorId}?pinsOnly=1`}
+                      to={`/floor-plans/${group.projectId}/${group.towerId}/${group.floorId}?pinsOnly=1&returnTo=${encodeURIComponent(returnTo)}`}
                       sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.25, py: 0.625, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none', whiteSpace: 'nowrap', flexShrink: 0, transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}
                     >
-                      <MapRounded sx={{ fontSize: 14 }} /> View Floor Plan
+                      <MapRounded sx={{ fontSize: 14 }} /> View on Floor Plan
                     </Box>
                   )}
                 </Box>
                 <Box sx={GALLERY_GRID_SX}>
-                  {group.captures.map(c => <CaptureCard key={c.id} capture={c} hasTour={tourCaptureIds.has(c.id)} onDelete={setDeleteTarget} showProjectName={showProjectName} compact={isMobile} />)}
+                  {group.captures.map(c => (
+                    <CaptureCard
+                      key={c.id}
+                      capture={c}
+                      hasTour={tourCaptureIds.has(c.id)}
+                      onDelete={setDeleteTarget}
+                      showProjectName={showProjectName}
+                      compact={isMobile}
+                    />
+                  ))}
                 </Box>
               </Box>
             );
@@ -748,38 +729,12 @@ export default function CapturesPage() {
             </Box>
           )}
         </Box>
-      ) : (
-        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: { xs: 2, sm: 4 }, width: '100%', minWidth: 0 }}>
-          <Box sx={GALLERY_GRID_SX}>
-            {paginatedFiltered.map(c => <CaptureCard key={c.id} capture={c} hasTour={tourCaptureIds.has(c.id)} showProjectName={showProjectName} compact={isMobile} />)}
-          </Box>
-          {totalPages > 1 && (
-            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, width: '100%' }}>
-              <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
-                Showing {pageStart}–{pageEnd} of {filtered.length} captures
-              </Typography>
-              <Pagination
-                count={totalPages}
-                page={page}
-                onChange={(_, p) => {
-                  setPage(p);
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }}
-                color="primary"
-                size={isMobile ? 'small' : 'medium'}
-                siblingCount={isMobile ? 0 : 1}
-                boundaryCount={1}
-                sx={{ maxWidth: '100%', '& .MuiPaginationItem-root': { fontWeight: 600 } }}
-              />
-            </Box>
-          )}
-        </Box>
       )}
 
       <ConfirmDialog
         open={!!deleteTarget}
         title="Delete this capture?"
-        description={`The capture for ${deleteTargetLabel}${deleteTarget ? ` (${deleteTarget.towerName} · ${deleteTarget.floorLabel})` : ''}, any earlier visits at this point, and any tour generated from them will be permanently removed. This cannot be undone.`}
+        description={`Remove this visit for ${deleteTargetLabel}${deleteTarget ? ` (${formatTowerLabel(deleteTarget.towerName)} · ${deleteTarget.floorLabel})` : ''}? Older captures on the same pin stay in the timeline for Compare. This cannot be undone.`}
         confirmLabel="Delete capture"
         destructive
         onConfirm={confirmDeleteCapture}

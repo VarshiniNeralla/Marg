@@ -30,6 +30,7 @@ from app.services.cloudinary_service import (
 )
 from app.services.room_map_service import RoomMapService
 from app.services.ai_progress_service import AIProgressService
+from app.services.predefined_pins_service import PredefinedPinsService
 from app.utils.pagination import success_response
 
 router = APIRouter(tags=["Workflow"])
@@ -68,6 +69,28 @@ def _id_filter(id: str) -> dict[str, Any]:
     if ObjectId.is_valid(id):
         return {"$in": [id, ObjectId(id)]}
     return id
+
+
+async def _resolve_user_display_name(db: AsyncIOMotorDatabase, user_id: str) -> str:
+    """Human-readable name for attribution fields (captures, floor plans, audit)."""
+    try:
+        user = await db["users"].find_one(
+            {"_id": _id_filter(user_id)}, {"name": 1, "email": 1, "full_name": 1}
+        )
+    except Exception as exc:  # never block the write on lookup failure
+        logger.warning(f"[workflow] user lookup failed for {user_id}: {exc!r}")
+        return user_id
+    if not user:
+        return user_id
+    return (
+        (user.get("name") or user.get("full_name") or user.get("email") or user_id)
+    )
+
+
+def _stamp_uploader(payload: dict[str, Any], display_name: str) -> None:
+    """Overwrite client placeholders like 'You' with the authenticated actor."""
+    payload["uploadedBy"] = display_name
+    payload["uploaded_by"] = display_name
 
 
 def _serialise(doc: dict[str, Any]) -> dict[str, Any]:
@@ -902,6 +925,15 @@ async def create_capture(payload: dict[str, Any], ctx: CallerContext, db: DB, _=
         payload["thumbnailUrl"] = first_asset.get("thumbnail_url")
         payload["previewUrl"] = first_asset.get("preview_url")
 
+    # Fill empty project/tower/floor labels from room → pin → floor plan hierarchy.
+    # Predefined-pin rooms used to omit towerId/projectId, which produced gallery
+    # labels like "· · Floor 2".
+    await _enrich_capture_location_fields(db, ctx, payload)
+
+    # Attribution is server-owned: clients historically sent uploadedBy="You".
+    display_name = await _resolve_user_display_name(db, ctx.user_id)
+    _stamp_uploader(payload, display_name)
+
     # Media fields are server-owned once written: a late client replay carrying
     # nulls must never clobber a panorama the stitch job produced.
     stored = await _upsert_preserving(
@@ -949,6 +981,12 @@ async def delete_capture(capture_id: str, ctx: CallerContext, db: DB, _=Depends(
     # without this left the actual image orphaned on Cloudinary forever.
     capture = await db["captures"].find_one({"_id": _id_filter(capture_id), "orgId": ctx.org_id})
     await _delete(db, "captures", capture_id, ctx)
+    # Keep pin timelines clean even if the client never follows up with
+    # updateCapturePin — dangling ids made copy-from treat pins as "has captures".
+    await db["capture_pins"].update_many(
+        {"orgId": ctx.org_id, "captureIds": capture_id},
+        {"$pull": {"captureIds": capture_id}, "$set": {"updatedAt": _now()}},
+    )
     if capture:
         assets = capture.get("mediaAssets") or capture.get("media_assets") or []
         await _release_capture_assets(db, ctx, assets)
@@ -1081,6 +1119,25 @@ async def create_floor_plan(payload: dict[str, Any], ctx: CallerContext, db: DB,
         width = asset.get("width")
         height = asset.get("height")
         payload["dimensions"] = {"width": width, "height": height} if width and height else None
+
+    display_name = await _resolve_user_display_name(db, ctx.user_id)
+    _stamp_uploader(payload, display_name)
+
+    # New / replaced drawing always starts as draft until points are annotated
+    # (or copied from another floor in the same tower).
+    floor_id = str(payload.get("floorId") or "")
+    prior = None
+    if floor_id:
+        prior = await db["floor_plans"].find_one(
+            {"orgId": ctx.org_id, "floorId": floor_id},
+            sort=[("createdAt", -1)],
+        )
+    payload.setdefault("pinsVisible", True)
+    payload["pinLayoutStatus"] = "draft"
+    payload["needsReannotate"] = bool(prior)
+    if prior:
+        payload.pop("copiedFromFloorPlanId", None)
+
     result = await _upsert(db, "floor_plans", payload, ctx)
 
     # Room map extraction runs once per upload/replace, synchronously, so the
@@ -1093,6 +1150,16 @@ async def create_floor_plan(payload: dict[str, Any], ctx: CallerContext, db: DB,
             org_id=ctx.org_id,
             image_url=image_url,
         )
+
+    # If this floor already had pins (client will re-point them), strip labels
+    # so a new drawing cannot silently keep wrong X/Y→room attributions.
+    if prior and result.get("id"):
+        try:
+            await PredefinedPinsService(db).mark_plan_needs_reannotate(
+                org_id=ctx.org_id, floor_plan_id=str(result["id"]),
+            )
+        except Exception:
+            logger.exception("Failed to mark floor plan {} for re-annotation", result.get("id"))
 
     return success_response(data=result, message="Floor plan uploaded")
 
@@ -1124,12 +1191,109 @@ async def delete_floor_plan(floor_plan_id: str, ctx: CallerContext, db: DB, _=De
     # Re-uploading a floor plan supersedes the previous record. The client
     # re-points pins onto the new plan and then deletes the stale record here so
     # the snapshot stops returning duplicate (empty) plans for the same floor.
+    # Idempotent: already-gone plans return success (write-queue races).
     plan = await db["floor_plans"].find_one({"_id": _id_filter(floor_plan_id), "orgId": ctx.org_id})
+    if not plan:
+        return success_response(message="Floor plan already deleted")
     await _delete(db, "floor_plans", floor_plan_id, ctx)
-    if plan:
-        assets = plan.get("mediaAssets") or plan.get("media_assets") or []
-        await delete_media_assets(assets)
+    assets = plan.get("mediaAssets") or plan.get("media_assets") or []
+    await delete_media_assets(assets)
     return success_response(message="Floor plan deleted")
+
+
+async def _enrich_capture_location_fields(
+    db: AsyncIOMotorDatabase,
+    ctx: CallerContext,
+    payload: dict[str, Any],
+) -> None:
+    """Ensure projectId/towerId/floorLabel names are present on capture creates."""
+    room_id = str(payload.get("roomId") or payload.get("room_id") or "")
+    project_id = str(payload.get("projectId") or payload.get("project_id") or "").strip()
+    tower_id = str(payload.get("towerId") or payload.get("tower_id") or "").strip()
+    floor_label = str(payload.get("floorLabel") or payload.get("floor_label") or "").strip()
+    project_name = str(payload.get("projectName") or payload.get("project_name") or "").strip()
+    tower_name = str(payload.get("towerName") or payload.get("tower_name") or "").strip()
+
+    room = None
+    pin = None
+    if room_id:
+        room = await db["rooms"].find_one({"_id": _id_filter(room_id), "orgId": ctx.org_id})
+        if not room:
+            room = await db["rooms"].find_one({"id": room_id, "orgId": ctx.org_id})
+        pin = await db["capture_pins"].find_one({
+            "orgId": ctx.org_id,
+            "$or": [{"roomId": room_id}, {"room_id": room_id}],
+        })
+
+    if not project_id:
+        project_id = str(
+            (room or {}).get("projectId")
+            or (pin or {}).get("projectId")
+            or ""
+        ).strip()
+    if not tower_id:
+        tower_id = str(
+            (room or {}).get("towerId")
+            or (pin or {}).get("towerId")
+            or ""
+        ).strip()
+    floor_id = str(
+        payload.get("floorId")
+        or (room or {}).get("floorId")
+        or (pin or {}).get("floorId")
+        or ""
+    ).strip()
+
+    # Heal room document if it was created without hierarchy ids.
+    if room and room_id and (project_id or tower_id or floor_id):
+        room_patch: dict[str, Any] = {"updatedAt": _now()}
+        if project_id and not room.get("projectId"):
+            room_patch["projectId"] = project_id
+        if tower_id and not room.get("towerId"):
+            room_patch["towerId"] = tower_id
+        if floor_id and not room.get("floorId"):
+            room_patch["floorId"] = floor_id
+        if len(room_patch) > 1:
+            await db["rooms"].update_one(
+                {"_id": room["_id"], "orgId": ctx.org_id},
+                {"$set": room_patch},
+            )
+
+    if project_id and not project_name:
+        proj = await db["projects"].find_one({"_id": _id_filter(project_id), "orgId": ctx.org_id})
+        if not proj:
+            proj = await db["projects"].find_one({"id": project_id, "orgId": ctx.org_id})
+        project_name = str((proj or {}).get("name") or "")
+    if tower_id and not tower_name:
+        tw = await db["towers"].find_one({"_id": _id_filter(tower_id), "orgId": ctx.org_id})
+        if not tw:
+            tw = await db["towers"].find_one({"id": tower_id, "orgId": ctx.org_id})
+        tower_name = str((tw or {}).get("name") or "")
+        if not project_id:
+            project_id = str((tw or {}).get("projectId") or "")
+            if project_id and not project_name:
+                proj = await db["projects"].find_one({"_id": _id_filter(project_id), "orgId": ctx.org_id})
+                if not proj:
+                    proj = await db["projects"].find_one({"id": project_id, "orgId": ctx.org_id})
+                project_name = str((proj or {}).get("name") or "")
+    if floor_id and not floor_label:
+        fl = await db["floors"].find_one({"_id": _id_filter(floor_id), "orgId": ctx.org_id})
+        if not fl:
+            fl = await db["floors"].find_one({"id": floor_id, "orgId": ctx.org_id})
+        floor_label = str((fl or {}).get("label") or "")
+        if not tower_id:
+            tower_id = str((fl or {}).get("towerId") or "")
+
+    if project_id:
+        payload["projectId"] = project_id
+    if tower_id:
+        payload["towerId"] = tower_id
+    if project_name:
+        payload["projectName"] = project_name
+    if tower_name:
+        payload["towerName"] = tower_name
+    if floor_label:
+        payload["floorLabel"] = floor_label
 
 
 async def _link_capture_to_pin_by_room(
@@ -1209,21 +1373,102 @@ async def list_capture_pins(floor_plan_id: str, ctx: CallerContext, db: DB):
 @router.post("/floor-plans/{floor_plan_id}/pins", status_code=status.HTTP_201_CREATED, summary="Create capture pin")
 async def create_capture_pin(floor_plan_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "create"))):
     payload.setdefault("floorPlanId", floor_plan_id)
-    return success_response(data=await _upsert(db, "capture_pins", payload, ctx), message="Capture pin created")
+    # Free-place pins without labels inherit nearest predefined flat/room.
+    is_predefined = bool(payload.get("isPredefined"))
+    has_labels = bool(str(payload.get("flatName") or "").strip() and str(payload.get("roomName") or "").strip())
+    if not is_predefined and not has_labels:
+        labeled = await db["capture_pins"].find(
+            {
+                "orgId": ctx.org_id,
+                "floorPlanId": floor_plan_id,
+                "flatName": {"$exists": True, "$nin": [None, ""]},
+                "roomName": {"$exists": True, "$nin": [None, ""]},
+            }
+        ).to_list(length=500)
+        from app.services.predefined_pins_service import apply_nearest_label
+        try:
+            stamped = apply_nearest_label(
+                {"x": payload.get("x"), "y": payload.get("y"), **payload},
+                labeled,
+            )
+            if stamped.get("flatName") and stamped.get("roomName"):
+                payload["flatName"] = stamped["flatName"]
+                payload["roomName"] = stamped["roomName"]
+                payload["inheritedFromPinId"] = stamped.get("inheritedFromPinId")
+                payload["source"] = "freeplace"
+                payload["isPredefined"] = False
+        except Exception:
+            logger.exception("Nearest-label resolve failed for new pin on {}", floor_plan_id)
+    elif is_predefined and has_labels:
+        payload["source"] = payload.get("source") or "predefined"
+        payload["isPredefined"] = True
+    stored = await _upsert(db, "capture_pins", payload, ctx)
+    return success_response(data=stored, message="Capture pin created")
 
 
 @router.put("/pins/{pin_id}", summary="Update capture pin")
 async def update_capture_pin(pin_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "edit"))):
-    return success_response(data=await _patch(db, "capture_pins", pin_id, payload, ctx), message="Capture pin updated")
+    # captureIds is a timeline. Blind $set from a stale/short client write used to
+    # wipe older visits (Compare / timeline disappeared after re-capture). Never
+    # drop an id that still has a live capture document.
+    body = dict(payload)
+    incoming_ids = body.pop("captureIds", None)
+    if incoming_ids is None:
+        incoming_ids = body.pop("capture_ids", None)
+    if incoming_ids is not None:
+        pin = await db["capture_pins"].find_one({"_id": _id_filter(pin_id), "orgId": ctx.org_id})
+        if not pin:
+            raise NotFoundException("capture pin", pin_id)
+        existing = [
+            cid for cid in (pin.get("captureIds") or pin.get("capture_ids") or [])
+            if isinstance(cid, str) and cid
+        ]
+        incoming = [cid for cid in (incoming_ids or []) if isinstance(cid, str) and cid]
+        live: set[str] = set()
+        for cid in set(existing) | set(incoming):
+            found = await db["captures"].find_one({"_id": _id_filter(cid), "orgId": ctx.org_id})
+            if found:
+                live.add(cid)
+        # Keep every live capture still on the pin, then append any new incoming ids.
+        merged: list[str] = []
+        for cid in existing:
+            if cid in live and cid not in merged:
+                merged.append(cid)
+        for cid in incoming:
+            if cid not in merged:
+                merged.append(cid)
+        # Drop ids that are neither live nor in the client's incoming list
+        # (intentional removals after deleteCapture).
+        body["captureIds"] = [
+            cid for cid in merged
+            if cid in live or cid in incoming
+        ]
+
+    updated = await _patch(db, "capture_pins", pin_id, body, ctx)
+    # After a free-place move, re-resolve nearest label if still unlabeled.
+    if not (updated.get("flatName") and updated.get("roomName")):
+        try:
+            stamped = await PredefinedPinsService(db).resolve_and_stamp_freeplace(
+                org_id=ctx.org_id, pin_id=pin_id,
+            )
+            if stamped:
+                updated = stamped
+        except Exception:
+            logger.exception("Nearest-label stamp failed for pin {}", pin_id)
+    return success_response(data=updated, message="Capture pin updated")
 
 
 @router.delete("/pins/{pin_id}", summary="Delete capture pin")
 async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "delete"))):
     # Cascade: removing a pin must also remove its capture timeline. Otherwise
     # orphaned captures stay in Mongo and reappear in Media Library / snapshot.
+    #
+    # Idempotent: floor replace / copy-from / client write-queue races often
+    # DELETE the same pin twice. Returning 404 for an already-gone pin floods
+    # logs and is not useful — treat as success.
     pin = await db["capture_pins"].find_one({"_id": _id_filter(pin_id), "orgId": ctx.org_id})
     if not pin:
-        raise NotFoundException("capture pin", pin_id)
+        return success_response(message="Capture pin already deleted")
     floor_plan_id = str(pin.get("floorPlanId") or pin.get("floor_plan_id") or "")
     capture_ids = [
         cid for cid in (pin.get("captureIds") or pin.get("capture_ids") or [])
@@ -1250,6 +1495,141 @@ async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(
     await _delete(db, "capture_pins", pin_id, ctx)
     await _resequence_pins_on_plan(db, ctx, floor_plan_id)
     return success_response(message="Capture pin deleted")
+
+
+# ── Predefined labeled capture points (admin/manager) ───────────────────────
+
+@router.post(
+    "/floor-plans/{floor_plan_id}/predefined-pins",
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a predefined labeled capture point",
+)
+async def create_predefined_pin(
+    floor_plan_id: str,
+    payload: dict[str, Any],
+    ctx: CallerContext,
+    db: DB,
+    _=Depends(require_permission("floorPlans", "edit")),
+):
+    try:
+        data = await PredefinedPinsService(db).create_predefined_pin(
+            org_id=ctx.org_id,
+            floor_plan_id=floor_plan_id,
+            payload=payload,
+            created_by=getattr(ctx, "user_id", None) or getattr(ctx, "email", None),
+        )
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
+    return success_response(data=data, message="Predefined pin created")
+
+
+@router.patch(
+    "/floor-plans/{floor_plan_id}/predefined-pins/{pin_id}",
+    summary="Update a predefined labeled capture point",
+)
+async def patch_predefined_pin(
+    floor_plan_id: str,
+    pin_id: str,
+    payload: dict[str, Any],
+    ctx: CallerContext,
+    db: DB,
+    _=Depends(require_permission("floorPlans", "edit")),
+):
+    try:
+        data = await PredefinedPinsService(db).update_predefined_pin(
+            org_id=ctx.org_id,
+            floor_plan_id=floor_plan_id,
+            pin_id=pin_id,
+            patch=payload,
+        )
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
+    return success_response(data=data, message="Predefined pin updated")
+
+
+@router.delete(
+    "/floor-plans/{floor_plan_id}/predefined-pins/{pin_id}",
+    summary="Delete a predefined labeled capture point",
+)
+async def delete_predefined_pin(
+    floor_plan_id: str,
+    pin_id: str,
+    ctx: CallerContext,
+    db: DB,
+    force: bool = Query(False),
+    _=Depends(require_permission("floorPlans", "edit")),
+):
+    try:
+        await PredefinedPinsService(db).delete_predefined_pin(
+            org_id=ctx.org_id,
+            floor_plan_id=floor_plan_id,
+            pin_id=pin_id,
+            force=force,
+        )
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
+    return success_response(message="Predefined pin deleted")
+
+
+@router.patch(
+    "/floor-plans/{floor_plan_id}/pins-visibility",
+    summary="Show or hide capture points on a floor plan",
+)
+async def set_pins_visibility(
+    floor_plan_id: str,
+    payload: dict[str, Any],
+    ctx: CallerContext,
+    db: DB,
+    _=Depends(require_permission("floorPlans", "view")),
+):
+    visible = payload.get("visible")
+    if visible is None:
+        visible = payload.get("pinsVisible")
+    if visible is None:
+        raise ValidationException("visible is required")
+    try:
+        data = await PredefinedPinsService(db).set_pins_visibility(
+            org_id=ctx.org_id,
+            floor_plan_id=floor_plan_id,
+            visible=bool(visible),
+        )
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
+    return success_response(data=data, message="Pin visibility updated")
+
+
+@router.post(
+    "/floors/{floor_id}/pins/copy-from",
+    summary="Copy labeled capture points from another floor in the same tower",
+)
+async def copy_pins_from_floor(
+    floor_id: str,
+    payload: dict[str, Any],
+    ctx: CallerContext,
+    db: DB,
+    _=Depends(require_permission("floorPlans", "edit")),
+):
+    source_floor_id = str(payload.get("sourceFloorId") or payload.get("source_floor_id") or "").strip()
+    if not source_floor_id:
+        raise ValidationException("sourceFloorId is required")
+    target_floor_plan_id = str(
+        payload.get("targetFloorPlanId") or payload.get("target_floor_plan_id") or ""
+    ).strip() or None
+    source_floor_plan_id = str(
+        payload.get("sourceFloorPlanId") or payload.get("source_floor_plan_id") or ""
+    ).strip() or None
+    try:
+        data = await PredefinedPinsService(db).copy_pins_from_floor(
+            org_id=ctx.org_id,
+            target_floor_id=floor_id,
+            source_floor_id=source_floor_id,
+            created_by=getattr(ctx, "user_id", None) or getattr(ctx, "email", None),
+            target_floor_plan_id=target_floor_plan_id,
+            source_floor_plan_id=source_floor_plan_id,
+        )
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
+    return success_response(data=data, message="Capture points copied")
 
 
 @router.get("/defects", summary="List defects")
@@ -1354,18 +1734,16 @@ async def create_audit_log(payload: dict[str, Any], ctx: CallerContext, db: DB):
 
     # Resolve a human-readable actor once, so the feed does not have to join
     # against users (and still reads correctly if the user is later removed).
+    payload["actorName"] = await _resolve_user_display_name(db, ctx.user_id)
     try:
         user = await db["users"].find_one(
-            {"_id": _id_filter(ctx.user_id)}, {"name": 1, "email": 1, "full_name": 1}
+            {"_id": _id_filter(ctx.user_id)}, {"email": 1}
         )
     except Exception as exc:  # never let enrichment break the write
         logger.warning(f"[audit] actor lookup failed for {ctx.user_id}: {exc!r}")
         user = None
     if user:
-        payload["actorName"] = user.get("name") or user.get("full_name") or user.get("email") or ctx.user_id
         payload["actorEmail"] = user.get("email")
-    else:
-        payload.setdefault("actorName", ctx.user_id)
 
     return success_response(data=await _upsert(db, "audit_logs", payload, ctx), message="Audit log created")
 

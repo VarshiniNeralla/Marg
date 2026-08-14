@@ -315,11 +315,12 @@ export default function TourFloorPlanPanel({
   const vbW = containerSize.w > 0 ? containerSize.w / scale : 100;
   const vbH = containerSize.h > 0 ? containerSize.h / scale : 100;
 
-  const PIN_SCREEN_RADIUS = 12;
+  // Keep markers compact so the plan stays readable when zoomed out.
+  const PIN_SCREEN_RADIUS = 6;
   const pinPageRadius = PIN_SCREEN_RADIUS / scale;
-  const pinStroke = 1.5 / scale;
-  const pinFontSize = 10 / scale;
-  const pinHitRadius = 16 / scale;
+  const pinStroke = 1.25 / scale;
+  const pinFontSize = 8 / scale;
+  const pinHitRadius = 12 / scale;
 
   const handleMaximize = () => {
     setMaximized(true);
@@ -414,13 +415,14 @@ export default function TourFloorPlanPanel({
                 height={pageSize.h}
                 preserveAspectRatio="none"
               />
-              {pins.map(pin => {
+              {pins.map((pin, index) => {
                 const cx = (pin.x / 100) * pageSize.w;
                 const cy = (pin.y / 100) * pageSize.h;
                 const hasCapture = pin.captureIds.length > 0;
                 const isActive = pin.id === activePinId;
                 const stroke = hasCapture ? (isActive ? '#2563eb' : '#16a34a') : '#d97706';
                 const fill = hasCapture ? (isActive ? '#2563eb' : '#16a34a') : '#fff';
+                const label = String(index + 1);
 
                 return (
                   <g key={pin.id} style={{ cursor: hasCapture ? 'pointer' : 'default' }}>
@@ -428,7 +430,7 @@ export default function TourFloorPlanPanel({
                       <circle
                         cx={cx}
                         cy={cy}
-                        r={pinPageRadius * 1.45}
+                        r={pinPageRadius * 1.55}
                         fill="rgba(37,99,235,0.2)"
                         stroke="#2563eb"
                         strokeWidth={pinStroke}
@@ -446,19 +448,20 @@ export default function TourFloorPlanPanel({
                       opacity={hasCapture ? 1 : 0.55}
                       style={{ pointerEvents: 'none' }}
                     />
-                    <text
-                      x={cx}
-                      y={cy}
-                      textAnchor="middle"
-                      dominantBaseline="central"
-                      fontSize={pinFontSize}
-                      fontWeight={700}
-                      fill={hasCapture ? '#fff' : '#d97706'}
-                      fontFamily="Inter, system-ui, sans-serif"
-                      style={{ pointerEvents: 'none', userSelect: 'none' }}
-                    >
-                      {pin.sequenceNumber}
-                    </text>
+                    {hasCapture && (
+                      <text
+                        x={cx}
+                        y={cy}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fill="#fff"
+                        fontSize={pinFontSize}
+                        fontWeight={700}
+                        style={{ pointerEvents: 'none', userSelect: 'none' }}
+                      >
+                        {label}
+                      </text>
+                    )}
                     {hasCapture && (
                       <circle
                         cx={cx}

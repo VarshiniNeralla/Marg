@@ -11,6 +11,9 @@ import { pendingUploadPins } from './pendingUploadRegistry';
  * sessions (e.g. a capture attempt that never completed before the app was
  * closed or the camera disconnected).
  *
+ * Never removes admin predefined / labeled layout pins — those are meant to
+ * stay empty until an engineer captures on them.
+ *
  * Reuses workflowStore's deleteCapturePin for each pin, so resequencing,
  * room cleanup, and backend mirroring all follow the same safe path as a
  * manual pin delete.
@@ -24,6 +27,8 @@ export function pruneOrphanedPins(): number {
   const orphans = capturePins.filter(
     p =>
       p.captureIds.length === 0 &&
+      !p.isPredefined &&
+      !(p.flatName && p.roomName) &&
       !fileUploadStatusForPin(p.id) &&
       // Sync mirror — Preferences load may not have finished yet.
       !pending.has(p.id),

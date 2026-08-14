@@ -57,8 +57,11 @@ export default function NewProjectPage() {
     try {
       const res = await uploadImage(file, 'thumbnails');
       setThumbUrl(res.url);
-    } catch {
-      setThumbError('Upload failed. The thumbnail will not be saved.');
+    } catch (err) {
+      const message =
+        (err as { message?: string })?.message
+        || 'Upload failed. The thumbnail will not be saved.';
+      setThumbError(message);
       setThumbUrl(null);
     } finally {
       setThumbUploading(false);
@@ -74,7 +77,7 @@ export default function NewProjectPage() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.name.trim()) return;
+    if (!form.name.trim() || thumbUploading) return;
     const newId = createProject({
       name: form.name,
       location: `${form.city}, ${form.state}`,
@@ -198,7 +201,7 @@ export default function NewProjectPage() {
                     {thumbUploading && (
                       <Box sx={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 1 }}>
                         <CircularProgress size={28} sx={{ color: '#fff' }} />
-                        <Typography sx={{ fontSize: '0.75rem', color: '#fff' }}>Uploading…</Typography>
+                        <Typography sx={{ fontSize: '0.75rem', color: '#fff' }}>Compressing & uploading…</Typography>
                       </Box>
                     )}
                     {/* Success indicator */}
@@ -229,7 +232,7 @@ export default function NewProjectPage() {
                   >
                     <AddPhotoAlternateRounded sx={{ color: colors.textSubdued, fontSize: 32 }} />
                     <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textMuted }}>Click to upload thumbnail</Typography>
-                    <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued }}>PNG, JPG, WebP · max 5 MB</Typography>
+                    <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued }}>PNG, JPG, WebP · large photos are auto-compressed</Typography>
                   </Box>
                 )}
 
@@ -245,6 +248,7 @@ export default function NewProjectPage() {
               <Box
                 component="button"
                 type="submit"
+                disabled={thumbUploading}
                 sx={{
                   width: '100%',
                   height: '38px',
@@ -255,13 +259,14 @@ export default function NewProjectPage() {
                   fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif',
                   fontWeight: 600,
                   border: 'none',
-                  cursor: 'pointer',
+                  cursor: thumbUploading ? 'not-allowed' : 'pointer',
+                  opacity: thumbUploading ? 0.65 : 1,
                   boxShadow: '0 4px 14px rgba(37,99,235,0.28)',
-                  '&:hover': { opacity: 0.92 },
+                  '&:hover': { opacity: thumbUploading ? 0.65 : 0.92 },
                   transition: `opacity ${motion.durationFast}`,
                 }}
               >
-                Create Project
+                {thumbUploading ? 'Uploading…' : 'Create Project'}
               </Box>
               <Box
                 component={Link}

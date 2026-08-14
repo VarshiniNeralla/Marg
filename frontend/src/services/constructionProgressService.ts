@@ -245,7 +245,7 @@ export const constructionProgressService = {
     return unwrap(apiClient.get('/construction-progress/floors'));
   },
 
-  getFloorDetail(floorId: string): Promise<FloorProgressSnapshot> {
+  getFloorDetail(floorId: string): Promise<FloorProgressSnapshot | null> {
     return unwrap(apiClient.get(`/construction-progress/floors/${floorId}`));
   },
 

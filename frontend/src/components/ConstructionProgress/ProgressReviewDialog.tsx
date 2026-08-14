@@ -384,7 +384,7 @@ export default function ProgressReviewDialog({
             size="small"
             fullWidth
             label="Correct room name"
-            placeholder="e.g. Kitchen, Utility, Sit-Out"
+            placeholder="e.g. Kitchen, Utility, Sit Out"
             value={answer.otherRoomText}
             onChange={e => onChange({ otherRoomText: e.target.value })}
           />

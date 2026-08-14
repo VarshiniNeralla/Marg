@@ -1,16 +1,17 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Box, Typography, useMediaQuery, useTheme, Menu, MenuItem, Pagination } from '@mui/material';
+import { Box, Typography, useMediaQuery, useTheme, MenuItem, Pagination, Tooltip, Select, FormControl, type SelectChangeEvent } from '@mui/material';
 import {
   LayersRounded, MapRounded, CheckCircleRounded, AddRounded,
   CameraAltRounded, ViewInArRounded, UploadFileRounded, ArrowBackRounded,
-  BusinessRounded, KeyboardArrowDownRounded, CheckRounded,
+  BusinessRounded, DeleteOutlineRounded,
 } from '@mui/icons-material';
 import { useWorkflowStore } from '@store/workflowStore';
-import { useAuthStore, isFieldEngineer , getRoleLandingPath } from '@store/authStore';
+import { useAuthStore, isFieldEngineer, isManagerOrAdmin, getRoleLandingPath } from '@store/authStore';
 import { getTowersByProject, getFloorsByTower, getFloorPlanByFloor, enrichFloorStats } from '@store/workflowSelectors';
 import EmptyState from '@shared/components/EmptyState/EmptyState';
-import { locationFilterMenuPaperSx, locationFilterToolbarSx } from '@/utils/locationFilters';
+import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
+import { locationFilterToolbarSx } from '@/utils/locationFilters';
 
 const PLANS_PAGE_SIZE_MOBILE = 9;  // 3 × 3
 const PLANS_PAGE_SIZE_DESKTOP = 8; // 4 × 2
@@ -49,10 +50,11 @@ export default function FloorPlansPage() {
 
   const user       = useAuthStore(s => s.user);
   const isEngineer = isFieldEngineer(user);
+  const canManagePlans = isManagerOrAdmin(user);
+  const role = user?.role || 'default';
 
-  const [towerMenuAnchor, setTowerMenuAnchor] = useState<null | HTMLElement>(null);
-  const [projectMenuAnchor, setProjectMenuAnchor] = useState<null | HTMLElement>(null);
   const [page, setPage] = useState(1);
+  const [deleteTarget, setDeleteTarget] = useState<{ planId: string; floorLabel: string } | null>(null);
 
   const projects   = useWorkflowStore(s => s.projects);
   const towers     = useWorkflowStore(s => s.towers);
@@ -62,21 +64,35 @@ export default function FloorPlansPage() {
   const captures   = useWorkflowStore(s => s.captures);
   const tours      = useWorkflowStore(s => s.tours);
   const floorPlans = useWorkflowStore(s => s.floorPlans);
+  const deleteFloorPlan = useWorkflowStore(s => s.deleteFloorPlan);
   const [searchParams] = useSearchParams();
 
-  const activeProjects = useMemo(
-    () => projects.filter(p => !p.archived && getTowersByProject(towers, p.id).length > 0),
-    [projects, towers],
-  );
+  // Field engineers only see assigned projects (same as Capture Workflow / History).
+  const assignedProjectIds = useMemo(() => {
+    if (!isEngineer) return null;
+    const ids = user?.assignedProjectIds ?? [];
+    return ids.length > 0 ? new Set(ids) : null;
+  }, [isEngineer, user?.assignedProjectIds]);
+
+  const activeProjects = useMemo(() => {
+    const base = projects.filter(p => !p.archived && getTowersByProject(towers, p.id).length > 0);
+    return assignedProjectIds ? base.filter(p => assignedProjectIds.has(p.id)) : base;
+  }, [projects, towers, assignedProjectIds]);
+
+  const storageKey = (kind: 'project' | 'tower') => `floorplans_${kind}Id_${role}`;
 
   const [projectId, setProjectId] = useState(() => {
-    const pid = searchParams.get('project');
-    if (pid && activeProjects.find(p => p.id === pid)) return pid;
-    // Auto-select only when there's a single project (the picker is hidden then).
-    // With multiple projects, require an explicit pick before showing floor plans.
-    return activeProjects.length === 1 ? activeProjects[0].id : '';
+    const fromUrl = searchParams.get('project');
+    if (fromUrl) return fromUrl;
+    try { return sessionStorage.getItem(storageKey('project')) || ''; } catch { return ''; }
   });
-  const project = activeProjects.find(p => p.id === projectId);
+  const [towerId, setTowerId] = useState(() => {
+    const fromUrl = searchParams.get('tower');
+    if (fromUrl) return fromUrl;
+    try { return sessionStorage.getItem(storageKey('tower')) || ''; } catch { return ''; }
+  });
+
+  const project = activeProjects.find(p => p.id === projectId) ?? null;
 
   const projectTowers = useMemo(
     () => project
@@ -85,11 +101,41 @@ export default function FloorPlansPage() {
     [towers, project],
   );
 
-  const [towerId, setTowerId] = useState(() => {
-    const tid = searchParams.get('tower');
-    return tid || (projectTowers[0]?.id ?? '');
-  });
-  const tower = projectTowers.find(t => t.id === towerId) ?? projectTowers[0];
+  // One-shot repair after store hydrate — do NOT depend on searchParams (URL writes
+  // were remounting anchors and leaving the old Menu stuck open).
+  const didRepairSelection = useRef(false);
+  useEffect(() => {
+    if (didRepairSelection.current) return;
+    if (projects.length === 0) return; // wait for real data
+    didRepairSelection.current = true;
+
+    let nextProject = projectId;
+    if (!nextProject || !activeProjects.some(p => p.id === nextProject)) {
+      nextProject = activeProjects[0]?.id ?? '';
+    }
+    if (nextProject !== projectId) setProjectId(nextProject);
+
+    const towersForProject = nextProject
+      ? [...getTowersByProject(towers, nextProject)].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+      : [];
+    let nextTower = towerId;
+    if (!nextTower || !towersForProject.some(t => t.id === nextTower)) {
+      nextTower = towersForProject[0]?.id ?? '';
+    }
+    if (nextTower !== towerId) setTowerId(nextTower);
+  }, [projects.length, activeProjects, towers, projectId, towerId]);
+
+  // Persist selection locally only — avoid setSearchParams while menus are open.
+  useEffect(() => {
+    try {
+      if (projectId) sessionStorage.setItem(storageKey('project'), projectId);
+      else sessionStorage.removeItem(storageKey('project'));
+      if (towerId) sessionStorage.setItem(storageKey('tower'), towerId);
+      else sessionStorage.removeItem(storageKey('tower'));
+    } catch { /* ignore */ }
+  }, [projectId, towerId, role]);
+
+  const tower = projectTowers.find(t => t.id === towerId) ?? null;
 
   const towerFloors = useMemo(
     () => tower ? [...getFloorsByTower(floors, tower.id)].sort((a, b) => a.number - b.number) : [],
@@ -107,6 +153,11 @@ export default function FloorPlansPage() {
     setProjectId(id);
     const sorted = [...getTowersByProject(towers, id)].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
     setTowerId(sorted[0]?.id ?? '');
+    setPage(1);
+  }
+
+  function selectTower(id: string) {
+    setTowerId(id);
     setPage(1);
   }
 
@@ -130,19 +181,41 @@ export default function FloorPlansPage() {
   const filterCount = project ? 2 : 1;
   const toolbarLayout = locationFilterToolbarSx(filterCount);
 
+  const selectSx = {
+    borderRadius: '10px',
+    backgroundColor: P.white,
+    fontSize: '0.8125rem',
+    fontWeight: 600,
+    color: P.strong,
+    '& .MuiOutlinedInput-notchedOutline': { borderColor: P.border, borderWidth: '1.5px' },
+    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: P.blue },
+    '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: P.blue, borderWidth: '1.5px' },
+    '& .MuiSelect-select': {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 1,
+      py: 1.125,
+      px: 1.5,
+    },
+  } as const;
+
   if (activeProjects.length === 0) {
     return (
       <EmptyState
         icon={<MapRounded />}
         title="No projects with floor plans"
-        description="Create a project and add towers to start mapping floor plans."
+        description={
+          isEngineer
+            ? 'No assigned projects have towers yet. Ask your admin to assign you to a project.'
+            : 'Create a project and add towers to start mapping floor plans.'
+        }
         action={!isEngineer ? { label: 'Create project', onClick: () => window.location.href = '/projects/new' } : undefined}
       />
     );
   }
 
   return (
-    <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6, width: '100%', minWidth: 0, overflow: 'hidden' }}>
+    <Box sx={{ maxWidth: 800, mx: 'auto', pb: 6, width: '100%', minWidth: 0 }}>
 
       {/* ── Back to overview (all roles) ──────────────────────────────── */}
       <Box
@@ -176,130 +249,134 @@ export default function FloorPlansPage() {
               ? 'View uploaded floor plans for your project sites'
               : 'Architectural blueprint view — map rooms, captures, and tours'}
         </Typography>
+        {canManagePlans && project && tower && (
+          <Typography sx={{ fontSize: '0.8125rem', color: P.subtle, mt: 0.75 }}>
+            Use the trash / upload icons on a card to replace a plan. Open a floor to Import annotations from another floor.
+          </Typography>
+        )}
       </Box>
 
-      {/* ── Toolbar: project + tower pills ─────────────────────────────── */}
+      {/* ── Toolbar: project + tower selects (native MUI Select — stable open/close) ── */}
       <Box sx={{ ...toolbarLayout.row, mb: 3 }}>
         <Box sx={toolbarLayout.group}>
-          <Box
-            onClick={e => setProjectMenuAnchor(e.currentTarget)}
-            sx={{
-              ...toolbarLayout.pill,
-              display: 'flex', alignItems: 'center', gap: 1,
-              px: 1.5, py: 0.875, borderRadius: '10px', cursor: 'pointer',
-              border: `1.5px solid ${projectMenuAnchor ? P.blue : P.border}`,
-              backgroundColor: projectMenuAnchor ? P.blueSoft : P.white,
-              transition: T, '&:hover': { borderColor: P.blue },
-              justifyContent: 'space-between',
-            }}
-          >
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, overflow: 'hidden', minWidth: 0 }}>
-              <Box sx={{ width: 18, height: 18, borderRadius: '5px', background: project?.gradient ?? `linear-gradient(135deg,${P.subtle},${P.muted})`, flexShrink: 0 }} />
-              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: P.strong, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {project ? project.name : 'Select a project'}
-              </Typography>
-            </Box>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0 }}>
-              <Box sx={{ px: 0.75, py: 0.25, borderRadius: '6px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: P.bg, color: P.muted }}>
-                {project ? projectTowers.length : activeProjects.length}
-              </Box>
-              <KeyboardArrowDownRounded sx={{ fontSize: 16, color: P.muted, transform: projectMenuAnchor ? 'rotate(180deg)' : 'none', transition: T }} />
-            </Box>
-          </Box>
-
-          {project && projectTowers.length > 0 && (
-            <Box
-              onClick={e => setTowerMenuAnchor(e.currentTarget)}
-              sx={{
-                ...toolbarLayout.pill,
-                display: 'flex', alignItems: 'center', gap: 1,
-                px: 1.5, py: 0.875, borderRadius: '10px', cursor: 'pointer',
-                border: `1.5px solid ${towerMenuAnchor ? P.blue : P.border}`,
-                backgroundColor: towerMenuAnchor ? P.blueSoft : P.white,
-                transition: T, '&:hover': { borderColor: P.blue },
-                justifyContent: 'space-between',
+          <FormControl fullWidth size="small" sx={toolbarLayout.pill}>
+            <Select
+              displayEmpty
+              value={projectId && activeProjects.some(p => p.id === projectId) ? projectId : ''}
+              onChange={(e: SelectChangeEvent<string>) => {
+                const id = e.target.value;
+                if (id) selectProject(id);
+              }}
+              sx={selectSx}
+              renderValue={(selected) => {
+                const p = activeProjects.find(x => x.id === selected);
+                return (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0, width: '100%' }}>
+                    <Box sx={{ width: 18, height: 18, borderRadius: '5px', background: p?.gradient ?? `linear-gradient(135deg,${P.subtle},${P.muted})`, flexShrink: 0 }} />
+                    <Typography noWrap sx={{ flex: 1, fontSize: '0.8125rem', fontWeight: 600, color: P.strong }}>
+                      {p?.name ?? 'Select a project'}
+                    </Typography>
+                    <Box sx={{ px: 0.75, py: 0.25, borderRadius: '6px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: P.bg, color: P.muted, flexShrink: 0 }}>
+                      {p ? getTowersByProject(towers, p.id).length : activeProjects.length}
+                    </Box>
+                  </Box>
+                );
+              }}
+              MenuProps={{
+                disableScrollLock: true,
+                slotProps: {
+                  paper: {
+                    sx: {
+                      mt: 1,
+                      borderRadius: '14px',
+                      border: `1px solid ${P.border}`,
+                      boxShadow: '0 12px 40px rgba(15,23,42,0.14)',
+                      maxHeight: 360,
+                    },
+                  },
+                },
               }}
             >
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, overflow: 'hidden', minWidth: 0 }}>
-                <BusinessRounded sx={{ fontSize: 18, color: P.subtle, flexShrink: 0 }} />
-                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: P.strong, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {tower?.name ?? 'Select a tower'}
-                </Typography>
-              </Box>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0 }}>
-                <Box sx={{ px: 0.75, py: 0.25, borderRadius: '6px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: P.bg, color: P.muted }}>
-                  {visibleFloors.length}
-                </Box>
-                <KeyboardArrowDownRounded sx={{ fontSize: 16, color: P.muted, transform: towerMenuAnchor ? 'rotate(180deg)' : 'none', transition: T }} />
-              </Box>
-            </Box>
+              {activeProjects.map(proj => (
+                <MenuItem key={proj.id} value={proj.id} sx={{ gap: 1.25, py: 1, borderRadius: '10px', mx: 0.5 }}>
+                  <Box sx={{ width: 22, height: 22, borderRadius: '7px', background: proj.gradient, flexShrink: 0 }} />
+                  <Typography sx={{ flex: 1, fontSize: '0.875rem', fontWeight: projectId === proj.id ? 700 : 500, color: projectId === proj.id ? P.blue : P.strong }}>
+                    {proj.name}
+                  </Typography>
+                  <Box sx={{ px: 0.875, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: P.bg, color: P.muted }}>
+                    {getTowersByProject(towers, proj.id).length}
+                  </Box>
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          {project && projectTowers.length > 0 && (
+            <FormControl fullWidth size="small" sx={toolbarLayout.pill}>
+              <Select
+                displayEmpty
+                value={towerId && projectTowers.some(t => t.id === towerId) ? towerId : ''}
+                onChange={(e: SelectChangeEvent<string>) => {
+                  const id = e.target.value;
+                  if (id) selectTower(id);
+                }}
+                sx={selectSx}
+                renderValue={(selected) => {
+                  const t = projectTowers.find(x => x.id === selected);
+                  const floorCount = t
+                    ? (isEngineer
+                      ? getFloorsByTower(floors, t.id).filter(f => !!getFloorPlanByFloor(floorPlans, t.id, f.id)).length
+                      : getFloorsByTower(floors, t.id).length)
+                    : 0;
+                  return (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0, width: '100%' }}>
+                      <BusinessRounded sx={{ fontSize: 18, color: P.subtle, flexShrink: 0 }} />
+                      <Typography noWrap sx={{ flex: 1, fontSize: '0.8125rem', fontWeight: 600, color: P.strong }}>
+                        {t?.name ?? 'Select a tower'}
+                      </Typography>
+                      <Box sx={{ px: 0.75, py: 0.25, borderRadius: '6px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: P.bg, color: P.muted, flexShrink: 0 }}>
+                        {floorCount}
+                      </Box>
+                    </Box>
+                  );
+                }}
+                MenuProps={{
+                  disableScrollLock: true,
+                  slotProps: {
+                    paper: {
+                      sx: {
+                        mt: 1,
+                        borderRadius: '14px',
+                        border: `1px solid ${P.border}`,
+                        boxShadow: '0 12px 40px rgba(15,23,42,0.14)',
+                        maxHeight: 360,
+                      },
+                    },
+                  },
+                }}
+              >
+                {projectTowers.map(t => {
+                  const tFloors = getFloorsByTower(floors, t.id);
+                  const floorCount = isEngineer
+                    ? tFloors.filter(f => !!getFloorPlanByFloor(floorPlans, t.id, f.id)).length
+                    : tFloors.length;
+                  return (
+                    <MenuItem key={t.id} value={t.id} sx={{ gap: 1.25, py: 1, borderRadius: '10px', mx: 0.5 }}>
+                      <BusinessRounded sx={{ fontSize: 18, color: towerId === t.id ? P.blue : P.muted }} />
+                      <Typography sx={{ flex: 1, fontSize: '0.875rem', fontWeight: towerId === t.id ? 700 : 500, color: towerId === t.id ? P.blue : P.strong }}>
+                        {t.name}
+                      </Typography>
+                      <Box sx={{ px: 0.875, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: P.bg, color: P.muted }}>
+                        {floorCount}
+                      </Box>
+                    </MenuItem>
+                  );
+                })}
+              </Select>
+            </FormControl>
           )}
         </Box>
       </Box>
-
-      <Menu
-        anchorEl={projectMenuAnchor}
-        open={!!projectMenuAnchor}
-        onClose={() => setProjectMenuAnchor(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-        slotProps={{ paper: { sx: locationFilterMenuPaperSx(280, P.border) } }}
-      >
-        {activeProjects.map(proj => {
-          const isActive = projectId === proj.id;
-          const pTowers = getTowersByProject(towers, proj.id).length;
-          return (
-            <MenuItem
-              key={proj.id}
-              onClick={() => { selectProject(proj.id); setProjectMenuAnchor(null); }}
-              sx={{ borderRadius: '10px', py: 0.875, px: 1, gap: 1.25, '&:hover': { backgroundColor: P.bg }, backgroundColor: isActive ? P.blueSoft : 'transparent' }}
-            >
-              <Box sx={{ width: 22, height: 22, borderRadius: '7px', background: proj.gradient, flexShrink: 0 }} />
-              <Typography sx={{ flex: 1, fontSize: '0.875rem', fontWeight: isActive ? 700 : 500, color: isActive ? P.blue : P.strong }}>
-                {proj.name}
-              </Typography>
-              <Box sx={{ px: 0.875, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: P.bg, color: P.muted }}>
-                {pTowers}
-              </Box>
-              {isActive && <CheckRounded sx={{ fontSize: 17, color: P.blue }} />}
-            </MenuItem>
-          );
-        })}
-      </Menu>
-
-      {project && (
-        <Menu
-          anchorEl={towerMenuAnchor}
-          open={!!towerMenuAnchor}
-          onClose={() => setTowerMenuAnchor(null)}
-          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-          transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-          slotProps={{ paper: { sx: locationFilterMenuPaperSx(260, P.border) } }}
-        >
-          {projectTowers.map(t => {
-            const isActive = towerId === t.id;
-            const tFloors = getFloorsByTower(floors, t.id);
-            const tMapped = tFloors.filter(f => getFloorPlanByFloor(floorPlans, t.id, f.id)).length;
-            const floorCount = isEngineer ? tMapped : tFloors.length;
-            return (
-              <MenuItem
-                key={t.id}
-                onClick={() => { setTowerId(t.id); setTowerMenuAnchor(null); setPage(1); }}
-                sx={{ borderRadius: '10px', py: 0.875, px: 1, gap: 1.25, '&:hover': { backgroundColor: P.bg }, backgroundColor: isActive ? P.blueSoft : 'transparent' }}
-              >
-                <BusinessRounded sx={{ fontSize: 18, color: isActive ? P.blue : P.muted }} />
-                <Typography sx={{ flex: 1, fontSize: '0.875rem', fontWeight: isActive ? 700 : 500, color: isActive ? P.blue : P.strong }}>
-                  {t.name}
-                </Typography>
-                <Box sx={{ px: 0.875, py: 0.125, borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 700, backgroundColor: P.bg, color: P.muted }}>
-                  {floorCount}
-                </Box>
-                {isActive && <CheckRounded sx={{ fontSize: 17, color: P.blue }} />}
-              </MenuItem>
-            );
-          })}
-        </Menu>
-      )}
 
       {/* ── Prompt to pick a project ───────────────────────────────────── */}
       {!project && (
@@ -466,12 +543,83 @@ export default function FloorPlansPage() {
               </Box>
             );
 
-            return href ? (
-              <Box key={floor.id} component={Link} to={href} sx={{ textDecoration: 'none', minWidth: 0, width: '100%' }}>
-                {card}
+            const uploadHref = project && tower
+              ? `/floor-plans/${project.id}/${tower.id}/${floor.id}/upload`
+              : null;
+
+            // Keep delete/upload-new OUTSIDE the card Link — otherwise clicks navigate
+            // to the viewer and the delete control never opens the confirm dialog.
+            return (
+              <Box key={floor.id} sx={{ position: 'relative', minWidth: 0, width: '100%' }}>
+                {href ? (
+                  <Box component={Link} to={href} sx={{ textDecoration: 'none', display: 'block', minWidth: 0, width: '100%' }}>
+                    {card}
+                  </Box>
+                ) : (
+                  <Box sx={{ minWidth: 0, width: '100%' }}>{card}</Box>
+                )}
+
+                {canManagePlans && hasPlan && stats.plan && (
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      top: 6,
+                      right: 6,
+                      zIndex: 6,
+                      display: 'flex',
+                      flexDirection: 'row',
+                      gap: 0.5,
+                    }}
+                  >
+                    <Tooltip title="Delete plan">
+                      <Box
+                        component="button"
+                        type="button"
+                        aria-label={`Delete floor plan for ${floor.label}`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDeleteTarget({ planId: stats.plan!.id, floorLabel: floor.label });
+                        }}
+                        sx={{
+                          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                          width: 26, height: 26, p: 0,
+                          borderRadius: '7px', cursor: 'pointer',
+                          border: `1px solid ${P.border}`,
+                          backgroundColor: 'rgba(255,255,255,0.96)',
+                          color: '#b91c1c',
+                          boxShadow: '0 1px 4px rgba(15,23,42,0.10)',
+                          '&:hover': { backgroundColor: '#fff', borderColor: '#ef4444', color: '#ef4444' },
+                        }}
+                      >
+                        <DeleteOutlineRounded sx={{ fontSize: 14 }} />
+                      </Box>
+                    </Tooltip>
+                    {uploadHref && (
+                      <Tooltip title="Upload new plan">
+                        <Box
+                          component={Link}
+                          to={uploadHref}
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label={`Upload new floor plan for ${floor.label}`}
+                          sx={{
+                            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                            width: 26, height: 26, p: 0,
+                            borderRadius: '7px', textDecoration: 'none',
+                            border: `1px solid ${P.border}`,
+                            backgroundColor: 'rgba(255,255,255,0.96)',
+                            color: P.blue,
+                            boxShadow: '0 1px 4px rgba(15,23,42,0.10)',
+                            '&:hover': { backgroundColor: '#fff', borderColor: P.blue },
+                          }}
+                        >
+                          <UploadFileRounded sx={{ fontSize: 14 }} />
+                        </Box>
+                      </Tooltip>
+                    )}
+                  </Box>
+                )}
               </Box>
-            ) : (
-              <Box key={floor.id} sx={{ minWidth: 0, width: '100%' }}>{card}</Box>
             );
           })}
         </Box>
@@ -491,6 +639,25 @@ export default function FloorPlansPage() {
       )}
       </>
       )}
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Delete floor plan?"
+        description={
+          deleteTarget
+            ? `Remove the floor plan for ${deleteTarget.floorLabel}? Capture points on this plan will also be removed. You can upload a new plan afterward.`
+            : ''
+        }
+        confirmLabel="Delete plan"
+        destructive
+        onConfirm={() => {
+          if (deleteTarget) {
+            deleteFloorPlan(deleteTarget.planId);
+            setDeleteTarget(null);
+          }
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </Box>
   );
 }

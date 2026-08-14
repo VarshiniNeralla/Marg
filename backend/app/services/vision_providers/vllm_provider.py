@@ -17,6 +17,7 @@ from app.services.vision_providers.groq_provider import (
     _parse_retry_after,
     _rooms_in_crop_prompt,
 )
+from app.services.vision_providers.compare_progress_prompt import build_compare_user_context
 
 
 class VllmVisionProvider(VisionProvider):
@@ -42,19 +43,7 @@ class VllmVisionProvider(VisionProvider):
         after_mime: str,
         context: dict[str, str],
     ) -> VisionAnalysisResult:
-        user_context = (
-            "Site inspection context (factual metadata only):\n"
-            f"- Project: {context.get('project_name', 'N/A')}\n"
-            f"- Tower: {context.get('tower', 'N/A')}\n"
-            f"- Floor: {context.get('floor', 'N/A')}\n"
-            f"- Capture point: {context.get('pin_name', 'N/A')}\n"
-            f"- Capture type: {context.get('capture_type', '360')}\n"
-            f"- BEFORE date (earlier): {context.get('before_date', 'N/A')}\n"
-            f"- AFTER date (later): {context.get('after_date', 'N/A')}\n\n"
-            "Image 1 is the BEFORE (earlier) capture.\n"
-            "Image 2 is the AFTER (later) capture.\n"
-            "Analyze construction progress between these two dates."
-        )
+        user_context = build_compare_user_context(context)
 
         payload: dict[str, Any] = {
             "model": self._model,
@@ -79,7 +68,7 @@ class VllmVisionProvider(VisionProvider):
                     ],
                 },
             ],
-            "temperature": self._temperature,
+            "temperature": min(self._temperature, 0.15),
             "max_tokens": self._max_tokens,
             "response_format": {"type": "json_object"},
         }

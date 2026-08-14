@@ -156,9 +156,13 @@ function TimelineBar({ meta }: { meta: ProgressReportVisualMeta }) {
 function HeroProgressCard({
   pct,
   description,
+  confidence,
+  comparison,
 }: {
   pct: number;
   description: string;
+  confidence?: number;
+  comparison?: NormalizedProgressReport['comparison'];
 }) {
   return (
     <Box
@@ -199,13 +203,50 @@ function HeroProgressCard({
             mt: 0.5,
           }}
         >
-          Overall Progress
+          Visible Progress Change
+        </Typography>
+        <Typography sx={{ fontSize: '0.5625rem', color: '#8b95a5', mt: 0.25, fontWeight: 500 }}>
+          Between visits
         </Typography>
       </Box>
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Typography sx={{ fontSize: '0.875rem', color: colors.text, lineHeight: 1.75 }}>
           {description}
         </Typography>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1.25 }}>
+          {typeof confidence === 'number' && (
+            <Chip
+              size="small"
+              label={`Report confidence ${confidence}%`}
+              sx={{
+                height: 22,
+                fontSize: '0.625rem',
+                fontWeight: 700,
+                backgroundColor: '#eef2f6',
+                color: '#5c6778',
+              }}
+            />
+          )}
+          {comparison && (
+            <>
+              <Chip
+                size="small"
+                label={`View ${comparison.viewConsistency}`}
+                sx={{ height: 22, fontSize: '0.625rem', fontWeight: 700, backgroundColor: '#eef2f6', color: '#5c6778' }}
+              />
+              <Chip
+                size="small"
+                label={`Visibility ${comparison.visibility}`}
+                sx={{ height: 22, fontSize: '0.625rem', fontWeight: 700, backgroundColor: '#eef2f6', color: '#5c6778' }}
+              />
+              <Chip
+                size="small"
+                label={`Compare confidence ${comparison.comparisonConfidence}%`}
+                sx={{ height: 22, fontSize: '0.625rem', fontWeight: 700, backgroundColor: '#eef2f6', color: '#5c6778' }}
+              />
+            </>
+          )}
+        </Box>
       </Box>
     </Box>
   );
@@ -452,7 +493,12 @@ export default function ProgressReportView({ report, meta, normalized: normalize
       <BrandHeader />
       {meta && <TimelineBar meta={meta} />}
 
-      <HeroProgressCard pct={pct} description={normalized.overallProgress.description} />
+      <HeroProgressCard
+        pct={pct}
+        description={normalized.overallProgress.description}
+        confidence={normalized.confidence}
+        comparison={normalized.comparison}
+      />
 
       <Box sx={{ mb: 2 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 1.25 }}>
@@ -492,7 +538,7 @@ export default function ProgressReportView({ report, meta, normalized: normalize
 
       {meta && <FloorPlanSection meta={meta} />}
 
-      {normalized.changesDetected.length > 0 && (
+      {((normalized.changes?.length ?? 0) > 0 || normalized.changesDetected.length > 0) && (
         <Box sx={{ mb: 1.5 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 1.25 }}>
             <ConstructionRounded sx={{ fontSize: 16, color: SECTION_THEME.changes.accent }} />
@@ -505,50 +551,107 @@ export default function ProgressReportView({ report, meta, normalized: normalize
                 letterSpacing: '0.1em',
               }}
             >
-              Key Construction Changes
+              Major Changes
             </Typography>
           </Box>
-          {normalized.changesDetected.map((c, i) => {
-            const imp = importanceStyles(c.importance);
-            return (
-              <Box
-                key={i}
-                sx={{
-                  p: 1.25,
-                  mb: 1,
-                  borderRadius: '4px',
-                  backgroundColor: '#fff',
-                  border: `1px solid ${colors.borderLight}`,
-                }}
-              >
-                <Box sx={{ display: 'flex', gap: 0.5, mb: 0.5, flexWrap: 'wrap' }}>
-                  <Chip
-                    label={c.importance}
-                    size="small"
+          {(normalized.changes?.length ?? 0) > 0
+            ? normalized.changes.map((c, i) => {
+                const imp = importanceStyles(c.impact);
+                return (
+                  <Box
+                    key={i}
                     sx={{
-                      height: 18,
-                      fontSize: '0.5625rem',
-                      fontWeight: 800,
-                      color: imp.color,
-                      backgroundColor: imp.bg,
-                      borderRadius: '2px',
+                      p: 1.5,
+                      mb: 1,
+                      borderRadius: '4px',
+                      backgroundColor: '#fff',
+                      border: `1px solid ${colors.borderLight}`,
                     }}
-                  />
-                  {c.category && c.category !== 'General' && (
-                    <Chip
-                      label={c.category}
-                      size="small"
-                      variant="outlined"
-                      sx={{ height: 18, fontSize: '0.5625rem', fontWeight: 600, borderRadius: '2px' }}
-                    />
-                  )}
-                </Box>
-                <Typography sx={{ fontSize: '0.8125rem', color: colors.text, lineHeight: 1.65 }}>
-                  {c.text}
-                </Typography>
-              </Box>
-            );
-          })}
+                  >
+                    <Box sx={{ display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <Typography sx={{ fontSize: '0.8125rem', fontWeight: 800, color: '#1a2332' }}>
+                        {c.category}{c.area ? ` · ${c.area}` : ''}
+                      </Typography>
+                      {c.changeType && (
+                        <Chip
+                          label={c.changeType.replace(/_/g, ' ')}
+                          size="small"
+                          sx={{ height: 20, fontSize: '0.5625rem', fontWeight: 700, backgroundColor: '#eef2f6', color: '#5c6778' }}
+                        />
+                      )}
+                      <Chip
+                        label={c.impact}
+                        size="small"
+                        sx={{
+                          height: 20,
+                          fontSize: '0.5625rem',
+                          fontWeight: 700,
+                          color: imp.color,
+                          backgroundColor: imp.bg,
+                        }}
+                      />
+                      <Chip
+                        label={`${c.confidence}% confidence`}
+                        size="small"
+                        sx={{ height: 20, fontSize: '0.5625rem', fontWeight: 700, backgroundColor: '#eef2f6', color: '#5c6778' }}
+                      />
+                    </Box>
+                    {c.beforeState && (
+                      <Typography sx={{ fontSize: '0.8125rem', color: colors.text, lineHeight: 1.6, mb: 0.5 }}>
+                        <Box component="span" sx={{ fontWeight: 700, color: '#1a4d8f' }}>BEFORE: </Box>
+                        {c.beforeState}
+                      </Typography>
+                    )}
+                    {c.afterState && (
+                      <Typography sx={{ fontSize: '0.8125rem', color: colors.text, lineHeight: 1.6 }}>
+                        <Box component="span" sx={{ fontWeight: 700, color: '#1a6b3c' }}>AFTER: </Box>
+                        {c.afterState}
+                      </Typography>
+                    )}
+                  </Box>
+                );
+              })
+            : normalized.changesDetected.map((c, i) => {
+                const imp = importanceStyles(c.importance);
+                return (
+                  <Box
+                    key={i}
+                    sx={{
+                      p: 1.25,
+                      mb: 1,
+                      borderRadius: '4px',
+                      backgroundColor: '#fff',
+                      border: `1px solid ${colors.borderLight}`,
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', gap: 0.5, mb: 0.5, flexWrap: 'wrap' }}>
+                      <Chip
+                        label={c.importance}
+                        size="small"
+                        sx={{
+                          height: 18,
+                          fontSize: '0.5625rem',
+                          fontWeight: 800,
+                          color: imp.color,
+                          backgroundColor: imp.bg,
+                          borderRadius: '2px',
+                        }}
+                      />
+                      {c.category && c.category !== 'General' && (
+                        <Chip
+                          label={c.category}
+                          size="small"
+                          variant="outlined"
+                          sx={{ height: 18, fontSize: '0.5625rem', fontWeight: 600, borderRadius: '2px' }}
+                        />
+                      )}
+                    </Box>
+                    <Typography sx={{ fontSize: '0.8125rem', color: colors.text, lineHeight: 1.65 }}>
+                      {c.text}
+                    </Typography>
+                  </Box>
+                );
+              })}
         </Box>
       )}
 

@@ -525,7 +525,12 @@ class ReviewCorrectionApplier:
                 # Preserve existing if we have nothing better, but clear wrong ones
                 # when overrides moved pins out.
                 room["pinNumbers"] = seqs
-                room["capturesCount"] = max(int(room.get("capturesCount") or 0), len(seqs))
+                # Coverage follows attributed pins — clearing pinNumbers must also
+                # clear phantom "1 capture mapped" left by overlapping AABB logic.
+                if seqs:
+                    room["capturesCount"] = max(int(room.get("capturesCount") or 0), len(seqs))
+                elif not (room.get("activities") or []):
+                    room["capturesCount"] = 0
 
         await self._db[_SNAPSHOTS].update_one(
             {"_id": snap["_id"]},

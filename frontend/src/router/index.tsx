@@ -66,7 +66,6 @@ const DefectsPage     = lazy(() => import('@/pages/Defects/DefectsPage'));
 const UserManagementPage = lazy(() => import('@/pages/Users/UserManagementPage'));
 const OrganizationsPage  = lazy(() => import('@/pages/Organizations/OrganizationsPage'));
 const MediaPage          = lazy(() => import('@/pages/Admin/MediaPage'));
-const AuditPage          = lazy(() => import('@/pages/Admin/AuditPage'));
 
 // ── Manager-only ──────────────────────────────────────────────────────────────
 const ReviewsPage = lazy(() => import('@/pages/Reviews/ReviewsPage'));
@@ -74,6 +73,8 @@ const ProgressReportsPage = lazy(() => import('@/pages/ProgressReports/ProgressR
 const ConstructionProgressOverviewPage = lazy(() => import('@/pages/ConstructionProgress/ConstructionProgressOverviewPage'));
 const ConstructionProgressDashboardPage = lazy(() => import('@/pages/ConstructionProgress/ConstructionProgressDashboardPage'));
 const FlatFinishingWorksPage = lazy(() => import('@/pages/ConstructionProgress/FlatFinishingWorksPage'));
+const DrishtiProjectSelectionPage = lazy(() => import('@/pages/Drishti/DrishtiProjectSelectionPage'));
+const DrishtiChatPage = lazy(() => import('@/pages/Drishti/DrishtiChatPage'));
 
 // ── Field Engineer-only ───────────────────────────────────────────────────────
 const CaptureWorkflowPage = lazy(() => import('@/pages/CaptureWorkflow/CaptureWorkflowPage'));
@@ -167,9 +168,13 @@ const router = createBrowserRouter([
           { path: '/construction-progress',           element: <PageSuspense><ConstructionProgressOverviewPage /></PageSuspense> },
           { path: '/construction-progress/:floorId',  element: <PageSuspense><ConstructionProgressDashboardPage /></PageSuspense> },
           { path: '/construction-progress/:floorId/flats', element: <PageSuspense><FlatFinishingWorksPage /></PageSuspense> },
+          { path: '/construction-progress/:floorId/common', element: <PageSuspense><FlatFinishingWorksPage /></PageSuspense> },
+          { path: '/drishti',              element: <PageSuspense><DrishtiProjectSelectionPage /></PageSuspense> },
+          { path: '/drishti/:projectId',   element: <PageSuspense><DrishtiChatPage /></PageSuspense> },
           // Managers see/edit field engineers only — the page and backend both scope this;
           // it's not moved to the Admin-only block below since Admins need the full view too.
           { path: '/users',                             element: <PageSuspense><UserManagementPage /></PageSuspense> },
+          { path: '/floor-plans/:projectId/:towerId/:floorId/upload', element: <PageSuspense><FloorPlanUploadPage /></PageSuspense> },
         ],
       },
 
@@ -182,11 +187,9 @@ const router = createBrowserRouter([
           { path: '/projects/:projectId/towers',                                element: <PageSuspense><TowersPage /></PageSuspense> },
           { path: '/projects/:projectId/towers/:towerId',                       element: <PageSuspense><FloorListPage /></PageSuspense> },
           { path: '/projects/:projectId/towers/:towerId/floors/:floorId',       element: <PageSuspense><RoomListPage /></PageSuspense> },
-          { path: '/floor-plans/:projectId/:towerId/:floorId/upload', element: <PageSuspense><FloorPlanUploadPage /></PageSuspense> },
           { path: '/workflow',                          element: <PageSuspense><WorkflowPage /></PageSuspense> },
           { path: '/organizations',                     element: <PageSuspense><OrganizationsPage /></PageSuspense> },
           { path: '/admin/media',                       element: <PageSuspense><MediaPage /></PageSuspense> },
-          { path: '/admin/audit',                       element: <PageSuspense><AuditPage /></PageSuspense> },
           { path: '/settings',                          element: <PageSuspense><SettingsPage /></PageSuspense> },
           { path: '/captures/upload',                   element: <PageSuspense><CaptureUploadPage /></PageSuspense> },
         ],

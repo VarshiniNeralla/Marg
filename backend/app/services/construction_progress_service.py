@@ -20,7 +20,8 @@ from app.services.construction_progress_providers import (
     ConstructionProgressProvider,
     VllmConstructionProgressProvider,
 )
-from app.services.flat_finishing_rosters import complete_flat_room_roster
+from app.services.predefined_pins_service import pick_location_from_pin
+from app.services.flat_finishing_rosters import _base, _norm, complete_common_area_roster, complete_flat_room_roster
 from app.services.pin_orphan_service import restore_orphan_pins_for_floor
 from app.services.room_map_service import (
     RoomMapService,
@@ -56,6 +57,241 @@ def _normalize_polygon(polygon: list[Any]) -> list[dict[str, float]]:
 
 def _room_key(flat: str, room: str) -> tuple[str, str]:
     return _canonical_flat_label(flat), str(room or "").strip().lower()
+
+
+def _pin_label_matches_room(
+    pin_room: str,
+    card_room: str,
+    *,
+    pin_xy: tuple[float, float] | None = None,
+    card_polys: list[list[dict[str, float]]] | None = None,
+) -> bool:
+    """True when a heatmap pin's attributed room belongs on this roster card.
+
+    Exact label wins. Plain labels like \"Dress\" may match \"Dress (Master Bedroom)\"
+    only when the pin tip falls inside that card's own polygon — never by
+    borrowing a Master Bedroom / Living pin that merely overlaps a neighbour
+    AABB (that was falsely marking Puja / Dress as photographed).
+    """
+    pr = str(pin_room or "").strip()
+    cr = str(card_room or "").strip()
+    if not pr or not cr:
+        return False
+    if _norm(pr) == _norm(cr):
+        return True
+    if _base(pr) != _base(cr):
+        return False
+    # Labeled pin for a different disambiguator (Dress (Bedroom-2) vs Master).
+    if "(" in pr and _norm(pr) != _norm(cr):
+        return False
+    # Plain pin label → only the Dress/Sit-Out/Balcony slot whose polygon
+    # actually contains the tip.
+    if "(" not in pr and card_polys and pin_xy is not None:
+        px, py = pin_xy
+        return any(_point_in_polygon(px, py, poly) for poly in card_polys if poly)
+    return False
+
+
+def heal_flat_progress_coverage(
+    flat_progress: list[dict[str, Any]],
+    heatmap_pins: list[dict[str, Any]],
+) -> bool:
+    """Clear phantom \"1 capture mapped\" on rooms with no attributed pin.
+
+    Older snapshots set capturesCount from overlapping room AABBs (or kept the
+    count after pinNumbers were cleared). Coverage must follow heatmapPins'
+    labeled room only — matching Capture History / admin annotation.
+    """
+    changed = False
+    pins = list(heatmap_pins or [])
+    for fp in flat_progress or []:
+        fname = _canonical_flat_label(str(fp.get("flatName") or ""))
+        flat_rooms = list(fp.get("rooms") or [])
+        flat_pins = [
+            p for p in pins
+            if _canonical_flat_label(str(p.get("flatName") or "")) == fname
+        ]
+        # How many roster slots share each base name (Dress ×2/×3).
+        base_counts: dict[str, int] = {}
+        for room in flat_rooms:
+            b = _base(str(room.get("roomName") or ""))
+            base_counts[b] = base_counts.get(b, 0) + 1
+
+        for room in flat_rooms:
+            rname = str(room.get("roomName") or "")
+            matched: list[dict[str, Any]] = []
+            for p in flat_pins:
+                try:
+                    xy = (float(p["x"]), float(p["y"]))
+                except (TypeError, ValueError, KeyError):
+                    xy = None
+                pin_room = str(p.get("roomName") or "")
+                if _pin_label_matches_room(
+                    pin_room,
+                    rname,
+                    pin_xy=xy,
+                    card_polys=None,
+                ):
+                    matched.append(p)
+                    continue
+                # Plain annotated \"Dress\" → sole Dress roster slot on this flat
+                # (or already-disambiguated heatmap label from a later analyze).
+                if (
+                    "(" not in pin_room
+                    and _base(pin_room) == _base(rname)
+                    and base_counts.get(_base(rname), 0) == 1
+                ):
+                    matched.append(p)
+            pin_nums = sorted({
+                int(p["sequenceNumber"])
+                for p in matched
+                if int(p.get("sequenceNumber") or 0)
+            })
+            # Photographed pins attributed to this label only — never keep a
+            # stale capturesCount when pinNumbers are empty (Dress/Puja bug).
+            new_caps = sum(int(p.get("capturesCount") or 0) for p in matched)
+            has_acts = bool(room.get("activities") or [])
+            if room.get("pinNumbers") != pin_nums:
+                room["pinNumbers"] = pin_nums
+                changed = True
+            prev_caps = room.get("capturesCount")
+            if prev_caps is None or int(prev_caps or 0) != int(new_caps):
+                room["capturesCount"] = int(new_caps)
+                changed = True
+            if int(new_caps) <= 0 and not has_acts and room.get("isComplete"):
+                room["isComplete"] = False
+                changed = True
+    return changed
+
+
+def recompute_flat_finishing_pcts(flat_progress: list[dict[str, Any]]) -> bool:
+    """Flat % = mean over the FULL room roster; uncaptured rooms count as 0%.
+
+    Previous v4.4 averaged only photographed rooms, so 4 nearly-done rooms
+    read as ~85% while most of the flat had never been captured.
+    """
+    changed = False
+    for fp in flat_progress or []:
+        rooms = list(fp.get("rooms") or [])
+        rooms_required = max(int(fp.get("roomsRequired") or 0), len(rooms))
+        if not rooms and rooms_required <= 0:
+            continue
+        photographed = 0
+        complete = 0
+        room_work_pcts: list[float] = []
+        for room in rooms:
+            has_cap = (
+                int(room.get("capturesCount") or 0) >= 1
+                or bool(room.get("activities") or [])
+                or bool(room.get("pinNumbers") or [])
+            )
+            if has_cap:
+                photographed += 1
+            if room.get("isComplete"):
+                complete += 1
+                room_work_pcts.append(100.0)
+                continue
+            if not has_cap:
+                room_work_pcts.append(0.0)
+                continue
+            acts = [
+                a for a in (room.get("activities") or [])
+                if a.get("status") != "not_observable"
+            ]
+            if not acts:
+                room_work_pcts.append(0.0)
+                continue
+            avg = sum(float(a.get("completionPct") or 0.0) for a in acts) / len(acts)
+            room_work_pcts.append(min(avg, 99.0))
+
+        # Pad denominator when roster expects more rooms than listed.
+        while len(room_work_pcts) < rooms_required:
+            room_work_pcts.append(0.0)
+
+        completion_pct = (
+            round(sum(room_work_pcts) / len(room_work_pcts), 1)
+            if room_work_pcts
+            else 0.0
+        )
+        is_fully = (
+            rooms_required > 0
+            and photographed >= rooms_required
+            and complete >= rooms_required
+        )
+        if is_fully:
+            completion_pct = 100.0
+        elif completion_pct >= 100.0 and not is_fully:
+            completion_pct = 99.0
+
+        updates = {
+            "completionPct": completion_pct,
+            "roomsComplete": complete,
+            "roomsPhotographed": photographed,
+            "roomsRequired": rooms_required,
+            "roomsTotal": rooms_required,  # always full roster in UI "X of Y"
+            "isFullyComplete": is_fully,
+        }
+        for key, val in updates.items():
+            if fp.get(key) != val:
+                fp[key] = val
+                changed = True
+    return changed
+
+
+_DISAMBIGUATE_BASES = frozenset({"dress", "sit-out", "balcony"})
+
+
+def _disambiguate_room_label(
+    flat_name: str,
+    room_name: str,
+    x: float,
+    y: float,
+    flats: list[dict[str, Any]],
+) -> str:
+    """Map plain admin labels (Dress) onto roster names (Dress (Master Bedroom)).
+
+    Uses the room-map polygon that contains the pin tip among same-base rooms.
+    """
+    name = str(room_name or "").strip()
+    if not name or "(" in name:
+        return name
+    if _base(name) not in _DISAMBIGUATE_BASES:
+        return name
+    fname = _canonical_flat_label(flat_name)
+    candidates: list[tuple[str, list[dict[str, float]]]] = []
+    for flat_entry in flats or []:
+        if _canonical_flat_label(str(flat_entry.get("flat") or "")) != fname:
+            continue
+        for r in flat_entry.get("rooms") or []:
+            n = str(r.get("name") or "").strip()
+            if not n or _base(n) != _base(name):
+                continue
+            poly = _normalize_polygon(r.get("polygon") or [])
+            if poly:
+                candidates.append((n, poly))
+    if not candidates:
+        return name
+    # Prefer already-labeled extract names when present.
+    labeled = [(n, p) for n, p in candidates if "(" in n]
+    pool = labeled or candidates
+    for n, poly in pool:
+        if _point_in_polygon(x, y, poly):
+            return n
+    # Nearest AABB center among same-base rooms.
+    def _centroid(poly: list[dict[str, float]]) -> tuple[float, float]:
+        return (
+            sum(pt["x"] for pt in poly) / len(poly),
+            sum(pt["y"] for pt in poly) / len(poly),
+        )
+
+    best_n, best_d = name, float("inf")
+    for n, poly in pool:
+        cx, cy = _centroid(poly)
+        d = (cx - x) ** 2 + (cy - y) ** 2
+        if d < best_d:
+            best_d = d
+            best_n = n
+    return best_n
 
 
 def _aabb_polygon(x0: float, x1: float, y0: float, y1: float) -> list[dict[str, float]]:
@@ -135,19 +371,22 @@ def _align_heatmap_to_pins(
         flat_name = pin_caps[0].flat_name
         room_name = pin_caps[0].room_name
         resolved = True
-        if pin.get("correctedFlatName") and pin.get("correctedRoomName"):
-            flat_name = _canonical_flat_label(str(pin["correctedFlatName"]))
-            room_name = str(pin["correctedRoomName"])
+        picked = pick_location_from_pin(pin)
+        if picked:
+            flat_name = _canonical_flat_label(picked[0])
+            room_name = picked[1]
         else:
             located = locate_pin(flats, x, y)
             resolved = located is not None
             if located:
                 flat_name, room_name = located[0], located[1]
                 flat_name = _canonical_flat_label(flat_name)
+        # Plain admin labels (Dress) → roster names (Dress (Master Bedroom)).
+        room_name = _disambiguate_room_label(flat_name, room_name, x, y, flats)
         state = state_by_room.get(_room_key(flat_name, room_name), "in_progress")
         if state in ("no_images", "uploaded"):
             state = "in_progress"
-        human_attributed = bool(pin.get("correctedFlatName") and pin.get("correctedRoomName"))
+        human_attributed = pick_location_from_pin(pin) is not None
         heatmap_pins.append({
             "pinId": pin_id,
             "sequenceNumber": int(pin.get("sequenceNumber") or pin.get("sequence_number") or 0),
@@ -159,6 +398,11 @@ def _align_heatmap_to_pins(
             "capturesCount": len(pin_caps),
             "resolved": resolved,
             "humanAttributed": human_attributed,
+            # Temporary sort key — upload order (earliest capture), not layout stop #.
+            "_uploadAt": min(
+                (c.captured_at for c in pin_caps if c.captured_at),
+                default=None,
+            ),
         })
 
     pins_by_room: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -197,20 +441,11 @@ def _align_heatmap_to_pins(
             int(room.get("capturesCount") or 0),
             sum(int(p["capturesCount"]) for p in room_pins),
         )
-        xs = [p["x"] for p in poly]
-        ys = [p["y"] for p in poly]
-        span_x = max(xs) - min(xs) if xs else 0.0
-        span_y = max(ys) - min(ys) if ys else 0.0
-        draw_poly = poly
-        if human_pins or span_x < _MIN_VISIBLE_ROOM_SPAN or span_y < _MIN_VISIBLE_ROOM_SPAN:
-            draw_poly = _expand_polygon_to_include(
-                poly,
-                [(float(p["x"]), float(p["y"])) for p in draw_pins],
-                pad=max(_ROOM_EXPAND_PAD, 2.0),
-            )
+        # Keep original room polygons for data/PDF consumers that still read them;
+        # the UI no longer paints bounding-box washes.
         aligned.append({
             **room,
-            "polygon": draw_poly,
+            "polygon": poly,
             "state": state,
             "capturesCount": captures_count,
             "pinNumbers": sorted(
@@ -220,24 +455,48 @@ def _align_heatmap_to_pins(
         for p in draw_pins:
             covered_pin_ids.add(p["pinId"])
 
-    # locate_pin miss (or name not on the room-map roster): personal halo so
-    # the pin still has a clickable room identity.
+    # locate_pin miss (or name not on the room-map roster): keep pin identity
+    # without inventing a halo bounding box for the UI.
     for p in heatmap_pins:
         if p["pinId"] in covered_pin_ids:
             continue
         aligned.append({
             "flatName": p["flatName"],
             "roomName": p["roomName"],
-            "polygon": _pin_halo_polygon(p["x"], p["y"]),
+            "polygon": [],
             "state": p["state"],
             "capturesCount": p["capturesCount"],
             "pinNumbers": [int(p["sequenceNumber"])] if p.get("sequenceNumber") else [],
         })
 
-    for p in heatmap_pins:
+    # Renumber markers 1..N by engineer upload/capture order (matches Capture Workflow).
+    def _upload_sort_key(p: dict[str, Any]) -> tuple[int, float, int]:
+        at = p.get("_uploadAt")
+        if isinstance(at, datetime):
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=timezone.utc)
+            return (0, at.timestamp(), int(p.get("sequenceNumber") or 0))
+        return (1, 0.0, int(p.get("sequenceNumber") or 0))
+
+    heatmap_pins.sort(key=_upload_sort_key)
+    for i, p in enumerate(heatmap_pins, start=1):
+        p["sequenceNumber"] = i
+        p.pop("_uploadAt", None)
         p.pop("resolved", None)
         p.pop("humanAttributed", None)
-    heatmap_pins.sort(key=lambda p: p["sequenceNumber"])
+
+    # Refresh pinNumbers on rooms to the new upload-order ids.
+    pin_num_by_id = {p["pinId"]: p["sequenceNumber"] for p in heatmap_pins}
+    for room in aligned:
+        ids = [
+            hp["pinId"]
+            for hp in heatmap_pins
+            if _room_key(hp["flatName"], hp["roomName"])
+            == _room_key(str(room.get("flatName") or ""), str(room.get("roomName") or ""))
+        ]
+        if ids:
+            room["pinNumbers"] = sorted(pin_num_by_id[i] for i in ids if i in pin_num_by_id)
+
     return aligned, heatmap_pins
 
 
@@ -427,6 +686,15 @@ class ConstructionProgressService:
             {"orgId": org_id, "$or": [{"_id": {"$in": unique_ids}}, {"id": {"$in": unique_ids}}]}
         ).to_list(length=2000)
 
+        flats_for_labels: list[dict[str, Any]] = []
+        if floor_plan_id:
+            try:
+                flats_for_labels = await self._room_maps.get_sanitized_flats(
+                    floor_plan_id, org_id,
+                )
+            except Exception:
+                flats_for_labels = []
+
         refs: list[CaptureRef] = []
         for cap in captures:
             cap_id = str(cap.get("id") or cap.get("_id") or "")
@@ -450,10 +718,12 @@ class ConstructionProgressService:
                     continue
             flat_name, room_name = _FALLBACK_LOCATION
             if pin and floor_plan_id:
-                # Human review override wins over geometry (Floor-1 pin corrections).
-                if pin.get("correctedFlatName") and pin.get("correctedRoomName"):
-                    flat_name = str(pin["correctedFlatName"])
-                    room_name = str(pin["correctedRoomName"])
+                # 1) Human review override
+                # 2) Predefined / copied / freeplace-inherited labels on the pin
+                # 3) AI room-map geometry (fallback)
+                picked = pick_location_from_pin(pin)
+                if picked:
+                    flat_name, room_name = picked
                 else:
                     flat_name, room_name = await self._room_maps.resolve_pin_location(
                         floor_plan_id=floor_plan_id,
@@ -462,6 +732,13 @@ class ConstructionProgressService:
                         pin_y=pin.get("y"),
                         fallback_pin_name=cap.get("roomName") or f"Pin {pin.get('sequenceNumber', '?')}",
                     )
+                try:
+                    px, py = float(pin.get("x")), float(pin.get("y"))
+                    room_name = _disambiguate_room_label(
+                        flat_name, room_name, px, py, flats_for_labels,
+                    )
+                except (TypeError, ValueError):
+                    pass
             image_url = str(
                 cap.get("processedPanoramaUrl")
                 or cap.get("original_url")
@@ -469,7 +746,12 @@ class ConstructionProgressService:
                 or cap.get("thumbnailUrl")
                 or ""
             )
-            captured_at = _parse_dt(cap.get("createdAt")) or _parse_dt(cap.get("uploadedAt"))
+            captured_at = (
+                _parse_dt(cap.get("capturedAt"))
+                or _parse_dt(cap.get("captured_at"))
+                or _parse_dt(cap.get("createdAt"))
+                or _parse_dt(cap.get("uploadedAt"))
+            )
             refs.append(
                 CaptureRef(
                     capture_id=cap_id,
@@ -633,7 +915,7 @@ class ConstructionProgressService:
                     if str(r.get("name") or "").strip()
                 ]
                 if flat_name == _COMMON_AREA_FLAT:
-                    common_area_units = room_names
+                    common_area_units = complete_common_area_roster(room_names)
                 else:
                     flat_units.append(flat_name)
                     # Guarantee every functional room on the floor plan appears
@@ -648,7 +930,11 @@ class ConstructionProgressService:
         for cap in captures:
             fname = _canonical_flat_label(cap.flat_name)
             rname = str(cap.room_name or "").strip()
-            if not fname or not rname or fname == _COMMON_AREA_FLAT or fname == "Unknown":
+            if not fname or not rname or fname == "Unknown":
+                continue
+            if fname == _COMMON_AREA_FLAT:
+                if rname not in common_area_units:
+                    common_area_units.append(rname)
                 continue
             roster = flat_room_rosters.setdefault(fname, [])
             if fname not in flat_units:
@@ -663,6 +949,7 @@ class ConstructionProgressService:
             flat_room_rosters[fname] = complete_flat_room_roster(
                 fname, flat_room_rosters[fname],
             )
+        common_area_units = complete_common_area_roster(common_area_units)
 
         # Factual site metadata — rendered into the vision prompt as facts
         # (not instructions) so the model treats project/tower/floor as
@@ -828,7 +1115,10 @@ class ConstructionProgressService:
         by_flat_doc = {
             _canonical_flat_label(str(d["flatName"])): d for d in flat_progress_docs
         }
-        for flat_name, room_names in flat_room_rosters.items():
+        roster_for_heal = dict(flat_room_rosters)
+        if common_area_units:
+            roster_for_heal[_COMMON_AREA_FLAT] = list(common_area_units)
+        for flat_name, room_names in roster_for_heal.items():
             doc_fp = by_flat_doc.get(flat_name)
             if doc_fp is None:
                 doc_fp = {
@@ -858,13 +1148,9 @@ class ConstructionProgressService:
         # Attach pin numbers + capture counts so Flat Finishing Works can show
         # every roster room with accurate coverage (not "No Photos Yet" when
         # pins/captures exist under that room name).
-        # Prefer geometric pin→room from heatmapPins (unique names after
-        # disambiguation); fall back to name key for older snapshots.
-        pins_by_room_key: dict[tuple[str, str], list[int]] = {}
-        for p in heatmap_pins:
-            pins_by_room_key.setdefault(
-                _room_key(str(p["flatName"]), str(p["roomName"])), []
-            ).append(int(p["sequenceNumber"]))
+        # Prefer attributed pin→room from heatmapPins (human label / locate_pin).
+        # Do NOT reassign pins by "tip inside room AABB" — overlapping Dress /
+        # Puja / Living boxes falsely marked unphotographed rooms as captured.
         # Also fold pin rooms into roster (same guarantee as captures above).
         for p in heatmap_pins:
             fname = _canonical_flat_label(str(p.get("flatName") or ""))
@@ -888,7 +1174,7 @@ class ConstructionProgressService:
             _room_key(flat, room): count
             for (flat, room), count in captures_by_room.items()
         }
-        # Polygon lookup for rooms that share a base name (Dress ×3).
+        # Polygons only disambiguate plain labels (Dress → Dress (Master Bedroom)).
         room_poly_by_flat: dict[str, list[tuple[str, list[dict[str, float]]]]] = {}
         for flat_entry in flats_for_align:
             fname = _canonical_flat_label(str(flat_entry.get("flat") or ""))
@@ -901,84 +1187,62 @@ class ConstructionProgressService:
 
         for fp in flat_progress_docs:
             fname = _canonical_flat_label(str(fp["flatName"]))
+            flat_pins = [
+                p for p in heatmap_pins
+                if _canonical_flat_label(str(p.get("flatName") or "")) == fname
+            ]
+            flat_polys = room_poly_by_flat.get(fname, [])
             for room in fp["rooms"]:
                 rname = str(room["roomName"])
                 key = _room_key(fname, rname)
-                pin_nums = sorted({n for n in pins_by_room_key.get(key, []) if n})
-                polys = [
-                    poly for n, poly in room_poly_by_flat.get(fname, [])
-                    if n == rname
-                ]
-                if polys and heatmap_pins:
-                    inside = []
-                    for p in heatmap_pins:
-                        if _canonical_flat_label(str(p["flatName"])) != fname:
-                            continue
-                        try:
-                            px, py = float(p["x"]), float(p["y"])
-                        except (TypeError, ValueError):
-                            continue
-                        if any(_point_in_polygon(px, py, poly) for poly in polys):
-                            seq = int(p.get("sequenceNumber") or 0)
-                            if seq:
-                                inside.append(seq)
-                    if inside:
-                        pin_nums = sorted(set(inside))
+                card_polys = [poly for n, poly in flat_polys if _norm(n) == _norm(rname)]
+                matched: list[dict[str, Any]] = []
+                for p in flat_pins:
+                    try:
+                        xy = (float(p["x"]), float(p["y"]))
+                    except (TypeError, ValueError):
+                        xy = None
+                    if _pin_label_matches_room(
+                        str(p.get("roomName") or ""),
+                        rname,
+                        pin_xy=xy,
+                        card_polys=card_polys,
+                    ):
+                        matched.append(p)
+                pin_nums = sorted({
+                    int(p["sequenceNumber"])
+                    for p in matched
+                    if int(p.get("sequenceNumber") or 0)
+                })
+                # Exact capture-key hits only — never invent coverage from a
+                # neighbour pin tip or a stale captures_by_room geometry label.
+                caps = int(caps_by_room_key.get(key, 0) or 0)
+                pin_caps = sum(int(p.get("capturesCount") or 0) for p in matched)
                 room["pinNumbers"] = pin_nums
-                room["capturesCount"] = int(caps_by_room_key.get(key, 0) or len(pin_nums))
-                # Do NOT wipe scored activities when capture matching fails —
-                # that was destroying evidence and resetting flat %. If AI
-                # scored the room, treat it as photographed.
-                if int(room["capturesCount"] or 0) <= 0 and room.get("activities"):
-                    room["capturesCount"] = 1
+                # Prefer attributed heatmap pins. If pins match but caps_by_room
+                # used a different spelling, keep the pin count. If nothing
+                # matched, force 0 even when caps_by_room has a phantom key.
+                if matched:
+                    room["capturesCount"] = max(caps, pin_caps)
+                else:
+                    room["capturesCount"] = 0
                 if int(room["capturesCount"] or 0) <= 0 and not room.get("activities"):
                     room["isComplete"] = False
 
-            # v4.4: recompute flat finishing from photographed rooms' work %.
-            photographed_rooms = [
-                r for r in fp["rooms"]
-                if int(r.get("capturesCount") or 0) >= 1 or (r.get("activities") or [])
-            ]
-            complete = sum(1 for r in photographed_rooms if r.get("isComplete"))
-            rooms_required = int(fp.get("roomsRequired") or len(fp["rooms"]) or 0)
-            rooms_photographed = len(photographed_rooms)
-            fp["roomsComplete"] = complete
-            fp["roomsPhotographed"] = rooms_photographed
-            fp["roomsRequired"] = rooms_required
-            fp["roomsTotal"] = rooms_photographed if rooms_photographed else rooms_required
+            # Recomputed below across the FULL roster (uncaptured = 0%).
 
-            room_work_pcts: list[float] = []
-            for r in photographed_rooms:
-                if r.get("isComplete"):
-                    room_work_pcts.append(100.0)
-                    continue
-                acts = [
-                    a for a in (r.get("activities") or [])
-                    if a.get("status") != "not_observable"
-                ]
-                if not acts:
-                    room_work_pcts.append(0.0)
-                    continue
-                avg = sum(float(a.get("completionPct") or 0.0) for a in acts) / len(acts)
-                room_work_pcts.append(min(avg, 99.0))
-            if room_work_pcts:
-                completion_pct = round(sum(room_work_pcts) / len(room_work_pcts), 1)
-            else:
-                completion_pct = 0.0
-            is_fully = (
-                rooms_required > 0
-                and rooms_photographed >= rooms_required
-                and complete >= rooms_required
+        # Prefer residential flats first in the Flat Finishing dropdown.
+        flat_progress_docs.sort(
+            key=lambda d: (
+                0 if str(d.get("flatName") or "").lower().startswith("flat") else 1,
+                str(d.get("flatName") or ""),
             )
-            if is_fully:
-                completion_pct = 100.0
-            elif completion_pct >= 100.0 and not is_fully:
-                completion_pct = 99.0
-            fp["completionPct"] = completion_pct
-            fp["isFullyComplete"] = is_fully
+        )
 
-        # Floor finishing % from finalized flat + common scopes (not the
-        # legacy mean of only high-scoring activity cards).
+        # Coverage + full-roster % (uncaptured rooms = 0%).
+        heal_flat_progress_coverage(flat_progress_docs, heatmap_pins)
+        recompute_flat_finishing_pcts(flat_progress_docs)
+
         from app.services.construction_progress_providers.vllm_provider import (
             rollup_floor_finishing_progress,
         )
@@ -1001,17 +1265,7 @@ class ConstructionProgressService:
             flat_for_rollup, result.activities,
         )
 
-        # Prefer residential flats first in the Flat Finishing dropdown.
-        flat_progress_docs.sort(
-            key=lambda d: (
-                0 if str(d.get("flatName") or "").lower().startswith("flat") else 1,
-                str(d.get("flatName") or ""),
-            )
-        )
-
         # Coverage ≠ progress: rooms with ≥1 usable capture ÷ roster rooms.
-        # Progress (overallProgressPct) averages photographed rooms only;
-        # this sibling field is how sparse photo coverage is communicated.
         roster_room_count = sum(len(fp.get("rooms") or []) for fp in flat_progress_docs)
         photographed_room_count = sum(
             1
@@ -1090,10 +1344,59 @@ class ConstructionProgressService:
     # ── Reads ──────────────────────────────────────────────────────────────────
 
     async def get_latest_snapshot(self, org_id: str, floor_id: str) -> dict[str, Any] | None:
+        # Prefer exact floorId; also accept legacy docs that stored id under floor_id.
         doc = await self._db[_COLLECTION].find_one(
             {"orgId": org_id, "floorId": floor_id}, sort=[("snapshotDate", -1)]
         )
-        return _serialize_snapshot(doc) if doc else None
+        if not doc:
+            doc = await self._db[_COLLECTION].find_one(
+                {"orgId": org_id, "floor_id": floor_id}, sort=[("snapshotDate", -1)]
+            )
+        if not doc:
+            return None
+        flats = list(doc.get("flatProgress") or [])
+        pins = list(doc.get("heatmapPins") or [])
+        healed = heal_flat_progress_coverage(flats, pins)
+        recomputed = recompute_flat_finishing_pcts(flats)
+        if healed or recomputed:
+            doc["flatProgress"] = flats
+            # Keep floor headline in sync with corrected flat %.
+            from app.services.construction_progress_providers.vllm_provider import (
+                rollup_floor_finishing_progress,
+            )
+            from app.services.construction_progress_providers.base import (
+                FlatProgress as _FlatProgress,
+            )
+
+            flat_for_rollup = [
+                _FlatProgress(
+                    flat_name=str(fp.get("flatName") or ""),
+                    completion_pct=float(fp.get("completionPct") or 0.0),
+                    rooms_complete=int(fp.get("roomsComplete") or 0),
+                    rooms_total=int(fp.get("roomsTotal") or 0),
+                    rooms_required=int(fp.get("roomsRequired") or 0),
+                    rooms_photographed=int(fp.get("roomsPhotographed") or 0),
+                    is_fully_complete=bool(fp.get("isFullyComplete")),
+                )
+                for fp in flats
+                if str(fp.get("flatName") or "").lower() != "common area"
+            ]
+            overall = rollup_floor_finishing_progress(flat_for_rollup, [])
+            doc["overallProgressPct"] = overall
+            try:
+                await self._db[_COLLECTION].update_one(
+                    {"_id": doc["_id"]},
+                    {
+                        "$set": {
+                            "flatProgress": flats,
+                            "overallProgressPct": overall,
+                            "updatedAt": _utcnow(),
+                        }
+                    },
+                )
+            except Exception as exc:
+                logger.warning("Failed to persist flatProgress coverage/pct heal: {}", exc)
+        return _serialize_snapshot(doc)
 
     async def delete_floor_reports(self, org_id: str, floor_id: str) -> int:
         """Delete every progress snapshot for a floor, resetting it back to 'not analyzed'."""

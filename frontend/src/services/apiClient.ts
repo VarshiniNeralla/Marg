@@ -43,6 +43,12 @@ apiClient.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+    // FormData must carry its own multipart boundary. The instance default
+    // Content-Type: application/json (or a bare multipart/form-data) makes
+    // FastAPI reject the body as 422 "file field required".
+    if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+      config.headers.delete('Content-Type');
+    }
     return config;
   },
   (error) => Promise.reject(error)
@@ -138,8 +144,9 @@ export function normaliseError(error: unknown): ApiError {
       message = body.message;
     } else if (typeof body?.detail === 'string') {
       message = body.detail;
-    } else if (Array.isArray(body?.detail) && body.detail[0]?.msg) {
-      message = body.detail[0].msg;
+    } else if (Array.isArray(body?.detail) && body.detail.length) {
+      const first = body.detail[0] as { msg?: string; message?: string };
+      message = first.message || first.msg || message;
     } else if (status === 401) {
       message = 'Your session has expired. Please log in again.';
     } else if (status === 403) {

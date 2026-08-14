@@ -138,6 +138,53 @@ export const workflowApiService = {
     await apiClient.delete(`/pins/${id}`);
   },
 
+  async createPredefinedPin(
+    floorPlanId: string,
+    payload: { x: number; y: number; flatName: string; roomName: string; label?: string },
+  ): Promise<WfCapturePin> {
+    return getData<WfCapturePin>(
+      apiClient.post(`/floor-plans/${floorPlanId}/predefined-pins`, payload),
+    );
+  },
+
+  async updatePredefinedPin(
+    floorPlanId: string,
+    pinId: string,
+    patch: Partial<WfCapturePin>,
+  ): Promise<WfCapturePin> {
+    return getData<WfCapturePin>(
+      apiClient.patch(`/floor-plans/${floorPlanId}/predefined-pins/${pinId}`, patch),
+    );
+  },
+
+  async deletePredefinedPin(floorPlanId: string, pinId: string, force = false): Promise<void> {
+    await apiClient.delete(`/floor-plans/${floorPlanId}/predefined-pins/${pinId}`, {
+      params: { force },
+    });
+  },
+
+  async setPinsVisibility(floorPlanId: string, visible: boolean): Promise<MockFloorPlan> {
+    return getData<MockFloorPlan>(
+      apiClient.patch(`/floor-plans/${floorPlanId}/pins-visibility`, { visible }),
+    );
+  },
+
+  async copyPinsFromFloor(targetFloorId: string, sourceFloorId: string, opts?: {
+    targetFloorPlanId?: string;
+    sourceFloorPlanId?: string;
+  }): Promise<{
+    copiedCount: number;
+    pins: WfCapturePin[];
+    targetFloorPlanId: string;
+    sourceFloorPlanId: string;
+  }> {
+    return getData(apiClient.post(`/floors/${targetFloorId}/pins/copy-from`, {
+      sourceFloorId,
+      targetFloorPlanId: opts?.targetFloorPlanId,
+      sourceFloorPlanId: opts?.sourceFloorPlanId,
+    }));
+  },
+
   async createDefect(defect: MockDefect): Promise<MockDefect> {
     return getData<MockDefect>(apiClient.post('/defects', defect));
   },

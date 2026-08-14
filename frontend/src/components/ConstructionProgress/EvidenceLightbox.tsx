@@ -6,6 +6,7 @@ import apiClient from '@/services/apiClient';
 import type { ApiResponse } from '@/types/dto';
 import { useWorkflowStore } from '@/store/workflowStore';
 import { getPinForCapture } from '@/store/workflowSelectors';
+import { formatPinLocationLabel } from '@/utils/pinLabels';
 
 /**
  * GET /captures/{id} returns the raw stored capture document (camelCase
@@ -29,18 +30,9 @@ function captureUrl(cap: RawCapture): string | undefined {
   return cap.processedPanoramaUrl || cap.original_url || cap.originalFileUrl || cap.thumbnailUrl || undefined;
 }
 
-/**
- * `capture.roomName` is frozen at capture-creation time (e.g. "Pin 8") and never
- * updates when pins are later renumbered or deleted — confirmed on real data
- * showing a capture still labelled "Pin 8"/"Pin 9" long after the floor's pins
- * had been cleaned up to 1-7 and 9. The pin's OWN current sequenceNumber (looked
- * up live from the store, not the capture doc) is the only label that can't go
- * stale, so it's used whenever the capture is still attached to a real pin.
- */
 function pinLabelFor(pins: ReturnType<typeof useWorkflowStore.getState>['capturePins'], captureId: string, fallback?: string): string {
   const pin = getPinForCapture(pins, captureId);
-  if (pin) return `Pin ${pin.sequenceNumber}`;
-  return fallback || 'Capture';
+  return formatPinLocationLabel(pin, fallback || 'Capture');
 }
 
 function FullSizeViewer({ capture, onClose }: { capture: RawCapture; onClose: () => void }) {

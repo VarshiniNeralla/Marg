@@ -162,13 +162,13 @@ async def heal_unlocated_pins_for_floor(
         if locate_pin(flats, pin.get("x"), pin.get("y")):
             continue
         unlocated += 1
-        logger.warning(
-            "[pin-orphan] pin={} seq={} at ({},{}) is outside every room polygon on "
-            "floor={} — leaving coordinates untouched (engineer placement wins)",
-            pin.get("_id") or pin.get("id"),
-            pin.get("sequenceNumber") or pin.get("sequence_number"),
-            pin.get("x"),
-            pin.get("y"),
+    # No per-pin WARNING spam: pins on walls/corridors/outside polygons are
+    # normal (engineer placement wins). Snapshot was flooding logs with dozens
+    # of identical lines on every load.
+    if unlocated:
+        logger.debug(
+            "[pin-orphan] {} pin(s) outside room polygons on floor={} (coordinates left as-is)",
+            unlocated,
             floor_id,
         )
     return unlocated
@@ -341,8 +341,8 @@ async def restore_orphan_pins_for_floor(
             "sequence_number": seq,
             "x": default_x,
             "y": default_y,
-            "createdBy": str(cap.get("uploadedBy") or cap.get("uploaded_by") or "You"),
-            "created_by": str(cap.get("uploadedBy") or cap.get("uploaded_by") or "You"),
+            "createdBy": str(cap.get("uploadedBy") or cap.get("uploaded_by") or "Unknown"),
+            "created_by": str(cap.get("uploadedBy") or cap.get("uploaded_by") or "Unknown"),
             "createdAt": now,
             "updatedAt": now,
             "created_at": now,
