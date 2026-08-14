@@ -155,3 +155,138 @@ class TestAskValidationGuardrail:
         result = await service.ask("org1", "user1", "manager", "p1", "question")
 
         assert result["message"]["content"] == _FALLBACK_ANSWER_TEXT
+
+
+_ROOM_STATUS_FLOOR_SNAPSHOT = {
+    "floorId": "f1",
+    "overallProgressPct": 55.0,
+    "flatProgress": [
+        {
+            "flatName": "Flat 02", "completionPct": 55.0,
+            "rooms": [
+                {
+                    "roomName": "Bedroom-3", "capturesCount": 2,
+                    "activities": [{"activityId": "a1", "activityName": "Wall Punning", "completionPct": 70.0, "status": "in_progress"}],
+                },
+            ],
+        },
+    ],
+}
+
+
+def _wire_room_scoped_mocks(monkeypatch, *, plan_overrides=None):
+    """Wires a plan that resolves to a specific room, and a floor snapshot
+    fetch that returns _ROOM_STATUS_FLOOR_SNAPSHOT — used to exercise the
+    resolution-status propagation and targeted-payload assembly paths."""
+    plan_kwargs = dict(
+        intent="room_status", floor_id="f1", floor_name="Floor 1",
+        flat_name="Flat 02", room_name="Bedroom-3",
+        resolution_status={"flat": "found", "room": "found"},
+        resolved_scope_for_persistence={},
+    )
+    plan_kwargs.update(plan_overrides or {})
+    plan = QueryPlan(**plan_kwargs)
+
+    monkeypatch.setattr(
+        service_module.DrishtiContextService, "get_project_context", AsyncMock(return_value=_PROJECT_CONTEXT),
+    )
+    monkeypatch.setattr(service_module.DrishtiQueryPlanner, "plan", AsyncMock(return_value=plan))
+    monkeypatch.setattr(service_module.DrishtiQueryPlanner, "resolve_entities", lambda self, p, snap, prev: plan)
+    monkeypatch.setattr(
+        service_module.DrishtiContextService, "get_floor_context",
+        AsyncMock(return_value=_ROOM_STATUS_FLOOR_SNAPSHOT),
+    )
+    return plan
+
+
+class TestResolutionStatusPropagation:
+    @pytest.mark.asyncio
+    async def test_found_room_never_triggers_generic_fallback_text(self, monkeypatch):
+        _wire_room_scoped_mocks(monkeypatch)
+        monkeypatch.setattr(
+            service_module.drishti_llm_client, "chat_completion_json",
+            AsyncMock(return_value={"answer": "Bedroom-3 is 70% complete on Wall Punning."}),
+        )
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        result = await service.ask("org1", "user1", "manager", "p1", "how is bedroom-3 doing")
+
+        assert result["message"]["content"] != _FALLBACK_ANSWER_TEXT
+
+    @pytest.mark.asyncio
+    async def test_not_configured_room_payload_carries_explicit_status_not_generic_fallback(self, monkeypatch):
+        """A room that doesn't exist in the roster must surface an explicit
+        resolutionStatus in the facts payload the LLM sees — it must NOT
+        silently degrade to the generic "couldn't structure a confident
+        answer" text, which is reserved for genuine LLM/validation failures."""
+        captured_payload = {}
+
+        async def fake_get_room_context(self, org_id, floor_id, flat_name, room_name, snapshot=None):
+            captured_payload["called"] = True
+            return {"flatName": flat_name, "roomName": room_name, "room": None, "resolutionStatus": "not_configured"}
+
+        _wire_room_scoped_mocks(monkeypatch)
+        monkeypatch.setattr(service_module.DrishtiContextService, "get_room_context", fake_get_room_context)
+        monkeypatch.setattr(
+            service_module.drishti_llm_client, "chat_completion_json",
+            AsyncMock(return_value={"answer": "Master Suite is not configured for Flat 02."}),
+        )
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        result = await service.ask("org1", "user1", "manager", "p1", "what about the master suite")
+
+        assert captured_payload["called"] is True
+        assert result["message"]["content"] != _FALLBACK_ANSWER_TEXT
+
+
+class TestJsonDumpsRegression:
+    @pytest.mark.asyncio
+    async def test_facts_payload_serialized_as_valid_json_not_python_repr(self, monkeypatch):
+        """Locks in the json.dumps(..., default=str) fix — a Python dict
+        containing None/True renders as invalid-JSON tokens ("None"/"True")
+        under str(), which the LLM would then have to guess at."""
+        _wire_common_mocks(monkeypatch)
+        captured = {}
+
+        async def fake_chat(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"answer": "ok"}
+
+        monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        await service.ask("org1", "user1", "manager", "p1", "question")
+
+        prompt = captured["user_prompt"]
+        # The project facts payload always includes a None (floorsNotYetAnalyzed
+        # is an int here, but overallProgressPct/summaryCards can be None/{});
+        # assert the JSON-valid tokens appear, not Python-repr tokens.
+        assert "None" not in prompt
+        assert "True" not in prompt or '"true"' in prompt.lower()
+
+
+class TestTargetedPayloadAssembly:
+    @pytest.mark.asyncio
+    async def test_room_status_excludes_whole_floor_snapshot_key(self, monkeypatch):
+        """For room/common-area/activity/ranking intents, the coarse
+        floor-wide snapshot must be absent — only the targeted sub-object is
+        sent, so the LLM never has to search a floor-wide dump itself."""
+        _wire_room_scoped_mocks(monkeypatch)
+        captured = {}
+
+        async def fake_chat(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"answer": "ok"}
+
+        monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        await service.ask("org1", "user1", "manager", "p1", "how is bedroom-3 doing")
+
+        prompt = captured["user_prompt"]
+        assert '"room"' in prompt
+        assert '"executiveSummary"' not in prompt  # only present in the coarse floor-wide payload

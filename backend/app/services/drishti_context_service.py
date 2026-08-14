@@ -181,15 +181,110 @@ class DrishtiContextService:
         snapshot = await self.get_floor_context(org_id, floor_id)
         if not snapshot:
             return None
-        target = flat_name.strip().lower()
-        for flat in snapshot.get("flatProgress", []):
-            if str(flat.get("flatName") or "").strip().lower() == target:
-                return flat
-        if target in ("common area", "common areas", "common"):
-            for flat in snapshot.get("flatProgress", []):
-                if str(flat.get("flatName") or "") == _COMMON_AREA_FLAT:
-                    return flat
-        return None
+        return _find_flat(snapshot, flat_name)
+
+    # ── Targeted room / common-area / activity lookups (never a floor-wide
+    # dump) — each returns {"resolutionStatus", ...} so the answer prompt can
+    # phrase "not configured" vs "configured but no evidence" vs a real
+    # answer honestly, instead of the LLM ever having to guess. ──
+
+    async def get_room_context(
+        self,
+        org_id: str,
+        floor_id: str,
+        flat_name: str,
+        room_name: str,
+        *,
+        snapshot: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        snapshot = snapshot if snapshot is not None else await self.get_floor_context(org_id, floor_id)
+        result = {"flatName": flat_name, "roomName": room_name, "room": None, "resolutionStatus": "not_configured"}
+        if not snapshot:
+            return result
+        flat = _find_flat(snapshot, flat_name)
+        if not flat:
+            return result
+        room = _find_room(flat, room_name)
+        if not room:
+            return result
+        result["room"] = room
+        result["resolutionStatus"] = _room_resolution_status(room)
+        return result
+
+    async def get_common_area_context(
+        self,
+        org_id: str,
+        floor_id: str,
+        common_area_name: str,
+        *,
+        snapshot: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        snapshot = snapshot if snapshot is not None else await self.get_floor_context(org_id, floor_id)
+        result = {
+            "flatName": _COMMON_AREA_FLAT, "commonAreaName": common_area_name,
+            "room": None, "resolutionStatus": "not_configured",
+        }
+        if not snapshot:
+            return result
+        common_flat = _find_flat(snapshot, _COMMON_AREA_FLAT)
+        if not common_flat:
+            return result
+        room = _find_room(common_flat, common_area_name)
+        if not room:
+            return result
+        result["room"] = room
+        result["resolutionStatus"] = _room_resolution_status(room)
+        return result
+
+    async def get_activity_context(
+        self,
+        org_id: str,
+        floor_id: str,
+        activity_id: str,
+        *,
+        flat_name: Optional[str] = None,
+        room_name: Optional[str] = None,
+        common_area_name: Optional[str] = None,
+        snapshot: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Finds every occurrence of one activity within the requested scope
+        (whole floor if no flat/room/common-area given, else narrowed).
+        Filters by activityId only — the name is already resolved against
+        ALL_ACTIVITIES upstream, this is a pure exact-id lookup."""
+        snapshot = snapshot if snapshot is not None else await self.get_floor_context(org_id, floor_id)
+        if not snapshot:
+            return {"activityId": activity_id, "hits": [], "resolutionStatus": "not_configured"}
+
+        flats = snapshot.get("flatProgress", [])
+        if flat_name:
+            flats = [f for f in flats if str(f.get("flatName") or "").strip().lower() == flat_name.strip().lower()]
+        elif common_area_name:
+            flats = [f for f in flats if str(f.get("flatName") or "") == _COMMON_AREA_FLAT]
+
+        hits: list[dict[str, Any]] = []
+        for flat in flats:
+            rooms = flat.get("rooms", [])
+            if room_name:
+                rooms = [r for r in rooms if str(r.get("roomName") or "").strip().lower() == room_name.strip().lower()]
+            elif common_area_name:
+                rooms = [r for r in rooms if str(r.get("roomName") or "").strip().lower() == common_area_name.strip().lower()]
+            for room in rooms:
+                for activity in room.get("activities", []):
+                    if activity.get("activityId") == activity_id:
+                        hits.append({
+                            "flatName": flat.get("flatName"),
+                            "roomName": room.get("roomName"),
+                            "activity": activity,
+                        })
+
+        if not hits:
+            resolution_status = "not_configured"
+        elif all(h["activity"].get("status") == "not_assessed" for h in hits):
+            resolution_status = "configured_no_evidence"
+        else:
+            resolution_status = "found"
+
+        return {"activityId": activity_id, "hits": hits, "resolutionStatus": resolution_status}
 
     # ── Capture coverage (configured vs captured vs assessed) ────────────
 
@@ -272,3 +367,42 @@ class DrishtiContextService:
                 "savedAt": report.get("saved_at") or report.get("savedAt"),
             })
         return notes
+
+
+# ── Shared lookup helpers ──────────────────────────────────────────────────
+# Module-level so both DrishtiContextService methods and any caller holding
+# an already-fetched snapshot (e.g. drishti_service.py's rooms_in_scope
+# helper) can reuse the exact same matching logic without a db round trip.
+
+def _find_flat(snapshot: dict[str, Any], flat_name: str) -> Optional[dict[str, Any]]:
+    target = flat_name.strip().lower()
+    for flat in snapshot.get("flatProgress", []):
+        if str(flat.get("flatName") or "").strip().lower() == target:
+            return flat
+    if target in ("common area", "common areas", "common"):
+        for flat in snapshot.get("flatProgress", []):
+            if str(flat.get("flatName") or "") == _COMMON_AREA_FLAT:
+                return flat
+    return None
+
+
+def _find_room(flat: dict[str, Any], room_name: str) -> Optional[dict[str, Any]]:
+    target = room_name.strip().lower()
+    for room in flat.get("rooms", []):
+        if str(room.get("roomName") or "").strip().lower() == target:
+            return room
+    return None
+
+
+def _room_resolution_status(room: dict[str, Any]) -> str:
+    """'configured_no_evidence' when the room exists in the roster but has
+    no usable capture yet (capturesCount == 0 and every activity is still
+    not_assessed) — 'found' otherwise. Never conflates a real 0%-progress
+    room (which HAS evidence, just shows no work yet) with an unphotographed
+    one."""
+    captures_count = int(room.get("capturesCount") or 0)
+    activities = room.get("activities", [])
+    all_not_assessed = bool(activities) and all(a.get("status") == "not_assessed" for a in activities)
+    if captures_count == 0 and (all_not_assessed or not activities):
+        return "configured_no_evidence"
+    return "found"

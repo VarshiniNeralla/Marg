@@ -181,3 +181,147 @@ class TestComputeCaptureCoverage:
         result = await service.compute_capture_coverage("org1", "f1")
 
         assert result["coveragePct"] == 91.0
+
+
+_ROOM_SNAPSHOT = {
+    "flatProgress": [
+        {
+            "flatName": "Flat 02",
+            "rooms": [
+                {
+                    "roomName": "Bedroom-3", "capturesCount": 2,
+                    "activities": [{"activityId": "a1", "activityName": "Wall Punning", "completionPct": 70.0, "status": "in_progress"}],
+                },
+                {
+                    "roomName": "Toilet", "capturesCount": 0,
+                    "activities": [{"activityId": "a1", "activityName": "Wall Punning", "completionPct": 0.0, "status": "not_assessed"}],
+                },
+            ],
+        },
+        {
+            "flatName": "Common Area",
+            "rooms": [
+                {
+                    "roomName": "Corridor", "capturesCount": 3,
+                    "activities": [{"activityId": "common.corridor_flooring_1", "activityName": "Corridor Flooring", "completionPct": 40.0, "status": "in_progress"}],
+                },
+            ],
+        },
+    ],
+}
+
+
+class TestGetRoomContext:
+    @pytest.mark.asyncio
+    async def test_found_when_room_has_evidence(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_ROOM_SNAPSHOT))
+
+        result = await service.get_room_context("org1", "f1", "Flat 02", "Bedroom-3")
+
+        assert result["resolutionStatus"] == "found"
+        assert result["room"]["roomName"] == "Bedroom-3"
+
+    @pytest.mark.asyncio
+    async def test_configured_no_evidence_when_room_never_captured(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_ROOM_SNAPSHOT))
+
+        result = await service.get_room_context("org1", "f1", "Flat 02", "Toilet")
+
+        assert result["resolutionStatus"] == "configured_no_evidence"
+
+    @pytest.mark.asyncio
+    async def test_not_configured_when_room_not_in_roster(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_ROOM_SNAPSHOT))
+
+        result = await service.get_room_context("org1", "f1", "Flat 02", "Master Suite")
+
+        assert result["resolutionStatus"] == "not_configured"
+        assert result["room"] is None
+
+    @pytest.mark.asyncio
+    async def test_not_configured_when_floor_never_analyzed(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=None))
+
+        result = await service.get_room_context("org1", "f1", "Flat 02", "Bedroom-3")
+
+        assert result["resolutionStatus"] == "not_configured"
+
+
+class TestGetCommonAreaContext:
+    @pytest.mark.asyncio
+    async def test_found_when_common_area_has_evidence(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_ROOM_SNAPSHOT))
+
+        result = await service.get_common_area_context("org1", "f1", "Corridor")
+
+        assert result["resolutionStatus"] == "found"
+        assert result["room"]["roomName"] == "Corridor"
+        assert result["flatName"] == "Common Area"
+
+    @pytest.mark.asyncio
+    async def test_real_flats_room_is_not_mistaken_for_a_common_area(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_ROOM_SNAPSHOT))
+
+        # "Bedroom-3" only exists under Flat 02, never under Common Area.
+        result = await service.get_common_area_context("org1", "f1", "Bedroom-3")
+
+        assert result["resolutionStatus"] == "not_configured"
+        assert result["room"] is None
+
+
+class TestGetActivityContext:
+    @pytest.mark.asyncio
+    async def test_found_across_multiple_rooms(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_ROOM_SNAPSHOT))
+
+        result = await service.get_activity_context("org1", "f1", "a1")
+
+        assert result["resolutionStatus"] == "found"
+        # a1 appears in both Bedroom-3 (in_progress) and Toilet (not_assessed).
+        assert len(result["hits"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_narrowed_to_one_room_when_room_name_given(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_ROOM_SNAPSHOT))
+
+        result = await service.get_activity_context("org1", "f1", "a1", flat_name="Flat 02", room_name="Bedroom-3")
+
+        assert len(result["hits"]) == 1
+        assert result["hits"][0]["roomName"] == "Bedroom-3"
+
+    @pytest.mark.asyncio
+    async def test_not_configured_when_activity_id_absent_in_scope(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_ROOM_SNAPSHOT))
+
+        result = await service.get_activity_context("org1", "f1", "nonexistent.activity")
+
+        assert result["resolutionStatus"] == "not_configured"
+        assert result["hits"] == []
+
+    @pytest.mark.asyncio
+    async def test_configured_no_evidence_when_only_not_assessed_hits(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_ROOM_SNAPSHOT))
+
+        result = await service.get_activity_context("org1", "f1", "a1", flat_name="Flat 02", room_name="Toilet")
+
+        assert result["resolutionStatus"] == "configured_no_evidence"

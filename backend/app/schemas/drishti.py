@@ -37,6 +37,11 @@ class DrishtiScope(BaseModel):
     floor_name: Optional[str] = Field(None, alias="floorName")
     flat_name: Optional[str] = Field(None, alias="flatName")
     room_name: Optional[str] = Field(None, alias="roomName")
+    # A common-area unit (Corridor, Lobby, ...) is a RoomProgress living under
+    # the synthetic "Common Area" pseudo-flat — this field disambiguates that
+    # from a real flat/room so the answer never calls a shared space "a flat".
+    common_area_name: Optional[str] = Field(None, alias="commonAreaName")
+    activity_name: Optional[str] = Field(None, alias="activityName")
 
     model_config = {"populate_by_name": True}
 

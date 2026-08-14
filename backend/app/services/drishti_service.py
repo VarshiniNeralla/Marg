@@ -11,6 +11,7 @@ reason alone.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -21,8 +22,9 @@ from pydantic import ValidationError
 
 from app.core.exceptions import NotFoundException
 from app.schemas.drishti import DrishtiAnswer, DrishtiMessage
+from app.services import drishti_analytics
 from app.services import drishti_llm_client
-from app.services.drishti_context_service import DrishtiContextService
+from app.services.drishti_context_service import DrishtiContextService, _COMMON_AREA_FLAT, _find_flat
 from app.services.drishti_forecast_service import DrishtiForecastService
 from app.services.drishti_prompts import DRISHTI_ANSWER_PROMPT
 from app.services.drishti_query_planner import DrishtiQueryPlanner, QueryPlan
@@ -67,18 +69,31 @@ class DrishtiService:
 
         project_context = await self._context_service.get_project_context(org_id, project_id)
         known_entities = project_context
+        previous_scope = conversation.get("scope") or {}
 
+        # Phase 1: classify intent, resolve tower/floor (cheap — no snapshot).
         plan = await self._planner.plan(
             question=question,
             conversation_history=[
                 {"role": m["role"], "content": m["content"]} for m in conversation["messages"][-6:]
             ],
             known_entities=known_entities,
-            previous_scope=conversation.get("scope") or {},
+            previous_scope=previous_scope,
         )
 
+        # Fetch the floor snapshot ONCE — reused for phase-2 entity
+        # resolution (flat/room/common-area rosters) AND for retrieval, so
+        # a narrowly-scoped question never triggers two separate queries.
+        floor_snapshot = None
+        if plan.needs_floor_snapshot:
+            floor_snapshot = await self._context_service.get_floor_context(org_id, plan.floor_id)
+
+        # Phase 2: resolve flat/room/common-area/activity against the real
+        # snapshot roster (or the project-invariant activity list).
+        plan = self._planner.resolve_entities(plan, floor_snapshot, previous_scope)
+
         facts_payload = await self._assemble_facts_payload(
-            org_id, user_id, role, project_id, project_context, plan
+            org_id, user_id, role, project_id, project_context, plan, floor_snapshot,
         )
 
         answer = await self._generate_answer(question, facts_payload, conversation["messages"][-6:])
@@ -143,6 +158,7 @@ class DrishtiService:
                 "towerId": None, "towerName": None,
                 "floorId": None, "floorName": None,
                 "flatName": None, "roomName": None,
+                "commonAreaName": None, "activityName": None,
             },
             "messages": [],
             "createdAt": now,
@@ -162,7 +178,13 @@ class DrishtiService:
         project_id: str,
         project_context: dict[str, Any],
         plan: QueryPlan,
+        floor_snapshot: Optional[dict[str, Any]],
     ) -> dict[str, Any]:
+        """Maps intent -> targeted retrieval. For intents narrower than
+        "whole floor" (see `_TARGETED_INTENTS`), the coarse floor snapshot is
+        deliberately withheld — only the specific room/common-area/activity/
+        ranking sub-object is sent, so the LLM is never handed a floor-wide
+        dump to search or calculate over itself."""
         payload: dict[str, Any] = {
             "project": {
                 "projectId": project_context["projectId"],
@@ -173,7 +195,7 @@ class DrishtiService:
             },
         }
 
-        if plan.intent == "project_overview" or plan.intent == "general":
+        if plan.intent in ("project_overview", "general"):
             payload["towers"] = project_context["towers"]
 
         if plan.tower_id and plan.intent in ("tower_status", "comparison"):
@@ -182,8 +204,11 @@ class DrishtiService:
                     payload["tower"] = tower
                     break
 
-        if plan.floor_id and plan.intent in ("floor_status", "flat_status", "comparison", "quality_query"):
-            floor_snapshot = await self._context_service.get_floor_context(org_id, plan.floor_id)
+        if not plan.floor_id:
+            return payload
+
+        # Whole-floor-grain intents keep today's coarser payload.
+        if plan.intent in ("floor_status", "comparison", "quality_query"):
             coverage = await self._context_service.compute_capture_coverage(org_id, plan.floor_id)
             payload["floor"] = {
                 "floorId": plan.floor_id,
@@ -191,9 +216,46 @@ class DrishtiService:
                 "snapshot": _trim_floor_snapshot(floor_snapshot),
                 "captureCoverage": coverage,
             }
-            if plan.flat_name and plan.intent == "flat_status":
-                flat = await self._context_service.get_flat_context(org_id, plan.floor_id, plan.flat_name)
-                payload["flat"] = flat
+
+        if plan.intent == "flat_status" and plan.flat_name:
+            flat = _find_flat(floor_snapshot, plan.flat_name) if floor_snapshot else None
+            payload["flat"] = {
+                "flatName": plan.flat_name,
+                "flat": flat,
+                "resolutionStatus": plan.resolution_status.get("flat", "not_configured"),
+            }
+
+        if plan.intent == "room_status" and plan.flat_name and plan.room_name:
+            payload["room"] = await self._context_service.get_room_context(
+                org_id, plan.floor_id, plan.flat_name, plan.room_name, snapshot=floor_snapshot,
+            )
+
+        if plan.intent == "common_area_status" and plan.common_area_name:
+            payload["commonArea"] = await self._context_service.get_common_area_context(
+                org_id, plan.floor_id, plan.common_area_name, snapshot=floor_snapshot,
+            )
+
+        if plan.intent == "activity_status" and plan.activity_id:
+            payload["activity"] = await self._context_service.get_activity_context(
+                org_id, plan.floor_id, plan.activity_id,
+                flat_name=plan.flat_name, room_name=plan.room_name,
+                common_area_name=plan.common_area_name, snapshot=floor_snapshot,
+            )
+
+        if plan.intent in ("activity_ranking", "flat_ranking", "common_area_ranking", "unfinished_work") and floor_snapshot:
+            direction = plan.ranking_direction or ("fastest" if plan.intent == "activity_ranking" else "most_progressed")
+            rooms = _rooms_in_scope(floor_snapshot, plan.flat_name, plan.common_area_name)
+            if plan.intent == "activity_ranking":
+                payload["ranking"] = drishti_analytics.rank_activities(rooms, direction, flat_name=plan.flat_name)
+            elif plan.intent == "flat_ranking":
+                payload["ranking"] = drishti_analytics.rank_flats(floor_snapshot.get("flatProgress", []), direction)
+            elif plan.intent == "common_area_ranking":
+                payload["ranking"] = drishti_analytics.rank_common_areas(floor_snapshot.get("flatProgress", []), direction)
+            elif plan.intent == "unfinished_work":
+                payload["unfinishedWork"] = drishti_analytics.rank_unfinished_work(rooms, flat_name=plan.flat_name)
+
+        if plan.intent == "capture_gap" and floor_snapshot:
+            payload["captureGaps"] = drishti_analytics.find_capture_gaps(floor_snapshot.get("flatProgress", []))
 
         if plan.needs_forecast or plan.intent == "forecast":
             if plan.floor_id:
@@ -206,9 +268,23 @@ class DrishtiService:
                     org_id, project_id, floor_ids
                 )
 
-        if plan.needs_quality_notes or plan.intent == "quality_query":
+        if plan.needs_quality_notes or plan.intent in ("quality_query", "management_summary"):
             payload["qualityNotes"] = await self._context_service.get_quality_notes(
                 org_id, user_id, role, project_id
+            )
+
+        if plan.intent == "management_summary" and floor_snapshot:
+            coverage = payload.get("floor", {}).get("captureCoverage") or await self._context_service.compute_capture_coverage(org_id, plan.floor_id)
+            unfinished = drishti_analytics.rank_unfinished_work(_rooms_in_scope(floor_snapshot, None, None))
+            capture_gaps = drishti_analytics.find_capture_gaps(floor_snapshot.get("flatProgress", []))
+            forecast = payload.get("forecast") or await self._forecast_service.forecast_floor(org_id, plan.floor_id)
+            payload["topConcerns"] = drishti_analytics.synthesize_top_concerns(
+                floor_snapshot=floor_snapshot,
+                coverage=coverage,
+                unfinished_work=unfinished,
+                capture_gaps=capture_gaps,
+                quality_notes=payload.get("qualityNotes", []),
+                forecast=forecast,
             )
 
         return payload
@@ -222,7 +298,7 @@ class DrishtiService:
             f"{m['role']}: {m['content']}" for m in recent_messages
         )
         user_prompt = (
-            f"Facts payload (JSON):\n{facts_payload}\n\n"
+            f"Facts payload (JSON):\n{json.dumps(facts_payload, default=str)}\n\n"
             f"Recent conversation:\n{history_text}\n\n"
             f"Question: {question}"
         )
@@ -318,3 +394,21 @@ def _trim_floor_snapshot(snapshot: Optional[dict[str, Any]]) -> Optional[dict[st
         "flatProgress": snapshot.get("flatProgress"),
         "snapshotDate": snapshot.get("snapshotDate"),
     }
+
+
+def _rooms_in_scope(
+    floor_snapshot: dict[str, Any], flat_name: Optional[str], common_area_name: Optional[str],
+) -> list[dict[str, Any]]:
+    """Picks the right rooms[] slice to feed drishti_analytics' ranking
+    functions: a specific flat's rooms, the Common Area pseudo-flat's rooms
+    (common_area_name set means "rank within common areas"), or every room
+    on the floor (both real flats and common areas) when neither is given —
+    still deterministic Python, never left to the LLM to figure out."""
+    flat_progress = floor_snapshot.get("flatProgress", [])
+    if flat_name:
+        flat = _find_flat(floor_snapshot, flat_name)
+        return flat.get("rooms", []) if flat else []
+    if common_area_name is not None:
+        common_flat = _find_flat(floor_snapshot, _COMMON_AREA_FLAT)
+        return common_flat.get("rooms", []) if common_flat else []
+    return [room for flat in flat_progress for room in flat.get("rooms", [])]
