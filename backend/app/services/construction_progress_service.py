@@ -1403,6 +1403,44 @@ class ConstructionProgressService:
         result = await self._db[_COLLECTION].delete_many({"orgId": org_id, "floorId": floor_id})
         return result.deleted_count
 
+    async def purge_snapshots_citing_capture(self, org_id: str, capture_id: str) -> int:
+        """
+        Delete every stored snapshot whose per-activity evidence cites a capture
+        that has just been deleted.
+
+        Snapshots are computed once by analyze_floor and persisted as an
+        immutable record ("one snapshot per floor per day" — see this module's
+        docstring); nothing previously invalidated them when their SOURCE
+        captures were deleted elsewhere (a pin delete, a capture cleanup, the
+        old-Cloudinary-account migration). Confirmed in production: two other
+        projects' floors kept reporting a stale non-zero overallProgressPct
+        (e.g. 4.1%, 3.0%) sourced entirely from evidenceCaptureIds that no
+        longer existed in the captures collection, with ZERO real captures
+        left on those floors — indistinguishable from genuine progress to
+        anyone reading the dashboard/Drishti summary. A snapshot whose
+        evidence has been deleted is not stale-but-close-enough; it is
+        describing captures that no longer exist, so it is deleted outright
+        rather than patched, and the floor reverts to "not yet analyzed"
+        until it is genuinely re-analyzed against real, current captures.
+        """
+        cid = str(capture_id or "").strip()
+        if not cid:
+            return 0
+        match = {"orgId": org_id, "flatProgress.rooms.activities.evidenceCaptureIds": cid}
+        stale_ids = [
+            doc["_id"]
+            async for doc in self._db[_COLLECTION].find(match, {"_id": 1})
+        ]
+        if not stale_ids:
+            return 0
+        result = await self._db[_COLLECTION].delete_many({"_id": {"$in": stale_ids}})
+        if result.deleted_count:
+            logger.warning(
+                "Purged {} stale construction-progress snapshot(s) citing deleted capture={} org_id={}",
+                result.deleted_count, cid, org_id,
+            )
+        return result.deleted_count
+
     async def list_floor_summaries(self, org_id: str) -> list[dict[str, Any]]:
         """One row per floor — the picker list for the Construction Progress
         overview page. Floors never analyzed show progress=None so the UI can

@@ -86,10 +86,14 @@ function mountOffscreenHtml(html: string): { container: HTMLDivElement; contentW
   // bugs surface as taller canvases (sliced) rather than silently clipped text.
   contentWrap.querySelectorAll('.print-page').forEach(el => {
     const page = el as HTMLElement;
+    const a4HeightPx = Math.round(297 * 96 / 25.4);
     page.style.width = `${A4_WIDTH_PX}px`;
     page.style.maxWidth = `${A4_WIDTH_PX}px`;
     page.style.minWidth = `${A4_WIDTH_PX}px`;
-    page.style.minHeight = `${Math.round(297 * 96 / 25.4)}px`;
+    // Prefer author-specified fixed height (Drishti report); fall back to min-height.
+    if (!page.style.height) {
+      page.style.minHeight = `${a4HeightPx}px`;
+    }
     page.style.boxSizing = 'border-box';
     page.style.background = '#ffffff';
   });
@@ -116,17 +120,47 @@ function sliceCanvas(source: HTMLCanvasElement, startY: number, sliceHeight: num
   return slice;
 }
 
+/** True when a canvas is essentially blank (e.g. footer-only collapsed page). */
+function isMostlyBlankCanvas(canvas: HTMLCanvasElement): boolean {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w < 8 || h < 8) return true;
+  // Sample a grid of pixels — blank pages are ~pure white.
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return false;
+  const data = ctx.getImageData(0, 0, w, h).data;
+  let nonWhite = 0;
+  const step = Math.max(4, Math.floor((w * h) / 4000)) * 4;
+  for (let i = 0; i < data.length; i += step) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    if (r < 250 || g < 250 || b < 250) nonWhite += 1;
+  }
+  const samples = Math.ceil(data.length / step);
+  return nonWhite / Math.max(samples, 1) < 0.01;
+}
+
 /**
  * Paint one `.print-page` into the PDF. Tall pages are sliced across multiple
  * A4 sheets at native aspect ratio — never squashed into a single 210×297 box
  * (that was the "long thin corrupted strip" bug).
+ * Skips near-blank captures (collapsed pages that only showed a footer strip).
+ * Returns whether any content was written.
  */
 async function appendPrintPageToPdf(
   pdf: InstanceType<typeof import('jspdf').jsPDF>,
   pageEl: HTMLElement,
   html2canvas: typeof import('html2canvas').default,
-  isFirstPage: boolean,
-): Promise<void> {
+  hasContentAlready: boolean,
+): Promise<boolean> {
+  // Skip pages whose body has no real content (avoids blank "footer-only" sheets).
+  const bodyEl = pageEl.querySelector('.page-body');
+  const bodyText = (bodyEl?.textContent || '').replace(/\s+/g, ' ').trim();
+  if (bodyText.length < 12) {
+    return false;
+  }
+
   const canvas = await html2canvas(pageEl, {
     scale: 2,
     useCORS: true,
@@ -137,30 +171,37 @@ async function appendPrintPageToPdf(
     scrollY: 0,
   });
 
+  if (isMostlyBlankCanvas(canvas)) {
+    return false;
+  }
+
   const imgWidthMm = PAGE_WIDTH_MM;
   const fullHeightMm = (canvas.height * imgWidthMm) / Math.max(canvas.width, 1);
   const pxPerMm = canvas.width / imgWidthMm;
   const pageHeightPx = Math.floor(PAGE_HEIGHT_MM * pxPerMm);
 
-  // Pages are packed to ≤ A4. Capture at fixed size; only slice if something overflowed.
+  // Simple path: page fits on one A4 sheet
   if (fullHeightMm <= PAGE_HEIGHT_MM + 1.5) {
-    if (!isFirstPage) pdf.addPage();
+    if (hasContentAlready) pdf.addPage();
     const imgData = canvas.toDataURL('image/jpeg', 0.92);
     pdf.addImage(imgData, 'JPEG', 0, 0, imgWidthMm, Math.min(fullHeightMm, PAGE_HEIGHT_MM));
-    return;
+    return true;
   }
 
+  // Overflow path: slice, skipping blank slices
   let offsetY = 0;
-  let firstSlice = true;
+  let wroteAny = false;
   while (offsetY < canvas.height - 1) {
     const slice = sliceCanvas(canvas, offsetY, pageHeightPx);
-    const sliceHeightMm = (slice.height * imgWidthMm) / Math.max(slice.width, 1);
-    const imgData = slice.toDataURL('image/jpeg', 0.92);
-    if (!(isFirstPage && firstSlice)) pdf.addPage();
-    pdf.addImage(imgData, 'JPEG', 0, 0, imgWidthMm, sliceHeightMm);
     offsetY += pageHeightPx;
-    firstSlice = false;
+    if (isMostlyBlankCanvas(slice)) continue;
+    const sliceHeightMm = (slice.height * imgWidthMm) / Math.max(slice.width, 1);
+    if (hasContentAlready || wroteAny) pdf.addPage();
+    const imgData = slice.toDataURL('image/jpeg', 0.92);
+    pdf.addImage(imgData, 'JPEG', 0, 0, imgWidthMm, sliceHeightMm);
+    wroteAny = true;
   }
+  return wroteAny;
 }
 
 async function renderHtmlToJsPdf(html: string): Promise<InstanceType<typeof import('jspdf').jsPDF>> {
@@ -177,8 +218,10 @@ async function renderHtmlToJsPdf(html: string): Promise<InstanceType<typeof impo
       return pdf;
     }
 
+    let hasContent = false;
     for (let i = 0; i < pages.length; i++) {
-      await appendPrintPageToPdf(pdf, pages[i], html2canvas, i === 0);
+      const wrote = await appendPrintPageToPdf(pdf, pages[i], html2canvas, hasContent);
+      if (wrote) hasContent = true;
     }
     return pdf;
   } finally {
@@ -192,11 +235,15 @@ async function renderHtmlToJsPdf(html: string): Promise<InstanceType<typeof impo
  * Android's native Share sheet. Native-only — window.print() has no OS-level
  * "Save as PDF" destination inside a Capacitor WebView.
  */
-async function exportHtmlToPdfNative(html: string, fileTitle: string): Promise<void> {
+async function exportHtmlToPdfNative(
+  html: string,
+  fileTitle: string,
+  options?: { appendTimestamp?: boolean },
+): Promise<void> {
   const pdf = await renderHtmlToJsPdf(html);
   const pdfBlob = pdf.output('blob') as Blob;
   const base64 = await blobToBase64(pdfBlob);
-  const fileName = `${fileTitle.replace(/[^a-z0-9]+/gi, '-')}-${Date.now()}.pdf`;
+  const fileName = buildPdfFileName(fileTitle, options);
 
   await Filesystem.writeFile({
     path: fileName,
@@ -219,18 +266,37 @@ async function exportHtmlToPdfNative(html: string, fileTitle: string): Promise<v
  * window.print() dialog, no print-preview tab. A field/office user clicking
  * "PDF Report" wants the file, not another dialog to click through.
  */
-async function exportHtmlToPdfWeb(html: string, fileTitle: string): Promise<void> {
+async function exportHtmlToPdfWeb(
+  html: string,
+  fileTitle: string,
+  options?: { appendTimestamp?: boolean },
+): Promise<void> {
   const pdf = await renderHtmlToJsPdf(html);
-  const fileName = `${fileTitle.replace(/[^a-z0-9]+/gi, '-')}-${Date.now()}.pdf`;
-  pdf.save(fileName);
+  pdf.save(buildPdfFileName(fileTitle, options));
+}
+
+function buildPdfFileName(fileTitle: string, options?: { appendTimestamp?: boolean }): string {
+  const appendTimestamp = options?.appendTimestamp !== false;
+  const base = fileTitle
+    .replace(/\.pdf$/i, '')
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
+    .replace(/[^a-z0-9._-]+/gi, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'report';
+  return appendTimestamp ? `${base}-${Date.now()}.pdf` : `${base}.pdf`;
 }
 
 /** Dispatches to the native (Capacitor) or web download flow. Both paths now
  *  render the same client-side PDF and hand it straight to the OS (native
  *  Share sheet / browser download) — neither shows a preview first. */
-export function exportHtmlToPdf(html: string, fileTitle: string): void | Promise<void> {
+export function exportHtmlToPdf(
+  html: string,
+  fileTitle: string,
+  options?: { appendTimestamp?: boolean },
+): void | Promise<void> {
   if (Capacitor.isNativePlatform()) {
-    return exportHtmlToPdfNative(html, fileTitle);
+    return exportHtmlToPdfNative(html, fileTitle, options);
   }
-  return exportHtmlToPdfWeb(html, fileTitle);
+  return exportHtmlToPdfWeb(html, fileTitle, options);
 }

@@ -2,7 +2,7 @@ from fastapi import APIRouter
 
 from app.core.dependencies import CallerContext, DB, ManagerOrAdminUser
 from app.core.exceptions import ForbiddenException, NotFoundException
-from app.schemas.drishti import AskDrishtiRequest
+from app.schemas.drishti import AskDrishtiRequest, RenameDrishtiConversationRequest
 from app.services.drishti_context_service import DrishtiContextService
 from app.services.drishti_service import DrishtiService
 from app.services.rbac_service import RBACService
@@ -71,6 +71,20 @@ async def list_conversations(
 async def get_conversation(conversation_id: str, ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
     conversation = await DrishtiService(db).get_conversation(ctx.org_id, ctx.user_id, conversation_id)
     return success_response(data=conversation)
+
+
+@router.patch("/conversations/{conversation_id}", summary="Rename a Drishti conversation")
+async def rename_conversation(
+    conversation_id: str,
+    body: RenameDrishtiConversationRequest,
+    ctx: CallerContext,
+    db: DB,
+    _manager_or_admin: ManagerOrAdminUser,
+):
+    updated = await DrishtiService(db).rename_conversation(
+        ctx.org_id, ctx.user_id, conversation_id, body.title,
+    )
+    return success_response(data=updated, message="Chat renamed")
 
 
 @router.delete("/conversations/{conversation_id}", summary="Delete a Drishti conversation")

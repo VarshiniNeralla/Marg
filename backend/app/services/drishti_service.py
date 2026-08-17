@@ -19,8 +19,9 @@ from typing import Any, Optional
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import ValidationError
+from pymongo import ReturnDocument
 
-from app.core.exceptions import NotFoundException
+from app.core.exceptions import NotFoundException, ValidationException
 from app.schemas.drishti import DrishtiAnswer, DrishtiMessage
 from app.services import drishti_analytics
 from app.services import drishti_llm_client
@@ -41,8 +42,25 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_utc(value: Any) -> Any:
+    """Mongo/BSON always stores datetimes as UTC but strips tzinfo on
+    read-back (a naive `datetime`, wall-clock value still correct UTC) — if
+    that naive value is serialized as-is, it renders without a `Z`/`+00:00`
+    suffix and the frontend's `new Date(...)` then misreads it as LOCAL
+    time, showing the wrong clock time to the user. Re-attach UTC tzinfo at
+    the read boundary so every timestamp this service returns serializes
+    unambiguously."""
+    if isinstance(value, datetime) and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def _oid_or_str(value: str):
     return ObjectId(value) if ObjectId.is_valid(value) else value
+
+
+def _message_with_utc_timestamp(message: dict[str, Any]) -> dict[str, Any]:
+    return {**message, "createdAt": _as_utc(message.get("createdAt"))}
 
 
 class DrishtiService:
@@ -204,6 +222,57 @@ class DrishtiService:
                     payload["tower"] = tower
                     break
 
+        # Activity resolution is project-invariant (matched against the
+        # static ALL_ACTIVITIES vocabulary, never a floor snapshot — see
+        # DrishtiQueryPlanner.resolve_entities) — so an activity question
+        # with no floor/flat/room in scope ("what is the current status of
+        # tiling") must still search the whole project instead of being cut
+        # off by the floor-scope guard below, which would otherwise discard
+        # an already-resolved activity_id and answer from project totals
+        # alone.
+        if not plan.floor_id and plan.activity_ids and plan.intent == "common_area_activity_status":
+            payload["commonAreaActivity"] = await self._context_service.get_common_area_category_status_across_project(
+                org_id, project_context, plan.activity_ids,
+            )
+
+        if not plan.floor_id and plan.activity_ids and plan.intent in ("activity_status", "activity_ranking", "unfinished_work"):
+            if plan.intent == "activity_status":
+                payload["activity"] = await self._context_service.find_activity_across_project(
+                    org_id, project_context, plan.activity_ids,
+                )
+            else:
+                project_rooms = await self._rooms_across_project(org_id, project_context)
+                if plan.intent == "activity_ranking":
+                    direction = plan.ranking_direction or "fastest"
+                    payload["ranking"] = drishti_analytics.rank_activities(project_rooms, direction)
+                else:
+                    payload["unfinishedWork"] = drishti_analytics.rank_unfinished_work(project_rooms)
+
+        # "Which activities are in progress/not started/..." (and its
+        # natural follow-up "what are those N activities?") needs the REAL
+        # per-activity list, not just the aggregate counts already in
+        # project.summaryCards — those counts alone can't answer "what are
+        # they", only "how many". Works with or without a floor named.
+        if plan.intent == "activity_list" and plan.activity_list_statuses:
+            flats_only = plan.activity_list_scope == "flats"
+            common_areas_only = plan.activity_list_scope == "common_areas"
+            if plan.floor_id and floor_snapshot:
+                if flats_only:
+                    rooms = _rooms_in_scope(floor_snapshot, None, None, flats_only=True)
+                elif common_areas_only:
+                    rooms = _rooms_in_scope(floor_snapshot, None, _COMMON_AREA_FLAT)
+                else:
+                    rooms = _rooms_in_scope(floor_snapshot, plan.flat_name, plan.common_area_name)
+            else:
+                rooms = await self._rooms_across_project(
+                    org_id, project_context, flats_only=flats_only, common_areas_only=common_areas_only,
+                )
+            payload["activityList"] = {
+                "statuses": plan.activity_list_statuses,
+                "scope": plan.activity_list_scope or "all",
+                "items": drishti_analytics.list_activities_by_status(rooms, plan.activity_list_statuses),
+            }
+
         if not plan.floor_id:
             return payload
 
@@ -235,11 +304,31 @@ class DrishtiService:
                 org_id, plan.floor_id, plan.common_area_name, snapshot=floor_snapshot,
             )
 
-        if plan.intent == "activity_status" and plan.activity_id:
-            payload["activity"] = await self._context_service.get_activity_context(
-                org_id, plan.floor_id, plan.activity_id,
+        # "What OTHER activities are pending in the Lift Lobby" / "what's
+        # configured in Bedroom-3" — every activity at exactly ONE location,
+        # any status, unfiltered by activity name — the "everything here"
+        # question none of the other intents answer on their own.
+        if plan.intent == "location_activities" and (plan.common_area_name or (plan.flat_name and plan.room_name)):
+            payload["locationActivities"] = await self._context_service.get_location_activities(
+                org_id, plan.floor_id,
                 flat_name=plan.flat_name, room_name=plan.room_name,
                 common_area_name=plan.common_area_name, snapshot=floor_snapshot,
+            )
+
+        if plan.intent == "activity_status" and plan.activity_ids:
+            payload["activity"] = await self._context_service.get_activity_context(
+                org_id, plan.floor_id, plan.activity_ids,
+                flat_name=plan.flat_name, room_name=plan.room_name,
+                common_area_name=plan.common_area_name, snapshot=floor_snapshot,
+            )
+
+        # "What is the status of painting across the Common Areas" — one
+        # activity category, aggregated across EVERY common-area unit on
+        # this floor (never restricted to one named unit) — distinguishing
+        # captured-and-assessed units from never-captured ones per the spec.
+        if plan.intent == "common_area_activity_status" and plan.activity_ids:
+            payload["commonAreaActivity"] = await self._context_service.get_common_area_category_status(
+                org_id, plan.floor_id, plan.activity_ids, snapshot=floor_snapshot,
             )
 
         if plan.intent in ("activity_ranking", "flat_ranking", "common_area_ranking", "unfinished_work") and floor_snapshot:
@@ -255,7 +344,9 @@ class DrishtiService:
                 payload["unfinishedWork"] = drishti_analytics.rank_unfinished_work(rooms, flat_name=plan.flat_name)
 
         if plan.intent == "capture_gap" and floor_snapshot:
-            payload["captureGaps"] = drishti_analytics.find_capture_gaps(floor_snapshot.get("flatProgress", []))
+            flat_progress = floor_snapshot.get("flatProgress", [])
+            payload["captureGaps"] = drishti_analytics.find_capture_gaps(flat_progress)
+            payload["capturedRooms"] = drishti_analytics.find_captured_rooms(flat_progress)
 
         if plan.needs_forecast or plan.intent == "forecast":
             if plan.floor_id:
@@ -288,6 +379,30 @@ class DrishtiService:
             )
 
         return payload
+
+    async def _rooms_across_project(
+        self, org_id: str, project_context: dict[str, Any], *,
+        flats_only: bool = False, common_areas_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Every room (real or common-area) across every analyzed floor in
+        the project, each tagged with its own flatName (see
+        `_tag_rooms_with_flat_name`), in one batched snapshot fetch — the
+        project-wide counterpart to `_rooms_in_scope`, used when an activity
+        ranking/unfinished-work/status-listing question names no floor.
+        `flats_only`/`common_areas_only` narrow to just one side — e.g.
+        "which activities are in progress in the flats?" project-wide."""
+        floor_ids = [f["floorId"] for t in project_context.get("towers", []) for f in t.get("floors", [])]
+        snapshots = await self._context_service.get_latest_snapshots_for_floors(org_id, floor_ids)
+        rooms: list[dict[str, Any]] = []
+        for snapshot in snapshots.values():
+            for flat in snapshot.get("flatProgress", []):
+                is_common = str(flat.get("flatName") or "") == _COMMON_AREA_FLAT
+                if flats_only and is_common:
+                    continue
+                if common_areas_only and not is_common:
+                    continue
+                rooms.extend(_tag_rooms_with_flat_name(flat))
+        return rooms
 
     # ── LLM call + validation guardrail ───────────────────────────────────
 
@@ -353,7 +468,7 @@ class DrishtiService:
                 "projectId": d["projectId"],
                 "projectName": d.get("projectName", ""),
                 "title": d.get("title", ""),
-                "updatedAt": d.get("updatedAt"),
+                "updatedAt": _as_utc(d.get("updatedAt")),
             }
             for d in docs
         ]
@@ -368,9 +483,9 @@ class DrishtiService:
             "projectName": doc.get("projectName", ""),
             "title": doc.get("title", ""),
             "scope": doc.get("scope") or {},
-            "messages": doc.get("messages", []),
-            "createdAt": doc.get("createdAt"),
-            "updatedAt": doc.get("updatedAt"),
+            "messages": [_message_with_utc_timestamp(m) for m in doc.get("messages", [])],
+            "createdAt": _as_utc(doc.get("createdAt")),
+            "updatedAt": _as_utc(doc.get("updatedAt")),
         }
 
     async def delete_conversation(self, org_id: str, user_id: str, conversation_id: str) -> int:
@@ -378,6 +493,29 @@ class DrishtiService:
             {"_id": _oid_or_str(conversation_id), "orgId": org_id, "userId": user_id}
         )
         return result.deleted_count
+
+    async def rename_conversation(
+        self, org_id: str, user_id: str, conversation_id: str, title: str
+    ) -> dict[str, Any]:
+        clean = " ".join((title or "").split()).strip()
+        if not clean:
+            raise ValidationException("Chat title cannot be empty")
+        clean = clean[:120]
+        now = datetime.now(timezone.utc)
+        result = await self._db[_COLLECTION].find_one_and_update(
+            {"_id": _oid_or_str(conversation_id), "orgId": org_id, "userId": user_id},
+            {"$set": {"title": clean, "updatedAt": now}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if not result:
+            raise NotFoundException("conversation", conversation_id)
+        return {
+            "conversationId": str(result["_id"]),
+            "projectId": result["projectId"],
+            "projectName": result.get("projectName", ""),
+            "title": result.get("title", clean),
+            "updatedAt": _as_utc(result.get("updatedAt")),
+        }
 
 
 def _trim_floor_snapshot(snapshot: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
@@ -396,14 +534,27 @@ def _trim_floor_snapshot(snapshot: Optional[dict[str, Any]]) -> Optional[dict[st
     }
 
 
+def _tag_rooms_with_flat_name(flat: dict[str, Any]) -> list[dict[str, Any]]:
+    """Stamps each room dict with its owning flat's name so a caller that
+    flattens rooms across multiple flats (whole floor / whole project) can
+    still attribute every activity to the correct flat — without this, a
+    multi-flat activity listing would either drop flatName entirely or
+    blanket-mislabel every room with one flat's name."""
+    flat_name = flat.get("flatName")
+    return [{**room, "flatName": flat_name} for room in flat.get("rooms", [])]
+
+
 def _rooms_in_scope(
     floor_snapshot: dict[str, Any], flat_name: Optional[str], common_area_name: Optional[str],
+    *, flats_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Picks the right rooms[] slice to feed drishti_analytics' ranking
     functions: a specific flat's rooms, the Common Area pseudo-flat's rooms
-    (common_area_name set means "rank within common areas"), or every room
-    on the floor (both real flats and common areas) when neither is given —
-    still deterministic Python, never left to the LLM to figure out."""
+    (common_area_name set means "rank within common areas"), every REAL
+    flat's rooms excluding common areas (flats_only=True — "in the flats?"),
+    or every room on the floor (both real flats and common areas, each
+    correctly tagged with its own flatName) when none of the above is given
+    — still deterministic Python, never left to the LLM to figure out."""
     flat_progress = floor_snapshot.get("flatProgress", [])
     if flat_name:
         flat = _find_flat(floor_snapshot, flat_name)
@@ -411,4 +562,9 @@ def _rooms_in_scope(
     if common_area_name is not None:
         common_flat = _find_flat(floor_snapshot, _COMMON_AREA_FLAT)
         return common_flat.get("rooms", []) if common_flat else []
-    return [room for flat in flat_progress for room in flat.get("rooms", [])]
+    if flats_only:
+        return [
+            room for flat in flat_progress if str(flat.get("flatName") or "") != _COMMON_AREA_FLAT
+            for room in _tag_rooms_with_flat_name(flat)
+        ]
+    return [room for flat in flat_progress for room in _tag_rooms_with_flat_name(flat)]

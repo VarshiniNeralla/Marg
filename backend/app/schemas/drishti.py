@@ -127,5 +127,11 @@ class AskDrishtiResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class RenameDrishtiConversationRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=120)
+
+    model_config = {"populate_by_name": True}
+
+
 class SuggestedQuestionsResponse(BaseModel):
     questions: list[str]

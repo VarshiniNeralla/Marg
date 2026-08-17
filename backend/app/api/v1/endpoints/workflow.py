@@ -30,6 +30,7 @@ from app.services.cloudinary_service import (
 )
 from app.services.room_map_service import RoomMapService
 from app.services.ai_progress_service import AIProgressService
+from app.services.construction_progress_service import ConstructionProgressService
 from app.services.predefined_pins_service import PredefinedPinsService
 from app.utils.pagination import success_response
 
@@ -882,6 +883,14 @@ async def delete_room(room_id: str, ctx: CallerContext, db: DB, _=Depends(requir
     await db["captures"].delete_many({"orgId": ctx.org_id, "roomId": room_id})
     for cap in room_captures:
         await _release_capture_assets(db, ctx, cap.get("mediaAssets") or cap.get("media_assets") or [])
+        try:
+            await AIProgressService(db).purge_for_timeline(ctx.org_id, cap["_id"])
+        except Exception:
+            logger.exception("Failed to purge progress analyses for room-delete capture {}", cap["_id"])
+        try:
+            await ConstructionProgressService(db).purge_snapshots_citing_capture(ctx.org_id, cap["_id"])
+        except Exception:
+            logger.exception("Failed to purge progress snapshots for room-delete capture {}", cap["_id"])
     await _delete(db, "rooms", room_id, ctx)
     return success_response(message="Room deleted")
 
@@ -998,6 +1007,16 @@ async def delete_capture(capture_id: str, ctx: CallerContext, db: DB, _=Depends(
             logger.info("Capture {} deleted with {} linked progress-analysis purge(s)", capture_id, purged)
     except Exception:
         logger.exception("Failed to purge progress analyses for deleted capture {}", capture_id)
+    # Also drop any construction-progress snapshot whose evidence cites this
+    # capture — otherwise the floor keeps reporting a stale, non-zero percent
+    # sourced from a capture that no longer exists (confirmed in production:
+    # two floors with zero real captures still showed 4.1%/3.0% progress).
+    try:
+        snap_purged = await ConstructionProgressService(db).purge_snapshots_citing_capture(ctx.org_id, capture_id)
+        if snap_purged:
+            logger.info("Capture {} deleted with {} stale progress snapshot(s) purged", capture_id, snap_purged)
+    except Exception:
+        logger.exception("Failed to purge progress snapshots for deleted capture {}", capture_id)
     return success_response(message="Capture deleted")
 
 
@@ -1486,11 +1505,25 @@ async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(
                 logger.info("Pin {} cascade: purged {} progress analyses for capture {}", pin_id, purged, cid)
         except Exception:
             logger.exception("Failed to purge progress analyses for capture {} during pin delete {}", cid, pin_id)
+        try:
+            snap_purged = await ConstructionProgressService(db).purge_snapshots_citing_capture(ctx.org_id, cid)
+            if snap_purged:
+                logger.info("Pin {} cascade: purged {} stale progress snapshot(s) for capture {}", pin_id, snap_purged, cid)
+        except Exception:
+            logger.exception("Failed to purge progress snapshots for capture {} during pin delete {}", cid, pin_id)
     if room_id:
         room_captures = await db["captures"].find({"orgId": ctx.org_id, "roomId": str(room_id)}).to_list(length=None)
         await db["captures"].delete_many({"orgId": ctx.org_id, "roomId": str(room_id)})
         for cap in room_captures:
             await _release_capture_assets(db, ctx, cap.get("mediaAssets") or cap.get("media_assets") or [])
+            try:
+                await AIProgressService(db).purge_for_timeline(ctx.org_id, cap["_id"])
+            except Exception:
+                logger.exception("Failed to purge progress analyses for room-cascade capture {}", cap["_id"])
+            try:
+                await ConstructionProgressService(db).purge_snapshots_citing_capture(ctx.org_id, cap["_id"])
+            except Exception:
+                logger.exception("Failed to purge progress snapshots for room-cascade capture {}", cap["_id"])
         await db["rooms"].delete_one({"_id": _id_filter(str(room_id)), "orgId": ctx.org_id})
     await _delete(db, "capture_pins", pin_id, ctx)
     await _resequence_pins_on_plan(db, ctx, floor_plan_id)

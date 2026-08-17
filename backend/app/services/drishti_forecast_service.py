@@ -10,7 +10,7 @@ entirely from `ConstructionProgressService.get_timeline`'s existing
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -23,6 +23,16 @@ _RECENCY_WINDOW = 3
 _RECENCY_DIVERGENCE_THRESHOLD = 0.20
 _FALLBACK_RANGE_PCT = 0.25
 
+# Assumption-based estimate — used ONLY when the real velocity forecast
+# comes back "insufficient_data" (no dated history to measure from). This
+# is a clearly-labeled generic-assumption fallback, never a substitute for
+# a measured forecast: a typical finishing-stage floor in this dataset
+# progresses at roughly this rate once work is actively underway. The
+# range brackets it +/-50% since there is, by definition, no real velocity
+# signal to narrow it further.
+_ASSUMED_PCT_PER_DAY = 1.0
+_ASSUMED_RANGE_PCT = 0.5
+
 
 class DrishtiForecastService:
     def __init__(self, db: AsyncIOMotorDatabase) -> None:
@@ -31,7 +41,16 @@ class DrishtiForecastService:
 
     async def forecast_floor(self, org_id: str, floor_id: str) -> dict[str, Any]:
         timeline = await self._progress_service.get_timeline(org_id, floor_id)
-        return compute_velocity_forecast(timeline)
+        forecast = compute_velocity_forecast(timeline)
+        if forecast.get("status") == "insufficient_data":
+            current_pct = timeline[-1].get("overallProgressPct") if timeline else None
+            if current_pct is None:
+                snapshot = await self._progress_service.get_latest_snapshot(org_id, floor_id)
+                current_pct = snapshot.get("overallProgressPct") if snapshot else None
+            estimate = compute_assumption_based_estimate(current_pct, as_of=timeline[-1]["snapshotDate"] if timeline else None)
+            if estimate is not None:
+                forecast["assumptionBasedEstimate"] = estimate
+        return forecast
 
     async def forecast_project(self, org_id: str, project_id: str, floor_ids: list[str]) -> dict[str, Any]:
         """Rolls up every floor's own forecast to a project-level estimate.
@@ -50,10 +69,30 @@ class DrishtiForecastService:
             if f.get("status") == "ok" and f.get("daysToComplete") is not None
         ]
         if not ok_forecasts:
-            return {
+            assumption_days = [
+                f["assumptionBasedEstimate"]["daysToComplete"]
+                for f in forecasts
+                if f.get("assumptionBasedEstimate")
+            ]
+            result: dict[str, Any] = {
                 "status": "insufficient_data",
                 "reason": "No floor in this project has enough dated history yet for a forecast.",
             }
+            if assumption_days:
+                result["assumptionBasedEstimate"] = {
+                    "basis": "assumption",
+                    "daysToComplete": round(max(assumption_days), 1),
+                    "floorsEstimated": len(assumption_days),
+                    "floorsTotal": len(floor_ids),
+                    "confidence": "low",
+                    "disclaimer": (
+                        "No historical progress data exists across this project's floors, so this "
+                        "estimate uses the slowest floor's generic assumption-based estimate as the "
+                        "project critical path. It is NOT based on this project's own measured "
+                        "velocity and should not be treated as a committed schedule."
+                    ),
+                }
+            return result
 
         critical_floor_id, critical_forecast = max(ok_forecasts, key=lambda pair: pair[1]["daysToComplete"])
         mean_days = sum(f["daysToComplete"] for _fid, f in ok_forecasts) / len(ok_forecasts)
@@ -156,6 +195,44 @@ def compute_velocity_forecast(timeline: list[dict[str, Any]]) -> dict[str, Any]:
         "rangeLowDate": last_date + timedelta(days=low_days),
         "rangeHighDate": last_date + timedelta(days=high_days),
         "confidence": _confidence_bucket(n, span_days),
+    }
+
+
+def compute_assumption_based_estimate(
+    current_pct: Optional[float], *, as_of: Optional[datetime] = None,
+) -> Optional[dict[str, Any]]:
+    """Pure function — a clearly-labeled, LAST-RESORT completion estimate
+    for when `compute_velocity_forecast` has no dated history to measure a
+    real velocity from. Never used when a real forecast succeeded, and
+    never used for `stalled_or_regressing` (that IS a real, measured
+    signal — a generic assumption should not paper over it).
+
+    Returns None when there isn't even a current completion percentage to
+    reason from (e.g. the floor has never been analyzed at all) — in that
+    case the answer must say so explicitly rather than guessing a number
+    out of nothing.
+    """
+    if current_pct is None:
+        return None
+    as_of = as_of or datetime.now(timezone.utc)
+    remaining_pct = max(0.0, 100.0 - current_pct)
+    days = remaining_pct / _ASSUMED_PCT_PER_DAY
+    low_days = days * (1 - _ASSUMED_RANGE_PCT)
+    high_days = days * (1 + _ASSUMED_RANGE_PCT)
+    return {
+        "basis": "assumption",
+        "currentPct": current_pct,
+        "assumedPctPerDay": _ASSUMED_PCT_PER_DAY,
+        "daysToComplete": round(days, 1),
+        "rangeLowDate": as_of + timedelta(days=low_days),
+        "rangeHighDate": as_of + timedelta(days=high_days),
+        "confidence": "low",
+        "disclaimer": (
+            "No historical progress data exists for this scope, so this estimate assumes a "
+            f"generic finishing pace of {_ASSUMED_PCT_PER_DAY}% per working day from the "
+            "current completion percentage. It is NOT based on this project's own measured "
+            "velocity and should not be treated as a committed schedule."
+        ),
     }
 
 

@@ -29,22 +29,30 @@ _RANKABLE_STATUSES = {"in_progress", "completed", "no_evidence"}
 
 
 def _iter_room_activities(rooms: list[dict[str, Any]], flat_name: Optional[str] = None):
+    """`rooms` entries may each carry their own "flatName" (when the caller
+    is scanning multiple flats — a whole floor or the whole project) — that
+    per-room value always wins. `flat_name` is only a fallback label for the
+    single-flat-scope case where the room dicts themselves don't carry one."""
     for room in rooms:
         room_name = room.get("roomName")
+        room_flat_name = room.get("flatName", flat_name)
         for activity in room.get("activities", []):
-            yield room_name, activity
+            yield room_name, room_flat_name, activity
 
 
 def rank_activities(
     rooms: list[dict[str, Any]], direction: str = "fastest", *, flat_name: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Ranks every rankable activity across the given rooms (already scoped
-    by the caller to a floor/flat/common-area/room). Returns [] — not an
-    exception — when nothing is rankable in scope; the caller must render
-    that as "no assessed activity data here yet," never let the LLM invent
-    a ranking to fill the gap."""
+    by the caller to a floor/flat/common-area/room). Each room dict may
+    carry its own "flatName" — required for a multi-flat scope (whole floor
+    or whole project) so every activity is correctly attributed to the flat
+    it actually belongs to, never blanket-labeled with one flat_name.
+    Returns [] — not an exception — when nothing is rankable in scope; the
+    caller must render that as "no assessed activity data here yet," never
+    let the LLM invent a ranking to fill the gap."""
     items: list[dict[str, Any]] = []
-    for room_name, activity in _iter_room_activities(rooms):
+    for room_name, room_flat_name, activity in _iter_room_activities(rooms, flat_name):
         status = activity.get("status")
         if status not in _RANKABLE_STATUSES:
             continue
@@ -52,13 +60,44 @@ def rank_activities(
             "activityName": activity.get("activityName"),
             "activityId": activity.get("activityId"),
             "roomName": room_name,
-            "flatName": flat_name,
+            "flatName": room_flat_name,
             "completionPct": float(activity.get("completionPct") or 0.0),
             "status": status,
             "evidence": activity.get("evidence") or "",
         })
     reverse = direction != "slowest"
     items.sort(key=lambda x: x["completionPct"], reverse=reverse)
+    return items
+
+
+def list_activities_by_status(
+    rooms: list[dict[str, Any]], statuses: list[str], *, flat_name: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Lists every activity occurrence whose status is in `statuses` — the
+    deterministic answer to "which activities are in progress/not started/
+    not assessed/not observable/completed" and its natural follow-up "what
+    are those N activities?". Unlike `rank_activities`, this is NOT limited
+    to _RANKABLE_STATUSES — a listing question about not_assessed/
+    not_observable activities is legitimate and must return real hits, not
+    an empty ranking array. Sorted by activityName then flatName/roomName
+    for a stable, scannable read (not a completion-percentage ranking).
+    Each room dict may carry its own "flatName" — see `_iter_room_activities`."""
+    status_set = set(statuses)
+    items: list[dict[str, Any]] = []
+    for room_name, room_flat_name, activity in _iter_room_activities(rooms, flat_name):
+        status = activity.get("status")
+        if status not in status_set:
+            continue
+        items.append({
+            "activityName": activity.get("activityName"),
+            "activityId": activity.get("activityId"),
+            "roomName": room_name,
+            "flatName": room_flat_name,
+            "completionPct": float(activity.get("completionPct") or 0.0),
+            "status": status,
+            "evidence": activity.get("evidence") or "",
+        })
+    items.sort(key=lambda x: (x["activityName"] or "", x["flatName"] or "", x["roomName"] or ""))
     return items
 
 
@@ -147,6 +186,40 @@ def find_capture_gaps(flat_progress: list[dict[str, Any]]) -> list[dict[str, Any
                 })
     gaps.sort(key=lambda g: g["capturesCount"])
     return gaps
+
+
+def find_captured_rooms(flat_progress: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The mirror image of find_capture_gaps: every room (real or
+    common-area) with at least one uploaded capture linked to its configured
+    capture point, best-first (most captures).
+
+    A "which rooms have been captured" question used to get NO usable list at
+    all — only find_capture_gaps existed, and it only ever returns the
+    zero-coverage side, so the captured side of the same data was computed
+    but never surfaced to the LLM. That forced the model to either invent an
+    answer or fall back on "the data does not list the specific rooms," even
+    though the room-level capture counts were sitting right there in the
+    snapshot the whole time.
+
+    Same room shape and same fields as find_capture_gaps (capturesCount,
+    pinNumbers) so the two are trivially unioned/diffed by a caller that needs
+    the full room roster (captured + gaps == every configured room)."""
+    captured: list[dict[str, Any]] = []
+    for flat in flat_progress:
+        flat_name = str(flat.get("flatName") or "")
+        is_common = flat_name == _COMMON_AREA_FLAT
+        for room in flat.get("rooms", []):
+            captures_count = int(room.get("capturesCount") or 0)
+            if captures_count > 0:
+                captured.append({
+                    "flatName": flat_name,
+                    "roomName": room.get("roomName"),
+                    "capturesCount": captures_count,
+                    "pinNumbers": room.get("pinNumbers") or [],
+                    "isCommonArea": is_common,
+                })
+    captured.sort(key=lambda r: (-r["capturesCount"], r["flatName"], str(r["roomName"])))
+    return captured
 
 
 def synthesize_top_concerns(

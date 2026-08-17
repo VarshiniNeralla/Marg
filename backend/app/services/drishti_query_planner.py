@@ -50,7 +50,8 @@ _COMMON_AREA_FLAT = "Common Area"
 
 _VALID_INTENTS = {
     "project_overview", "tower_status", "floor_status", "flat_status",
-    "room_status", "common_area_status", "activity_status",
+    "room_status", "common_area_status", "location_activities",
+    "activity_status", "common_area_activity_status", "activity_list",
     "activity_ranking", "flat_ranking", "common_area_ranking",
     "unfinished_work", "capture_gap", "management_summary",
     "forecast", "comparison", "quality_query", "general",
@@ -59,13 +60,254 @@ _VALID_INTENTS = {
 # Intents that need a floor's actual flat/room/common-area roster resolved
 # against real data before retrieval — anything narrower than "whole floor".
 _INTENTS_NEEDING_FLOOR_SNAPSHOT = {
-    "flat_status", "room_status", "common_area_status", "activity_status",
+    "flat_status", "room_status", "common_area_status", "location_activities",
+    "activity_status", "common_area_activity_status", "activity_list",
     "activity_ranking", "flat_ranking", "common_area_ranking",
     "unfinished_work", "capture_gap", "comparison",
 }
 
+# Valid values for scopeHints.activityListStatus — mirrors the real
+# ActivityStatus taxonomy (construction_progress_providers/base.py) exactly,
+# so a listing question can never invent a status that doesn't exist.
+_VALID_ACTIVITY_LIST_STATUSES = {"in_progress", "completed", "not_assessed", "not_observable", "no_evidence"}
+
 _RANKING_INTENTS = {
     "activity_ranking", "flat_ranking", "common_area_ranking", "unfinished_work",
+}
+
+# Category keywords a manager actually says ("tiling", "MEP", "painting")
+# rarely match one single activity name by string similarity — e.g.
+# "tiling"/"tiles" shares no substring and no useful difflib ratio with the
+# real activity name "Vitrified Flooring". Plain fuzzy matching against
+# ALL_ACTIVITIES' names alone (see `_resolve_activity_ids`) silently fails
+# for exactly these common, everyday terms, so each keyword is mapped here
+# to every real activity id it plausibly covers (built from the frozen ids
+# in construction_progress_providers/activities.py — never invents an id,
+# only groups existing ones). Checked BEFORE falling back to name-similarity
+# matching, and can resolve to multiple ids (e.g. "MEP" legitimately spans
+# both MEP-named activities plus the closely related plumbing/electrical
+# work items) — callers must be prepared to search/report on more than one
+# activity for a single keyword.
+_ACTIVITY_KEYWORD_ALIASES: dict[str, list[str]] = {
+    "tiling": [
+        "flat.vitrified_flooring_16", "flat.toilet_utility_balcony_flooring_14",
+        "flat.toilet_utility_dado_15", "flat.toilet_grouting_30",
+        "common.corridor_flooring_3", "common.staircase_flooring_8",
+    ],
+    "tiles": [
+        "flat.vitrified_flooring_16", "flat.toilet_utility_balcony_flooring_14",
+        "flat.toilet_utility_dado_15", "flat.toilet_grouting_30",
+        "common.corridor_flooring_3", "common.staircase_flooring_8",
+    ],
+    "flooring": [
+        "flat.floor_screed_1", "flat.vitrified_flooring_16",
+        "flat.toilet_utility_balcony_flooring_14",
+        "common.corridor_flooring_3", "common.staircase_flooring_8",
+    ],
+    "floor": [
+        "flat.floor_screed_1", "flat.vitrified_flooring_16",
+        "flat.toilet_utility_balcony_flooring_14",
+        "common.corridor_flooring_3", "common.staircase_flooring_8",
+    ],
+    "painting": [
+        "flat.putty_1st_coat_25", "flat.putty_2nd_coat_26",
+        "flat.primer_1st_coat_paint_27", "flat.final_coat_paint_37",
+        "common.putty_1st_coat_4", "common.putty_2nd_coat_5",
+        "common.primer_1st_coat_paint_6", "common.painting_2nd_coat_9",
+    ],
+    "paint": [
+        "flat.putty_1st_coat_25", "flat.putty_2nd_coat_26",
+        "flat.primer_1st_coat_paint_27", "flat.final_coat_paint_37",
+        "common.putty_1st_coat_4", "common.putty_2nd_coat_5",
+        "common.primer_1st_coat_paint_6", "common.painting_2nd_coat_9",
+    ],
+    "punning": ["flat.ceiling_punning_2", "flat.wall_punning_4", "common.wall_punning_works_1"],
+    "putty": [
+        "flat.putty_1st_coat_25", "flat.putty_2nd_coat_26",
+        "common.putty_1st_coat_4", "common.putty_2nd_coat_5",
+    ],
+    "false ceiling": [
+        "flat.false_ceiling_framing_6", "flat.false_ceiling_boxing_24",
+        "flat.false_ceiling_in_toilets_sitouts_utilities_28", "common.false_ceiling_works_2",
+    ],
+    "ceiling": [
+        "flat.ceiling_punning_2", "flat.false_ceiling_framing_6", "flat.false_ceiling_boxing_24",
+        "flat.false_ceiling_in_toilets_sitouts_utilities_28", "common.false_ceiling_works_2",
+    ],
+    "electrical": [
+        "flat.electrical_wiring_23", "flat.modular_switches_sockets_signal_booster_fixing_31",
+        "flat.fa_fixing_32", "common.mep_works_fire_fighting_electrical_0",
+    ],
+    "electricity": [
+        "flat.electrical_wiring_23", "flat.modular_switches_sockets_signal_booster_fixing_31",
+        "flat.fa_fixing_32", "common.mep_works_fire_fighting_electrical_0",
+    ],
+    "plumbing": [
+        "flat.mep_ceiling_services_plumbing_fire_gas_3", "flat.plumbing_pvc_waterline_7",
+        "flat.plumbing_diverter_flush_valve_fixing_10", "flat.cp_fixtures_sanitary_fixtures_34",
+        "flat.waterproofing_8", "flat.gas_meter_fixing_33",
+    ],
+    "mep": [
+        "flat.mep_ceiling_services_plumbing_fire_gas_3", "flat.electrical_wiring_23",
+        "flat.plumbing_pvc_waterline_7", "flat.plumbing_diverter_flush_valve_fixing_10",
+        "flat.fa_fixing_32", "flat.gas_meter_fixing_33",
+        "common.mep_works_fire_fighting_electrical_0",
+    ],
+    "doors": [
+        "flat.main_door_frame_5", "flat.toilet_door_frame_9", "flat.internal_door_frames_18",
+        "flat.main_door_shutter_fixing_temporary_21", "flat.internal_door_shutter_fixing_with_hardware_22",
+        "flat.main_door_internal_door_polishing_36", "common.fire_doors_shaft_doors_7",
+    ],
+    "windows": [
+        "flat.window_w3a_utility_door_sld_fixing_20", "flat.ventilator_fixing_11",
+    ],
+    "doors/windows": [
+        "flat.main_door_frame_5", "flat.toilet_door_frame_9", "flat.internal_door_frames_18",
+        "flat.main_door_shutter_fixing_temporary_21", "flat.internal_door_shutter_fixing_with_hardware_22",
+        "flat.main_door_internal_door_polishing_36", "common.fire_doors_shaft_doors_7",
+        "flat.window_w3a_utility_door_sld_fixing_20", "flat.ventilator_fixing_11",
+    ],
+    "cleaning": ["flat.normal_cleaning_29", "flat.deep_cleaning_38"],
+}
+
+
+def _resolve_activity_ids(hint: str, all_activities: list[dict[str, Any]]) -> list[str]:
+    """Resolves a user's activity keyword to every real activity id it
+    plausibly covers. Checks the category-keyword alias map first (case-
+    insensitive exact match on the whole hint, since that's how the
+    classifier is prompted to phrase `activityName`), then falls back to
+    single-activity name-similarity matching for a hint that already names
+    one specific real activity (e.g. "wall punning", "final coat paint")."""
+    normalized = hint.strip().lower()
+    alias_ids = _ACTIVITY_KEYWORD_ALIASES.get(normalized)
+    if alias_ids:
+        valid_ids = {a["activityId"] for a in all_activities}
+        return [aid for aid in alias_ids if aid in valid_ids]
+
+    names = [a["name"] for a in all_activities]
+    match = _closest_match(hint, names)
+    if not match:
+        return []
+    matched_def = next(a for a in all_activities if a["name"] == match)
+    return [matched_def["activityId"]]
+
+
+def _scan_question_for_activity_keyword(question: str) -> Optional[str]:
+    """Deterministic safety net, independent of the LLM classifier: scans
+    the raw question text for any known category keyword/activity name. A
+    small local classifier model does not reliably populate `activityName`
+    for every intent that needs it (confirmed in practice: a real "painting
+    works in the Common Areas" question came back from the model with no
+    activityName set at all, silently producing an empty facts payload and
+    forcing the answer model to improvise from stale conversation history
+    instead of real data). This never REPLACES the classifier's own
+    activityName when present — it only fills the gap when the classifier
+    left it empty but the question plainly names a category."""
+    lower = question.lower()
+    for keyword in _ACTIVITY_KEYWORD_ALIASES:
+        if re.search(rf"\b{re.escape(keyword)}\b", lower):
+            return keyword
+    for activity in activities_as_dicts():
+        if activity["name"].lower() in lower:
+            return activity["name"]
+    return None
+
+
+_FLATS_SCOPE_PATTERN = re.compile(r"\bflats?\b|\bapartments?\b|\bunits?\b", re.IGNORECASE)
+_COMMON_AREAS_SCOPE_PATTERN = re.compile(r"\bcommon\s+areas?\b|\bshared\s+spaces?\b", re.IGNORECASE)
+
+
+def _scan_question_for_activity_list_scope(question: str) -> Optional[str]:
+    """Deterministic safety net for "activity_list" location scoping — a
+    bare follow-up like "in the flats?" must reliably narrow (or, from a
+    prior common-area scope, RE-scope) the listing to flats only, without
+    depending on the classifier consistently populating a location hint for
+    this intent. Checked in addition to (not instead of) the classifier's
+    own flatName/commonAreaName hints — see `plan()`."""
+    if _FLATS_SCOPE_PATTERN.search(question):
+        return "flats"
+    if _COMMON_AREAS_SCOPE_PATTERN.search(question):
+        return "common_areas"
+    return None
+
+
+def _scan_question_for_common_area(question: str) -> Optional[str]:
+    """Same safety net as `_scan_question_for_activity_keyword`, for common
+    area names — a "what other activities are pending in the Lift Lobby"
+    question must resolve "Lift Lobby" even if the classifier mis-set
+    commonAreaName to null for an unexpected intent choice."""
+    lower = question.lower()
+    for name in _COMMON_AREA_CANONICAL:
+        if re.search(rf"\b{re.escape(name.lower())}\b", lower):
+            return name
+    # Common colloquial aliases the canonical-name scan above would miss.
+    aliases = {
+        "elevator lobby": "Lift Lobby", "lift": "Lift Lobby",
+        "stairs": "Staircase", "stairwell": "Staircase", "stair case": "Staircase",
+        "main lobby": "Entrance Lobby",
+    }
+    for alias, canonical in aliases.items():
+        if re.search(rf"\b{re.escape(alias)}\b", lower):
+            return canonical
+    return None
+
+
+# Regex patterns matched against the raw question text for the two intents
+# most prone to LLM misclassification in practice — both involve a subtler
+# distinction ("all common areas" vs "one area"; "everything here" vs "one
+# thing") that prose-only classifier instructions did not reliably produce
+# from a small local model, even after being spelled out in detail.
+_COMMON_AREA_ACTIVITY_PATTERN = re.compile(
+    r"\b(?:in|across|for)\s+(?:the\s+)?common\s+area", re.IGNORECASE,
+)
+_LOCATION_ACTIVITIES_PATTERN = re.compile(
+    r"\b(?:other|else)\b.{0,30}\bactivit", re.IGNORECASE,
+)
+# Requires an actual location signal ("in/at the <place>") alongside the
+# "other activities" phrasing above — a bare "which activities are in
+# progress" (a pure activity_list status question, no location named) must
+# NOT be corrected into location_activities just because it contains the
+# word "which" near "activities"; only "...OTHER activities... IN <place>"
+# should. Matched separately from the canonical common-area list so it also
+# covers a named flat/room ("...other activities pending in Bedroom-3").
+_LOCATION_SIGNAL_PATTERN = re.compile(r"\b(?:in|at|for)\s+(?:the\s+)?\w", re.IGNORECASE)
+
+
+def _correct_intent_from_question(intent: str, question: str) -> str:
+    """Deterministic post-classification correction for the two patterns
+    confirmed to trip up the classifier in practice: a question that
+    explicitly says "in/across the Common Area(s)" alongside an activity
+    category must aggregate across every unit (`common_area_activity_status`),
+    never one named unit or one activity found "anywhere"; and a question
+    asking for "other activities" AT A NAMED LOCATION that was scoped down
+    to a specific place (activity_status/common_area_status/activity_list
+    all being about ONE axis each) really means "everything here"
+    (`location_activities`). Never overrides an intent that's already
+    correct or unrelated — only nudges these two specific confusions. The
+    location-signal requirement matters: a bare "which activities are in
+    progress" (no location named at all) is a legitimate activity_list
+    question and must NOT be corrected just because "which"/"activities"
+    both appear — only "...OTHER activities...IN <place>" should."""
+    if _COMMON_AREA_ACTIVITY_PATTERN.search(question) and intent in ("activity_status", "common_area_status"):
+        return "common_area_activity_status"
+    if (
+        _LOCATION_ACTIVITIES_PATTERN.search(question)
+        and _LOCATION_SIGNAL_PATTERN.search(question)
+        and intent in ("activity_status", "general", "common_area_status", "activity_list")
+    ):
+        return "location_activities"
+    return intent
+
+
+# Intents whose retrieval is legitimately project-wide by default — a stale
+# floor/tower from an unrelated earlier turn must NEVER silently narrow one
+# of these down to one location just because the current question didn't
+# repeat the location; each already has its own project-wide code path
+# (`find_activity_across_project`, `get_common_area_category_status_across_project`,
+# `_rooms_across_project`) that only activates when floor_id is falsy.
+_PROJECT_WIDE_BY_DEFAULT_INTENTS = {
+    "activity_status", "common_area_activity_status", "activity_list",
+    "activity_ranking", "unfinished_work",
 }
 
 
@@ -81,6 +323,21 @@ class QueryPlan:
     common_area_name: Optional[str] = None
     activity_name: Optional[str] = None
     activity_id: Optional[str] = None
+    # Every real activity id a category keyword ("tiling", "MEP", "painting",
+    # "doors") legitimately maps to — a keyword is rarely one single named
+    # activity in this data model. `activity_id` (above) is kept as the
+    # first entry for callers/tests that only care about one id; new code
+    # should search across all of `activity_ids`.
+    activity_ids: list[str] = field(default_factory=list)
+    # For "activity_list" intent — which real ActivityStatus value(s) the
+    # user wants listed ("which activities are in progress", "what are
+    # those 27 activities [that were previously summarized as in progress]").
+    activity_list_statuses: list[str] = field(default_factory=list)
+    # For "activity_list" intent — narrows the LOCATION side of the listing
+    # independent of flat_name/common_area_name (which name ONE specific
+    # unit): "flats" = every real flat, no common areas; "common_areas" =
+    # every common-area unit, no flats; None = everything (the default).
+    activity_list_scope: Optional[str] = None
     ranking_target: Optional[str] = None
     ranking_direction: Optional[str] = None
     needs_forecast: bool = False
@@ -119,14 +376,26 @@ class DrishtiQueryPlanner:
         if intent not in _VALID_INTENTS:
             return self._fallback_plan(previous_scope)
 
+        intent = _correct_intent_from_question(intent, question)
         scope_hints = raw.get("scopeHints") or {}
         tower_id, tower_name = self._resolve_tower(scope_hints.get("towerName"), known_entities)
         floor_id, floor_name = self._resolve_floor(scope_hints.get("floorName"), known_entities)
 
         # Sticky tower/floor fallback for follow-ups ("why is that?") that
         # don't restate scope — only when the intent isn't explicitly
-        # project-wide and nothing new was resolved.
-        if not tower_id and not floor_id and intent not in ("project_overview", "general"):
+        # project-wide and nothing new was resolved. Intents in
+        # `_PROJECT_WIDE_BY_DEFAULT_INTENTS` (activity_status,
+        # common_area_activity_status, activity_list, activity_ranking,
+        # unfinished_work) are explicitly excluded: a real bug traced to
+        # this exact line let a stale floor from an unrelated earlier turn
+        # silently narrow "how is MEP progressing ACROSS THE PROJECT" down
+        # to just one floor, so it reported "not_configured" for an
+        # activity that genuinely existed and was scored on other floors.
+        if (
+            not tower_id and not floor_id
+            and intent not in ("project_overview", "general")
+            and intent not in _PROJECT_WIDE_BY_DEFAULT_INTENTS
+        ):
             tower_id = previous_scope.get("towerId")
             tower_name = previous_scope.get("towerName")
             floor_id = previous_scope.get("floorId")
@@ -134,6 +403,28 @@ class DrishtiQueryPlanner:
 
         ranking_target = scope_hints.get("rankingTarget") or None
         ranking_direction = scope_hints.get("rankingDirection") or None
+        raw_statuses = scope_hints.get("activityListStatuses") or []
+        activity_list_statuses = [s for s in raw_statuses if s in _VALID_ACTIVITY_LIST_STATUSES]
+
+        activity_name_hint = scope_hints.get("activityName") or None
+        common_area_hint = scope_hints.get("commonAreaName") or None
+
+        # Deterministic safety net: a small local classifier model does not
+        # reliably populate activityName/commonAreaName for every intent
+        # that structurally needs them — confirmed in practice, not just in
+        # theory (see `_scan_question_for_activity_keyword`'s docstring).
+        # Never overrides a hint the classifier DID provide; only fills a
+        # gap for intents whose entire retrieval path depends on it.
+        if not activity_name_hint and intent in (
+            "activity_status", "common_area_activity_status", "activity_ranking", "unfinished_work",
+        ):
+            activity_name_hint = _scan_question_for_activity_keyword(question)
+        if not common_area_hint and intent in ("common_area_status", "location_activities"):
+            common_area_hint = _scan_question_for_common_area(question)
+
+        activity_list_scope = None
+        if intent == "activity_list":
+            activity_list_scope = _scan_question_for_activity_list_scope(question)
 
         plan = QueryPlan(
             intent=intent,
@@ -144,8 +435,10 @@ class DrishtiQueryPlanner:
             # once we know whether phase-2 resolution found anything.
             flat_name=scope_hints.get("flatName") or None,
             room_name=scope_hints.get("roomName") or None,
-            common_area_name=scope_hints.get("commonAreaName") or None,
-            activity_name=scope_hints.get("activityName") or None,
+            common_area_name=common_area_hint,
+            activity_name=activity_name_hint,
+            activity_list_statuses=activity_list_statuses,
+            activity_list_scope=activity_list_scope,
             ranking_target=ranking_target,
             ranking_direction=ranking_direction,
             needs_forecast=bool(raw.get("needsForecast")),
@@ -191,7 +484,14 @@ class DrishtiQueryPlanner:
         common_flat = next((f for f in flat_progress if str(f.get("flatName") or "") == _COMMON_AREA_FLAT), None)
 
         # ── Flat ──
-        flat_hint = plan.flat_name or (previous_scope.get("flatName") if plan.intent not in ("project_overview", "general") else None)
+        # "activity_list" defaults to project-wide — a prior turn's specific
+        # flat must not silently narrow a fresh "which activities are X"
+        # question down to just that flat.
+        flat_hint = plan.flat_name or (
+            previous_scope.get("flatName")
+            if plan.intent not in ("project_overview", "general", "activity_list")
+            else None
+        )
         resolved_flat_name = None
         if flat_hint:
             candidates = [f.get("flatName") or "" for f in real_flats]
@@ -217,8 +517,19 @@ class DrishtiQueryPlanner:
             plan.room_name = room_hint
 
         # ── Common area ──
+        # "common_area_activity_status" means "aggregate across ALL common
+        # areas" by design — never carry forward one previously-named unit
+        # onto it, or the whole point of asking for every unit is defeated.
+        # "activity_list" defaults to project-wide (every flat AND common
+        # area) unless THIS turn explicitly narrows it — a stale
+        # commonAreaName from an unrelated earlier turn must never silently
+        # narrow "which activities are X" down to common areas only, which
+        # previously made a bare follow-up like "in the flats?" appear to
+        # have no flat data at all even though it plainly does.
         common_area_hint = plan.common_area_name or (
-            previous_scope.get("commonAreaName") if plan.intent not in ("project_overview", "general") else None
+            previous_scope.get("commonAreaName")
+            if plan.intent not in ("project_overview", "general", "common_area_activity_status", "activity_list")
+            else None
         )
         if common_area_hint:
             # Canonicalize against the project-wide vocabulary first (handles
@@ -240,15 +551,21 @@ class DrishtiQueryPlanner:
         activity_hint = plan.activity_name
         if activity_hint:
             all_activities = activities_as_dicts()
-            names = [a["name"] for a in all_activities]
-            match = _closest_match(activity_hint, names)
-            if match:
-                matched_def = next(a for a in all_activities if a["name"] == match)
-                plan.activity_name = match
-                plan.activity_id = matched_def["activityId"]
+            matched_ids = _resolve_activity_ids(activity_hint, all_activities)
+            if matched_ids:
+                plan.activity_ids = matched_ids
+                plan.activity_id = matched_ids[0]
+                # Keep activity_name as the user's own wording when it maps to
+                # several real activities (a category keyword like "tiling" or
+                # "MEP") — there is no single "matched name" to report back in
+                # that case; only collapse to one canonical name for an exact/
+                # near-exact single match.
+                if len(matched_ids) == 1:
+                    plan.activity_name = next(a["name"] for a in all_activities if a["activityId"] == matched_ids[0])
             else:
                 plan.activity_name = activity_hint
                 plan.activity_id = None
+                plan.activity_ids = []
 
         plan.resolved_scope_for_persistence = {
             "towerId": plan.tower_id, "towerName": plan.tower_name,

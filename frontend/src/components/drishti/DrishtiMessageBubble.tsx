@@ -2,6 +2,7 @@ import { Box, Typography, Chip } from '@mui/material';
 import { LightbulbRounded, FlagRounded, TrendingUpRounded, TrendingDownRounded } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
 import type { DrishtiMessage } from '@/types/drishti';
+import DrishtiMarkdown from './DrishtiMarkdown';
 
 interface Props {
   message: DrishtiMessage;
@@ -18,7 +19,7 @@ export default function DrishtiMessageBubble({ message, onFollowUpClick }: Props
           maxWidth: '78%', px: 2, py: 1.25, borderRadius: '14px 14px 4px 14px',
           backgroundColor: colors.primary, color: '#fff',
         }}>
-          <Typography sx={{ fontSize: '0.875rem' }}>{message.content}</Typography>
+          <DrishtiMarkdown text={message.content} color="#fff" />
         </Box>
       </Box>
     );
@@ -32,9 +33,7 @@ export default function DrishtiMessageBubble({ message, onFollowUpClick }: Props
         maxWidth: '86%', width: '100%', px: 2.5, py: 2, borderRadius: '4px 14px 14px 14px',
         border: `1px solid ${colors.border}`, backgroundColor: colors.card,
       }}>
-        <Typography sx={{ fontSize: '0.875rem', color: colors.textStrong, whiteSpace: 'pre-wrap' }}>
-          {message.content}
-        </Typography>
+        <DrishtiMarkdown text={message.content} color={colors.textStrong} />
 
         {!!payload?.metrics?.length && (
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1.5 }}>

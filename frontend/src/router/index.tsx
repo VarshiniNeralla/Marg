@@ -75,6 +75,7 @@ const ConstructionProgressDashboardPage = lazy(() => import('@/pages/Constructio
 const FlatFinishingWorksPage = lazy(() => import('@/pages/ConstructionProgress/FlatFinishingWorksPage'));
 const DrishtiProjectSelectionPage = lazy(() => import('@/pages/Drishti/DrishtiProjectSelectionPage'));
 const DrishtiChatPage = lazy(() => import('@/pages/Drishti/DrishtiChatPage'));
+const DrishtiPdfPreviewPage = lazy(() => import('@/pages/Drishti/DrishtiPdfPreviewPage'));
 
 // ── Field Engineer-only ───────────────────────────────────────────────────────
 const CaptureWorkflowPage = lazy(() => import('@/pages/CaptureWorkflow/CaptureWorkflowPage'));
@@ -83,6 +84,12 @@ const UploadQueuePage     = lazy(() => import('@/pages/Captures/CaptureUploadPag
 const MyCaptures          = lazy(() => import('@/pages/Captures/CapturesPage'));
 
 const router = createBrowserRouter([
+  // Local PDF layout QA (no auth) — remove once redesign is signed off
+  {
+    path: '/dev/drishti-pdf-preview',
+    element: <PageSuspense><DrishtiPdfPreviewPage /></PageSuspense>,
+  },
+
   // ── Landing (public) ────────────────────────────────────────────────────────
   {
     element: <LandingLayout />,

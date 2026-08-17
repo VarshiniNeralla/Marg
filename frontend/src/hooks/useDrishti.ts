@@ -63,3 +63,18 @@ export function useDeleteDrishtiConversation(projectId: string) {
     },
   });
 }
+
+export function useRenameDrishtiConversation(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ conversationId, title }: { conversationId: string; title: string }) =>
+      drishtiService.renameConversation(conversationId, title),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: DRISHTI_KEYS.conversations(projectId) });
+      qc.setQueryData(DRISHTI_KEYS.conversation(data.conversationId), (old: unknown) => {
+        if (!old || typeof old !== 'object') return old;
+        return { ...old, title: data.title, updatedAt: data.updatedAt };
+      });
+    },
+  });
+}

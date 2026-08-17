@@ -45,4 +45,8 @@ export const drishtiService = {
   deleteConversation(conversationId: string): Promise<{ deleted: boolean }> {
     return unwrap(apiClient.delete(`/drishti/conversations/${conversationId}`));
   },
+
+  renameConversation(conversationId: string, title: string): Promise<DrishtiConversationSummary> {
+    return unwrap(apiClient.patch(`/drishti/conversations/${conversationId}`, { title }));
+  },
 };

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from app.services.drishti_analytics import (
     find_capture_gaps,
+    find_captured_rooms,
+    list_activities_by_status,
     rank_activities,
     rank_common_areas,
     rank_flats,
@@ -65,6 +67,67 @@ class TestRankActivities:
         assert rank_activities([], direction="fastest") == []
         rooms = [_room("Empty Room", [_activity("a1", "X", 0.0, status="not_assessed")])]
         assert rank_activities(rooms, direction="fastest") == []
+
+    def test_per_room_flat_name_wins_over_fallback_parameter(self):
+        """Regression: a multi-flat scope (whole floor / whole project) must
+        attribute each activity to the room's OWN flat, never blanket-label
+        every activity with one fallback flat_name — that would misattribute
+        every activity outside the fallback flat to the wrong flat."""
+        room_in_flat_a = {**_room("Kitchen", [_activity("a1", "Tiling", 50.0)]), "flatName": "Flat A"}
+        room_in_flat_b = {**_room("Bedroom", [_activity("a2", "Painting", 30.0)]), "flatName": "Flat B"}
+        result = rank_activities([room_in_flat_a, room_in_flat_b], direction="fastest", flat_name="Fallback")
+        by_activity = {r["activityName"]: r["flatName"] for r in result}
+        assert by_activity["Tiling"] == "Flat A"
+        assert by_activity["Painting"] == "Flat B"
+
+    def test_falls_back_to_flat_name_param_when_room_lacks_its_own(self):
+        # Single-flat scope: rooms don't carry their own flatName, so the
+        # caller-supplied fallback is used for all of them.
+        rooms = [_room("Kitchen", [_activity("a1", "Tiling", 50.0)])]
+        result = rank_activities(rooms, direction="fastest", flat_name="Flat 02")
+        assert result[0]["flatName"] == "Flat 02"
+
+
+class TestListActivitiesByStatus:
+    def test_lists_matching_status_only(self):
+        rooms = [_room("Kitchen", [
+            _activity("a1", "Tiling", 50.0, status="in_progress"),
+            _activity("a2", "Painting", 100.0, status="completed"),
+            _activity("a3", "Corecutting", 0.0, status="not_assessed"),
+        ])]
+        result = list_activities_by_status(rooms, ["in_progress"])
+        assert len(result) == 1
+        assert result[0]["activityName"] == "Tiling"
+
+    def test_includes_not_assessed_and_not_observable_unlike_rank_activities(self):
+        """Unlike rank_activities (which excludes non-rankable statuses),
+        a LISTING question about not_assessed/not_observable activities is
+        legitimate and must return real hits."""
+        rooms = [_room("Kitchen", [
+            _activity("a1", "Corecutting", 0.0, status="not_assessed"),
+            _activity("a2", "MEP", 0.0, status="not_observable"),
+        ])]
+        result = list_activities_by_status(rooms, ["not_assessed", "not_observable"])
+        assert len(result) == 2
+
+    def test_multi_flat_scope_attributes_each_activity_to_its_own_flat(self):
+        room_in_flat_a = {**_room("Kitchen", [_activity("a1", "Tiling", 50.0, status="in_progress")]), "flatName": "Flat A"}
+        room_in_flat_b = {**_room("Bedroom", [_activity("a2", "Tiling", 30.0, status="in_progress")]), "flatName": "Flat B"}
+        result = list_activities_by_status([room_in_flat_a, room_in_flat_b], ["in_progress"])
+        flat_names = {r["flatName"] for r in result}
+        assert flat_names == {"Flat A", "Flat B"}
+
+    def test_empty_when_nothing_matches(self):
+        rooms = [_room("Kitchen", [_activity("a1", "Tiling", 50.0, status="completed")])]
+        assert list_activities_by_status(rooms, ["not_assessed"]) == []
+
+    def test_sorted_by_activity_name_then_flat_then_room(self):
+        rooms = [
+            {**_room("Room B", [_activity("a1", "Zebra Activity", 50.0, status="in_progress")]), "flatName": "Flat 02"},
+            {**_room("Room A", [_activity("a2", "Alpha Activity", 50.0, status="in_progress")]), "flatName": "Flat 01"},
+        ]
+        result = list_activities_by_status(rooms, ["in_progress"])
+        assert [r["activityName"] for r in result] == ["Alpha Activity", "Zebra Activity"]
 
 
 class TestRankFlats:
@@ -134,6 +197,48 @@ class TestFindCaptureGaps:
         assert corridor_gap["isCommonArea"] is True
         toilet_gap = next(g for g in gaps if g["roomName"] == "Toilet")
         assert toilet_gap["isCommonArea"] is False
+
+
+class TestFindCapturedRooms:
+    def test_surfaces_only_rooms_with_captures_best_first(self):
+        flats = [
+            _flat("Flat 01", [
+                _room("Bedroom", [_activity("a1", "X", 50.0)], captures_count=2),
+                _room("Toilet", [_activity("a1", "X", 0.0, status="not_assessed")], captures_count=0),
+            ]),
+            _flat("Common Area", [
+                _room("Corridor", [_activity("a1", "X", 30.0)], captures_count=1),
+            ]),
+        ]
+        captured = find_captured_rooms(flats)
+        room_names = {r["roomName"] for r in captured}
+        assert room_names == {"Bedroom", "Corridor"}
+        assert "Toilet" not in room_names
+        # best-first: Bedroom (2 captures) before Corridor (1 capture).
+        assert [r["roomName"] for r in captured] == ["Bedroom", "Corridor"]
+        bedroom = next(r for r in captured if r["roomName"] == "Bedroom")
+        assert bedroom["isCommonArea"] is False
+        corridor = next(r for r in captured if r["roomName"] == "Corridor")
+        assert corridor["isCommonArea"] is True
+
+    def test_empty_when_nothing_captured(self):
+        flats = [_flat("Flat 01", [
+            _room("Toilet", [_activity("a1", "X", 0.0, status="not_assessed")], captures_count=0),
+        ])]
+        assert find_captured_rooms(flats) == []
+
+    def test_is_the_exact_complement_of_find_capture_gaps(self):
+        flats = [
+            _flat("Flat 01", [
+                _room("Bedroom", [_activity("a1", "X", 50.0)], captures_count=3),
+                _room("Toilet", [_activity("a1", "X", 0.0, status="not_assessed")], captures_count=0),
+            ]),
+        ]
+        captured_names = {r["roomName"] for r in find_captured_rooms(flats)}
+        gap_names = {g["roomName"] for g in find_capture_gaps(flats)}
+        assert captured_names == {"Bedroom"}
+        assert gap_names == {"Toilet"}
+        assert captured_names.isdisjoint(gap_names)
 
 
 class TestSynthesizeTopConcerns:

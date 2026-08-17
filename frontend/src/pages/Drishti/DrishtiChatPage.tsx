@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Box, Typography, TextField, IconButton, CircularProgress, Button, Tooltip,
+  Box, Typography, TextField, IconButton, CircularProgress, Button, Tooltip, Dialog,
 } from '@mui/material';
 import {
   SendRounded, ArrowBackRounded, AutoAwesomeRounded, DeleteOutlineRounded,
   AddCommentRounded, ChatBubbleOutlineRounded, MenuRounded, CloseRounded,
+  EditOutlined, PictureAsPdfRounded,
 } from '@mui/icons-material';
 import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
@@ -16,11 +17,13 @@ import {
   useDrishtiConversations,
   useAskDrishti,
   useDeleteDrishtiConversation,
+  useRenameDrishtiConversation,
 } from '@/hooks/useDrishti';
 import DrishtiMessageBubble from '@/components/drishti/DrishtiMessageBubble';
 import DrishtiSuggestedQuestions from '@/components/drishti/DrishtiSuggestedQuestions';
 import DrishtiScopeBreadcrumb from '@/components/drishti/DrishtiScopeBreadcrumb';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
+import { exportDrishtiChatPdf } from '@/utils/drishtiChatPdf';
 import type { DrishtiConversationSummary, DrishtiMessage, DrishtiScope } from '@/types/drishti';
 
 const EMPTY_SCOPE: DrishtiScope = {
@@ -42,11 +45,13 @@ function ChatHistoryItem({
   chat,
   active,
   onSelect,
+  onRename,
   onDelete,
 }: {
   chat: DrishtiConversationSummary;
   active: boolean;
   onSelect: () => void;
+  onRename: () => void;
   onDelete: () => void;
 }) {
   return (
@@ -59,7 +64,7 @@ function ChatHistoryItem({
         border: `1px solid ${active ? colors.primary + '33' : 'transparent'}`,
         '&:hover': {
           backgroundColor: active ? colors.primarySoft : colors.bg,
-          '& .chat-delete': { opacity: 1 },
+          '& .chat-actions': { opacity: 1 },
         },
       }}
     >
@@ -75,20 +80,34 @@ function ChatHistoryItem({
           {formatChatTime(chat.updatedAt)}
         </Typography>
       </Box>
-      <Tooltip title="Delete chat">
-        <IconButton
-          className="chat-delete"
-          size="small"
-          onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          sx={{
-            opacity: { xs: 1, md: 0 }, transition: 'opacity 120ms',
-            color: colors.textMuted, p: 0.5,
-            '&:hover': { color: colors.danger, backgroundColor: colors.dangerBg },
-          }}
-        >
-          <DeleteOutlineRounded sx={{ fontSize: 15 }} />
-        </IconButton>
-      </Tooltip>
+      <Box
+        className="chat-actions"
+        sx={{
+          display: 'flex', opacity: { xs: 1, md: 0 }, transition: 'opacity 120ms', flexShrink: 0,
+        }}
+      >
+        <Tooltip title="Rename">
+          <IconButton
+            size="small"
+            onClick={(e) => { e.stopPropagation(); onRename(); }}
+            sx={{ color: colors.textMuted, p: 0.5, '&:hover': { color: colors.primary } }}
+          >
+            <EditOutlined sx={{ fontSize: 15 }} />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Delete chat">
+          <IconButton
+            size="small"
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            sx={{
+              color: colors.textMuted, p: 0.5,
+              '&:hover': { color: colors.danger, backgroundColor: colors.dangerBg },
+            }}
+          >
+            <DeleteOutlineRounded sx={{ fontSize: 15 }} />
+          </IconButton>
+        </Tooltip>
+      </Box>
     </Box>
   );
 }
@@ -108,6 +127,9 @@ export default function DrishtiChatPage() {
   const [input, setInput] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<DrishtiConversationSummary | null>(null);
+  const [renameTarget, setRenameTarget] = useState<DrishtiConversationSummary | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [exportingPdf, setExportingPdf] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const hydratedRef = useRef<string | null>(null);
 
@@ -116,6 +138,7 @@ export default function DrishtiChatPage() {
   const { data: suggestedData } = useSuggestedQuestions(projectId);
   const askMutation = useAskDrishti(projectId as string);
   const deleteMutation = useDeleteDrishtiConversation(projectId as string);
+  const renameMutation = useRenameDrishtiConversation(projectId as string);
 
   // Keep URL in sync so refresh restores the active chat.
   useEffect(() => {
@@ -195,6 +218,57 @@ export default function DrishtiChatPage() {
       toast.error('Could not delete chat');
     } finally {
       setDeleteTarget(null);
+    }
+  };
+
+  const openRename = (chat: DrishtiConversationSummary) => {
+    setRenameTarget(chat);
+    setRenameValue(chat.title || '');
+  };
+
+  const confirmRename = async () => {
+    if (!renameTarget) return;
+    const title = renameValue.trim();
+    if (!title) {
+      toast.error('Enter a chat name');
+      return;
+    }
+    try {
+      await renameMutation.mutateAsync({
+        conversationId: renameTarget.conversationId,
+        title,
+      });
+      toast.success('Chat renamed');
+      setRenameTarget(null);
+    } catch {
+      toast.error('Could not rename chat');
+    }
+  };
+
+  const downloadPdf = async () => {
+    // Prefer the hydrated conversation transcript when it has at least as many
+    // messages as local state (avoids exporting a partial optimistic buffer).
+    const messages =
+      conversation?.messages
+      && conversation.messages.length >= localMessages.length
+        ? conversation.messages
+        : localMessages;
+    if (!messages.length) {
+      toast.info('Ask something first — nothing to export yet.');
+      return;
+    }
+    setExportingPdf(true);
+    try {
+      await exportDrishtiChatPdf({
+        title: conversation?.title || sortedChats.find(c => c.conversationId === conversationId)?.title || 'Drishti chat',
+        projectName: project?.projectName || conversation?.projectName || '',
+        messages,
+        conversation: conversation ?? null,
+      });
+    } catch {
+      toast.error('Failed to export chat PDF');
+    } finally {
+      setExportingPdf(false);
     }
   };
 
@@ -288,6 +362,7 @@ export default function DrishtiChatPage() {
               chat={chat}
               active={chat.conversationId === conversationId}
               onSelect={() => selectChat(chat.conversationId)}
+              onRename={() => openRename(chat)}
               onDelete={() => setDeleteTarget(chat)}
             />
           ))
@@ -371,25 +446,61 @@ export default function DrishtiChatPage() {
             >
               New chat
             </Button>
-            {conversationId && (
-              <Tooltip title="Delete this chat">
-                <IconButton
-                  size="small"
-                  onClick={() => {
-                    const chat = sortedChats.find(c => c.conversationId === conversationId);
-                    setDeleteTarget(chat ?? {
-                      conversationId,
-                      projectId,
-                      projectName: project?.projectName ?? '',
-                      title: conversation?.title || 'Chat',
-                      updatedAt: new Date().toISOString(),
-                    });
-                  }}
-                  sx={{ color: colors.textMuted, '&:hover': { color: colors.danger } }}
-                >
-                  <DeleteOutlineRounded sx={{ fontSize: 18 }} />
-                </IconButton>
+            {localMessages.length > 0 && (
+              <Tooltip title="Download chat PDF">
+                <span>
+                  <IconButton
+                    size="small"
+                    onClick={downloadPdf}
+                    disabled={exportingPdf}
+                    sx={{ color: colors.textMuted, '&:hover': { color: colors.primary } }}
+                  >
+                    {exportingPdf
+                      ? <CircularProgress size={16} />
+                      : <PictureAsPdfRounded sx={{ fontSize: 18 }} />}
+                  </IconButton>
+                </span>
               </Tooltip>
+            )}
+            {conversationId && (
+              <>
+                <Tooltip title="Rename chat">
+                  <IconButton
+                    size="small"
+                    onClick={() => {
+                      const chat = sortedChats.find(c => c.conversationId === conversationId);
+                      openRename(chat ?? {
+                        conversationId,
+                        projectId,
+                        projectName: project?.projectName ?? '',
+                        title: conversation?.title || 'Chat',
+                        updatedAt: new Date().toISOString(),
+                      });
+                    }}
+                    sx={{ color: colors.textMuted, '&:hover': { color: colors.primary } }}
+                  >
+                    <EditOutlined sx={{ fontSize: 18 }} />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Delete this chat">
+                  <IconButton
+                    size="small"
+                    onClick={() => {
+                      const chat = sortedChats.find(c => c.conversationId === conversationId);
+                      setDeleteTarget(chat ?? {
+                        conversationId,
+                        projectId,
+                        projectName: project?.projectName ?? '',
+                        title: conversation?.title || 'Chat',
+                        updatedAt: new Date().toISOString(),
+                      });
+                    }}
+                    sx={{ color: colors.textMuted, '&:hover': { color: colors.danger } }}
+                  >
+                    <DeleteOutlineRounded sx={{ fontSize: 18 }} />
+                  </IconButton>
+                </Tooltip>
+              </>
             )}
             <Button size="small" onClick={() => navigate('/drishti')} sx={{ fontSize: '0.75rem', textTransform: 'none' }}>
               Projects
@@ -471,6 +582,55 @@ export default function DrishtiChatPage() {
         onConfirm={confirmDelete}
         onCancel={() => setDeleteTarget(null)}
       />
+
+      <Dialog
+        open={Boolean(renameTarget)}
+        onClose={() => setRenameTarget(null)}
+        maxWidth="xs"
+        fullWidth
+        slotProps={{ paper: { sx: { borderRadius: '16px', p: 2.5 } } }}
+      >
+        <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: colors.textStrong, mb: 0.5 }}>
+          Rename chat
+        </Typography>
+        <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, mb: 2 }}>
+          Choose a short name so you can find this thread later.
+        </Typography>
+        <TextField
+          autoFocus
+          fullWidth
+          size="small"
+          label="Chat name"
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value.slice(0, 120))}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              confirmRename();
+            }
+          }}
+          disabled={renameMutation.isPending}
+        />
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, mt: 2.5 }}>
+          <Button
+            size="small"
+            onClick={() => setRenameTarget(null)}
+            disabled={renameMutation.isPending}
+            sx={{ textTransform: 'none' }}
+          >
+            Cancel
+          </Button>
+          <Button
+            size="small"
+            variant="contained"
+            onClick={confirmRename}
+            disabled={renameMutation.isPending || !renameValue.trim()}
+            sx={{ textTransform: 'none', fontWeight: 700 }}
+          >
+            {renameMutation.isPending ? 'Saving…' : 'Save'}
+          </Button>
+        </Box>
+      </Dialog>
     </Box>
   );
 }

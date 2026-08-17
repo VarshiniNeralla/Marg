@@ -325,3 +325,293 @@ class TestGetActivityContext:
         result = await service.get_activity_context("org1", "f1", "a1", flat_name="Flat 02", room_name="Toilet")
 
         assert result["resolutionStatus"] == "configured_no_evidence"
+
+
+_PROJECT_CONTEXT_TWO_FLOORS = {
+    "towers": [
+        {
+            "towerId": "t1", "towerName": "Tower A",
+            "floors": [
+                {"floorId": "f1", "floorName": "Floor 1"},
+                {"floorId": "f2", "floorName": "Floor 2"},
+            ],
+        },
+    ],
+}
+
+
+def _snapshot_doc(floor_id, snapshot_date, flat_progress):
+    return {"floorId": floor_id, "snapshotDate": snapshot_date, "flatProgress": flat_progress}
+
+
+class TestFindActivityAcrossProject:
+    @pytest.mark.asyncio
+    async def test_finds_hits_across_multiple_floors_in_one_batched_query(self):
+        import datetime as dt
+
+        snapshots = [
+            _snapshot_doc("f1", dt.datetime(2026, 1, 1), [
+                {"flatName": "Flat 01", "rooms": [
+                    {"roomName": "Kitchen", "activities": [
+                        {"activityId": "flat.vitrified_flooring_16", "activityName": "Vitrified Flooring", "completionPct": 70.0, "status": "in_progress"},
+                    ]},
+                ]},
+            ]),
+            _snapshot_doc("f2", dt.datetime(2026, 1, 1), [
+                {"flatName": "Common Area", "rooms": [
+                    {"roomName": "Corridor", "activities": [
+                        {"activityId": "flat.vitrified_flooring_16", "activityName": "Vitrified Flooring", "completionPct": 30.0, "status": "in_progress"},
+                    ]},
+                ]},
+            ]),
+        ]
+        db = _make_db([], [], snapshots)
+        service = DrishtiContextService(db)
+
+        result = await service.find_activity_across_project("org1", _PROJECT_CONTEXT_TWO_FLOORS, "flat.vitrified_flooring_16")
+
+        assert result["resolutionStatus"] == "found"
+        assert len(result["hits"]) == 2
+        floor_names = {h["floorName"] for h in result["hits"]}
+        assert floor_names == {"Floor 1", "Floor 2"}
+        assert result["floorsSearched"] == 2
+        assert result["floorsAnalyzed"] == 2
+
+    @pytest.mark.asyncio
+    async def test_no_project_floors_reports_not_configured(self):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+
+        result = await service.find_activity_across_project("org1", {"towers": []}, "flat.vitrified_flooring_16")
+
+        assert result["resolutionStatus"] == "not_configured"
+        assert result["hits"] == []
+
+    @pytest.mark.asyncio
+    async def test_analyzed_floors_but_activity_never_scored_is_not_configured(self):
+        import datetime as dt
+
+        snapshots = [
+            _snapshot_doc("f1", dt.datetime(2026, 1, 1), [
+                {"flatName": "Flat 01", "rooms": [
+                    {"roomName": "Kitchen", "activities": [
+                        {"activityId": "flat.electrical_wiring_23", "activityName": "Electrical Wiring", "completionPct": 50.0, "status": "in_progress"},
+                    ]},
+                ]},
+            ]),
+        ]
+        db = _make_db([], [], snapshots)
+        service = DrishtiContextService(db)
+
+        result = await service.find_activity_across_project("org1", _PROJECT_CONTEXT_TWO_FLOORS, "flat.vitrified_flooring_16")
+
+        assert result["resolutionStatus"] == "not_configured"
+        assert result["hits"] == []
+        assert result["floorsAnalyzed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_no_floors_analyzed_at_all_is_configured_no_evidence(self):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+
+        result = await service.find_activity_across_project("org1", _PROJECT_CONTEXT_TWO_FLOORS, "flat.vitrified_flooring_16")
+
+        assert result["resolutionStatus"] == "configured_no_evidence"
+        assert result["floorsAnalyzed"] == 0
+
+
+# ── Fixtures for location_activities / common-area category status ─────────
+
+_LIFT_LOBBY_SNAPSHOT = {
+    "floorId": "f1",
+    "flatProgress": [
+        {
+            "flatName": "Flat 02",
+            "rooms": [
+                {"roomName": "Bedroom-3", "capturesCount": 1, "activities": [
+                    {"activityId": "flat.vitrified_flooring_16", "activityName": "Vitrified Flooring", "completionPct": 60.0, "status": "in_progress"},
+                ]},
+            ],
+        },
+        {
+            "flatName": "Common Area",
+            "rooms": [
+                {
+                    "roomName": "Lift Lobby", "capturesCount": 4,
+                    "activities": [
+                        {"activityId": "common.wall_punning_works_1", "activityName": "Wall Punning Works", "completionPct": 85.0, "status": "in_progress", "confidencePct": 90.0, "evidence": "Wall surfaces largely finished"},
+                        {"activityId": "common.primer_1st_coat_paint_6", "activityName": "Primer & 1st Coat Paint", "completionPct": 0.0, "status": "not_assessed"},
+                        {"activityId": "common.painting_2nd_coat_9", "activityName": "Painting 2nd Coat", "completionPct": 0.0, "status": "not_assessed"},
+                        {"activityId": "common.false_ceiling_works_2", "activityName": "False Ceiling Works", "completionPct": 15.0, "status": "in_progress"},
+                    ],
+                },
+                {
+                    "roomName": "Corridor", "capturesCount": 3,
+                    "activities": [
+                        {"activityId": "common.corridor_flooring_3", "activityName": "Corridor Flooring", "completionPct": 40.0, "status": "in_progress"},
+                        {"activityId": "common.primer_1st_coat_paint_6", "activityName": "Primer & 1st Coat Paint", "completionPct": 30.0, "status": "in_progress"},
+                    ],
+                },
+                {
+                    "roomName": "Staircase", "capturesCount": 0,
+                    "activities": [
+                        {"activityId": "common.primer_1st_coat_paint_6", "activityName": "Primer & 1st Coat Paint", "completionPct": 0.0, "status": "not_assessed"},
+                    ],
+                },
+            ],
+        },
+    ],
+}
+
+_PAINTING_IDS = [
+    "flat.putty_1st_coat_25", "flat.putty_2nd_coat_26", "flat.primer_1st_coat_paint_27", "flat.final_coat_paint_37",
+    "common.putty_1st_coat_4", "common.putty_2nd_coat_5", "common.primer_1st_coat_paint_6", "common.painting_2nd_coat_9",
+]
+
+
+class TestGetLocationActivities:
+    """Covers the exact reported bug: "what OTHER activities are pending in
+    the Lift Lobby" must return EVERY activity at that location, not just
+    the one previously discussed."""
+
+    @pytest.mark.asyncio
+    async def test_returns_every_activity_at_the_named_common_area(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_LIFT_LOBBY_SNAPSHOT))
+
+        result = await service.get_location_activities(
+            "org1", "f1", common_area_name="Lift Lobby",
+        )
+
+        assert result["resolutionStatus"] == "found"
+        assert len(result["activities"]) == 4
+        names = {a["activityName"] for a in result["activities"]}
+        assert names == {"Wall Punning Works", "Primer & 1st Coat Paint", "Painting 2nd Coat", "False Ceiling Works"}
+
+    @pytest.mark.asyncio
+    async def test_returns_every_activity_at_a_room_in_a_flat(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_LIFT_LOBBY_SNAPSHOT))
+
+        result = await service.get_location_activities(
+            "org1", "f1", flat_name="Flat 02", room_name="Bedroom-3",
+        )
+
+        assert len(result["activities"]) == 1
+        assert result["activities"][0]["activityName"] == "Vitrified Flooring"
+
+    @pytest.mark.asyncio
+    async def test_uncaptured_location_reports_configured_no_evidence(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_LIFT_LOBBY_SNAPSHOT))
+
+        result = await service.get_location_activities(
+            "org1", "f1", common_area_name="Staircase",
+        )
+
+        assert result["resolutionStatus"] == "configured_no_evidence"
+        assert len(result["activities"]) == 1  # the activity record exists, just not_assessed
+
+    @pytest.mark.asyncio
+    async def test_unknown_location_reports_not_configured(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_LIFT_LOBBY_SNAPSHOT))
+
+        result = await service.get_location_activities(
+            "org1", "f1", common_area_name="Fire Shaft",
+        )
+
+        assert result["resolutionStatus"] == "not_configured"
+        assert result["activities"] == []
+
+
+class TestGetCommonAreaCategoryStatus:
+    """Covers "what is the status of painting in the Common Areas" —
+    aggregating one category across EVERY common-area unit, distinguishing
+    captured/assessed units from never-captured ones."""
+
+    @pytest.mark.asyncio
+    async def test_aggregates_across_all_common_area_units(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_LIFT_LOBBY_SNAPSHOT))
+
+        result = await service.get_common_area_category_status("org1", "f1", _PAINTING_IDS)
+
+        assert result["resolutionStatus"] == "found"
+        unit_names = {u["commonAreaName"] for u in result["units"]}
+        assert unit_names == {"Lift Lobby", "Corridor"}
+        assert "Staircase" in result["uncapturedUnits"]
+
+    @pytest.mark.asyncio
+    async def test_overall_pct_excludes_not_assessed_units(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=_LIFT_LOBBY_SNAPSHOT))
+
+        result = await service.get_common_area_category_status("org1", "f1", _PAINTING_IDS)
+
+        # Lift Lobby's painting activities are not_assessed (excluded);
+        # Corridor's Primer & 1st Coat Paint is in_progress at 30% (included).
+        assert result["overallCompletionPct"] == 30.0
+
+    @pytest.mark.asyncio
+    async def test_never_configured_on_this_floor_is_not_configured(self, monkeypatch):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=None))
+
+        result = await service.get_common_area_category_status("org1", "f1", _PAINTING_IDS)
+
+        assert result["resolutionStatus"] == "not_configured"
+
+    @pytest.mark.asyncio
+    async def test_units_present_but_all_not_assessed_is_configured_no_evidence(self, monkeypatch):
+        snapshot = {
+            "flatProgress": [{
+                "flatName": "Common Area",
+                "rooms": [{
+                    "roomName": "Lobby", "capturesCount": 2,
+                    "activities": [{"activityId": "common.primer_1st_coat_paint_6", "activityName": "Primer & 1st Coat Paint", "completionPct": 0.0, "status": "not_assessed"}],
+                }],
+            }],
+        }
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=snapshot))
+
+        result = await service.get_common_area_category_status("org1", "f1", _PAINTING_IDS)
+
+        assert result["resolutionStatus"] == "configured_no_evidence"
+        assert result["overallCompletionPct"] is None
+
+
+class TestGetCommonAreaCategoryStatusAcrossProject:
+    @pytest.mark.asyncio
+    async def test_aggregates_per_floor_across_project(self):
+        db = _make_db([], [], [_LIFT_LOBBY_SNAPSHOT])
+        service = DrishtiContextService(db)
+
+        result = await service.get_common_area_category_status_across_project(
+            "org1", _PROJECT_CONTEXT_TWO_FLOORS, _PAINTING_IDS,
+        )
+
+        assert result["resolutionStatus"] == "found"
+        assert len(result["byFloor"]) == 1
+        assert result["byFloor"][0]["floorId"] == "f1"
+        assert result["overallCompletionPct"] == 30.0
+
+    @pytest.mark.asyncio
+    async def test_no_floors_returns_not_configured(self):
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+
+        result = await service.get_common_area_category_status_across_project(
+            "org1", {"towers": []}, _PAINTING_IDS,
+        )
+
+        assert result["resolutionStatus"] == "not_configured"

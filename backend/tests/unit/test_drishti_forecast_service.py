@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.services.drishti_forecast_service import compute_velocity_forecast
+from app.services.drishti_forecast_service import compute_assumption_based_estimate, compute_velocity_forecast
 
 
 def _dt(days_from_epoch: int) -> datetime:
@@ -121,3 +121,34 @@ class TestConfidenceBucketBoundaries:
     def test_high_at_exact_boundaries(self):
         result = compute_velocity_forecast(self._series(8, 30))
         assert result["confidence"] == "high"
+
+
+class TestAssumptionBasedEstimate:
+    """The clearly-labeled last-resort estimate used only when a real
+    velocity forecast has no dated history to measure from — never a
+    substitute for a measured forecast, always explicitly disclaimed."""
+
+    def test_none_when_no_current_pct_available(self):
+        assert compute_assumption_based_estimate(None) is None
+
+    def test_produces_labeled_estimate_from_current_pct(self):
+        estimate = compute_assumption_based_estimate(60.0, as_of=_dt(0))
+        assert estimate["basis"] == "assumption"
+        assert estimate["confidence"] == "low"
+        assert estimate["currentPct"] == 60.0
+        assert estimate["daysToComplete"] > 0
+        assert "disclaimer" in estimate
+        assert "not" in estimate["disclaimer"].lower()
+
+    def test_range_brackets_the_point_estimate(self):
+        estimate = compute_assumption_based_estimate(50.0, as_of=_dt(0))
+        assert estimate["rangeLowDate"] < estimate["rangeHighDate"]
+
+    def test_full_completion_yields_zero_days(self):
+        estimate = compute_assumption_based_estimate(100.0, as_of=_dt(0))
+        assert estimate["daysToComplete"] == 0.0
+
+    def test_defaults_as_of_to_now_when_not_given(self):
+        # Must not raise even without an explicit as_of reference date.
+        estimate = compute_assumption_based_estimate(40.0)
+        assert estimate is not None
