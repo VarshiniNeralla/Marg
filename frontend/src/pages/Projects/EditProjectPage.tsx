@@ -4,7 +4,7 @@ import { Box, Typography, Grid, TextField, MenuItem, Alert, InputAdornment, Tool
 import { ArrowBackRounded, ApartmentRounded, LayersRounded, AddPhotoAlternateRounded, DeleteRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
-import { getProjectById } from '@store/workflowSelectors';
+import { getProjectById, getCapturesByProjectScope } from '@store/workflowSelectors';
 import { uploadImage } from '@services/uploadService';
 
 const STATES = ['Telangana', 'Andhra Pradesh', 'Karnataka', 'Maharashtra', 'Tamil Nadu', 'Gujarat', 'Rajasthan', 'Delhi'];
@@ -44,6 +44,7 @@ export default function EditProjectPage() {
   const floors = useWorkflowStore(s => s.floors);
   const rooms = useWorkflowStore(s => s.rooms);
   const captures = useWorkflowStore(s => s.captures);
+  const capturePins = useWorkflowStore(s => s.capturePins);
   const updateProject = useWorkflowStore(s => s.updateProject);
   const project = getProjectById(projects, projectId ?? '');
 
@@ -51,8 +52,7 @@ export default function EditProjectPage() {
   const projectFloors = floors.filter(f => projectTowerIds.has(f.towerId));
   const projectFloorIds = new Set(projectFloors.map(f => f.id));
   const projectRooms = rooms.filter(r => projectFloorIds.has(r.floorId));
-  const projectRoomIds = new Set(projectRooms.map(r => r.id));
-  const projectCaptures = captures.filter(c => projectRoomIds.has(c.roomId));
+  const projectCaptures = getCapturesByProjectScope({ rooms, captures, capturePins }, projectId ?? '');
 
   const [saved, setSaved] = useState(false);
   const [form, setForm] = useState(() => ({

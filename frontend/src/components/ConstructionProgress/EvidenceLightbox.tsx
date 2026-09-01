@@ -7,6 +7,7 @@ import type { ApiResponse } from '@/types/dto';
 import { useWorkflowStore } from '@/store/workflowStore';
 import { getPinForCapture } from '@/store/workflowSelectors';
 import { formatPinLocationLabel } from '@/utils/pinLabels';
+import { resolveMediaUrl } from '@/config/env';
 
 /**
  * GET /captures/{id} returns the raw stored capture document (camelCase
@@ -27,7 +28,8 @@ interface RawCapture {
 }
 
 function captureUrl(cap: RawCapture): string | undefined {
-  return cap.processedPanoramaUrl || cap.original_url || cap.originalFileUrl || cap.thumbnailUrl || undefined;
+  const raw = cap.processedPanoramaUrl || cap.original_url || cap.originalFileUrl || cap.thumbnailUrl || undefined;
+  return resolveMediaUrl(raw) ?? undefined;
 }
 
 function pinLabelFor(pins: ReturnType<typeof useWorkflowStore.getState>['capturePins'], captureId: string, fallback?: string): string {

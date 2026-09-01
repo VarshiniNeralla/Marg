@@ -121,6 +121,61 @@ def assert_same_tower(target_tower_id: str, source_tower_id: str) -> None:
         raise ValueError("copy is only allowed within the same tower")
 
 
+def assert_same_project(target_project_id: str, source_project_id: str) -> None:
+    """Raise if copy-from crosses projects.
+
+    Identical floor plates are commonly shared across towers in one project,
+    so imports are scoped to the project (not a single tower).
+
+    If either side is missing projectId (legacy / incomplete records), do not
+    block the copy — callers already scope by orgId.
+    """
+    t = str(target_project_id or "").strip()
+    s = str(source_project_id or "").strip()
+    if not t or not s:
+        return
+    if t != s:
+        raise ValueError("copy is only allowed within the same project")
+
+
+def room_upsert_update(
+    plan: dict[str, Any],
+    *,
+    room_id: str,
+    org_id: str,
+    room_name: str,
+    seq: int,
+    now: datetime | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Mongo upsert for a pin's backing room.
+
+    MongoDB rejects any path that appears in both $setOnInsert and $set
+    (``Updating the path 'towerId' would create a conflict at 'towerId'``).
+    Identity fields go in $setOnInsert; location + label go only in $set
+    (those still apply on insert).
+    """
+    ts = now or _utcnow()
+    set_on_insert: dict[str, Any] = {
+        "_id": room_id,
+        "id": room_id,
+        "orgId": org_id,
+        "room_number": f"Pin {seq}",
+        "type": "custom",
+        "createdAt": ts,
+    }
+    set_fields: dict[str, Any] = {
+        "name": room_name,
+        "towerId": plan.get("towerId"),
+        "projectId": plan.get("projectId"),
+        "floorId": plan.get("floorId"),
+        "updatedAt": ts,
+    }
+    overlap = set(set_on_insert) & set(set_fields)
+    if overlap:
+        raise ValueError(f"conflicting upsert paths: {sorted(overlap)}")
+    return {"$setOnInsert": set_on_insert, "$set": set_fields}
+
+
 class PredefinedPinsService:
     def __init__(self, db: AsyncIOMotorDatabase):
         self._db = db
@@ -182,32 +237,15 @@ class PredefinedPinsService:
         pin_id = str(ObjectId())
         room_id = str(payload.get("roomId") or f"{plan.get('floorId')}-predef-{pin_id[-6:]}")
 
-        # Ensure a backing room exists for capture join (name = room label).
-        # `name` must only appear in $set — Mongo rejects the same path in both
-        # $setOnInsert and $set ("Updating the path 'name' would create a conflict").
         await self._db["rooms"].update_one(
             {"_id": room_id, "orgId": org_id},
-            {
-                "$setOnInsert": {
-                    "_id": room_id,
-                    "id": room_id,
-                    "orgId": org_id,
-                    "floorId": plan.get("floorId"),
-                    "towerId": plan.get("towerId"),
-                    "projectId": plan.get("projectId"),
-                    "room_number": f"Pin {seq}",
-                    "type": "custom",
-                    "createdAt": _utcnow(),
-                },
-                "$set": {
-                    "name": room_name,
-                    # Heal older rooms that were created without tower/project.
-                    "towerId": plan.get("towerId"),
-                    "projectId": plan.get("projectId"),
-                    "floorId": plan.get("floorId"),
-                    "updatedAt": _utcnow(),
-                },
-            },
+            room_upsert_update(
+                plan,
+                room_id=room_id,
+                org_id=org_id,
+                room_name=room_name,
+                seq=seq,
+            ),
             upsert=True,
         )
 
@@ -377,8 +415,20 @@ class PredefinedPinsService:
                     {
                         "orgId": org_id,
                         "$or": [{"floorPlanId": pid}, {"floorPlanId": str(plan.get("id") or "")}],
-                        "flatName": {"$exists": True, "$nin": [None, ""]},
-                        "roomName": {"$exists": True, "$nin": [None, ""]},
+                        "$and": [
+                            {
+                                "$or": [
+                                    {"flatName": {"$exists": True, "$nin": [None, ""]}},
+                                    {"flat_name": {"$exists": True, "$nin": [None, ""]}},
+                                ]
+                            },
+                            {
+                                "$or": [
+                                    {"roomName": {"$exists": True, "$nin": [None, ""]}},
+                                    {"room_name": {"$exists": True, "$nin": [None, ""]}},
+                                ]
+                            },
+                        ],
                     }
                 )
                 if count > best_count:
@@ -387,7 +437,41 @@ class PredefinedPinsService:
             return best if best_count > 0 else plans[0]
 
         target_plan = await _plan_by_id(target_floor_plan_id) or await _latest_plan(target_floor_id)
-        source_plan = await _plan_by_id(source_floor_plan_id) or await _best_labeled_plan(source_floor_id)
+        # Prefer an explicit source plan only when it actually owns labeled pins;
+        # otherwise re-uploads leave the client pointing at a newer empty plan.
+        source_plan = None
+        if source_floor_plan_id:
+            candidate = await _plan_by_id(source_floor_plan_id)
+            if candidate:
+                cand_id = str(candidate.get("_id") or candidate.get("id") or "")
+                cand_alt = str(candidate.get("id") or "")
+                labeled = await self._db["capture_pins"].count_documents(
+                    {
+                        "orgId": org_id,
+                        "$or": [
+                            {"floorPlanId": cand_id},
+                            *([{ "floorPlanId": cand_alt }] if cand_alt and cand_alt != cand_id else []),
+                        ],
+                        "$and": [
+                            {
+                                "$or": [
+                                    {"flatName": {"$exists": True, "$nin": [None, ""]}},
+                                    {"flat_name": {"$exists": True, "$nin": [None, ""]}},
+                                ]
+                            },
+                            {
+                                "$or": [
+                                    {"roomName": {"$exists": True, "$nin": [None, ""]}},
+                                    {"room_name": {"$exists": True, "$nin": [None, ""]}},
+                                ]
+                            },
+                        ],
+                    }
+                )
+                if labeled > 0:
+                    source_plan = candidate
+        if source_plan is None:
+            source_plan = await _best_labeled_plan(source_floor_id)
 
         if not target_plan or not source_plan:
             raise ValueError("source or target floor plan not found")
@@ -398,7 +482,29 @@ class PredefinedPinsService:
         else:
             t_tower = str(target_plan.get("towerId") or "")
             s_tower = str(source_plan.get("towerId") or "")
-        assert_same_tower(t_tower, s_tower)
+
+        async def _project_for(tower_id: str, floor_doc: dict | None, plan_doc: dict) -> str:
+            direct = str(
+                (floor_doc or {}).get("projectId")
+                or (floor_doc or {}).get("project_id")
+                or plan_doc.get("projectId")
+                or plan_doc.get("project_id")
+                or ""
+            ).strip()
+            if direct:
+                return direct
+            if not tower_id:
+                return ""
+            tower = await self._db["towers"].find_one(
+                {"orgId": org_id, "$or": [{"_id": _oid(tower_id)}, {"id": tower_id}]}
+            )
+            if not tower:
+                return ""
+            return str(tower.get("projectId") or tower.get("project_id") or "").strip()
+
+        t_project = await _project_for(t_tower, target_floor, target_plan)
+        s_project = await _project_for(s_tower, source_floor, source_plan)
+        assert_same_project(t_project, s_project)
 
         source_plan_id = str(source_plan.get("_id") or source_plan.get("id") or "")
         target_plan_id = str(target_plan.get("_id") or target_plan.get("id") or "")
@@ -406,6 +512,22 @@ class PredefinedPinsService:
 
         # Prefer labeled pins on the chosen source plan; fall back to any labeled
         # pins on the source floor (covers plan-id drift after re-upload).
+        labeled_filter = {
+            "$and": [
+                {
+                    "$or": [
+                        {"flatName": {"$exists": True, "$nin": [None, ""]}},
+                        {"flat_name": {"$exists": True, "$nin": [None, ""]}},
+                    ]
+                },
+                {
+                    "$or": [
+                        {"roomName": {"$exists": True, "$nin": [None, ""]}},
+                        {"room_name": {"$exists": True, "$nin": [None, ""]}},
+                    ]
+                },
+            ]
+        }
         source_pins = await self._db["capture_pins"].find(
             {
                 "orgId": org_id,
@@ -413,8 +535,7 @@ class PredefinedPinsService:
                     {"floorPlanId": source_plan_id},
                     *([{"floorPlanId": source_plan_alt}] if source_plan_alt and source_plan_alt != source_plan_id else []),
                 ],
-                "flatName": {"$exists": True, "$nin": [None, ""]},
-                "roomName": {"$exists": True, "$nin": [None, ""]},
+                **labeled_filter,
             }
         ).sort("sequenceNumber", 1).to_list(length=500)
 
@@ -423,8 +544,7 @@ class PredefinedPinsService:
                 {
                     "orgId": org_id,
                     "floorId": source_floor_id,
-                    "flatName": {"$exists": True, "$nin": [None, ""]},
-                    "roomName": {"$exists": True, "$nin": [None, ""]},
+                    **labeled_filter,
                 }
             ).sort("sequenceNumber", 1).to_list(length=500)
 
@@ -441,6 +561,12 @@ class PredefinedPinsService:
             ).sort("sequenceNumber", 1).to_list(length=500)
 
         if not source_pins:
+            logger.warning(
+                "copy-from found no source pins org={} source_floor={} source_plan={}",
+                org_id,
+                source_floor_id,
+                source_plan_id,
+            )
             raise ValueError("source floor has no labeled predefined pins")
 
         # Deduplicate by sequence / coordinates if floor-wide fallback pulled overlaps.

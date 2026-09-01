@@ -37,11 +37,30 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
-    # ── Cloudinary ────────────────────────────────────────────────────────────
+    # ── Media storage ─────────────────────────────────────────────────────────
+    # Hybrid routing (see cloudinary_service._resolve_media_storage):
+    #   • floor plans → always Cloudinary (sharp PDF→PNG; avoids soft local raster)
+    #   • captures    → local disk when MEDIA_STORAGE=local (Cloudinary on failure)
+    #   • other media → follows MEDIA_STORAGE
+    # Set MEDIA_STORAGE=cloudinary to force Cloudinary for captures too.
+    MEDIA_STORAGE: str = "local"
+    # Absolute or relative path for on-disk uploads. Empty → <repo>/uploads.
+    UPLOAD_ROOT: str = ""
+    # Optional absolute origin used when building media URLs, e.g.
+    # http://localhost:8002 or https://your-tunnel.trycloudflare.com
+    # Leave empty to store relative /media/... paths (frontend prefixes API base).
+    MEDIA_PUBLIC_BASE_URL: str = ""
+    # When True (default), /media requires a valid HMAC signature or JWT.
+    # Set MEDIA_REQUIRE_AUTH=false only for local debugging of raw file URLs.
+    MEDIA_REQUIRE_AUTH: bool = True
+    # TTL for HMAC-signed media URLs written into Mongo (seconds).
+    MEDIA_URL_TTL_SECONDS: int = 7 * 24 * 60 * 60
+
+    # ── Cloudinary (floor plans + capture fallback) ───────────────────────────
     CLOUDINARY_CLOUD_NAME: str = ""
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
-    # Max upload size for images sent to Cloudinary (bytes). Cloudinary's FREE
+    # Max upload size for images sent to storage (bytes). Cloudinary's FREE
     # plan hard-caps at 10 MB/file, so we cap here and fail fast with a clear
     # message. Raise (via env) after upgrading the plan.
     MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
@@ -50,6 +69,11 @@ class Settings(BaseSettings):
     # larger cap — a raw Insta360 .dng is ~35 MB. Only the stitched output must
     # fit MAX_UPLOAD_BYTES.
     MAX_RAW_UPLOAD_BYTES: int = 64 * 1024 * 1024
+    # Stitched equirect output (2:1). 7680×3840 ≈ 8K — sharper zoom than the
+    # previous 5760×2880 default; raise further only if CPU/RAM allow.
+    STITCH_OUTPUT_WIDTH: int = 7680
+    STITCH_OUTPUT_HEIGHT: int = 3840
+    STITCH_JPEG_QUALITY: int = 95
     # Seconds before a Cloudinary upload call is abandoned (frees the worker).
     CLOUDINARY_UPLOAD_TIMEOUT: int = 120
 
@@ -177,6 +201,14 @@ class Settings(BaseSettings):
         provider = self.VISION_PROVIDER.strip().lower()
         if provider and provider not in {"groq", "vllm"}:
             raise ValueError("VISION_PROVIDER must be one of: groq, vllm")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_media_storage(self) -> "Settings":
+        mode = (self.MEDIA_STORAGE or "local").strip().lower()
+        if mode not in {"local", "cloudinary"}:
+            raise ValueError("MEDIA_STORAGE must be one of: local, cloudinary")
+        object.__setattr__(self, "MEDIA_STORAGE", mode)
         return self
 
     # ── Derived helpers ───────────────────────────────────────────────────────

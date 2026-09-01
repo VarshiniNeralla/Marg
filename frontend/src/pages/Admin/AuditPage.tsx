@@ -77,12 +77,12 @@ function formatLatency(ms?: number | null): string {
   return `${(ms / 1000).toFixed(1)} s`;
 }
 
-const COLS = 'minmax(130px,1.1fr) minmax(120px,1.2fr) minmax(80px,0.8fr) minmax(90px,0.9fr) minmax(72px,0.7fr) minmax(72px,0.7fr) minmax(72px,0.7fr) minmax(64px,0.6fr)';
-const ACTIVITY_COLS = 'minmax(120px,0.95fr) minmax(110px,0.9fr) minmax(140px,1.2fr) minmax(220px,1.95fr)';
+const COLS = 'minmax(120px,1fr) minmax(110px,1fr) minmax(120px,1.2fr) minmax(80px,0.8fr) minmax(90px,0.9fr) minmax(72px,0.7fr) minmax(72px,0.7fr) minmax(72px,0.7fr) minmax(64px,0.6fr)';
+const ACTIVITY_COLS = 'minmax(120px,0.95fr) minmax(110px,0.9fr) minmax(110px,0.9fr) minmax(140px,1.2fr) minmax(220px,1.95fr)';
 
 function activitySubject(log: ProgressAnalysisAuditEntry): string {
   const parts = [log.projectName, log.tower, log.floor, log.pinName].filter(Boolean);
-  return parts.join(' · ') || 'Progress analysis';
+  return parts.join(' · ') || log.sourceLabel || 'LLM call';
 }
 
 function activityTokenSummary(log: ProgressAnalysisAuditEntry): string {
@@ -156,7 +156,7 @@ export default function AuditPage() {
           Audit
         </Typography>
         <Typography sx={{ fontSize: '0.9375rem', color: colors.textMuted }}>
-          LLM token usage for construction progress analyses and platform activity
+          LLM token usage across construction progress analyses, Drishti chat, and platform activity
         </Typography>
       </Box>
 
@@ -169,7 +169,7 @@ export default function AuditPage() {
       }}>
         <Metric
           icon={<AutoAwesomeRounded />}
-          label="Analyses run"
+          label="LLM calls"
           value={formatTokens(summary.analysisCount)}
           color="#7c3aed"
         />
@@ -243,7 +243,7 @@ export default function AuditPage() {
               px: 2.5, py: 1.25, borderBottom: `1px solid ${colors.borderLight}`,
               backgroundColor: colors.bgDeep,
             }}>
-              {['Date', 'Project', 'Location', 'Pin', 'Model', 'Input', 'Output', 'Total'].map(h => (
+              {['Date', 'Source', 'Project', 'Location', 'Pin', 'Model', 'Input', 'Output', 'Total'].map(h => (
                 <Typography key={h} sx={{ fontSize: '0.6875rem', fontWeight: 700, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                   {h}
                 </Typography>
@@ -265,7 +265,7 @@ export default function AuditPage() {
                   No analyses yet
                 </Typography>
                 <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, mt: 0.5 }}>
-                  Token usage will appear here after progress analyses are run.
+                  Token usage will appear here after progress analyses run or Drishti is asked a question.
                 </Typography>
               </Box>
             ) : (
@@ -281,6 +281,9 @@ export default function AuditPage() {
                 >
                   <Typography sx={{ fontSize: '0.8125rem', color: colors.textSecondary }}>
                     {formatDate(row.createdAt)}
+                  </Typography>
+                  <Typography noWrap sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.textMuted }}>
+                    {row.sourceLabel || '—'}
                   </Typography>
                   <Box sx={{ minWidth: 0 }}>
                     <Typography noWrap sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong }}>
@@ -342,7 +345,7 @@ export default function AuditPage() {
               borderBottom: `1px solid ${colors.borderLight}`,
               backgroundColor: colors.bgDeep,
             }}>
-              {['Date', 'Actor', 'Subject', 'Token Summary'].map(h => (
+              {['Date', 'Source', 'Actor', 'Subject', 'Token Summary'].map(h => (
                 <Typography key={h} sx={{ fontSize: '0.6875rem', fontWeight: 700, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                   {h}
                 </Typography>
@@ -377,6 +380,9 @@ export default function AuditPage() {
                 >
                   <Typography sx={{ fontSize: '0.8125rem', color: colors.textSecondary }}>
                     {formatDate(log.createdAt)}
+                  </Typography>
+                  <Typography noWrap sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.textMuted }}>
+                    {log.sourceLabel || '—'}
                   </Typography>
                   <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong }}>
                     {log.requestedByName || log.requestedBy || 'Unknown user'}

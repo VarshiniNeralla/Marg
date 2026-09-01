@@ -21,9 +21,9 @@ bytes (the "dedup key"):
     running joins the existing job instead of starting a rival one.
 
 Because the request's UploadFile does not outlive the response, the raw bytes
-are spooled to disk and the job reads them back. The client's own durable upload
-queue keeps its copy until the job completes, so a lost spool file is always
-recoverable by re-uploading.
+are spooled to disk and the job reads them back. On success the spool is
+deleted; on failure it is KEPT so the client can retry the same job (or upload
+a Studio equirect JPEG) without re-capturing.
 """
 from __future__ import annotations
 
@@ -51,6 +51,9 @@ _ACTIVE_STATUSES = (JOB_STATUS_PENDING, JOB_STATUS_PROCESSING)
 # (hung thread, killed worker). Without this sweep such a job would hold the
 # in-flight dedup guard forever and silently block every retry of those bytes.
 _STALE_AFTER = timedelta(minutes=10)
+
+# Failed-job spool retention — long enough for a site visit + Studio export.
+_FAILED_RAW_RETENTION = timedelta(days=7)
 
 
 def _utcnow() -> datetime:
@@ -88,6 +91,7 @@ class CaptureStitchService:
             return {"status": JOB_STATUS_COMPLETED, "jobId": None, "asset": cached_asset}
 
         await self._fail_stale_jobs(org_id=org_id)
+        await self._cleanup_expired_failed_raw(org_id=org_id)
 
         # 2. A job for these bytes is already running — join it rather than
         #    starting a second stitch of the same file.
@@ -100,6 +104,39 @@ class CaptureStitchService:
                 f"job={existing['_id']} status={existing.get('status')}"
             )
             return {"status": existing.get("status"), "jobId": str(existing["_id"]), "asset": None}
+
+        # 3. A prior failed job for these bytes still has the spool — re-arm it
+        #    instead of creating a duplicate job id (keeps client poll stable).
+        failed = await jobs.find_one(
+            {"orgId": org_id, "dedupKey": dedup_key, "status": JOB_STATUS_FAILED}
+        )
+        if failed:
+            raw = Path(failed.get("rawPath") or "")
+            if raw.exists():
+                job_id = str(failed["_id"])
+                logger.info(
+                    f"[stitch-job] re-arming failed job={job_id} file={filename} "
+                    f"(spool retained)"
+                )
+                await jobs.update_one(
+                    {"_id": job_id},
+                    {
+                        "$set": {
+                            "status": JOB_STATUS_PENDING,
+                            "error": None,
+                            "asset": None,
+                            "filename": filename,
+                            "ext": ext,
+                            "folder": folder,
+                            "entityId": entity_id,
+                            "heartbeatAt": _utcnow(),
+                            "completedAt": None,
+                            "rawRetained": True,
+                        }
+                    },
+                )
+                self._dispatch(job_id)
+                return {"status": JOB_STATUS_PENDING, "jobId": job_id, "asset": None}
 
         job_id = str(uuid.uuid4())
         now = _utcnow()
@@ -116,6 +153,7 @@ class CaptureStitchService:
                 "entityId": entity_id,
                 "asset": None,
                 "error": None,
+                "rawRetained": True,
                 "createdAt": now,
                 "heartbeatAt": now,
                 "completedAt": None,
@@ -129,12 +167,85 @@ class CaptureStitchService:
         doc = await self._db[COLLECTION_JOBS].find_one({"_id": job_id, "orgId": org_id})
         if not doc:
             return None
+        raw_path = Path(doc.get("rawPath") or "")
+        can_retry = (
+            doc.get("status") == JOB_STATUS_FAILED
+            and bool(doc.get("rawPath"))
+            and raw_path.exists()
+        )
         return {
             "jobId": str(doc["_id"]),
             "status": doc.get("status"),
             "asset": doc.get("asset"),
             "error": doc.get("error"),
+            "canRetry": can_retry,
+            "rawRetained": bool(doc.get("rawRetained")) and raw_path.exists(),
         }
+
+    async def retry_job(self, *, org_id: str, job_id: str) -> dict[str, Any]:
+        """
+        Re-run a failed stitch using the retained spool file.
+
+        Returns the same shape as get_job after re-queueing.
+        """
+        jobs = self._db[COLLECTION_JOBS]
+        doc = await jobs.find_one({"_id": job_id, "orgId": org_id})
+        if not doc:
+            raise KeyError(job_id)
+
+        status = doc.get("status")
+        if status in _ACTIVE_STATUSES:
+            return await self.get_job(org_id=org_id, job_id=job_id)  # type: ignore[return-value]
+
+        if status == JOB_STATUS_COMPLETED and doc.get("asset"):
+            return await self.get_job(org_id=org_id, job_id=job_id)  # type: ignore[return-value]
+
+        raw_path = Path(doc.get("rawPath") or "")
+        if not raw_path.exists():
+            await self._mark_failed(
+                job_id,
+                "Raw capture is no longer on the server — re-upload the file or "
+                "export an equirectangular JPEG from Insta360 Studio.",
+                retain_raw=False,
+            )
+            out = await self.get_job(org_id=org_id, job_id=job_id)
+            assert out is not None
+            return out
+
+        await jobs.update_one(
+            {"_id": job_id},
+            {
+                "$set": {
+                    "status": JOB_STATUS_PENDING,
+                    "error": None,
+                    "asset": None,
+                    "heartbeatAt": _utcnow(),
+                    "completedAt": None,
+                    "rawRetained": True,
+                }
+            },
+        )
+        # Clear failed processingStatus on the capture so the UI shows stitching again.
+        try:
+            await self._db["captures"].update_one(
+                {"stitchJobId": job_id, "orgId": org_id},
+                {
+                    "$set": {
+                        "processingStatus": "processing",
+                        "processing_status": "processing",
+                        "stitchError": None,
+                        "updatedAt": _utcnow(),
+                    }
+                },
+            )
+        except Exception as exc:
+            logger.warning(f"[stitch-job] could not clear stitchError on retry job={job_id}: {exc!r}")
+
+        logger.info(f"[stitch-job] manual retry queued job={job_id} file={doc.get('filename')}")
+        self._dispatch(job_id)
+        out = await self.get_job(org_id=org_id, job_id=job_id)
+        assert out is not None
+        return out
 
     async def recover_orphaned_jobs(self) -> None:
         """
@@ -168,7 +279,11 @@ class CaptureStitchService:
                 logger.warning(
                     f"[stitch-job] orphaned job={job_id} has no spooled file — marking failed"
                 )
-                await self._mark_failed(job_id, "Server restarted and the uploaded file was no longer available.")
+                await self._mark_failed(
+                    job_id,
+                    "Server restarted and the uploaded file was no longer available.",
+                    retain_raw=False,
+                )
 
     # ── Internals ─────────────────────────────────────────────────────────────
 
@@ -180,17 +295,35 @@ class CaptureStitchService:
 
     async def _run_job(self, job_id: str) -> None:
         jobs = self._db[COLLECTION_JOBS]
-        job = await jobs.find_one({"_id": job_id})
-        if not job:
-            return
-
-        await jobs.update_one(
-            {"_id": job_id},
+        # Atomic claim: only one worker may transition pending → processing.
+        # Orphans are reset to pending on startup before re-dispatch.
+        claimed = await jobs.find_one_and_update(
+            {"_id": job_id, "status": JOB_STATUS_PENDING},
             {"$set": {"status": JOB_STATUS_PROCESSING, "heartbeatAt": _utcnow()}},
         )
+        if not claimed:
+            return
 
-        raw_path = Path(job.get("rawPath") or "")
-        filename = job.get("filename") or "capture"
+        raw_path = Path(claimed.get("rawPath") or "")
+        filename = claimed.get("filename") or "capture"
+        heartbeat_stop = asyncio.Event()
+
+        async def _heartbeat_loop() -> None:
+            while not heartbeat_stop.is_set():
+                try:
+                    await asyncio.wait_for(heartbeat_stop.wait(), timeout=30.0)
+                    return
+                except asyncio.TimeoutError:
+                    try:
+                        await jobs.update_one(
+                            {"_id": job_id, "status": JOB_STATUS_PROCESSING},
+                            {"$set": {"heartbeatAt": _utcnow()}},
+                        )
+                    except Exception as exc:
+                        logger.warning(f"[stitch-job] heartbeat failed job={job_id}: {exc!r}")
+
+        heartbeat_task = asyncio.create_task(_heartbeat_loop())
+        succeeded = False
 
         try:
             if not raw_path.exists():
@@ -200,7 +333,7 @@ class CaptureStitchService:
                 asset = await upload_media(
                     file_obj=file_obj,
                     filename=filename,
-                    folder=job.get("folder") or "",
+                    folder=claimed.get("folder") or "",
                     resource_type="auto",
                     tag_if_panorama=True,
                 )
@@ -210,12 +343,12 @@ class CaptureStitchService:
             # hit instead of paying for a second stitch.
             from app.api.v1.endpoints.workflow import _asset_payload, _dedup_store
 
-            await _dedup_store(self._db, job["dedupKey"], asset)
+            await _dedup_store(self._db, claimed["dedupKey"], asset)
             payload = _asset_payload(
                 asset,
                 kind="captures",
-                entity_id=job.get("entityId"),
-                ext=job.get("ext") or "",
+                entity_id=claimed.get("entityId"),
+                ext=claimed.get("ext") or "",
             )
             # Carry the job id onto the FINISHED asset too. The client created its
             # capture record from the pending payload (which had this id) and uses
@@ -230,26 +363,55 @@ class CaptureStitchService:
                         "status": JOB_STATUS_COMPLETED,
                         "asset": payload,
                         "error": None,
+                        "rawRetained": False,
                         "heartbeatAt": _utcnow(),
                         "completedAt": _utcnow(),
                     }
                 },
             )
-            await self._apply_asset_to_capture(job_id=job_id, org_id=job["orgId"], payload=payload)
+            await self._apply_asset_to_capture(job_id=job_id, org_id=claimed["orgId"], payload=payload)
+            succeeded = True
             logger.info(f"✅ STITCH COMPLETE — {filename} — panorama ready: {payload.get('processed_panorama_url')}")
             logger.info(f"[stitch-job] completed job={job_id} file={filename}")
         except Exception as exc:
             logger.error(f"❌ STITCH FAILED — {filename} — {exc}")
             logger.exception(f"[stitch-job] failed job={job_id} file={filename}")
-            await self._mark_failed(job_id, str(exc)[:500])
+            await self._mark_failed(job_id, str(exc)[:500], retain_raw=True)
+            await self._apply_failure_to_capture(
+                job_id=job_id,
+                org_id=claimed["orgId"],
+                error=str(exc)[:500],
+            )
         finally:
-            # Best-effort spool cleanup. On failure the client still holds the
-            # bytes, so keeping the temp file buys nothing.
+            heartbeat_stop.set()
             try:
-                if raw_path.exists():
-                    raw_path.unlink()
+                await heartbeat_task
             except Exception:
                 pass
+            # Delete spool only after a successful stitch. Failed jobs keep the
+            # raw .insp so Retry Stitch / Studio-export recovery can use it.
+            if succeeded:
+                try:
+                    if raw_path.exists():
+                        raw_path.unlink()
+                except Exception:
+                    pass
+
+    async def _apply_failure_to_capture(self, *, job_id: str, org_id: str, error: str) -> None:
+        try:
+            await self._db["captures"].update_one(
+                {"stitchJobId": job_id, "orgId": org_id},
+                {
+                    "$set": {
+                        "processingStatus": "failed",
+                        "processing_status": "failed",
+                        "stitchError": error,
+                        "updatedAt": _utcnow(),
+                    }
+                },
+            )
+        except Exception as exc:
+            logger.warning(f"[stitch-job] capture failure patch failed for job={job_id}: {exc!r}")
 
     async def _apply_asset_to_capture(self, *, job_id: str, org_id: str, payload: dict[str, Any]) -> None:
         """
@@ -307,6 +469,7 @@ class CaptureStitchService:
                         "media_assets": [payload],
                         "processingStatus": payload.get("processing_status"),
                         "processing_status": payload.get("processing_status"),
+                        "stitchError": None,
                         "original_url": payload.get("original_url"),
                         "originalFileUrl": payload.get("original_file_url"),
                         "processedPanoramaUrl": payload.get("processed_panorama_url"),
@@ -328,7 +491,7 @@ class CaptureStitchService:
             # patch here is recoverable and must not fail the job.
             logger.warning(f"[stitch-job] capture patch failed for job={job_id}: {exc!r}")
 
-    async def _mark_failed(self, job_id: str, error: str) -> None:
+    async def _mark_failed(self, job_id: str, error: str, *, retain_raw: bool = True) -> None:
         try:
             await self._db[COLLECTION_JOBS].update_one(
                 {"_id": job_id},
@@ -336,6 +499,7 @@ class CaptureStitchService:
                     "$set": {
                         "status": JOB_STATUS_FAILED,
                         "error": error,
+                        "rawRetained": retain_raw,
                         "heartbeatAt": _utcnow(),
                         "completedAt": _utcnow(),
                     }
@@ -353,6 +517,7 @@ class CaptureStitchService:
                     "$set": {
                         "status": JOB_STATUS_FAILED,
                         "error": "Stitching timed out.",
+                        "rawRetained": True,
                         "completedAt": _utcnow(),
                     }
                 },
@@ -361,3 +526,34 @@ class CaptureStitchService:
                 logger.warning(f"[stitch-job] failed {result.modified_count} stale job(s)")
         except Exception as exc:
             logger.warning(f"[stitch-job] stale sweep failed: {exc!r}")
+
+    async def _cleanup_expired_failed_raw(self, *, org_id: str) -> None:
+        """Drop retained spools for failed jobs older than retention window."""
+        cutoff = _utcnow() - _FAILED_RAW_RETENTION
+        try:
+            old = await self._db[COLLECTION_JOBS].find(
+                {
+                    "orgId": org_id,
+                    "status": JOB_STATUS_FAILED,
+                    "rawRetained": True,
+                    "completedAt": {"$lt": cutoff},
+                }
+            ).to_list(length=100)
+        except Exception as exc:
+            logger.warning(f"[stitch-job] failed-raw cleanup query failed: {exc!r}")
+            return
+
+        for doc in old:
+            raw = Path(doc.get("rawPath") or "")
+            try:
+                if raw.exists():
+                    raw.unlink()
+            except Exception:
+                pass
+            try:
+                await self._db[COLLECTION_JOBS].update_one(
+                    {"_id": doc["_id"]},
+                    {"$set": {"rawRetained": False}},
+                )
+            except Exception:
+                pass

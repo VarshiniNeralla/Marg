@@ -20,6 +20,7 @@ dependencies = [
     "pydantic-settings>=2.2.1",
     "pydantic[email]==2.6.4",
     "pymongo==4.6.2",
+    "pymupdf>=1.28.2",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
     "python-dotenv==1.0.1",

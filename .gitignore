@@ -10,6 +10,10 @@ backend/.pytest_cache/
 frontend/node_modules/
 frontend/dist/
 
+# Local media uploads (MEDIA_STORAGE=local) — never commit binary assets
+uploads/
+backend/uploads/
+
 *.pyc
 
 learn.py

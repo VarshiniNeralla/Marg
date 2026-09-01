@@ -553,6 +553,20 @@ class ConstructionProgressService:
 
     # ── Floor + capture resolution ────────────────────────────────────────────
 
+    async def get_floor_project_id(self, org_id: str, floor_id: str) -> str | None:
+        """Resolves floor -> tower -> projectId, for the per-floor RBAC guard
+        in the endpoint layer (a manager scoped to specific projects must not
+        reach a floor outside them by guessing/reusing its floor_id, even
+        though `list_floor_summaries` already hides it from the picker)."""
+        floor = await self._db["floors"].find_one({"_id": floor_id, "orgId": org_id}) \
+            or await self._db["floors"].find_one({"id": floor_id, "orgId": org_id})
+        if not floor:
+            return None
+        tower = await self._db["towers"].find_one({"_id": floor.get("towerId"), "orgId": org_id}) \
+            or await self._db["towers"].find_one({"id": floor.get("towerId"), "orgId": org_id})
+        project_id = (tower or {}).get("projectId")
+        return str(project_id) if project_id else None
+
     async def _get_floor_context(self, org_id: str, floor_id: str) -> dict[str, Any] | None:
         floor = await self._db["floors"].find_one({"_id": floor_id, "orgId": org_id}) \
             or await self._db["floors"].find_one({"id": floor_id, "orgId": org_id})
@@ -1325,6 +1339,24 @@ class ConstructionProgressService:
             "Construction progress snapshot created floor_id={} org_id={} overall={}%",
             floor_id, org_id, overall_finishing_pct,
         )
+        if result.total_tokens or result.prompt_tokens or result.completion_tokens:
+            from app.services.llm_usage_service import LLMUsageService
+
+            await LLMUsageService(self._db).record_usage(
+                org_id=org_id,
+                source="construction_progress",
+                model=result.model,
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+                total_tokens=result.total_tokens,
+                latency_ms=result.latency_ms,
+                project_id=str(context.get("projectId") or ""),
+                project_name=str(context.get("projectName") or ""),
+                tower=str(context.get("towerName") or ""),
+                floor=str(context.get("floorLabel") or ""),
+                requested_by=analyzed_by,
+                entity_id=str(doc["_id"]),
+            )
         # Re-apply human pin + activity corrections onto the new snapshot so a
         # fresh analyze does not wipe Floor-1 (and later) review fixes.
         try:
@@ -1441,13 +1473,20 @@ class ConstructionProgressService:
             )
         return result.deleted_count
 
-    async def list_floor_summaries(self, org_id: str) -> list[dict[str, Any]]:
+    async def list_floor_summaries(
+        self, org_id: str, *, accessible_project_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """One row per floor — the picker list for the Construction Progress
         overview page. Floors never analyzed show progress=None so the UI can
         offer "Analyze now". Batches all lookups (towers/projects/latest
         snapshots) instead of one round trip per floor — with 100+ floors per
         org, the naive per-floor version took 15+ seconds; this is a handful
-        of queries regardless of floor count."""
+        of queries regardless of floor count.
+
+        `accessible_project_ids=None` means no project filter (system admins
+        — RBACService's sentinel for "all projects"); an explicit list is the
+        hard boundary for a project-scoped manager/field-engineer, same
+        contract as RBACService.get_accessible_project_ids."""
         floors = await self._db["floors"].find({"orgId": org_id}).to_list(length=1000)
         if not floors:
             return []
@@ -1534,17 +1573,22 @@ class ConstructionProgressService:
             if any(cid in existing_capture_ids for cid in cids)
         } | floors_with_room_captures
 
+        accessible_set = set(accessible_project_ids) if accessible_project_ids is not None else None
+
         summaries: list[dict[str, Any]] = []
         for floor in floors:
             floor_id = str(floor.get("id") or floor.get("_id"))
             if floor_id not in floors_with_captures:
                 continue
             tower = tower_by_id.get(str(floor.get("towerId")))
+            floor_project_id = str((tower or {}).get("projectId") or "")
+            if accessible_set is not None and floor_project_id not in accessible_set:
+                continue
             project = project_by_id.get(str(tower.get("projectId"))) if tower else None
             latest = latest_by_floor.get(floor_id)
             summaries.append({
                 "floorId": floor_id,
-                "projectId": str((tower or {}).get("projectId") or ""),
+                "projectId": floor_project_id,
                 "projectName": str((project or {}).get("name") or ""),
                 "towerId": str(floor.get("towerId") or ""),
                 "towerName": str((tower or {}).get("name") or ""),

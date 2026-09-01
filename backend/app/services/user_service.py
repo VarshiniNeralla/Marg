@@ -203,6 +203,32 @@ class UserService:
                     "Ask another admin to do this."
                 )
 
+        # Prevent self-deactivation (lockout)
+        if is_self and payload.is_active is False:
+            raise ForbiddenException("You cannot deactivate your own account")
+
+        # Cap assignable roles the same way register does
+        if is_admin and payload.role is not None and payload.role != target.role:
+            assignable = self._assignable_roles(caller_role)
+            if payload.role not in assignable:
+                raise ForbiddenException(
+                    f"You cannot assign role '{payload.role}'. "
+                    f"Allowed: {', '.join(sorted(assignable))}"
+                )
+
+        # Last-admin protection: demote / deactivate must leave ≥1 active admin
+        becoming_non_admin = (
+            is_admin
+            and target.role in ("admin", "super_admin")
+            and target.is_active
+            and (
+                (payload.role is not None and payload.role not in ("admin", "super_admin"))
+                or payload.is_active is False
+            )
+        )
+        if becoming_non_admin:
+            await self._ensure_another_active_admin(org_id, excluding_user_id=target_user_id)
+
         fields: dict = {}
         if payload.name is not None:
             fields["name"] = payload.name.strip()
@@ -254,6 +280,9 @@ class UserService:
         if not target.is_active:
             raise ConflictException("User is already deactivated")
 
+        if target.role in ("admin", "super_admin"):
+            await self._ensure_another_active_admin(org_id, excluding_user_id=target_user_id)
+
         await self._user_repo.set_active(target_user_id, False)
 
         await self._write_audit_log(
@@ -264,7 +293,33 @@ class UserService:
         )
         logger.info(f"User {target_user_id} deactivated by {caller_id}")
 
-    # ── Private helpers ───────────────────────────────────────────────────────
+    async def set_password_as_admin(
+        self,
+        *,
+        target_user_id: str,
+        org_id: str,
+        caller_id: str,
+        new_password: str,
+    ) -> None:
+        """Admin sets another user's password (no current-password check)."""
+        if target_user_id == caller_id:
+            raise ForbiddenException(
+                "Use the account security settings to change your own password"
+            )
+        target = await self._user_repo.find_by_id(target_user_id, org_id=org_id)
+        if not target:
+            raise NotFoundException("User", target_user_id)
+
+        from app.core.security import hash_password
+
+        await self._user_repo.update_password(target_user_id, hash_password(new_password))
+        await self._write_audit_log(
+            org_id=org_id,
+            actor_id=caller_id,
+            action="USER_PASSWORD_SET",
+            resource_id=target_user_id,
+        )
+        logger.info(f"Password for user {target_user_id} set by admin {caller_id}")
 
     # ── DELETE /users/:id/permanent (hard delete) ─────────────────────────────
 
@@ -279,7 +334,26 @@ class UserService:
         if not target:
             raise NotFoundException("User", target_user_id)
 
-        await self._user_repo._collection.delete_one({"_id": ObjectId(target_user_id) if ObjectId.is_valid(target_user_id) else target_user_id})
+        if target.role in ("admin", "super_admin"):
+            await self._ensure_another_active_admin(org_id, excluding_user_id=target_user_id)
+
+        from bson import ObjectId
+
+        oid = ObjectId(target_user_id) if ObjectId.is_valid(target_user_id) else target_user_id
+        org_filter = ObjectId(org_id) if ObjectId.is_valid(org_id) else org_id
+        await self._user_repo._collection.delete_one({"_id": oid, "org_id": org_filter})
+
+        # Best-effort: revoke project assignments for this user in the org.
+        try:
+            await self._db.user_projects.update_many(
+                {
+                    "user_id": target_user_id,
+                    "$or": [{"org_id": org_id}, {"orgId": org_id}, {"org_id": org_filter}],
+                },
+                {"$set": {"is_active": False}},
+            )
+        except Exception as exc:
+            logger.warning(f"Could not revoke assignments for deleted user {target_user_id}: {exc!r}")
 
         await self._write_audit_log(
             org_id=org_id,
@@ -288,6 +362,32 @@ class UserService:
             resource_id=target_user_id,
         )
         logger.info(f"User {target_user_id} permanently deleted by {caller_id}")
+
+    @staticmethod
+    def _assignable_roles(caller_role: str) -> set[str]:
+        base = {"manager", "field_engineer", "user", "reviewer", "viewer", "admin"}
+        if caller_role == "super_admin":
+            return base | {"super_admin"}
+        # Org admin may mint admin/manager/engineer — never super_admin
+        return base
+
+    async def _ensure_another_active_admin(self, org_id: str, *, excluding_user_id: str) -> None:
+        from bson import ObjectId
+
+        org_key = ObjectId(org_id) if ObjectId.is_valid(org_id) else org_id
+        excl = ObjectId(excluding_user_id) if ObjectId.is_valid(excluding_user_id) else excluding_user_id
+        count = await self._user_repo._collection.count_documents(
+            {
+                "org_id": org_key,
+                "role": {"$in": ["admin", "super_admin"]},
+                "is_active": True,
+                "_id": {"$ne": excl},
+            }
+        )
+        if count < 1:
+            raise ForbiddenException(
+                "Cannot remove or demote the last active administrator for this organization"
+            )
 
     @staticmethod
     def _to_response(user: UserDocument) -> UserResponse:

@@ -148,6 +148,8 @@ export interface ProgressReportDetail extends ProgressReportSummary {
 
 export interface ProgressAnalysisAuditEntry {
   reportId: string;
+  source?: string;
+  sourceLabel?: string;
   projectId: string;
   projectName: string;
   tower: string;

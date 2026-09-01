@@ -17,7 +17,7 @@ import { userService } from '@services/userService';
 import { authService as backendAuth } from '@services/authService';
 import { projectService } from '@services/projectService';
 import { useAuthStore, getRoleLandingPath } from '@store/authStore';
-import apiClient from '@services/apiClient';
+import apiClient, { normaliseError } from '@services/apiClient';
 import type { ProjectResponse } from '@/types/dto';
 
 type AppRole = 'admin' | 'manager' | 'field_engineer';
@@ -64,7 +64,23 @@ interface EditForm {
   assignedProjectIds: string[];
 }
 
-const EMPTY_CREATE: CreateForm = { name: '', email: '', role: 'field_engineer', designation: '', password: 'Prangan@123', assignedProjectIds: [] };
+function generateTempPassword(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@$!%*?&';
+  let out = 'Aa1@';
+  for (let i = 0; i < 10; i++) {
+    out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return out;
+}
+
+const EMPTY_CREATE = (): CreateForm => ({
+  name: '',
+  email: '',
+  role: 'field_engineer',
+  designation: '',
+  password: generateTempPassword(),
+  assignedProjectIds: [],
+});
 const EMPTY_EDIT: EditForm = { name: '', designation: '', role: 'field_engineer', newPassword: '', assignedProjectIds: [] };
 const USERS_PAGE_SIZE = 6;
 
@@ -248,7 +264,7 @@ export default function UserManagementPage() {
   const [page, setPage] = useState(1);
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [createForm, setCreateForm] = useState<CreateForm>(EMPTY_CREATE);
+  const [createForm, setCreateForm] = useState<CreateForm>(() => EMPTY_CREATE());
   const [createErr, setCreateErr] = useState('');
   const [creating, setCreating] = useState(false);
   const [createdInfo, setCreatedInfo] = useState<{ name: string; email: string; password: string } | null>(null);
@@ -282,9 +298,14 @@ export default function UserManagementPage() {
     setError('');
     try {
       const res = await userService.listUsers({ limit: 100 });
-      setUsers((res.items as unknown as ApiUser[]) ?? []);
-    } catch {
-      setError('Failed to load users. Check your connection.');
+      setUsers((res?.items as unknown as ApiUser[]) ?? []);
+    } catch (err) {
+      const apiErr = normaliseError(err);
+      setError(
+        apiErr.status === 0
+          ? 'Failed to load users. Check your connection — the API may be offline or pointing at an old tunnel URL.'
+          : apiErr.message || 'Failed to load users.',
+      );
     } finally {
       setLoading(false);
     }
@@ -316,8 +337,11 @@ export default function UserManagementPage() {
     }
     setCreating(true);
     try {
-      // Use /auth/register — admin creates users this way (org_slug from current user's org)
-      const orgSlug = (currentUser as any)?.org_slug ?? 'myhome';
+      const orgSlug = currentUser?.org_slug;
+      if (!orgSlug) {
+        setCreateErr('Your session is missing an organization slug. Sign out and sign in again.');
+        return;
+      }
       await apiClient.post('/auth/register', {
         name: createForm.name.trim(),
         email: createForm.email.trim().toLowerCase(),
@@ -329,7 +353,7 @@ export default function UserManagementPage() {
       });
       setCreatedInfo({ name: createForm.name.trim(), email: createForm.email.trim().toLowerCase(), password: createForm.password });
       setCreateOpen(false);
-      setCreateForm(EMPTY_CREATE);
+      setCreateForm(EMPTY_CREATE());
       await load();
     } catch (e: any) {
       const detail = e?.detail;
@@ -370,12 +394,13 @@ export default function UserManagementPage() {
         // a changed value) doesn't reject an otherwise-valid manager edit.
         role: isManagerCaller ? undefined : editForm.role,
       } as any);
-      if (editForm.newPassword.trim()) {
-        await apiClient.put(`/users/${editTarget.id}/password`, { new_password: editForm.newPassword.trim() });
+      if (!isManagerCaller && editForm.newPassword.trim()) {
+        await userService.setUserPassword(editTarget.id, editForm.newPassword.trim());
         setPwSuccess(true);
       }
-      // Persist project assignments (only meaningful for field engineers)
-      await userService.setUserProjects(editTarget.id, editForm.role === 'field_engineer' ? editForm.assignedProjectIds : []);
+      // Persist project assignments (meaningful for field engineers and managers)
+      const scopedRoles = new Set(['field_engineer', 'manager']);
+      await userService.setUserProjects(editTarget.id, scopedRoles.has(editForm.role) ? editForm.assignedProjectIds : []);
       setEditTarget(null);
       await load();
     } catch (e: any) {
@@ -386,15 +411,17 @@ export default function UserManagementPage() {
   }
 
   // ── Delete ────────────────────────────────────────────────────────────────────
+  const [deleteErr, setDeleteErr] = useState('');
   async function handleDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
+    setDeleteErr('');
     try {
       await userService.deactivateUser(deleteTarget.id);
       setDeleteTarget(null);
       await load();
     } catch (e: any) {
-      setDeleteTarget(null);
+      setDeleteErr(e?.message ?? 'Failed to delete user. The last admin cannot be removed.');
     } finally {
       setDeleting(false);
     }
@@ -439,7 +466,7 @@ export default function UserManagementPage() {
             </IconButton>
           </Tooltip>
           {!isManagerCaller && (
-          <Button variant="primary" onClick={() => { setCreateForm(EMPTY_CREATE); setCreateErr(''); setCreateOpen(true); loadProjects(); }} sx={{ gap: 0.75, height: 38, fontSize: '0.875rem' }}>
+          <Button variant="primary" onClick={() => { setCreateForm(EMPTY_CREATE()); setCreateErr(''); setCreateOpen(true); loadProjects(); }} sx={{ gap: 0.75, height: 38, fontSize: '0.875rem' }}>
             <AddRounded sx={{ fontSize: 18 }} /> Create User
           </Button>
           )}
@@ -595,8 +622,8 @@ export default function UserManagementPage() {
               </Select>
             </Box>
 
-            {/* Project assignment — only for field_engineer */}
-            {createForm.role === 'field_engineer' && (
+            {/* Project assignment — field engineers and managers are both scoped by assignment */}
+            {(createForm.role === 'field_engineer' || createForm.role === 'manager') && (
               <Box>
                 <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>
                   Assign to Project
@@ -704,8 +731,8 @@ export default function UserManagementPage() {
             </Box>
             )}
 
-            {/* Project assignment — only for field_engineer */}
-            {editForm.role === 'field_engineer' && (
+            {/* Project assignment — field engineers and managers are both scoped by assignment */}
+            {(editForm.role === 'field_engineer' || editForm.role === 'manager') && (
               <Box>
                 <Typography sx={{ fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>
                   Assigned Projects
@@ -747,12 +774,14 @@ export default function UserManagementPage() {
               </Box>
             )}
 
-            {/* Change password */}
-            <Box sx={{ pt: 0.5, borderTop: `1px solid ${colors.borderLight}` }}>
-              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong, mb: 0.25 }}>Change Password</Typography>
-              <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mb: 0.875 }}>Leave blank to keep the current password unchanged.</Typography>
-              <Box component="input" type="password" value={editForm.newPassword} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditForm(f => ({ ...f, newPassword: e.target.value }))} placeholder="New password (min 8 chars)" sx={{ ...inputSx, fontFamily: 'monospace', letterSpacing: '0.04em' }} />
-            </Box>
+            {/* Admin-only: managers cannot reset another user's password via API */}
+            {!isManagerCaller && (
+              <Box sx={{ pt: 0.5, borderTop: `1px solid ${colors.borderLight}` }}>
+                <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.textStrong, mb: 0.25 }}>Change Password</Typography>
+                <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mb: 0.875 }}>Leave blank to keep the current password unchanged.</Typography>
+                <Box component="input" type="password" value={editForm.newPassword} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditForm(f => ({ ...f, newPassword: e.target.value }))} placeholder="New password (min 8 chars)" sx={{ ...inputSx, fontFamily: 'monospace', letterSpacing: '0.04em' }} />
+              </Box>
+            )}
           </Box>
         </DialogContent>
         <Divider />
@@ -769,12 +798,15 @@ export default function UserManagementPage() {
         <DialogContent sx={{ pt: 2 }}>
           <Typography sx={{ fontSize: '0.9375rem', color: colors.textSecondary }}>
             Permanently delete <strong>{deleteTarget?.name}</strong> ({deleteTarget?.email})?
-            This action cannot be undone.
+            This action cannot be undone. The last administrator cannot be removed.
           </Typography>
+          {deleteErr && (
+            <Typography sx={{ mt: 1.5, fontSize: '0.8125rem', color: colors.danger }}>{deleteErr}</Typography>
+          )}
         </DialogContent>
         <Divider />
         <DialogActions sx={{ p: 2, gap: 1 }}>
-          <MuiButton onClick={() => setDeleteTarget(null)} sx={{ borderRadius: '10px', textTransform: 'none', color: colors.textMuted }}>Cancel</MuiButton>
+          <MuiButton onClick={() => { setDeleteTarget(null); setDeleteErr(''); }} sx={{ borderRadius: '10px', textTransform: 'none', color: colors.textMuted }}>Cancel</MuiButton>
           <MuiButton onClick={handleDelete} disabled={deleting} sx={{ borderRadius: '10px', textTransform: 'none', fontWeight: 600, color: '#fff', backgroundColor: colors.danger, px: 2.5, '&:hover': { backgroundColor: '#b91c1c' } }}>
             {deleting ? <CircularProgress size={16} sx={{ color: '#fff' }} /> : 'Delete'}
           </MuiButton>

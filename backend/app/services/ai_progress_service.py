@@ -12,6 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.config import Settings, get_settings
 from app.services.image_fetch import download_image, resize_if_needed, validate_image_url
+from app.services.llm_usage_service import LLMUsageService
 from app.services.vision_providers.base import VisionProvider
 from app.services.vision_providers.compare_progress_prompt import COMPARE_ANALYSIS_PROMPT_VERSION
 from app.services.vision_providers.groq_provider import GroqVisionProvider
@@ -557,77 +558,6 @@ class AIProgressService:
             raise ValueError("Failed to save report")
         return _serialize_report_summary(updated)
 
-    async def list_token_audit(
-        self,
-        org_id: str,
-        *,
-        skip: int = 0,
-        limit: int = 20,
-    ) -> tuple[list[dict[str, Any]], int, dict[str, Any]]:
-        """List completed progress analyses with LLM token usage (admin audit)."""
-        query: dict[str, Any] = {
-            "org_id": org_id,
-            "analysis": {"$exists": True, "$ne": None},
-        }
-        total = await self._db[_COLLECTION_CACHE].count_documents(query)
-        cursor = (
-            self._db[_COLLECTION_CACHE]
-            .find(query)
-            .sort([("created_at", -1)])
-            .skip(skip)
-            .limit(limit)
-        )
-        docs = await cursor.to_list(length=limit)
-        user_ids = {
-            str(doc.get("requested_by") or "")
-            for doc in docs
-            if doc.get("requested_by")
-        }
-        user_names = await self._resolve_user_names(user_ids)
-        items = [
-            _serialize_token_audit_entry(doc, user_names)
-            for doc in docs
-        ]
-        summary = await self._aggregate_token_usage(org_id, query)
-        return items, total, summary
-
-    async def _aggregate_token_usage(
-        self,
-        org_id: str,
-        query: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        match = query or {
-            "org_id": org_id,
-            "analysis": {"$exists": True, "$ne": None},
-        }
-        pipeline = [
-            {"$match": match},
-            {
-                "$group": {
-                    "_id": None,
-                    "analysisCount": {"$sum": 1},
-                    "promptTokens": {"$sum": {"$ifNull": ["$prompt_tokens", 0]}},
-                    "completionTokens": {"$sum": {"$ifNull": ["$completion_tokens", 0]}},
-                    "totalTokens": {"$sum": {"$ifNull": ["$total_tokens", 0]}},
-                }
-            },
-        ]
-        rows = await self._db[_COLLECTION_CACHE].aggregate(pipeline).to_list(length=1)
-        if not rows:
-            return {
-                "analysisCount": 0,
-                "promptTokens": 0,
-                "completionTokens": 0,
-                "totalTokens": 0,
-            }
-        row = rows[0]
-        return {
-            "analysisCount": int(row.get("analysisCount") or 0),
-            "promptTokens": int(row.get("promptTokens") or 0),
-            "completionTokens": int(row.get("completionTokens") or 0),
-            "totalTokens": int(row.get("totalTokens") or 0),
-        }
-
     async def _resolve_user_names(self, user_ids: set[str]) -> dict[str, str]:
         from bson import ObjectId
 
@@ -689,6 +619,23 @@ class AIProgressService:
             "updated_at": now,
         }
         await self._db["audit_logs"].insert_one(doc)
+
+        await LLMUsageService(self._db).record_usage(
+            org_id=job["org_id"],
+            source="progress_analysis",
+            model=result.model,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            total_tokens=result.total_tokens,
+            latency_ms=result.latency_ms,
+            project_id=str(job.get("project_id") or ""),
+            project_name=project_name,
+            tower=str(job.get("tower") or ""),
+            floor=str(job.get("floor") or ""),
+            pin_name=pin,
+            requested_by=user_id or None,
+            entity_id=report_id or str(job.get("_id") or ""),
+        )
 
     async def get_job_enriched(self, org_id: str, job_id: str) -> dict[str, Any] | None:
         job = await self.get_job(org_id, job_id)
@@ -1144,26 +1091,3 @@ def _serialize_report_detail(doc: dict[str, Any]) -> dict[str, Any]:
     summary["totalTokens"] = doc.get("total_tokens")
     summary["requestedBy"] = doc.get("requested_by")
     return summary
-
-
-def _serialize_token_audit_entry(
-    doc: dict[str, Any],
-    user_names: dict[str, str],
-) -> dict[str, Any]:
-    requested_by = str(doc.get("requested_by") or "") or None
-    return {
-        "reportId": str(doc["_id"]),
-        "projectId": doc.get("project_id", "") or "",
-        "projectName": doc.get("project_name", ""),
-        "tower": doc.get("tower", ""),
-        "floor": doc.get("floor", ""),
-        "pinName": doc.get("pin_name", ""),
-        "model": doc.get("model"),
-        "promptTokens": int(doc.get("prompt_tokens") or 0),
-        "completionTokens": int(doc.get("completion_tokens") or 0),
-        "totalTokens": int(doc.get("total_tokens") or 0),
-        "requestedBy": requested_by,
-        "requestedByName": user_names.get(requested_by or "", None) if requested_by else None,
-        "createdAt": doc.get("created_at"),
-        "latencyMs": doc.get("latency_ms"),
-    }

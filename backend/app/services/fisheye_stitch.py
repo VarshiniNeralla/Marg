@@ -1853,12 +1853,26 @@ def _detect_fisheye_circle(lens_region) -> Optional[tuple[float, float, float]]:
     return float(cx), float(cy), float(radius)
 
 
+def _default_stitch_size_and_quality() -> tuple[int, int, int]:
+    """Resolve equirect size + JPEG quality from app settings (with safe fallbacks)."""
+    try:
+        from app.core.config import get_settings
+
+        s = get_settings()
+        return int(s.STITCH_OUTPUT_WIDTH), int(s.STITCH_OUTPUT_HEIGHT), int(s.STITCH_JPEG_QUALITY)
+    except Exception:
+        return 7680, 3840, 95
+
+
 def _stitch_arrays(
     data: bytes,
     filename: str,
     *,
-    out_w: int = 5760,
-    out_h: int = 2880,
+    out_w: int = 7680,
+    out_h: int = 3840,
+    fov_bias_deg: float = 0.0,
+    force_circle_detect: bool = False,
+    skip_autocal: bool = False,
 ) -> Optional[tuple[object, StitchArtifacts]]:
     """Core stitch pipeline returning (blended_bgr, debug artifacts)."""
     import numpy as np
@@ -1940,24 +1954,31 @@ def _stitch_arrays(
         if calib is None and W == 2 * H and H > 0:
             half = float(H)
             is_x3 = "X3" in str(model or prof.model)
-            if is_x3:
-                # Use exact measured optical parameters for X3, scaled from the 72MP reference
-                s = H / 5984.0
-                cx1, cy1, r1 = 2957.0 * s, 2944.0 * s, 3048.0 * s
-                cx2, cy2, r2 = 2991.0 * s, 2872.0 * s, 3164.0 * s
-                source = "profile_x3_hardcoded"
-            else:
+            # Recovery path: prefer content-detected circles over the X3
+            # hardcoded profile when a prior attempt produced a blank sphere.
+            if force_circle_detect or not is_x3:
                 det1 = _detect_fisheye_circle(img[:, 0:W // 2])
                 det2 = _detect_fisheye_circle(img[:, W // 2:W])
                 if det1 is not None and det2 is not None:
                     cx1, cy1, r1 = det1
                     cx2, cy2, r2 = det2
                     source = "detected"
+                elif is_x3:
+                    s = H / 5984.0
+                    cx1, cy1, r1 = 2957.0 * s, 2944.0 * s, 3048.0 * s
+                    cx2, cy2, r2 = 2991.0 * s, 2872.0 * s, 3164.0 * s
+                    source = "profile_x3_hardcoded"
                 else:
                     cx1 = cy1 = prof.default_center_frac[0] * half
                     r1 = prof.default_radius_frac * half
                     cx2, cy2, r2 = cx1, cy1, r1
                     source = "profile"
+            else:
+                # Use exact measured optical parameters for X3, scaled from the 72MP reference
+                s = H / 5984.0
+                cx1, cy1, r1 = 2957.0 * s, 2944.0 * s, 3048.0 * s
+                cx2, cy2, r2 = 2991.0 * s, 2872.0 * s, 3164.0 * s
+                source = "profile_x3_hardcoded"
             calib = DualFisheyeCalibration(
                 lens1=LensCalibration(cx1, cy1, r1, (0.0, 0.0, 0.0)),
                 lens2=LensCalibration(cx2, cy2, r2, (0.0, 0.0, 0.0)),
@@ -1976,13 +1997,16 @@ def _stitch_arrays(
             logger.warning(f"No usable calibration for {filename}; cannot stitch reliably")
             return None
 
-    fov = prof.fisheye_fov_deg
+    fov = float(prof.fisheye_fov_deg) + float(fov_bias_deg or 0.0)
     sx_full = W / calib.width if calib.width else 1.0
     sy_full = H / calib.height if calib.height else 1.0
     meta.update({
         "calibration_source": calib.source,
         "layout": calib.layout,
-        "fisheye_fov_deg": fov,
+        "fisheye_fov_deg": float(prof.fisheye_fov_deg),
+        "fov_bias_deg": float(fov_bias_deg or 0.0),
+        "force_circle_detect": bool(force_circle_detect),
+        "skip_autocal": bool(skip_autocal),
         "raw_calibration": calib.raw,
         "calibration_width": calib.width,
         "calibration_height": calib.height,
@@ -2011,7 +2035,14 @@ def _stitch_arrays(
         l2 = _scale_lens_to_region(calib.lens2, sx_full, sy_full)
         l2_draw = LensCalibration(l2.cx - W // 2, l2.cy, l2.radius, l2.rot)
 
-    fov, autocal = _autocal_fov(top, bot, l1, l2_draw, fov)
+    if skip_autocal:
+        autocal = {
+            "fov_delta_deg": 0.0,
+            "skipped": True,
+            "fov_bias_deg": float(fov_bias_deg or 0.0),
+        }
+    else:
+        fov, autocal = _autocal_fov(top, bot, l1, l2_draw, fov)
     meta["fisheye_fov_deg_effective"] = fov
     meta["fov_autocal"] = autocal
 
@@ -2036,6 +2067,13 @@ def _stitch_arrays(
     # confidently darkens the other hemisphere into grey blobs).
     v1 &= (m1x >= 0) & (m1x < top.shape[1] - 1) & (m1y >= 0) & (m1y < top.shape[0] - 1)
     v2 &= (m2x >= 0) & (m2x < bot.shape[1] - 1) & (m2y >= 0) & (m2y < bot.shape[0] - 1)
+    sphere_coverage = float(np.mean(v1 | v2))
+    meta["sphere_coverage"] = sphere_coverage
+    if sphere_coverage < 0.88:
+        logger.warning(
+            f"[stitch] low sphere coverage={sphere_coverage:.3f} for {filename} "
+            f"(fov={fov:.2f} calib={calib.source})"
+        )
 
     front = cv2.remap(top, m1x, m1y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
     back = cv2.remap(bot, m2x, m2y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
@@ -2275,18 +2313,37 @@ def stitch_equirectangular(
     data: bytes,
     filename: str,
     *,
-    out_w: int = 5760,
-    out_h: int = 2880,
+    out_w: Optional[int] = None,
+    out_h: Optional[int] = None,
+    jpeg_quality: Optional[int] = None,
     debug_dir: Optional[Path] = None,
+    fov_bias_deg: float = 0.0,
+    force_circle_detect: bool = False,
+    skip_autocal: bool = False,
 ) -> Optional[StitchResult]:
     """
     Stitch a raw dual-fisheye file into an equirectangular panorama.
 
     When ``debug_dir`` is set, intermediate PNGs are written for inspection.
+    Size/quality default to ``STITCH_OUTPUT_*`` / ``STITCH_JPEG_QUALITY`` settings.
     """
     import cv2
 
-    result = _stitch_arrays(data, filename, out_w=out_w, out_h=out_h)
+    def_w, def_h, def_q = _default_stitch_size_and_quality()
+    out_w = def_w if out_w is None else int(out_w)
+    out_h = def_h if out_h is None else int(out_h)
+    jpeg_quality = def_q if jpeg_quality is None else int(jpeg_quality)
+    jpeg_quality = max(1, min(100, jpeg_quality))
+
+    result = _stitch_arrays(
+        data,
+        filename,
+        out_w=out_w,
+        out_h=out_h,
+        fov_bias_deg=fov_bias_deg,
+        force_circle_detect=force_circle_detect,
+        skip_autocal=skip_autocal,
+    )
     if result is None:
         return None
     out, artifacts = result
@@ -2303,7 +2360,7 @@ def stitch_equirectangular(
             background_bgr=artifacts.blended,
         )
 
-    ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
     if not ok:
         return None
 
@@ -2322,15 +2379,97 @@ def stitch_equirectangular(
     )
 
 
+def stitch_equirectangular_with_recovery(
+    data: bytes,
+    filename: str,
+    *,
+    out_w: Optional[int] = None,
+    out_h: Optional[int] = None,
+    jpeg_quality: Optional[int] = None,
+) -> Optional[StitchResult]:
+    """
+    Stitch with automatic alternate FOV / circle-detect retries when the first
+    output is blank or leaves too much of the sphere uncovered.
+    """
+    from app.services.panorama_service import (
+        save_stitch_failure_artifact,
+        stitched_output_is_unusable,
+    )
+
+    attempts: list[dict] = [
+        {"label": "default"},
+        {"label": "wider_fov", "fov_bias_deg": 2.5},
+        {
+            "label": "wider_fov_detect",
+            "fov_bias_deg": 3.0,
+            "force_circle_detect": True,
+        },
+        {
+            "label": "wide_fov_no_autocal",
+            "fov_bias_deg": 4.0,
+            "force_circle_detect": True,
+            "skip_autocal": True,
+        },
+        {"label": "narrower_fov", "fov_bias_deg": -2.0},
+    ]
+
+    last: Optional[StitchResult] = None
+    for attempt in attempts:
+        label = str(attempt.pop("label"))
+        logger.info(f"[stitch-recovery] attempt={label} file={filename}")
+        result = stitch_equirectangular(
+            data,
+            filename,
+            out_w=out_w,
+            out_h=out_h,
+            jpeg_quality=jpeg_quality,
+            **attempt,
+        )
+        if result is None:
+            logger.warning(f"[stitch-recovery] attempt={label} returned None for {filename}")
+            continue
+        last = result
+        meta = dict(result.metadata or {})
+        meta["stitch_attempt"] = label
+        result.metadata = meta
+        coverage = meta.get("sphere_coverage")
+        unusable, reason = stitched_output_is_unusable(
+            result.processed_image,
+            sphere_coverage=float(coverage) if coverage is not None else None,
+        )
+        if not unusable:
+            if label != "default":
+                logger.info(
+                    f"[stitch-recovery] recovered file={filename} via attempt={label} "
+                    f"coverage={coverage}"
+                )
+            return result
+        save_stitch_failure_artifact(
+            jpeg=result.processed_image,
+            filename=f"{Path(filename).stem}__{label}{Path(filename).suffix}",
+            reason=reason,
+            metadata=meta,
+        )
+        logger.warning(
+            f"[stitch-recovery] attempt={label} rejected for {filename}: {reason} "
+            f"bytes={len(result.processed_image)} coverage={coverage}"
+        )
+
+    return last
+
+
 def stitch_equirectangular_debug(
     data: bytes,
     filename: str,
     out_dir: Path,
     *,
-    out_w: int = 5760,
-    out_h: int = 2880,
+    out_w: Optional[int] = None,
+    out_h: Optional[int] = None,
 ) -> Optional[StitchArtifacts]:
     """Run stitch and write intermediate PNGs to ``out_dir``."""
+    def_w, def_h, _ = _default_stitch_size_and_quality()
+    out_w = def_w if out_w is None else int(out_w)
+    out_h = def_h if out_h is None else int(out_h)
     result = _stitch_arrays(data, filename, out_w=out_w, out_h=out_h)
     if result is None:
         return None

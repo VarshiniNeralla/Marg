@@ -53,19 +53,80 @@ export default function ConstructionProgressDashboardPage() {
   const [snapshot, setSnapshot] = useState<FloorProgressSnapshot | null>(null);
   const [notAnalyzed, setNotAnalyzed] = useState(false);
   const analyzingRef = useRef(false);
+  const pollGenerationRef = useRef(0);
+
+  const finishAnalyze = useCallback((ok: boolean, isReanalysis: boolean, error?: string | null) => {
+    analyzingRef.current = false;
+    setAnalyzing(false);
+    if (ok) {
+      toast.success(isReanalysis ? 'Re-analysis complete' : 'Progress analysis complete');
+    } else {
+      toast.error(error || (isReanalysis ? 'Failed to re-analyze floor' : 'Failed to analyze floor'));
+    }
+  }, []);
+
+  const pollAnalyzeJob = useCallback(async (id: string, jobId: string, isReanalysis: boolean) => {
+    const generation = ++pollGenerationRef.current;
+    const maxAttempts = 180; // 180 × 5s ≈ 15 min
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(r => setTimeout(r, 5_000));
+      if (pollGenerationRef.current !== generation) return;
+      try {
+        const job = await constructionProgressService.getAnalyzeJob(id, jobId);
+        if (pollGenerationRef.current !== generation) return;
+        if (job.status === 'completed') {
+          const detail = await constructionProgressService.getFloorDetail(id);
+          if (pollGenerationRef.current !== generation) return;
+          if (detail) {
+            setSnapshot(detail);
+            setNotAnalyzed(false);
+          }
+          finishAnalyze(true, isReanalysis);
+          return;
+        }
+        if (job.status === 'failed') {
+          finishAnalyze(false, isReanalysis, job.error);
+          return;
+        }
+      } catch {
+        /* keep polling — brief network blips during a long analyze are expected */
+      }
+    }
+    if (pollGenerationRef.current === generation) {
+      finishAnalyze(
+        false,
+        isReanalysis,
+        isReanalysis ? 'Re-analysis timed out — check again shortly' : 'Analysis timed out — check again shortly',
+      );
+    }
+  }, [finishAnalyze]);
 
   const load = useCallback(async () => {
     if (!floorId) return;
     setLoading(true);
     setNotAnalyzed(false);
     try {
-      const detail = await constructionProgressService.getFloorDetail(floorId);
+      const [detail, activeJob] = await Promise.all([
+        constructionProgressService.getFloorDetail(floorId),
+        constructionProgressService.getActiveAnalyzeJob(floorId).catch(() => null),
+      ]);
       if (!detail) {
         setSnapshot(null);
         setNotAnalyzed(true);
       } else {
         setSnapshot(detail);
         setNotAnalyzed(false);
+      }
+      // Resume overlay if a background job is still running (page refresh / reconnect).
+      if (
+        activeJob
+        && (activeJob.status === 'pending' || activeJob.status === 'processing')
+        && !analyzingRef.current
+      ) {
+        analyzingRef.current = true;
+        setAnalyzeIsReanalysis(!!detail);
+        setAnalyzing(true);
+        void pollAnalyzeJob(floorId, activeJob.jobId, !!detail);
       }
     } catch (err: unknown) {
       const status = (err as { status?: number; response?: { status?: number } })?.status
@@ -82,10 +143,14 @@ export default function ConstructionProgressDashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [floorId]);
+  }, [floorId, pollAnalyzeJob]);
 
   useEffect(() => {
     load();
+    return () => {
+      // Invalidate any in-flight poll when leaving the page.
+      pollGenerationRef.current += 1;
+    };
   }, [load]);
 
   // Tick the overlay clock while analyze is in flight.
@@ -104,49 +169,28 @@ export default function ConstructionProgressDashboardPage() {
 
   const handleAnalyze = async () => {
     if (!floorId || analyzingRef.current) return;
-    // Whether this is a first-ever analysis or a re-analysis is decided by
-    // whether a snapshot already existed the moment the button was pressed —
-    // reading `snapshot` again after the call resolves would always say
-    // "existed" and the overlay/toast would say "Re-analyzing" even for a
-    // first-time run.
     const isReanalysis = !!snapshot;
-    const previousSnapshotId = snapshot?.snapshotId;
     analyzingRef.current = true;
     setAnalyzeIsReanalysis(isReanalysis);
     setAnalyzing(true);
     try {
-      const result = await constructionProgressService.analyzeFloor(floorId);
-      setSnapshot(result);
-      setNotAnalyzed(false);
-      toast.success(isReanalysis ? 'Re-analysis complete' : 'Progress analysis complete');
-    } catch {
-      // Long /analyze calls often fail at the browser (tunnel timeout / bogus
-      // CORS) while the backend is still finishing. Keep the overlay up and
-      // poll for a new snapshot for up to ~15 minutes before giving up.
-      let recovered: FloorProgressSnapshot | null = null;
-      const maxAttempts = 90; // 90 × 10s ≈ 15 min
-      for (let i = 0; i < maxAttempts; i++) {
-        await new Promise(r => setTimeout(r, 10_000));
-        try {
-          const detail = await constructionProgressService.getFloorDetail(floorId);
-          if (detail && detail.snapshotId !== previousSnapshotId) {
-            recovered = detail;
-            break;
-          }
-        } catch {
-          /* keep waiting — empty/null until the first snapshot lands is expected */
+      const job = await constructionProgressService.analyzeFloor(floorId);
+      if (job.status === 'completed' && job.snapshotId) {
+        const detail = await constructionProgressService.getFloorDetail(floorId);
+        if (detail) {
+          setSnapshot(detail);
+          setNotAnalyzed(false);
         }
+        finishAnalyze(true, isReanalysis);
+        return;
       }
-      if (recovered) {
-        setSnapshot(recovered);
-        setNotAnalyzed(false);
-        toast.success(isReanalysis ? 'Re-analysis complete' : 'Progress analysis complete');
-      } else {
-        toast.error(isReanalysis ? 'Failed to re-analyze floor' : 'Failed to analyze floor');
+      if (job.status === 'failed') {
+        finishAnalyze(false, isReanalysis, job.error);
+        return;
       }
-    } finally {
-      analyzingRef.current = false;
-      setAnalyzing(false);
+      await pollAnalyzeJob(floorId, job.jobId, isReanalysis);
+    } catch {
+      finishAnalyze(false, isReanalysis, isReanalysis ? 'Failed to start re-analysis' : 'Failed to start analysis');
     }
   };
 

@@ -139,6 +139,13 @@ class FloorProgressResult:
     # FlatProgress/RoomProgress. Empty for providers/tests that don't
     # populate it or when no room-map roster was supplied.
     flat_progress: list[FlatProgress] = field(default_factory=list)
+    # Summed token usage across every surface-group vision call made while
+    # assessing this floor (0 for providers/tests that don't populate it) —
+    # feeds the admin Audit page's LLM token ledger.
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    latency_ms: float = 0.0
 
 
 class ConstructionProgressProvider(ABC):

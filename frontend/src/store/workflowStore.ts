@@ -11,7 +11,8 @@ import type { UploadedFileResponse } from '@/services/uploadService';
 import { STORE_VERSION, WORKFLOW_STORE_KEY } from './persistence';
 import { createSafeStorage } from './safeStorage';
 import { addTombstones, tombstoneMap, tombstoneSet, clearTombstones } from './tombstones';
-import { useAuthStore } from './authStore';
+import { useAuthStore, isFieldEngineer, isManagerOrAdmin } from './authStore';
+import { findOwnFloorPlanTour } from '@/utils/captureOwnership';
 import { pendingUploadPins, removePendingUploadPin } from './pendingUploadRegistry';
 import { enqueueWrite, isCreatePending, cancelWritesForEntityIds, cancelPendingDeletesForEntityIds, SYNC_ERROR_EVENT as WRITE_QUEUE_SYNC_ERROR_EVENT, type WriteOpName } from './writeQueue';
 import { isLiveUploadedTour } from './tourFilters';
@@ -22,6 +23,10 @@ function currentUploaderName(): string {
   const actor = useAuthStore.getState().user;
   const name = actor?.name?.trim() || actor?.email?.trim();
   return name || 'Unknown user';
+}
+
+function currentUploaderUserId(): string {
+  return useAuthStore.getState().user?.id?.trim() || '';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -182,6 +187,12 @@ export interface WfCapturePin {
   source?: 'predefined' | 'copied' | 'freeplace';
   isPredefined?: boolean;
   inheritedFromPinId?: string;
+  /**
+   * Client-only: wall-clock ms when this device placed the pin. Used to protect
+   * freshly annotated points from a replace hydrate that races ahead of the
+   * createCapturePin write / lags the next snapshot (pins vanishing mid-session).
+   */
+  clientCreatedAt?: number;
 }
 
 export type WorkflowDataState = Pick<WorkflowState,
@@ -284,6 +295,46 @@ const ROOM_TEMPLATES: Record<FlatType, Array<{ name: string; type: WfRoom['type'
   ],
 };
 
+export interface PublishFloorPlanTourResult {
+  tourIds: string[];
+  publishedStops: number;
+  totalPins: number;
+  skipped: {
+    noCapture: number;
+    stitching: number;
+    noPanorama: number;
+  };
+}
+
+/** User-facing summary for publish toasts. */
+export function formatPublishFloorPlanTourMessage(result: PublishFloorPlanTourResult): string {
+  if (result.tourIds.length) {
+    const skipTotal = result.skipped.noCapture + result.skipped.stitching + result.skipped.noPanorama;
+    let msg = `Published walkthrough · ${result.publishedStops} stop${result.publishedStops !== 1 ? 's' : ''}`;
+    if (skipTotal) {
+      const parts: string[] = [];
+      if (result.skipped.stitching) parts.push(`${result.skipped.stitching} still stitching`);
+      if (result.skipped.noPanorama) parts.push(`${result.skipped.noPanorama} missing panorama`);
+      if (result.skipped.noCapture) parts.push(`${result.skipped.noCapture} without capture`);
+      msg += ` (${parts.join(', ')} skipped)`;
+    }
+    return msg;
+  }
+  const { skipped, totalPins } = result;
+  if (totalPins === 0) return 'No capture points on this floor plan yet';
+  if (skipped.stitching && !skipped.noCapture && !skipped.noPanorama) {
+    return `${skipped.stitching} point${skipped.stitching !== 1 ? 's' : ''} still stitching — wait for processing, then publish again`;
+  }
+  if (skipped.noCapture && !skipped.stitching && !skipped.noPanorama) {
+    return 'No pins with captures to publish yet';
+  }
+  const parts: string[] = [];
+  if (skipped.stitching) parts.push(`${skipped.stitching} still stitching`);
+  if (skipped.noPanorama) parts.push(`${skipped.noPanorama} missing panorama`);
+  if (skipped.noCapture) parts.push(`${skipped.noCapture} without capture`);
+  return `Could not publish — ${parts.join(', ')}`;
+}
+
 interface WorkflowState {
   projects: ProjectArchived[];
   towers: MockTower[];
@@ -303,6 +354,15 @@ interface WorkflowState {
   nextId: (prefix: string) => string;
   resetToSeed: () => void;
   hydrateFromApi: (data: Partial<WorkflowDataState>, options?: { replace?: boolean }) => void;
+  /** Last workflow snapshot failure message (null when healthy). */
+  apiSnapshotError: string | null;
+  /** idle | loading | ready | error — dashboards must not show fake zeros while loading. */
+  apiSnapshotStatus: 'idle' | 'loading' | 'ready' | 'error';
+  /** Bump to force WorkflowApiBootstrap to re-fetch the org snapshot. */
+  apiSnapshotRetryNonce: number;
+  setApiSnapshotError: (error: string | null) => void;
+  setApiSnapshotStatus: (status: 'idle' | 'loading' | 'ready' | 'error') => void;
+  retryApiSnapshot: () => void;
 
   // ── Projects ──
   createProject: (p: Partial<MockProject> & { name: string }) => string;
@@ -369,7 +429,7 @@ interface WorkflowState {
   deleteCapturePin: (id: string) => void;
   /** Drop empty free-place pins on a floor (accidental plan taps), keep labeled layout. */
   pruneEmptyFreeplacePinsOnFloor: (floorId: string) => number;
-  publishFloorPlanTour: (floorPlanId: string, pinIds?: string[], opts?: { silent?: boolean }) => string[];
+  publishFloorPlanTour: (floorPlanId: string, pinIds?: string[], opts?: { silent?: boolean }) => PublishFloorPlanTourResult;
 
   // ── Captures ──
   uploadCapture: (roomId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => string;
@@ -536,6 +596,23 @@ function firstMediaUrl(mediaAssets: UploadedFileResponse[] = []) {
   return first?.processed_panorama_url || first?.original_file_url || first?.original_url || null;
 }
 
+/** Prefer the capture record that actually has a panorama (API vs stale local). */
+function preferRicherCapture<T extends { id: string }>(api: T, local: T): T {
+  const a = api as T & Record<string, unknown>;
+  const b = local as T & Record<string, unknown>;
+  const aAssets = (a.mediaAssets as UploadedFileResponse[] | undefined) ?? [];
+  const bAssets = (b.mediaAssets as UploadedFileResponse[] | undefined) ?? [];
+  const aUrl = firstMediaUrl(aAssets) || (a.processedPanoramaUrl as string | undefined) || (a.processed_panorama_url as string | undefined);
+  const bUrl = firstMediaUrl(bAssets) || (b.processedPanoramaUrl as string | undefined) || (b.processed_panorama_url as string | undefined);
+  if (aUrl && !bUrl) return api;
+  if (bUrl && !aUrl) return local;
+  const aProc = String(a.processingStatus ?? a.processing_status ?? '').toLowerCase() === 'processing';
+  const bProc = String(b.processingStatus ?? b.processing_status ?? '').toLowerCase() === 'processing';
+  if (!aProc && bProc) return api;
+  if (!bProc && aProc) return local;
+  return api;
+}
+
 function pushNotif(
   set: (fn: (s: WorkflowState) => Partial<WorkflowState>) => void,
   type: NotifType,
@@ -544,7 +621,14 @@ function pushNotif(
   link: string,
 ) {
   const id = `n${Date.now()}`;
-  const notification = { id, type, title, body, link, read: false, createdAt: 'Just now' };
+  const userId = useAuthStore.getState().user?.id ?? '';
+  const notification = {
+    id, type, title, body, link, read: false, createdAt: 'Just now',
+    recipientUserId: userId || undefined,
+    recipient_user_id: userId || undefined,
+    userId: userId || undefined,
+    user_id: userId || undefined,
+  };
   set(s => ({
     notifications: [notification, ...s.notifications],
   }));
@@ -621,6 +705,9 @@ export const useWorkflowStore = create<WorkflowState>()(
   persist(
     (set, get) => ({
       ...buildInitialWorkflowData(),
+      apiSnapshotError: null as string | null,
+      apiSnapshotStatus: 'idle' as 'idle' | 'loading' | 'ready' | 'error',
+      apiSnapshotRetryNonce: 0,
 
       nextId(prefix) {
         const uidCounter = get().uidCounter + 1;
@@ -629,7 +716,30 @@ export const useWorkflowStore = create<WorkflowState>()(
       },
 
       resetToSeed() {
-        set(buildInitialWorkflowData());
+        set({
+          ...buildInitialWorkflowData(),
+          apiSnapshotError: null,
+          apiSnapshotStatus: 'idle',
+        });
+      },
+
+      setApiSnapshotError(error) {
+        set({
+          apiSnapshotError: error,
+          ...(error ? { apiSnapshotStatus: 'error' as const } : {}),
+        });
+      },
+
+      setApiSnapshotStatus(status) {
+        set({ apiSnapshotStatus: status });
+      },
+
+      retryApiSnapshot() {
+        set(s => ({
+          apiSnapshotError: null,
+          apiSnapshotStatus: 'loading',
+          apiSnapshotRetryNonce: s.apiSnapshotRetryNonce + 1,
+        }));
       },
 
       hydrateFromApi(data, options) {
@@ -755,19 +865,35 @@ export const useWorkflowStore = create<WorkflowState>()(
               // are still on this device's upload queue — otherwise a snapshot
               // that races ahead of writeQueue / lags the capture POST drops
               // the pin mid-upload and the photo has nowhere to attach.
+              //
+              // Also keep recently placed labeled annotation pins for a short
+              // grace window: createCapturePin can flush (isCreatePending=false)
+              // before the next GET snapshot includes them, which made points
+              // vanish mid-annotation without the user deleting anything.
+              const PIN_CREATE_GRACE_MS = 5 * 60 * 1000;
+              const now = Date.now();
               const api = apiPins ?? [];
               const apiIds = new Set(api.map(p => p.id));
-              return localPins.filter(
-                p =>
-                  !apiIds.has(p.id) &&
-                  !tombstones.has(p.id) &&
-                  (isCreatePending('createCapturePin', p.id) || pinsWithPendingUploads.has(p.id)),
-              );
+              return localPins.filter(p => {
+                if (apiIds.has(p.id) || tombstones.has(p.id)) return false;
+                if (isCreatePending('createCapturePin', p.id) || pinsWithPendingUploads.has(p.id)) {
+                  return true;
+                }
+                const labeled = Boolean(p.flatName && p.roomName) || p.isPredefined;
+                const age = typeof p.clientCreatedAt === 'number'
+                  ? now - p.clientCreatedAt
+                  : (p.createdAt === 'Just now' ? 0 : Infinity);
+                return labeled && age < PIN_CREATE_GRACE_MS;
+              });
             })()
           : [];
         const basePinsRaw = (
           replace
-            ? [...(apiPins ?? []), ...keepLocalPins]
+            // If the snapshot omitted capturePins entirely, keep local — an
+            // undefined field must not be treated as "server has zero pins".
+            ? (apiPins === undefined
+                ? localPins.filter(p => !tombstones.has(p.id))
+                : [...apiPins, ...keepLocalPins])
             : mergeById(apiPins, localPins, 'createCapturePin')
         )
           // Belt-and-suspenders: mergeById already drops tombstoned/non-pending
@@ -821,13 +947,23 @@ export const useWorkflowStore = create<WorkflowState>()(
           return { ...p, captureIds };
         });
 
+        const apiPinIds = new Set((apiPins ?? []).map(p => p.id));
         const cleanPins = healedPins
           .filter(p => {
+            // Server pins from the snapshot must NEVER be dropped client-side.
+            // Earlier logic removed pins whose captureIds all looked "dangling"
+            // (stitch discard, engineer-scoped captures, snapshot lag) — that
+            // wiped real layout points from the UI even when Mongo still had them.
+            if (apiPinIds.has(p.id)) return true;
             // Keep pins that still have captures OR have never had any (freshly placed, not yet captured).
             // Remove only those that had captures but all of them are now dangling —
             // and no room-owned capture exists either (after the heal above).
             const hadCaptures = basePins.find(bp => bp.id === p.id)!.captureIds.length > 0;
             if (!hadCaptures || p.captureIds.length > 0) return true;
+            // Labeled layout pins must stay even when this user has no captures
+            // on them (other engineers' photos are scoped out of the snapshot).
+            const original = basePins.find(bp => bp.id === p.id)!;
+            if (original.isPredefined || (original.flatName && original.roomName)) return true;
             // Room still owns captures even if captureIds was stale — keep the pin.
             if ((captureIdsByRoom.get(p.roomId) ?? []).some(id => mergedCaptureIds.has(id))) return true;
             // Every captureId resolved to nothing — but that is only a deletion if
@@ -841,7 +977,6 @@ export const useWorkflowStore = create<WorkflowState>()(
             // false) while the server snapshot still lagged, so every captureId
             // looked dangling and the pin was deleted.
             if (pinsWithPendingUploads.has(p.id)) return true;
-            const original = basePins.find(bp => bp.id === p.id)!;
             return original.captureIds.some(id => isCreatePending('createCapture', id));
           });
 
@@ -858,6 +993,21 @@ export const useWorkflowStore = create<WorkflowState>()(
               ? (migrated.captures ?? [])
               : mergeById(migrated.captures, s.captures, 'createCapture')
           ).filter(c => !hiddenByTombstone(c.id, c, tombstonedAt));
+
+          // If local still has a mid-stitch placeholder but the snapshot (or
+          // the other side of a non-replace merge) already has the panorama,
+          // keep the media-rich copy so Capture History does not stay on
+          // "Processing 360°…" after the server finished stitching.
+          {
+            const byId = new Map(mergedCaptures.map(c => [c.id, c]));
+            for (const local of s.captures) {
+              const current = byId.get(local.id);
+              if (!current) continue;
+              byId.set(local.id, preferRicherCapture(current, local));
+            }
+            mergedCaptures.length = 0;
+            mergedCaptures.push(...byId.values());
+          }
 
           // Captures belonging to a pin whose upload is still pending on THIS
           // device must survive the merge even when the snapshot omits them: with
@@ -971,11 +1121,20 @@ export const useWorkflowStore = create<WorkflowState>()(
             // means "server data wins whenever the API returned any," so a
             // remaining local-tombstone filter here would only hide a floor plan
             // the server still reports — i.e. per-device drift, not real deletion.
-            floorPlans:    (migrated.floorPlans ?? s.floorPlans),
+            floorPlans:    (migrated.floorPlans ?? s.floorPlans).map(fp => {
+              const local = s.floorPlans.find(x => x.id === fp.id);
+              if (!local) return fp;
+              // Snapshot payloads often omit pinsVisible; don't clobber a local hide.
+              if (typeof (fp as { pinsVisible?: boolean }).pinsVisible !== 'boolean'
+                && typeof local.pinsVisible === 'boolean') {
+                return { ...fp, pinsVisible: local.pinsVisible };
+              }
+              return fp;
+            }),
             defects:       migrated.defects       ?? s.defects,
             notifications: migrated.notifications ?? s.notifications,
             auditLogs:     migrated.auditLogs     ?? s.auditLogs,
-            users:         migrated.users         ?? s.users,
+            users:         replace ? (migrated.users ?? []) : (migrated.users ?? s.users),
             captures: mergedCaptures,
             capturePins: cleanPins,
           };
@@ -1006,6 +1165,33 @@ export const useWorkflowStore = create<WorkflowState>()(
             if (!apiPinIds.has(pin.id) && !isCreatePending('createCapturePin', pin.id)) {
               mirrorApi('createCapturePin', [pin], 'reconnect-pin');
             }
+          }
+        }
+
+        // Snapshot-race repair: labeled annotation pins kept via the grace window
+        // must be re-POSTed if the create already left the write queue but the
+        // GET snapshot still omitted them — otherwise the next hydrate after the
+        // grace expires would drop them for good.
+        if (replace && keepLocalPins.length) {
+          const apiPinIds = new Set((apiPins ?? []).map(p => p.id));
+          for (const pin of keepLocalPins) {
+            if (tombstones.has(pin.id)) continue;
+            if (apiPinIds.has(pin.id)) continue;
+            if (isCreatePending('createCapturePin', pin.id)) continue;
+            if (!(pin.isPredefined || (pin.flatName && pin.roomName))) continue;
+            const room = get().rooms.find(r => r.id === pin.roomId);
+            if (room && !isCreatePending('createRoom', room.id)) {
+              const apiRoomIds = new Set((migrated.rooms ?? []).map(r => r.id));
+              if (!apiRoomIds.has(room.id) && !tombstones.has(room.id)) {
+                const flat = get().flats.find(f => f.id === room.flatId);
+                const apiFlatIds = new Set((migrated.flats ?? []).map(f => f.id));
+                if (flat && !apiFlatIds.has(flat.id) && !tombstones.has(flat.id) && !isCreatePending('createFlat', flat.id)) {
+                  mirrorApi('createFlat', [flat], 'snapshot-race-flat');
+                }
+                mirrorApi('createRoom', [room], 'snapshot-race-room');
+              }
+            }
+            mirrorApi('createCapturePin', [pin], 'snapshot-race-pin');
           }
         }
 
@@ -1409,7 +1595,9 @@ export const useWorkflowStore = create<WorkflowState>()(
       towerId, towerName: tower?.name ?? '',
       floorLabel: floor?.label ?? '',
       status: 'review', reviewStatus: 'uploaded',
-      uploadedBy: currentUploaderName(), uploadedAt: uploadedAtLabel, capturedAt, captured_at: capturedAt,
+      uploadedBy: currentUploaderName(),
+      uploadedByUserId: currentUploaderUserId() || undefined,
+      uploadedAt: uploadedAtLabel, capturedAt, captured_at: capturedAt,
       reviewedBy: null, reviewNotes: null, assignedTo: null,
       fileCount,
       sizeMb: mediaAssets.length ? +(mediaAssets.reduce((sum, asset) => sum + (asset.size || 0), 0) / 1024 / 1024).toFixed(1) : fileCount * 4,
@@ -1479,13 +1667,11 @@ export const useWorkflowStore = create<WorkflowState>()(
   },
   deleteCapture(id) {
     const cap = get().captures.find(c => c.id === id);
+    const actor = useAuthStore.getState().user;
     // Pins that referenced this capture in their timeline — unlink it.
+    // Capture points always stay on the plan (even when the timeline is empty)
+    // so the engineer can re-upload at the same annotated location.
     const affectedPins = get().capturePins.filter(p => p.captureIds.includes(id));
-    // Pins whose timeline becomes empty once this capture is removed are deleted
-    // entirely (and their successors renumbered) below via deleteCapturePin.
-    const emptiedPinIds = affectedPins
-      .filter(p => p.captureIds.filter(cid => cid !== id).length === 0)
-      .map(p => p.id);
     // Floor plans whose walkthrough may need rebuilding (pin timeline or tour.captureId).
     const floorPlansToRefresh = new Set<string>(
       affectedPins.map(p => p.floorPlanId).filter(Boolean),
@@ -1516,10 +1702,9 @@ export const useWorkflowStore = create<WorkflowState>()(
     // not resurrect it via the hydrate back-fill.
     addTombstones(id);
     mirrorApi('deleteCapture', [id]);
-    // Mirror the unlink on each affected pin so the backend timeline stays in sync,
-    // but skip pins about to be deleted (deleteCapturePin handles their removal).
+    // Mirror the unlink on each affected pin so the backend timeline stays in sync.
+    // Never DELETE the pin here — points outlive their media.
     affectedPins.forEach(p => {
-      if (emptiedPinIds.includes(p.id)) return;
       const remaining = p.captureIds.filter(cid => cid !== id);
       mirrorApi('updateCapturePin', [p.id, { captureIds: remaining }]);
     });
@@ -1530,14 +1715,10 @@ export const useWorkflowStore = create<WorkflowState>()(
           (affectedPins.length ? ` — unlinked from pin(s) ${affectedPins.map(p => p.id).join(', ')}` : ' — not linked to any pin'),
       );
     }
-    // Remove any now-empty pins from the floor plan and resequence the rest to 1..N.
-    emptiedPinIds.forEach(pinId => get().deleteCapturePin(pinId));
 
     // Rebuild (or remove) walkthroughs so captureId/steps stay valid after refresh.
     floorPlansToRefresh.forEach(fpId => {
-      const existing = get().tours.find(
-        t => (t as MockTour & { floorPlanId?: string }).floorPlanId === fpId,
-      );
+      const existing = findOwnFloorPlanTour(get().tours, fpId, actor);
       if (!existing) return;
       const stillHasCaptures = get().capturePins.some(
         p => p.floorPlanId === fpId && p.captureIds.length > 0,
@@ -1545,7 +1726,20 @@ export const useWorkflowStore = create<WorkflowState>()(
       if (!stillHasCaptures) {
         get().deleteTour(existing.id);
       } else {
-        get().publishFloorPlanTour(fpId, undefined, { silent: true });
+        // Preserve the published pin subset — never expand to the full floor.
+        const priorPinIds = ((existing as { steps?: { pinId?: string }[] }).steps ?? [])
+          .map(s => s.pinId)
+          .filter((id): id is string => !!id);
+        const stillValid = priorPinIds.filter(pid =>
+          get().capturePins.some(p => p.id === pid && p.captureIds.some(cid =>
+            get().captures.some(c => c.id === cid),
+          )),
+        );
+        get().publishFloorPlanTour(
+          fpId,
+          stillValid.length ? stillValid : undefined,
+          { silent: true },
+        );
       }
     });
   },
@@ -1558,16 +1752,32 @@ export const useWorkflowStore = create<WorkflowState>()(
   // ── Review ──────────────────────────────────────────────────────────────────
   reviewCapture(id, action, notes) {
     const cap = get().captures.find(c => c.id === id);
+    let patch: Partial<MockCapture> & Record<string, unknown> = {
+      status: 'review',
+      reviewStatus: 'reviewing',
+      reviewNotes: notes ?? 'Changes requested',
+    };
+    if (action === 'approve') {
+      patch = {
+        status: 'processed',
+        reviewStatus: 'approved',
+        reviewedBy: 'You',
+        reviewNotes: notes ?? cap?.reviewNotes ?? null,
+        processingStatus: 'reviewed',
+        processing_status: 'reviewed',
+      };
+    } else if (action === 'reject') {
+      patch = {
+        status: 'rejected',
+        reviewStatus: 'changes_requested',
+        reviewedBy: 'You',
+        reviewNotes: notes ?? 'Rejected',
+      };
+    }
     set(s => ({
-      captures: s.captures.map(c => {
-        if (c.id !== id) return c;
-        if (action === 'approve') return { ...c, status: 'processed', reviewStatus: 'approved', reviewedBy: 'You', reviewNotes: notes ?? c.reviewNotes, processingStatus: 'reviewed', processing_status: 'reviewed' };
-        if (action === 'reject') return { ...c, status: 'rejected', reviewStatus: 'changes_requested', reviewedBy: 'You', reviewNotes: notes ?? 'Rejected' };
-        return { ...c, status: 'review', reviewStatus: 'reviewing', reviewNotes: notes ?? 'Changes requested' };
-      }),
+      captures: s.captures.map(c => (c.id === id ? { ...c, ...patch } : c)),
     }));
-    const updated = get().captures.find(c => c.id === id);
-    if (updated) mirrorApi('updateCaptureReview', [id, updated]);
+    mirrorApi('updateCaptureReview', [id, patch]);
     if (cap) {
       if (action === 'approve') {
         pushNotif(set, 'review_approved', 'Capture approved', `${cap.roomName} was approved`, `/captures/${id}`);
@@ -1580,9 +1790,12 @@ export const useWorkflowStore = create<WorkflowState>()(
   },
   assignReviewer(id, reviewerName) {
     const cap = get().captures.find(c => c.id === id);
-    set(s => ({ captures: s.captures.map(c => c.id === id ? { ...c, assignedTo: reviewerName, reviewStatus: c.reviewStatus === 'uploaded' ? 'assigned' : c.reviewStatus } : c) }));
-    const updated = get().captures.find(c => c.id === id);
-    if (updated) mirrorApi('updateCaptureReview', [id, updated]);
+    const patch = {
+      assignedTo: reviewerName,
+      reviewStatus: (cap?.reviewStatus === 'uploaded' ? 'assigned' : cap?.reviewStatus) as MockCapture['reviewStatus'],
+    };
+    set(s => ({ captures: s.captures.map(c => (c.id === id ? { ...c, ...patch } : c)) }));
+    mirrorApi('updateCaptureReview', [id, patch]);
     if (cap) {
       pushNotif(set, 'review_requested', 'Review requested', `${cap.roomName} assigned to ${reviewerName}`, `/captures/${id}`);
       pushAudit(set, 'review_assigned', 'capture', id, cap.roomName, cap.projectId, `Assigned to ${reviewerName}`);
@@ -1654,12 +1867,18 @@ export const useWorkflowStore = create<WorkflowState>()(
   },
 
   uploadFloorPlan(payload) {
-    const id = get().nextId('fp');
+    const plansForFloor = get().floorPlans.filter(
+      fp => fp.towerId === payload.towerId && fp.floorId === payload.floorId,
+    );
+    const pinOwnedPlanId = plansForFloor.find(
+      fp => get().capturePins.some(p => p.floorPlanId === fp.id),
+    )?.id;
+    const canonicalPlanId = pinOwnedPlanId ?? plansForFloor[0]?.id ?? get().nextId('fp');
+    const id = canonicalPlanId;
     const mediaAssets = payload.mediaAssets ?? [];
     const firstAsset = mediaAssets[0];
     // Capture superseded plans before creating the new one.
-    const supersededPlanIds = get().floorPlans
-      .filter(fp => fp.towerId === payload.towerId && fp.floorId === payload.floorId)
+    const supersededPlanIds = plansForFloor
       .map(fp => fp.id);
     const superseded = new Set(supersededPlanIds);
     const isReplace = supersededPlanIds.length > 0;
@@ -1686,31 +1905,12 @@ export const useWorkflowStore = create<WorkflowState>()(
       pinLayoutStatus: 'draft' as const,
       needsReannotate: isReplace,
     } as MockFloorPlan & Record<string, unknown>;
-    // Re-uploading a plan for a floor used to leave the OLD floor-plan record on
-    // the backend (only local state dropped it), so a freshly-hydrated device saw
-    // duplicate plans — and pins/tours stayed attached to the now-orphaned old id.
-    // Capture those superseded ids so we can re-point pins onto the new plan and
-    // delete the stale records, keeping exactly one canonical plan per floor.
-
     set(s => ({
       floorPlans: [...s.floorPlans.filter(fp => !(fp.towerId === payload.towerId && fp.floorId === payload.floorId)), plan],
       floors: s.floors.map(f => f.id === payload.floorId ? { ...f, floorPlanId: id } : f),
-      // Move existing pins onto the new plan; strip labels when replacing the drawing
-      // so admin must re-annotate (coords may no longer match rooms).
+      // Keep admin-defined points attached to the floor across re-uploads.
       capturePins: s.capturePins.map(p => {
         if (!superseded.has(p.floorPlanId)) return p;
-        if (isReplace && p.captureIds.length === 0) {
-          return {
-            ...p,
-            floorPlanId: id,
-            flatName: undefined,
-            roomName: undefined,
-            label: undefined,
-            isPredefined: false,
-            source: 'freeplace' as const,
-            inheritedFromPinId: undefined,
-          };
-        }
         return { ...p, floorPlanId: id };
       }),
       tours: s.tours.map(t => {
@@ -1719,11 +1919,11 @@ export const useWorkflowStore = create<WorkflowState>()(
       }),
     }));
     mirrorApi('createFloorPlan', [plan]);
-    // Mirror the pin re-points, then delete the superseded plan records.
+    // Mirror any pin re-points only when we're collapsing duplicate plan ids.
     get().capturePins
-      .filter(p => p.floorPlanId === id && supersededPlanIds.length > 0)
+      .filter(p => p.floorPlanId === id && supersededPlanIds.some(oldId => oldId !== id))
       .forEach(p => mirrorApi('updateCapturePin', [p.id, { floorPlanId: id }]));
-    supersededPlanIds.forEach(oldId => {
+    supersededPlanIds.filter(oldId => oldId !== id).forEach(oldId => {
       addTombstones(oldId);
       mirrorApi('deleteFloorPlan', [oldId]);
     });
@@ -1809,6 +2009,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       sequenceNumber, x, y,
       createdBy: createdBy ?? 'You',
       createdAt: 'Just now',
+      clientCreatedAt: Date.now(),
       captureIds: [],
       flatName: resolvedFlat || undefined,
       roomName: resolvedRoom || undefined,
@@ -1955,6 +2156,39 @@ export const useWorkflowStore = create<WorkflowState>()(
     const pin = get().capturePins.find(p => p.id === pinId);
     if (!pin) return '';
 
+    // Hydrate / write-queue races can leave a pin without its backing room in
+    // the local store. Recreate from pin hierarchy so attach does not fail
+    // forever after the bytes already landed on the server.
+    if (!get().rooms.some(r => r.id === pin.roomId)) {
+      const flatId = defaultFlatId(pin.floorId);
+      if (!get().flats.some(f => f.id === flatId)) {
+        const floor = get().floors.find(f => f.id === pin.floorId);
+        const tower = get().towers.find(t => t.id === (pin.towerId || floor?.towerId));
+        const parentFlat: WfFlat = {
+          id: flatId,
+          floorId: pin.floorId,
+          towerId: pin.towerId || floor?.towerId || '',
+          projectId: pin.projectId || tower?.projectId || '',
+          number: pin.flatName || 'Flat A',
+          type: '1 BHK',
+        };
+        set(s => ({ flats: [...s.flats, parentFlat] }));
+        mirrorApi('createFlat', [parentFlat]);
+      }
+      const roomName = pin.roomName || pin.label || `Pin ${pin.sequenceNumber}`;
+      const room: WfRoom = {
+        id: pin.roomId,
+        flatId,
+        floorId: pin.floorId,
+        towerId: pin.towerId || '',
+        projectId: pin.projectId || '',
+        name: roomName,
+        type: 'custom',
+      };
+      set(s => ({ rooms: [...s.rooms, room] }));
+      mirrorApi('createRoom', [room]);
+    }
+
     // Background stitching means this runs TWICE for one photo: once when the
     // server accepts the bytes (202, panorama not ready) and again when the
     // stitch job finishes with the real asset. Both calls carry the same
@@ -2015,8 +2249,13 @@ export const useWorkflowStore = create<WorkflowState>()(
     if (!pin || !stitchJobId) return;
 
     const captureId = pin.captureIds.find(id => {
-      const c = get().captures.find(x => x.id === id) as (MockCapture & { stitchJobId?: string }) | undefined;
-      return !!c && c.stitchJobId === stitchJobId;
+      const c = get().captures.find(x => x.id === id) as (MockCapture & {
+        stitchJobId?: string;
+        mediaAssets?: { stitchJobId?: string }[];
+      }) | undefined;
+      if (!c) return false;
+      const job = c.stitchJobId || c.mediaAssets?.[0]?.stitchJobId;
+      return !!job && job === stitchJobId;
     });
     if (!captureId) return;
 
@@ -2053,17 +2292,34 @@ export const useWorkflowStore = create<WorkflowState>()(
         )
     ).sort((a, b) => a.sequenceNumber - b.sequenceNumber);
 
+    const skipped = { noCapture: 0, stitching: 0, noPanorama: 0 };
     const steps: TourStep[] = [];
     for (const pin of pins) {
       // Prefer the newest id that still has a live capture document.
       const latestCaptureId = [...pin.captureIds]
         .reverse()
         .find(id => get().captures.some(c => c.id === id));
-      if (!latestCaptureId) continue; // pin still waiting for a capture
+      if (!latestCaptureId) {
+        skipped.noCapture += 1;
+        continue;
+      }
       const cap = get().captures.find(c => c.id === latestCaptureId) as (MockCapture & Record<string, unknown>) | undefined;
-      if (!cap) continue;
+      if (!cap) {
+        skipped.noCapture += 1;
+        continue;
+      }
+      const procStatus = String(cap.processingStatus ?? cap.processing_status ?? '').toLowerCase();
+      if (procStatus === 'processing' || procStatus === 'pending' || procStatus === 'queued') {
+        skipped.stitching += 1;
+        continue;
+      }
       const mediaAssets = (cap.mediaAssets as UploadedFileResponse[] | undefined) ?? [];
       const panoramaUrl = firstMediaUrl(mediaAssets) ?? (cap.processedPanoramaUrl as string | undefined) ?? null;
+      // Do not publish stops that are still stitching / have no panorama yet.
+      if (!panoramaUrl) {
+        skipped.noPanorama += 1;
+        continue;
+      }
       steps.push({
         pinId: pin.id,
         captureId: latestCaptureId,
@@ -2073,13 +2329,17 @@ export const useWorkflowStore = create<WorkflowState>()(
         thumbnailUrl: (mediaAssets[0]?.thumbnail_url ?? (cap.thumbnailUrl as string | undefined)) ?? null,
       });
     }
-    if (!steps.length) return [];
+    if (!steps.length) {
+      return { tourIds: [], publishedStops: 0, totalPins: pins.length, skipped };
+    }
 
     const allFloorPins = get().capturePins.filter(
       p => p.floorPlanId === floorPlanId || (!!floorId && p.floorId === floorId),
     );
     const metaPin = pins[0] ?? allFloorPins[0];
-    if (!metaPin) return [];
+    if (!metaPin) {
+      return { tourIds: [], publishedStops: 0, totalPins: pins.length, skipped };
+    }
 
     const floor = get().floors.find(f => f.id === metaPin.floorId);
     const tower = get().towers.find(t => t.id === metaPin.towerId);
@@ -2087,9 +2347,12 @@ export const useWorkflowStore = create<WorkflowState>()(
     const first = steps[0];
     const panoramaUrls = steps.map(s => s.panoramaUrl).filter((u): u is string => !!u);
 
-    // One stable tour per floor plan — reuse the existing record if present.
-    const existing = get().tours.find(t => (t as MockTour & { floorPlanId?: string }).floorPlanId === floorPlanId);
+    // One stable tour per engineer per floor plan — reuse their existing record.
+    const actor = useAuthStore.getState().user;
+    const existing = findOwnFloorPlanTour(get().tours, floorPlanId, actor);
     const id = existing?.id ?? get().nextId('tour');
+    const uploaderName = currentUploaderName();
+    const uploaderUserId = currentUploaderUserId();
 
     const tour = {
       id,
@@ -2105,6 +2368,10 @@ export const useWorkflowStore = create<WorkflowState>()(
       lastCapture: 'Just now',
       gradient: project?.gradient ?? GRADIENTS[0],
       viewCount: existing?.viewCount ?? 0,
+      uploadedBy: uploaderName,
+      uploadedByUserId: uploaderUserId || undefined,
+      uploaded_by: uploaderName,
+      uploaded_by_user_id: uploaderUserId || undefined,
       steps,
       panoramaUrls,
       panorama_urls: panoramaUrls,
@@ -2115,17 +2382,27 @@ export const useWorkflowStore = create<WorkflowState>()(
     } as MockTour & Record<string, unknown>;
 
     set(s => ({ tours: [tour, ...s.tours.filter(t => t.id !== id)] }));
-    if (existing) mirrorApi('updateTour', [id, tour]);
-    else mirrorApi('createTour', [tour]);
+    // POST /tours upserts by id — do not use updateTour(/status), which only
+    // accepts status/managerReviewed and would drop steps on republish.
+    mirrorApi('createTour', [tour]);
     if (!opts?.silent) {
       pushNotif(set, 'tour_published', 'Walkthrough published', `${tour.roomName} · ${steps.length} stops is live`, `/tours/${id}`);
       pushAudit(set, 'tour_published', 'tour', id, tour.roomName, tour.projectId, `Published walkthrough (${steps.length} pins) for ${tour.floorLabel}`);
     }
-    return [id];
+    return {
+      tourIds: [id],
+      publishedStops: steps.length,
+      totalPins: pins.length,
+      skipped,
+    };
   },
   deleteCapturePin(id) {
     const pin = get().capturePins.find(p => p.id === id);
     if (!pin) return;
+    // Site Engineers must never remove annotated points (API: floorPlans:delete).
+    // Capture delete only unlinks media; managers/admins remove points explicitly.
+    const actor = useAuthStore.getState().user;
+    if (isFieldEngineer(actor) || !isManagerOrAdmin(actor)) return;
     // Tombstone FIRST so any concurrent file-queue flush refuses to POST for
     // this pin (isTombstoned check). Then cancel leftover create/update writes
     // and drop the pending-upload registry entry synchronously.
@@ -2168,14 +2445,29 @@ export const useWorkflowStore = create<WorkflowState>()(
   },
 
   pruneEmptyFreeplacePinsOnFloor(floorId) {
+    // Site Engineers must never delete capture points (API rejects pin DELETE).
+    // Only managers/admins may prune accidental free-place pins from the plan.
+    const actor = useAuthStore.getState().user;
+    if (isFieldEngineer(actor) || !isManagerOrAdmin(actor)) return 0;
+
     const state = get();
     const onFloor = state.capturePins.filter(p => p.floorId === floorId);
     const hasLabeled = onFloor.some(
       p => p.flatName && p.roomName && p.source !== 'freeplace',
     );
     if (!hasLabeled) return 0;
+    // CRITICAL: never delete empty freeplace pins that already have Flat·Room
+    // labels (or predefined). Those are real capture points whose photo was
+    // discarded after a failed stitch / capture delete — pruning them is what
+    // drove floor pin counts down (114 → 82 → 48). Only wipe unlabeled tap
+    // accidents (no flat, no room, no captures, not predefined).
     const accidents = onFloor.filter(
-      p => p.source === 'freeplace' && (p.captureIds?.length ?? 0) === 0,
+      p =>
+        p.source === 'freeplace'
+        && (p.captureIds?.length ?? 0) === 0
+        && !p.isPredefined
+        && !(p.flatName && p.roomName)
+        && !(p.label || '').trim(),
     );
     if (accidents.length === 0) return 0;
 

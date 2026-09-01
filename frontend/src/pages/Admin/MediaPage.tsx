@@ -13,10 +13,22 @@ import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, getRoleLandingPath } from '@store/authStore';
 import { isTombstoned } from '@store/tombstones';
 import { isLiveUploadedTour } from '@store/tourFilters';
+import apiClient from '@services/apiClient';
+import type { ApiResponse } from '@/types/dto';
 
-/** True only for real uploaded media (Cloudinary / CDN / absolute http URLs). */
+type MediaDashboardStats = {
+  storageBytes: number;
+  totalCaptures: number;
+  totalFloorPlans: number;
+  totalTours: number;
+  failedProcessing: number;
+};
+
+/** True for real uploaded media (Cloudinary, absolute http, or local /media). */
 function isUploadedUrl(value: unknown): value is string {
-  return typeof value === 'string' && /^https?:\/\//i.test(value.trim());
+  if (typeof value !== 'string') return false;
+  const t = value.trim();
+  return /^https?:\/\//i.test(t) || t.startsWith('/media/');
 }
 
 function firstUploadedUrl(...candidates: unknown[]): string | null {
@@ -92,6 +104,20 @@ export default function MediaPage() {
   const [page, setPage] = useState(1);
   const [sortOrder, setSortOrder] = useState<'recent' | 'oldest'>('recent');
   const [sortAnchor, setSortAnchor] = useState<null | HTMLElement>(null);
+  const [apiStats, setApiStats] = useState<MediaDashboardStats | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await apiClient.get<ApiResponse<MediaDashboardStats>>('/admin/media');
+        if (!cancelled && data.data) setApiStats(data.data);
+      } catch {
+        // Fall back to client-derived metrics below.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const items = useMemo<MediaItem[]>(() => {
     const out: MediaItem[] = [];
@@ -223,10 +249,10 @@ export default function MediaPage() {
   const start = (currentPage - 1) * pageSize;
   const visible = filtered.slice(start, start + pageSize);
 
-  const storageBytes = items.reduce((sum, i) => sum + i.sizeBytes, 0);
-  const captureCount = items.filter(i => i.kind === 'capture').length;
-  const floorPlanCount = items.filter(i => i.kind === 'floor_plan').length;
-  const tourCount = items.filter(i => i.kind === 'tour').length;
+  const storageBytes = apiStats?.storageBytes ?? items.reduce((sum, i) => sum + i.sizeBytes, 0);
+  const captureCount = apiStats?.totalCaptures ?? items.filter(i => i.kind === 'capture').length;
+  const floorPlanCount = apiStats?.totalFloorPlans ?? items.filter(i => i.kind === 'floor_plan').length;
+  const tourCount = apiStats?.totalTours ?? items.filter(i => i.kind === 'tour').length;
 
   const filters: { key: 'all' | MediaKind; label: string }[] = [
     { key: 'all', label: 'All' },

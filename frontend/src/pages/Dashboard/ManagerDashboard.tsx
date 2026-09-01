@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { Box, Typography, Grid, Pagination } from '@mui/material';
+import { Box, Typography, Grid, Pagination, Alert, Button } from '@mui/material';
 import {
   RateReviewRounded, CheckCircleRounded, CameraAltRounded,
-  ViewInArRounded, ArrowForwardRounded,
+  ViewInArRounded, ArrowForwardRounded, RefreshRounded,
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
@@ -26,7 +26,11 @@ export default function ManagerDashboard() {
   const defects    = useWorkflowStore(s => s.defects);
   const notifications = useWorkflowStore(s => s.notifications);
   const auditLogs  = useWorkflowStore(s => s.auditLogs);
+  const apiSnapshotError = useWorkflowStore(s => s.apiSnapshotError);
+  const apiSnapshotStatus = useWorkflowStore(s => s.apiSnapshotStatus);
+  const retryApiSnapshot = useWorkflowStore(s => s.retryApiSnapshot);
   const [toursPage, setToursPage] = useState(1);
+  const snapshotLoading = apiSnapshotStatus === 'loading' || apiSnapshotStatus === 'idle';
 
   // Same shared aggregation Admin's dashboard uses, so "Total Captures" /
   // "Published Tours" can never drift between the two roles' views of the
@@ -46,11 +50,13 @@ export default function ManagerDashboard() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
 
+  const fmt = (n: number) => (snapshotLoading ? '…' : String(n));
+
   const kpis = [
     {
       label: 'Pending Reviews',
-      value: pendingReviews,
-      sub: 'awaiting your action',
+      value: fmt(pendingReviews),
+      sub: snapshotLoading ? 'loading workspace…' : 'awaiting your action',
       color: '#d97706',
       bg: 'rgba(217,119,6,0.08)',
       icon: <RateReviewRounded />,
@@ -58,8 +64,8 @@ export default function ManagerDashboard() {
     },
     {
       label: 'Reviewed',
-      value: reviewedCount,
-      sub: 'marked as done',
+      value: fmt(reviewedCount),
+      sub: snapshotLoading ? 'loading workspace…' : 'marked as done',
       color: '#059669',
       bg: 'rgba(5,150,105,0.08)',
       icon: <CheckCircleRounded />,
@@ -67,8 +73,8 @@ export default function ManagerDashboard() {
     },
     {
       label: 'Published Tours',
-      value: stats.publishedTourCount,
-      sub: 'live for clients',
+      value: fmt(stats.publishedTourCount),
+      sub: snapshotLoading ? 'loading workspace…' : 'live for clients',
       color: '#2563eb',
       bg: 'rgba(37,99,235,0.08)',
       icon: <ViewInArRounded />,
@@ -76,8 +82,8 @@ export default function ManagerDashboard() {
     },
     {
       label: 'Total Captures',
-      value: stats.captureCount,
-      sub: 'across all projects',
+      value: fmt(stats.captureCount),
+      sub: snapshotLoading ? 'loading workspace…' : 'across all projects',
       color: '#7c3aed',
       bg: 'rgba(124,58,237,0.08)',
       icon: <CameraAltRounded />,
@@ -87,6 +93,25 @@ export default function ManagerDashboard() {
 
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto' }}>
+      {apiSnapshotError && (
+        <Alert
+          severity="error"
+          sx={{ mb: 2.5, borderRadius: '12px', alignItems: 'center' }}
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              startIcon={<RefreshRounded sx={{ fontSize: 16 }} />}
+              onClick={() => retryApiSnapshot()}
+              sx={{ textTransform: 'none', fontWeight: 600 }}
+            >
+              Retry
+            </Button>
+          }
+        >
+          Could not load live workspace data. Stats below may be stale or empty. {apiSnapshotError}
+        </Alert>
+      )}
       <DashboardHero
         eyebrow="My Overview"
         greeting={`${greeting}, ${user?.name?.split(' ')[0] ?? 'Manager'}`}

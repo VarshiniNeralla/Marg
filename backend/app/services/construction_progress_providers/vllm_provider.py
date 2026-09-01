@@ -726,6 +726,7 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
             )
 
         semaphore = asyncio.Semaphore(_CAPTURE_CONCURRENCY)
+        usage_totals: dict[str, float] = {}
 
         async def _assess_one(capture: CaptureRef) -> tuple[CaptureRef, dict[str, dict[str, Any]]]:
             async with semaphore:
@@ -741,7 +742,7 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                     if not room_acts:
                         return capture, {}
                     result = await self._assess_capture(
-                        capture, room_acts, context=context,
+                        capture, room_acts, context=context, usage_totals=usage_totals,
                     )
                     if not result:
                         logger.warning(
@@ -960,6 +961,10 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
             model=self._model,
             per_capture_completion=per_capture_completion,
             flat_progress=flat_progress,
+            prompt_tokens=int(usage_totals.get("prompt_tokens", 0)),
+            completion_tokens=int(usage_totals.get("completion_tokens", 0)),
+            total_tokens=int(usage_totals.get("total_tokens", 0)),
+            latency_ms=usage_totals.get("latency_ms", 0.0),
         )
 
     # ── Per-capture path (T4 + T7a/b) ──────────────────────────────────────
@@ -970,6 +975,7 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         activities: list[ActivityDef],
         *,
         context: dict[str, str] | None = None,
+        usage_totals: dict[str, float] | None = None,
     ) -> dict[str, dict[str, Any]]:
         if not activities:
             return {}
@@ -1010,13 +1016,21 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
             ]
             if not selected:
                 return {}
-            return await self._call_surface_group(
+            call_usage: dict[str, Any] = {}
+            result = await self._call_surface_group(
                 capture=capture,
                 surface_group=group,
                 activities=acts,
                 views=selected,
                 context=context,
+                usage_out=call_usage,
             )
+            if usage_totals is not None and call_usage:
+                usage_totals["prompt_tokens"] = usage_totals.get("prompt_tokens", 0) + call_usage.get("prompt_tokens", 0)
+                usage_totals["completion_tokens"] = usage_totals.get("completion_tokens", 0) + call_usage.get("completion_tokens", 0)
+                usage_totals["total_tokens"] = usage_totals.get("total_tokens", 0) + call_usage.get("total_tokens", 0)
+                usage_totals["latency_ms"] = usage_totals.get("latency_ms", 0.0) + call_usage.get("latency_ms", 0.0)
+            return result
 
         group_results = await asyncio.gather(*[
             _call_group(g, acts) for g, acts in by_group.items()
@@ -1082,6 +1096,7 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         activities: list[ActivityDef],
         views: list[tuple[ViewSpec, bytes]],
         context: dict[str, str] | None,
+        usage_out: dict[str, Any] | None = None,
     ) -> dict[str, dict[str, Any]]:
         metadata_block = _factual_metadata_block(context, capture, surface_group)
         location_line = _pin_location_text(capture)
@@ -1131,6 +1146,7 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         raw = await self._chat_completion(
             payload,
             log_label=f"construction-progress capture={capture.capture_id} group={surface_group}",
+            usage_out=usage_out,
         )
 
         valid_ids = {a.activity_id for a in activities}
@@ -1202,7 +1218,13 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
             headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
 
-    async def _chat_completion(self, payload: dict[str, Any], *, log_label: str) -> dict[str, Any]:
+    async def _chat_completion(
+        self,
+        payload: dict[str, Any],
+        *,
+        log_label: str,
+        usage_out: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         last_error: Exception | None = None
         started = time.perf_counter()
 
@@ -1228,6 +1250,12 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                 raw_content = (choices[0].get("message") or {}).get("content") or ""
                 parsed = _parse_json_content(raw_content)
                 logger.info("{} completed model={} latency_ms={:.0f}", log_label, self._model, latency_ms)
+                if usage_out is not None:
+                    usage = body.get("usage") or {}
+                    usage_out["prompt_tokens"] = int(usage.get("prompt_tokens") or 0)
+                    usage_out["completion_tokens"] = int(usage.get("completion_tokens") or 0)
+                    usage_out["total_tokens"] = int(usage.get("total_tokens") or 0)
+                    usage_out["latency_ms"] = latency_ms
                 return parsed
             except httpx.TimeoutException as exc:
                 last_error = exc

@@ -8,8 +8,11 @@ import {
 import { getCaptureById, getPinForCapture, getPinCaptureTimeline } from '@store/workflowSelectors';
 import type { MockCapture } from '@/data/mockData';
 import { useWorkflowStore } from '@store/workflowStore';
+import { useAuthStore, isFieldEngineer } from '@store/authStore';
+import { filterOwnCaptures } from '@/utils/captureOwnership';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { formatPinLocationLabel, formatTowerLabel } from '@/utils/pinLabels';
+import { resolveMediaUrl } from '@/config/env';
 
 const P = {
   border: '#e4e7ec', muted: '#6b7280', subtle: '#9ca3af', strong: '#111827',
@@ -21,13 +24,13 @@ const T = `all 160ms cubic-bezier(0.4,0,0.2,1)`;
 function captureImageUrl(c: MockCapture | undefined): string | null {
   if (!c) return null;
   const r = c as MockCapture & Record<string, unknown>;
-  return (
+  return resolveMediaUrl(
     (r.processedPanoramaUrl as string | undefined) ??
     (r.original_url as string | undefined) ??
     (r.originalFileUrl as string | undefined) ??
     (r.thumbnailUrl as string | undefined) ??
     (r.thumbnail_url as string | undefined) ??
-    null
+    null,
   );
 }
 
@@ -48,8 +51,10 @@ function fmtDateTime(c: MockCapture): { date: string; time: string } {
 
 export default function CaptureDetailPage() {
   const { captureId } = useParams<{ captureId: string }>();
-  const captures = useWorkflowStore(s => s.captures);
+  const capturesAll = useWorkflowStore(s => s.captures);
   const pins = useWorkflowStore(s => s.capturePins);
+  const user = useAuthStore(s => s.user);
+  const captures = isFieldEngineer(user) ? filterOwnCaptures(capturesAll, user) : capturesAll;
   const deleteCapture = useWorkflowStore(s => s.deleteCapture);
   const [deleteTarget, setDeleteTarget] = useState<MockCapture | null>(null);
 

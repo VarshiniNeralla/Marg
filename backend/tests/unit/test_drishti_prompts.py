@@ -34,6 +34,18 @@ def test_answer_prompt_requires_naming_actual_captured_rooms():
     assert "does not list the specific rooms" in lowered
 
 
+def test_answer_prompt_requires_stating_single_room_capture_count():
+    """Regression for a real bug: "How many captures does the Corridor
+    have?" was answered "the data does not specify the number" even though
+    find_captured_rooms already attaches an exact capturesCount to every
+    room. The prompt's own "don't pad every line with (1 capture)" guidance
+    (meant for a multi-room LIST) was being applied to a direct single-room
+    COUNT question too, so the model refused to state a number it had."""
+    lowered = DRISHTI_ANSWER_PROMPT.lower()
+    assert "how many captures" in lowered
+    assert "must answer with that" in lowered
+
+
 def test_classifier_prompt_routes_positive_coverage_phrasing_to_capture_gap():
     lowered = DRISHTI_CLASSIFIER_PROMPT.lower()
     assert "which rooms/flats have been captured/photographed" in lowered
@@ -119,6 +131,18 @@ def test_answer_prompt_allows_labeled_assumption_based_estimate():
 
 def test_answer_prompt_never_labels_assumption_estimate_as_measured_forecast():
     assert 'never call it a "projected completion date"' in DRISHTI_ANSWER_PROMPT.lower()
+
+
+def test_answer_prompt_forbids_reformatting_dates():
+    """Regression for a real bug: the backend correctly retrieved
+    endDate "2028-05-12" (confirmed against the live database), but the
+    LLM hallucinated "October 15, 2024" while restating it in prose. The
+    prompt must explicitly forbid parsing/reformatting/recomputing a date
+    and require verbatim quoting of pre-formatted "...Display" fields."""
+    lowered = DRISHTI_ANSWER_PROMPT.lower()
+    assert "enddatedisplay" in lowered
+    assert "verbatim" in lowered
+    assert "never shift, round, guess, or" in lowered
 
 
 def test_classifier_prompt_declares_activity_list_intent_and_statuses():

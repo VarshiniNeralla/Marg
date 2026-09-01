@@ -162,6 +162,75 @@ export function getToursByProject(tours: MockTour[], projectId: string) {
   return tours.filter(t => t.projectId === projectId);
 }
 
+function normaliseFloorLabel(label: string | undefined | null) {
+  return (label ?? '').trim().toLowerCase();
+}
+
+type ScopedCaptureData = Pick<WorkflowData, 'rooms' | 'captures'> & {
+  capturePins?: WfCapturePin[];
+};
+
+export function getCapturesByProjectScope(
+  data: ScopedCaptureData,
+  projectId: string,
+) {
+  const roomIds = new Set(
+    data.rooms.filter(room => room.projectId === projectId).map(room => room.id),
+  );
+  const pinCaptureIds = new Set(
+    (data.capturePins ?? [])
+      .filter(pin => pin.projectId === projectId)
+      .flatMap(pin => pin.captureIds),
+  );
+  return data.captures.filter(capture =>
+    capture.projectId === projectId
+    || roomIds.has(capture.roomId)
+    || pinCaptureIds.has(capture.id),
+  );
+}
+
+export function getCapturesByTowerScope(
+  data: ScopedCaptureData,
+  towerId: string,
+) {
+  const roomIds = new Set(
+    data.rooms.filter(room => room.towerId === towerId).map(room => room.id),
+  );
+  const pinCaptureIds = new Set(
+    (data.capturePins ?? [])
+      .filter(pin => pin.towerId === towerId)
+      .flatMap(pin => pin.captureIds),
+  );
+  return data.captures.filter(capture =>
+    capture.towerId === towerId
+    || roomIds.has(capture.roomId)
+    || pinCaptureIds.has(capture.id),
+  );
+}
+
+export function getCapturesByFloorScope(
+  data: ScopedCaptureData,
+  floor: WfFloor,
+) {
+  const roomIds = new Set(
+    data.rooms.filter(room => room.floorId === floor.id).map(room => room.id),
+  );
+  const pinCaptureIds = new Set(
+    (data.capturePins ?? [])
+      .filter(pin => pin.floorId === floor.id)
+      .flatMap(pin => pin.captureIds),
+  );
+  const floorLabel = normaliseFloorLabel(floor.label);
+  return data.captures.filter(capture =>
+    roomIds.has(capture.roomId)
+    || pinCaptureIds.has(capture.id)
+    || (
+      capture.towerId === floor.towerId
+      && normaliseFloorLabel(capture.floorLabel) === floorLabel
+    ),
+  );
+}
+
 export function getTourForCapture(tours: MockTour[], captureId: string) {
   return tours.find(t => t.captureId === captureId);
 }
@@ -270,19 +339,25 @@ export function computeDashboardStats(data: WorkflowData) {
 
 export function enrichFloorStats(
   floor: WfFloor,
-  data: Pick<WorkflowData, 'flats' | 'rooms' | 'captures' | 'tours' | 'floorPlans'>,
+  data: Pick<WorkflowData, 'flats' | 'rooms' | 'captures' | 'tours' | 'floorPlans' | 'capturePins'>,
 ) {
   const plan = getFloorPlanByFloor(data.floorPlans, floor.towerId, floor.id);
   const flats = getFlatsByFloor(data.flats, floor.id);
   const floorRooms = getRoomsByFloor(data.rooms, floor.id);
-  const roomCount = plan?.rooms.length ?? floorRooms.length;
-  const capturesOnFloor = data.captures.filter(c =>
-    floorRooms.some(r => r.id === c.roomId)
+  const labeledPins = (data.capturePins ?? []).filter(
+    p => p.floorId === floor.id && p.flatName && p.roomName,
   );
+  // Prefer annotated capture points when the floor-plan room overlay is empty
+  // (pin-based workflow), otherwise fall back to plan/room records.
+  const roomCount = labeledPins.length > 0
+    ? labeledPins.length
+    : (plan?.rooms.length || floorRooms.length);
+  const capturesOnFloor = getCapturesByFloorScope(data, floor);
   const toursOnFloor = data.tours.filter(t =>
     floorRooms.some(r => r.id === t.roomId)
+    || capturesOnFloor.some(c => c.id === t.captureId),
   );
-  const mapped = plan
+  const mapped = plan && plan.rooms.length > 0
     ? plan.rooms.filter(r => r.status !== 'not_started').length
     : capturesOnFloor.filter(c => c.status === 'processed').length;
 

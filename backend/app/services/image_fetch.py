@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
@@ -15,12 +16,79 @@ ALLOWED_IMAGE_HOSTS = (
     "res.cloudinary.com",
     "cloudinary.com",
 )
+_LOCAL_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _mime_for_path(path: Path) -> str:
+    ext = path.suffix.lower()
+    return {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".pdf": "application/pdf",
+    }.get(ext, "application/octet-stream")
+
+
+def _try_local_media_path(url: str, *, settings: Settings) -> Path | None:
+    """
+    Map a /media/... URL (relative or absolute against our public base / loopback)
+    to a path under UPLOAD_ROOT. Returns None when the URL is not local media.
+    """
+    from app.services.local_media_service import upload_root
+
+    raw = (url or "").strip()
+    if not raw:
+        return None
+
+    media_path: str | None = None
+    if raw.startswith("/media/"):
+        # Signed media URLs append ?exp=&sig= — strip before resolving the path.
+        media_path = raw.split("?", 1)[0].split("#", 1)[0]
+    else:
+        parsed = urlparse(raw)
+        if parsed.path.startswith("/media/"):
+            host = (parsed.hostname or "").lower()
+            base = (settings.MEDIA_PUBLIC_BASE_URL or "").strip()
+            base_host = urlparse(base).hostname.lower() if base else None
+            if host in _LOCAL_LOOPBACK_HOSTS or (base_host and host == base_host):
+                media_path = parsed.path
+
+    if not media_path:
+        return None
+
+    rel = media_path[len("/media/") :].lstrip("/")
+    if not rel or ".." in rel.split("/"):
+        raise ValueError("Image URL path is invalid")
+
+    root = upload_root()
+    path = (root / Path(rel)).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Image URL path is invalid") from exc
+    return path
 
 
 def validate_image_url(url: str, *, settings: Settings | None = None) -> str:
-    """Validate and return a safe HTTPS image URL."""
+    """Validate and return a safe image URL (Cloudinary HTTPS or local /media)."""
     settings = settings or get_settings()
-    parsed = urlparse((url or "").strip())
+    raw = (url or "").strip()
+    if not raw:
+        raise ValueError("Image URL is empty")
+
+    # Relative local media paths are served by this API.
+    if raw.startswith("/media/"):
+        path = _try_local_media_path(raw, settings=settings)
+        if path is None:
+            raise ValueError("Image URL path is invalid")
+        return raw
+
+    parsed = urlparse(raw)
+    local_path = _try_local_media_path(raw, settings=settings)
+    if local_path is not None:
+        return raw
 
     if parsed.scheme != "https":
         raise ValueError("Image URL must use HTTPS")
@@ -32,15 +100,25 @@ def validate_image_url(url: str, *, settings: Settings | None = None) -> str:
         allowed_hosts.add(f"{cloud_name}.cloudinary.com")
 
     if not any(host == h or host.endswith(f".{h}") for h in allowed_hosts):
-        raise ValueError("Image URL must be from an allowed Cloudinary host")
+        raise ValueError("Image URL must be from an allowed Cloudinary host or local /media")
 
     if not parsed.path or parsed.path == "/":
         raise ValueError("Image URL path is invalid")
 
-    return url.strip()
+    return raw
 
 
 async def download_image(url: str, *, timeout: float) -> tuple[bytes, str]:
+    settings = get_settings()
+    local_path = _try_local_media_path(url, settings=settings)
+    if local_path is not None:
+        if not local_path.is_file():
+            raise ValueError(f"Local media file not found: {local_path.name}")
+        data = local_path.read_bytes()
+        if len(data) > MAX_DOWNLOAD_BYTES:
+            raise ValueError("Image download exceeds maximum allowed size")
+        return data, _mime_for_path(local_path)
+
     async with httpx.AsyncClient(
         timeout=timeout,
         follow_redirects=True,

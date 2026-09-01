@@ -4,6 +4,7 @@ import { InsightsRounded, ChevronRightRounded, HourglassEmptyRounded, FolderOpen
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import { toast } from 'react-toastify';
+import { useAuthStore, isAdmin } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getTowersByProject, getFloorsByTower } from '@store/workflowSelectors';
 import {
@@ -129,7 +130,7 @@ function DeleteConfirmModal({
   );
 }
 
-function FloorCard({ floor, onDelete }: { floor: FloorSummary; onDelete: (floor: FloorSummary) => void }) {
+function FloorCard({ floor, onDelete }: { floor: FloorSummary; onDelete?: (floor: FloorSummary) => void }) {
   const pct = floor.overallProgressPct;
   return (
     <Box
@@ -200,7 +201,7 @@ function FloorCard({ floor, onDelete }: { floor: FloorSummary; onDelete: (floor:
         <ChevronRightRounded sx={{ fontSize: 20, color: P.subtle, flexShrink: 0 }} />
       </Box>
 
-      {floor.analyzed && (
+      {floor.analyzed && onDelete && (
         <IconButton
           size="small"
           onClick={e => { e.preventDefault(); e.stopPropagation(); onDelete(floor); }}
@@ -215,6 +216,8 @@ function FloorCard({ floor, onDelete }: { floor: FloorSummary; onDelete: (floor:
 }
 
 export default function ConstructionProgressOverviewPage() {
+  const user = useAuthStore(s => s.user);
+  const canDeleteReports = isAdmin(user);
   const [loading, setLoading] = useState(true);
   const [floors, setFloors] = useState<FloorSummary[]>([]);
   const [selectedProject, setSelectedProject] = useState('');
@@ -356,7 +359,7 @@ export default function ConstructionProgressOverviewPage() {
           </Box>
 
           {selectedFloorSummary ? (
-            <FloorCard floor={selectedFloorSummary} onDelete={setPendingDelete} />
+            <FloorCard floor={selectedFloorSummary} onDelete={canDeleteReports ? setPendingDelete : undefined} />
           ) : (
             <>
               <Box sx={{ textAlign: 'center', py: 4 }}>
@@ -372,7 +375,7 @@ export default function ConstructionProgressOverviewPage() {
                   </Typography>
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
                     {previousReports.map(f => (
-                      <FloorCard key={f.floorId} floor={f} onDelete={setPendingDelete} />
+                      <FloorCard key={f.floorId} floor={f} onDelete={canDeleteReports ? setPendingDelete : undefined} />
                     ))}
                   </Box>
                 </Box>

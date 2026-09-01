@@ -140,6 +140,7 @@ async def login(request: Request, payload: LoginRequest, response: Response, db:
                 role=user.role,
                 org_id=str(user.org_id),
                 org_name=org.name,
+                org_slug=org.slug,
                 avatar_url=user.avatar_url,
                 assigned_project_ids=assigned_project_ids,
             ),

@@ -1,13 +1,30 @@
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from app.core.dependencies import CallerContext, DB, ManagerOrAdminUser
+from app.core.dependencies import CallerContext, DB, ManagerOrAdminUser, AdminUser
+from app.core.exceptions import ForbiddenException, NotFoundException
 from app.services.construction_progress_providers import activities_as_dicts
 from app.services.construction_progress_review_service import ConstructionProgressReviewService
 from app.services.construction_progress_service import ConstructionProgressService
+from app.services.rbac_service import RBACService
 from app.utils.pagination import success_response
 
 router = APIRouter(prefix="/construction-progress", tags=["Construction Progress"])
+
+
+async def _assert_floor_access(ctx: CallerContext, db: DB, service: ConstructionProgressService, floor_id: str) -> None:
+    """Per-floor RBAC boundary mirroring drishti.py's `_assert_project_access`
+    — a project-scoped manager/field-engineer must not reach a floor outside
+    their assignment by calling its floor-scoped route directly, even though
+    `list_floor_summaries` already hides it from the picker list."""
+    accessible = await RBACService(db).get_accessible_project_ids(ctx.user_id, ctx.org_id, ctx.role)
+    if accessible is None:
+        return
+    project_id = await service.get_floor_project_id(ctx.org_id, floor_id)
+    if project_id is None:
+        raise NotFoundException("Floor", floor_id)
+    if project_id not in accessible:
+        raise ForbiddenException("You do not have access to this floor's project")
 
 
 class ActivityCorrectionIn(BaseModel):
@@ -47,7 +64,8 @@ async def list_activities(_manager_or_admin: ManagerOrAdminUser):
 @router.get("/floors", summary="List floors with progress summary")
 async def list_floors(ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
     service = ConstructionProgressService(db)
-    summaries = await service.list_floor_summaries(ctx.org_id)
+    accessible = await RBACService(db).get_accessible_project_ids(ctx.user_id, ctx.org_id, ctx.role)
+    summaries = await service.list_floor_summaries(ctx.org_id, accessible_project_ids=accessible)
     return success_response(data=summaries)
 
 
@@ -60,6 +78,7 @@ async def get_floor_detail(floor_id: str, ctx: CallerContext, db: DB, _manager_o
     noisy during analyze polling and easy to confuse with a real missing floor.
     """
     service = ConstructionProgressService(db)
+    await _assert_floor_access(ctx, db, service, floor_id)
     snapshot = await service.get_latest_snapshot(ctx.org_id, floor_id)
     if not snapshot:
         return success_response(
@@ -71,21 +90,79 @@ async def get_floor_detail(floor_id: str, ctx: CallerContext, db: DB, _manager_o
 
 @router.post(
     "/floors/{floor_id}/analyze",
-    status_code=status.HTTP_201_CREATED,
-    summary="Generate a new progress snapshot for a floor",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start a background progress analysis job for a floor",
 )
 async def analyze_floor(floor_id: str, ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
+    """Enqueue analyze work and return a pollable job.
+
+    Inline POST used to hold the HTTP connection for many minutes; tunnel /
+    browser aborts cancelled the coroutine and left no snapshot. Work now runs
+    in a background task (see ConstructionProgressAnalyzeJobService).
+    """
+    from app.services.construction_progress_analyze_job_service import (
+        ConstructionProgressAnalyzeJobService,
+    )
+
     service = ConstructionProgressService(db)
-    try:
-        snapshot = await service.analyze_floor(ctx.org_id, floor_id, analyzed_by=ctx.user_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    return success_response(data=snapshot, message="Progress snapshot generated")
+    await _assert_floor_access(ctx, db, service, floor_id)
+    job = await ConstructionProgressAnalyzeJobService(db).start_analyze(
+        org_id=ctx.org_id,
+        floor_id=floor_id,
+        analyzed_by=ctx.user_id,
+    )
+    return success_response(data=job, message="Progress analysis started")
+
+
+@router.get(
+    "/floors/{floor_id}/analyze/jobs/{job_id}",
+    summary="Poll a floor progress analysis job",
+)
+async def get_analyze_job(
+    floor_id: str,
+    job_id: str,
+    ctx: CallerContext,
+    db: DB,
+    _manager_or_admin: ManagerOrAdminUser,
+):
+    from app.services.construction_progress_analyze_job_service import (
+        ConstructionProgressAnalyzeJobService,
+    )
+
+    service = ConstructionProgressService(db)
+    await _assert_floor_access(ctx, db, service, floor_id)
+    job = await ConstructionProgressAnalyzeJobService(db).get_job(org_id=ctx.org_id, job_id=job_id)
+    if not job or job.get("floorId") != floor_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis job not found")
+    return success_response(data=job)
+
+
+@router.get(
+    "/floors/{floor_id}/analyze/active",
+    summary="Get the active analyze job for a floor, if any",
+)
+async def get_active_analyze_job(
+    floor_id: str,
+    ctx: CallerContext,
+    db: DB,
+    _manager_or_admin: ManagerOrAdminUser,
+):
+    from app.services.construction_progress_analyze_job_service import (
+        ConstructionProgressAnalyzeJobService,
+    )
+
+    service = ConstructionProgressService(db)
+    await _assert_floor_access(ctx, db, service, floor_id)
+    job = await ConstructionProgressAnalyzeJobService(db).get_active_job_for_floor(
+        org_id=ctx.org_id, floor_id=floor_id,
+    )
+    return success_response(data=job)
 
 
 @router.get("/floors/{floor_id}/timeline", summary="Progress trend over time for a floor")
 async def get_floor_timeline(floor_id: str, ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
     service = ConstructionProgressService(db)
+    await _assert_floor_access(ctx, db, service, floor_id)
     timeline = await service.get_timeline(ctx.org_id, floor_id)
     return success_response(data=timeline)
 
@@ -93,12 +170,13 @@ async def get_floor_timeline(floor_id: str, ctx: CallerContext, db: DB, _manager
 @router.get("/floors/{floor_id}/heatmap", summary="Room-level heatmap for a floor's latest snapshot")
 async def get_floor_heatmap(floor_id: str, ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
     service = ConstructionProgressService(db)
+    await _assert_floor_access(ctx, db, service, floor_id)
     heatmap = await service.get_heatmap(ctx.org_id, floor_id)
     return success_response(data=heatmap)
 
 
 @router.delete("/floors/{floor_id}", summary="Delete all progress reports for a floor")
-async def delete_floor_reports(floor_id: str, ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
+async def delete_floor_reports(floor_id: str, ctx: CallerContext, db: DB, _admin: AdminUser):
     service = ConstructionProgressService(db)
     deleted_count = await service.delete_floor_reports(ctx.org_id, floor_id)
     if deleted_count == 0:
@@ -116,6 +194,7 @@ async def compare_floor_snapshots(
     to_snapshot_id: str = Query(..., alias="to"),
 ):
     service = ConstructionProgressService(db)
+    await _assert_floor_access(ctx, db, service, floor_id)
     try:
         comparison = await service.compare(ctx.org_id, floor_id, from_snapshot_id, to_snapshot_id)
     except ValueError as exc:

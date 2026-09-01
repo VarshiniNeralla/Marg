@@ -72,3 +72,42 @@ export const API_BASE_URL = resolveBaseUrl();
 
 /** Full API v1 prefix, e.g. "https://sitevision-api.onrender.com/api/v1". */
 export const API_V1_URL = `${API_BASE_URL}/api/v1`;
+
+/**
+ * Turn a stored media URL into something the browser/WebView can load.
+ * Relative `/media/...` paths (local disk storage) are prefixed with the API host.
+ * Absolute Cloudinary (or other) URLs pass through unchanged.
+ *
+ * Legacy unsigned `/media` URLs (pre-HMAC) get `access_token` appended so the
+ * auth-gated media route can serve them to <img> / PSV without Authorization headers.
+ */
+let _mediaAccessToken: string | null = null;
+
+/** Called from authStore whenever the access token changes. */
+export function setMediaAccessToken(token: string | null): void {
+  _mediaAccessToken = token;
+}
+
+export function resolveMediaUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  let absolute = trimmed.startsWith('/media/')
+    ? `${API_BASE_URL}${trimmed}`
+    : trimmed;
+
+  const isLocalMedia =
+    absolute.includes(`${API_BASE_URL}/media/`)
+    || absolute.startsWith('/media/')
+    || /\/media\//.test(absolute);
+  if (
+    isLocalMedia
+    && !/[?&]sig=/.test(absolute)
+    && !/[?&]access_token=/.test(absolute)
+    && _mediaAccessToken
+  ) {
+    const sep = absolute.includes('?') ? '&' : '?';
+    absolute = `${absolute}${sep}access_token=${encodeURIComponent(_mediaAccessToken)}`;
+  }
+  return absolute;
+}

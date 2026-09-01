@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.services.construction_progress_service import ConstructionProgressService
@@ -48,8 +49,17 @@ class DrishtiContextService:
         user may see."""
         query: dict[str, Any] = {"orgId": org_id}
         if accessible_project_ids is not None:
+            # `projects._id` is stored as an ObjectId (see
+            # user_project_service.py's own lookup), but the accessible-id
+            # list from user_projects is always plain strings — matching
+            # only the string form here silently returned zero projects for
+            # every non-admin (manager) even when correctly assigned.
+            object_ids = [
+                ObjectId(pid) for pid in accessible_project_ids if ObjectId.is_valid(pid)
+            ]
             query["$or"] = [
                 {"_id": {"$in": accessible_project_ids}},
+                {"_id": {"$in": object_ids}},
                 {"id": {"$in": accessible_project_ids}},
             ]
         projects = await self._db["projects"].find(query).to_list(length=1000)

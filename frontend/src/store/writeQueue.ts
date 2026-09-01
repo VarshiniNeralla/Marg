@@ -24,7 +24,7 @@
  */
 import { Network } from '@capacitor/network';
 import { workflowApiService } from '@/services/workflowApiService';
-import { useAuthStore } from './authStore';
+import { useAuthStore, isFieldEngineer } from './authStore';
 import { isTombstoned } from './tombstones';
 
 const QUEUE_KEY = 'sitesurelabs-write-queue-v1';
@@ -50,6 +50,9 @@ export interface PendingWrite {
   context?: string;      // human label for diagnostics
   attempts: number;
   createdAt: number;
+  /** When set to 'failed', the entry is kept for manual retry instead of dropped. */
+  status?: 'pending' | 'failed';
+  lastError?: string;
 }
 
 type WriteOps = typeof workflowApiService;
@@ -124,7 +127,7 @@ function emitRecovered(): void {
 function messageForStatus(status: number): string {
   if (status === 403) return 'You do not have permission to save that change.';
   if (status === 401) return 'Your session expired — please sign in again to save changes.';
-  return 'A change could not be saved to the server and will not be retried. Please try again manually.';
+  return 'A change could not be saved to the server. It will stay queued until you retry sync.';
 }
 
 /**
@@ -135,7 +138,19 @@ function messageForStatus(status: number): string {
  * failure, and should never surface an error toast.
  */
 function isNoopDelete(op: string, status: number): boolean {
-  return status === 404 && op.startsWith('delete');
+  if (status === 404 && op.startsWith('delete')) return true;
+  // Leftover pin DELETEs from "delete last capture" for Site Engineers always
+  // 403 (floorPlans:delete). Drop silently — do not toast permission spam.
+  if (status === 403 && op === 'deleteCapturePin') return true;
+  return false;
+}
+
+/** Drop queued pin DELETEs that Site Engineers are not allowed to perform. */
+function dropForbiddenPinDeletes(): void {
+  if (!isFieldEngineer(useAuthStore.getState().user)) return;
+  const before = queue.length;
+  queue = queue.filter(e => e.op !== 'deleteCapturePin');
+  if (queue.length !== before) save();
 }
 
 /** True if this write would recreate or patch an intentionally deleted id. */
@@ -192,6 +207,7 @@ let hadBacklog = false;
 async function flush(): Promise<void> {
   if (flushing) return;
   if (typeof window === 'undefined') return;
+  dropForbiddenPinDeletes();
   if (!queue.length) return;
   // Don't hammer the API (and trigger login redirects) while signed out.
   // Still arm the poll so a backlog taken offline / mid-refresh retries once
@@ -205,8 +221,19 @@ async function flush(): Promise<void> {
   try {
     // FIFO. Stop at the first transient failure so ordering is preserved
     // (a create is never overtaken by a later update of the same entity).
+    let skippedFailed = 0;
     while (queue.length) {
       const entry = queue[0];
+
+      // Failed entries sit at the back until retried — never block fresh work.
+      if (entry.status === 'failed') {
+        skippedFailed += 1;
+        if (skippedFailed >= queue.length) break;
+        queue.push(queue.shift() as PendingWrite);
+        save();
+        continue;
+      }
+      skippedFailed = 0;
 
       // Never recreate/update an entity the client already deleted. Leftover
       // createCapturePin / updateCapturePin entries after a pin delete were
@@ -251,13 +278,15 @@ async function flush(): Promise<void> {
           scheduleRetry(backoffFor(Math.max(1, entry.attempts || 1)));
           break;
         }
-        // Reachable transient (429 / 5xx). Count it; give up only after
-        // MAX_ATTEMPTS so a poison entry can't wedge the queue forever.
+        // Reachable transient (429 / 5xx). Count it; mark failed after
+        // MAX_ATTEMPTS but keep the entry for manual retry — never drop metadata.
         entry.attempts += 1;
         if (entry.attempts >= MAX_ATTEMPTS) {
-          queue.shift();
+          entry.status = 'failed';
+          entry.lastError = messageForStatus(status);
+          queue.push(queue.shift() as PendingWrite);
           save();
-          emitError(messageForStatus(status), status, entry.context);
+          emitError(entry.lastError, status, entry.context);
           continue;
         }
         save();
@@ -269,7 +298,8 @@ async function flush(): Promise<void> {
     flushing = false;
   }
 
-  if (!queue.length) {
+  const activeCount = queue.filter(e => e.status !== 'failed').length;
+  if (!activeCount) {
     stopPolling();
     if (hadBacklog) {
       hadBacklog = false;
@@ -314,6 +344,11 @@ export function enqueueWrite<K extends WriteOpName>(
   args: Parameters<WriteOps[K] extends (...a: never[]) => unknown ? WriteOps[K] : never>,
   context?: string,
 ): void {
+  // Site Engineers must never DELETE pins (403). Drop any leftover queue spam.
+  if (op === 'deleteCapturePin' && isFieldEngineer(useAuthStore.getState().user)) {
+    return;
+  }
+
   // Collapse exact duplicates that haven't been sent yet (double-tap / double
   // fire). Different field-patches on the same entity are kept distinct.
   const serialisedArgs = JSON.stringify(args);
@@ -357,11 +392,28 @@ export function enqueueWrite<K extends WriteOpName>(
   }
 
   if (queue.length >= MAX_QUEUE) {
-    // Safety valve: never let the queue grow unbounded. Drop the oldest and
-    // warn — the API snapshot rehydrates the full dataset on next load anyway.
-    queue.shift();
-    // eslint-disable-next-line no-console
-    console.warn('[write-queue] queue full; dropping oldest pending write');
+    // Prefer dropping non-create updates over creates (creates are dependency
+    // roots — dropping them leaves orphan updates). If only creates remain,
+    // refuse the new enqueue rather than shifting the oldest create.
+    const dropIdx = queue.findIndex(e =>
+      e.op !== 'createCapture'
+      && e.op !== 'createCapturePin'
+      && e.op !== 'createRoom'
+      && e.op !== 'createTour'
+      && e.op !== 'createFloorPlan'
+      && e.op !== 'createProject'
+      && e.op !== 'createTower'
+      && e.op !== 'createFloor',
+    );
+    if (dropIdx >= 0) {
+      queue.splice(dropIdx, 1);
+      // eslint-disable-next-line no-console
+      console.warn('[write-queue] queue full; dropped a non-create pending write');
+    } else {
+      // eslint-disable-next-line no-console
+      console.error('[write-queue] queue full of creates; refusing new enqueue');
+      return;
+    }
   }
 
   queue.push({
@@ -381,9 +433,31 @@ export function flushWriteQueue(): void {
   void flush();
 }
 
-/** Number of writes still waiting to reach the backend. */
+/** Number of writes still waiting to reach the backend (excludes failed-but-retained). */
 export function pendingWriteCount(): number {
-  return queue.length;
+  return queue.filter(e => e.status !== 'failed').length;
+}
+
+/** Writes that exhausted retries but are kept for manual replay. */
+export function failedWriteCount(): number {
+  return queue.filter(e => e.status === 'failed').length;
+}
+
+/** Reset failed entries and replay the queue — call from a "Retry sync" action. */
+export function retryFailedWrites(): void {
+  let changed = false;
+  for (const entry of queue) {
+    if (entry.status === 'failed') {
+      entry.status = undefined;
+      entry.attempts = 0;
+      entry.lastError = undefined;
+      changed = true;
+    }
+  }
+  if (changed) {
+    save();
+    void flush();
+  }
 }
 
 /**
@@ -473,6 +547,12 @@ export function cancelPendingDeletesForEntityIds(...ids: string[]): void {
     return !id || !idSet.has(id);
   });
   if (queue.length !== before) save();
+}
+
+export function clearWriteQueue(): void {
+  if (!queue.length) return;
+  queue = [];
+  save();
 }
 
 // ── Triggers ─────────────────────────────────────────────────────────────────

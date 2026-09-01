@@ -60,6 +60,7 @@ export interface UserInfo {
   role: SystemRole;
   org_id: string;
   org_name: string;
+  org_slug?: string;
   avatar_url: string | null;
   assigned_project_ids?: string[];
 }

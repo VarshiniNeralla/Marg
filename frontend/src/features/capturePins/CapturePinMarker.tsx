@@ -29,7 +29,7 @@ interface CapturePinMarkerProps {
  */
 export default function CapturePinMarker({
   pin, pageW, pageH, scale, selected, dense = false, annotationOnly = false,
-  showSequence = false, sequenceNumber, onSelect,
+  showSequence = false, sequenceNumber,
 }: CapturePinMarkerProps) {
   const cx = (pin.x / 100) * pageW;
   const cy = (pin.y / 100) * pageH;
@@ -54,33 +54,28 @@ export default function CapturePinMarker({
 
   const fill   = hasCapture ? '#16a34a' : '#2563eb';
   const stroke = hasCapture ? '#15803d' : '#1d4ed8';
-  const roomLabel = (pin.label || pin.roomName || '').trim();
+  // Prefer Flat · Room (same wording as the save dialog) so the on-map label
+  // does not look like it "changed" after save when only roomName was shown.
+  const flat = (pin.flatName || '').trim();
+  const room = (pin.roomName || pin.label || '').trim();
+  const roomLabel = flat && room ? `${flat} · ${room}` : (room || flat);
 
-  const startRef = React.useRef({ x: 0, y: 0 });
+  // Hit target in page units ≈ 28 CSS px — large enough for a finger, but the
+  // viewer owns pointer events (no stopPropagation). Stealing pointerdown used
+  // to swallow tablet taps: jitter then exceeded the pin's 10px slop AND the
+  // viewer never saw the gesture, so neither select nor place ran.
+  const hitR = Math.max(r * 2.2, 28 / Math.max(scale, 0.05));
 
   return (
     <g
       data-capture-pin={pin.id}
-      style={{ cursor: 'pointer', touchAction: 'none' }}
-      onPointerDown={(e) => {
-        e.stopPropagation();
-        startRef.current = { x: e.clientX, y: e.clientY };
-      }}
-      onPointerMove={(e) => {
-        e.stopPropagation();
-      }}
-      onPointerUp={(e) => {
-        e.stopPropagation();
-        const dx = e.clientX - startRef.current.x;
-        const dy = e.clientY - startRef.current.y;
-        if (Math.hypot(dx, dy) > 10) return;
-        onSelect(pin);
-      }}
+      style={{ cursor: 'pointer' }}
     >
       {/* Invisible hit target — easier taps without making the visible dot huge */}
       <circle
-        cx={cx} cy={cy} r={Math.max(r * 2.6, (dense ? 10 : 12) / scale)}
+        cx={cx} cy={cy} r={hitR}
         fill="transparent"
+        pointerEvents="all"
       />
 
       {selected && (
@@ -136,7 +131,7 @@ export default function CapturePinMarker({
           fontFamily="Inter, system-ui, sans-serif"
           style={{ pointerEvents: 'none', userSelect: 'none' }}
         >
-          {roomLabel.length > 18 ? `${roomLabel.slice(0, 16)}…` : roomLabel}
+          {roomLabel.length > 22 ? `${roomLabel.slice(0, 20)}…` : roomLabel}
         </text>
       ) : null}
     </g>

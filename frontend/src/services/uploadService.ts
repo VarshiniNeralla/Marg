@@ -113,6 +113,9 @@ export interface StitchJobResponse {
   status: StitchJobStatus;
   asset: UploadedFileResponse | null;
   error: string | null;
+  /** True when the server still has the raw .insp and can re-stitch. */
+  canRetry?: boolean;
+  rawRetained?: boolean;
 }
 
 /**
@@ -126,6 +129,14 @@ export interface StitchJobResponse {
 export async function getCaptureStitchJob(jobId: string): Promise<StitchJobResponse> {
   const { data } = await apiClient.get<ApiResponse<StitchJobResponse>>(
     `/uploads/captures/jobs/${jobId}`,
+  );
+  return data.data!;
+}
+
+/** Re-queue a failed stitch using the server-retained raw capture. */
+export async function retryCaptureStitchJob(jobId: string): Promise<StitchJobResponse> {
+  const { data } = await apiClient.post<ApiResponse<StitchJobResponse>>(
+    `/uploads/captures/jobs/${jobId}/retry`,
   );
   return data.data!;
 }

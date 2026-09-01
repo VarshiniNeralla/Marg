@@ -6,14 +6,17 @@ import { colors, motion } from '@theme/tokens';
 import { statusConfig, getRoomHistory, getPinForCapture } from '@store/workflowSelectors';
 import type { MockCapture } from '@/data/mockData';
 import { useWorkflowStore } from '@store/workflowStore';
-import { useAuthStore , getRoleLandingPath } from '@store/authStore';
+import { useAuthStore, getRoleLandingPath } from '@store/authStore';
+import { can } from '@/utils/permissions';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { buildFloorOptions, floorSelectionLabel, locationFilterMenuPaperSx, locationFilterToolbarSx, type FloorOption } from '@/utils/locationFilters';
-import { resolveCaptureThumbnailUrl } from '@/utils/captureMedia';
+import { resolveCaptureImageCandidates } from '@/utils/captureMedia';
 import { formatPinLocationLabel, formatTowerLabel, enrichCaptureLocation } from '@/utils/pinLabels';
 import {
   filterGalleryCaptures,
 } from '@/utils/captureGallery';
+import { filterOwnCaptures, ownCaptureIdSet, pinCaptureIdsForUser } from '@/utils/captureOwnership';
+import { reconcileStitchedCaptureMedia } from '@/store/fileUploadQueue';
 
 // Capture gallery — project-wise selection, calm minimal cards.
 
@@ -31,7 +34,14 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
   const st = statusConfig.capture[capture.status];
   const history = getRoomHistory(capture);
   const dot = STATUS_DOT[capture.status] ?? colors.textSubdued;
-  const thumbUrl = resolveCaptureThumbnailUrl(capture as MockCapture & Record<string, unknown>);
+  const thumbCandidates = useMemo(
+    () => resolveCaptureImageCandidates(capture as MockCapture & Record<string, unknown>),
+    [capture],
+  );
+  const [thumbIdx, setThumbIdx] = useState(0);
+  React.useEffect(() => { setThumbIdx(0); }, [capture.id]);
+  const thumbUrl = thumbIdx >= 0 ? (thumbCandidates[thumbIdx] ?? null) : null;
+  const thumbsExhausted = thumbIdx < 0 && thumbCandidates.length > 0;
   const projectShort = capture.projectName.replace(/^My Home\s+/i, '');
   // Prefer live Flat · Room from the pin — capture.roomName is frozen at create
   // time and may still say "Pin N" for older uploads.
@@ -76,15 +86,19 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
             src={thumbUrl}
             alt=""
             loading="lazy"
+            onError={() => {
+              // Prefer next candidate (e.g. full image when a stale *_thumb.jpg 404s).
+              setThumbIdx(i => (i + 1 < thumbCandidates.length ? i + 1 : -1));
+            }}
             sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
           />
         ) : (
-          // No image yet — a raw 360 still stitching in the background. The
-          // card's gradient shows through as the backdrop.
+          // No image yet — either still stitching, or every candidate URL 404'd
+          // (stale local path after delete / before stitch reconcile).
           <Box sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 0.75 }}>
             <ViewInArRounded sx={{ color: 'rgba(255,255,255,0.55)', fontSize: 26 }} />
             <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: 'rgba(255,255,255,0.75)' }}>
-              Processing 360°…
+              {thumbsExhausted ? 'Image unavailable' : 'Processing 360°…'}
             </Typography>
           </Box>
         )}
@@ -163,11 +177,11 @@ export default function CapturesPage() {
   const isMdUp = useMediaQuery(theme.breakpoints.up('md'));
   const isEngineerView = location.pathname === '/my-captures';
   const user = useAuthStore(s => s.user);
-  const role = user?.role || 'default';
+  const sessionUserKey = user?.id || user?.role || 'default';
 
-  const [projectId, setProjectId] = useState<string>(() => sessionStorage.getItem(`captures_projectId_${role}`) || '');
-  const [towerId, setTowerId] = useState<string>(() => sessionStorage.getItem(`captures_towerId_${role}`) || '');
-  const [floorId, setFloorId] = useState<string>(() => sessionStorage.getItem(`captures_floorId_${role}`) || '');
+  const [projectId, setProjectId] = useState<string>(() => sessionStorage.getItem(`captures_projectId_${sessionUserKey}`) || '');
+  const [towerId, setTowerId] = useState<string>(() => sessionStorage.getItem(`captures_towerId_${sessionUserKey}`) || '');
+  const [floorId, setFloorId] = useState<string>(() => sessionStorage.getItem(`captures_floorId_${sessionUserKey}`) || '');
   const [sortOrder, setSortOrder] = useState<'latest' | 'oldest'>('latest');
   const [sortAnchor, setSortAnchor] = useState<null | HTMLElement>(null);
 
@@ -180,6 +194,13 @@ export default function CapturesPage() {
   const tours = useWorkflowStore(s => s.tours);
   const deleteCapture = useWorkflowStore(s => s.deleteCapture);
   const [deleteTarget, setDeleteTarget] = useState<MockCapture | null>(null);
+
+  // Pull finished stitch panoramas onto any still-empty capture cards (common
+  // after refresh when the server finished stitching while the UI was idle).
+  React.useEffect(() => {
+    void reconcileStitchedCaptureMedia();
+  }, []);
+
   const tourCaptureIds = useMemo(() => new Set(tours.map(t => t.captureId)), [tours]);
   // Same stale-roomName concern as CaptureCard's displayName — resolve the live pin label here too.
   const deleteTargetLabel = deleteTarget
@@ -218,14 +239,19 @@ export default function CapturesPage() {
   }, [allFloors, projectId, towerId, availableTowers]);
 
   const galleryCaptures = useMemo(() => {
-    const enriched = mockCaptures.map(c => enrichCaptureLocation(c, {
-      pins: allPins,
+    const scopedCaptures = isEngineerView ? filterOwnCaptures(mockCaptures, user) : mockCaptures;
+    const ownIds = isEngineerView ? ownCaptureIdSet(mockCaptures, user) : null;
+    const pinsForGallery = ownIds
+      ? allPins.map(p => ({ ...p, captureIds: pinCaptureIdsForUser(p.captureIds, ownIds) }))
+      : allPins;
+    const enriched = scopedCaptures.map(c => enrichCaptureLocation(c, {
+      pins: pinsForGallery,
       projects: allProjects,
       towers: allTowers,
       floors: allFloors,
     }));
-    return filterGalleryCaptures(enriched, allPins, assignedProjectIds);
-  }, [mockCaptures, allPins, assignedProjectIds, allProjects, allTowers, allFloors]);
+    return filterGalleryCaptures(enriched, pinsForGallery, assignedProjectIds);
+  }, [mockCaptures, allPins, assignedProjectIds, allProjects, allTowers, allFloors, isEngineerView, user]);
 
   const filtered = useMemo(() => {
     const list = galleryCaptures.filter(c => {
@@ -333,18 +359,18 @@ export default function CapturesPage() {
     setTowerId(id === 'all' ? '' : 'all');
     setFloorId(id === 'all' ? '' : 'all');
     setMenuAnchor(null); 
-    sessionStorage.setItem(`captures_projectId_${role}`, id);
-    sessionStorage.setItem(`captures_towerId_${role}`, id === 'all' ? '' : 'all');
-    sessionStorage.setItem(`captures_floorId_${role}`, id === 'all' ? '' : 'all');
+    sessionStorage.setItem(`captures_projectId_${sessionUserKey}`, id);
+    sessionStorage.setItem(`captures_towerId_${sessionUserKey}`, id === 'all' ? '' : 'all');
+    sessionStorage.setItem(`captures_floorId_${sessionUserKey}`, id === 'all' ? '' : 'all');
   };
   const handleTowerSelect = (id: string) => { 
     setTowerId(id); setFloorId('all'); setTowerMenuAnchor(null); 
-    sessionStorage.setItem(`captures_towerId_${role}`, id);
-    sessionStorage.setItem(`captures_floorId_${role}`, 'all');
+    sessionStorage.setItem(`captures_towerId_${sessionUserKey}`, id);
+    sessionStorage.setItem(`captures_floorId_${sessionUserKey}`, 'all');
   };
   const handleFloorSelect = (id: string) => { 
     setFloorId(id); setFloorMenuAnchor(null); 
-    sessionStorage.setItem(`captures_floorId_${role}`, id);
+    sessionStorage.setItem(`captures_floorId_${sessionUserKey}`, id);
   };
 
   const selectedProject = PROJECTS_WITH_CAPTURES.find(p => p.id === projectId);
@@ -697,7 +723,7 @@ export default function CapturesPage() {
                       key={c.id}
                       capture={c}
                       hasTour={tourCaptureIds.has(c.id)}
-                      onDelete={setDeleteTarget}
+                      onDelete={can(user?.role, 'captures', 'delete') ? setDeleteTarget : undefined}
                       showProjectName={showProjectName}
                       compact={isMobile}
                     />

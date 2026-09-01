@@ -9,9 +9,10 @@ import {
   PublishRounded, VisibilityRounded, VisibilityOffRounded, ContentCopyRounded, EditLocationAltRounded,
   DeleteOutlineRounded, MapRounded,
 } from '@mui/icons-material';
-import { useWorkflowStore } from '@store/workflowStore';
+import { useWorkflowStore, formatPublishFloorPlanTourMessage } from '@store/workflowStore';
 import { useAuthStore, isFieldEngineer, isManagerOrAdmin } from '@store/authStore';
 import { getFloorPlanByFloor, getFloorsByTower, getCapturePinsByFloorPlan } from '@store/workflowSelectors';
+import { resolveMediaUrl } from '@/config/env';
 import type { MockRoomMarker } from '@/data/mockData';
 import type { WfCapturePin } from '@store/workflowStore';
 import { useDeviceType, usesCameraCapture } from '@/hooks/useDeviceType';
@@ -25,6 +26,7 @@ import CaptureTimeline from '@shared/components/CaptureTimeline/CaptureTimeline'
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import type { CaptureSnapshot } from '@/data/mockData';
 import { formatCaptureDateTime, uploadSequenceByPinId } from '@/utils/pinLabels';
+import { ownCaptureIdSet, pinCaptureIdsForUser, pinHasOwnCapture } from '@/utils/captureOwnership';
 import { normaliseError } from '@/services/apiClient';
 
 /* ── PDF.js (lazy-loaded so bundle stays small until a PDF is needed) ──── */
@@ -80,10 +82,13 @@ const STATUS_COLOR: Record<string, { fill: string; stroke: string; label: string
 function CtrlBtn({ title, onClick, children, small }: { title: string; onClick: () => void; children: React.ReactNode; small?: boolean }) {
   const size = small ? 28 : 34;
   return (
-    <Tooltip title={title} placement="right">
+    <Tooltip title={title} placement="right" disableTouchListener>
       <IconButton
+        type="button"
+        data-no-pan
         onClick={() => onClick()}
         onPointerDown={e => e.stopPropagation()}
+        onPointerUp={e => e.stopPropagation()}
         size="small"
         sx={{
           width: size, height: size, borderRadius: '9px',
@@ -91,6 +96,7 @@ function CtrlBtn({ title, onClick, children, small }: { title: string; onClick: 
           backdropFilter: 'blur(8px)',
           boxShadow: '0 1px 6px rgba(15,23,42,0.12)',
           color: P.strong,
+          touchAction: 'manipulation',
           transition: T,
           '&:hover': { backgroundColor: P.white, boxShadow: '0 3px 12px rgba(15,23,42,0.16)', color: P.blue },
         }}
@@ -171,8 +177,10 @@ export default function FloorPlanViewerPage() {
 
   const theme    = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const compactChrome = useMediaQuery(theme.breakpoints.down('lg'));
   const device   = useDeviceType();
   const useCamera = usesCameraCapture(device);
+  const isTouchUi = device !== 'desktop';
 
   const user       = useAuthStore(s => s.user);
   const isEngineer = isFieldEngineer(user);
@@ -181,10 +189,12 @@ export default function FloorPlanViewerPage() {
 
   const project    = useWorkflowStore(s => s.projects.find(p => p.id === projectId));
   const tower      = useWorkflowStore(s => s.towers.find(t => t.id === towerId));
+  const towers     = useWorkflowStore(s => s.towers);
   const floors     = useWorkflowStore(s => s.floors);
   const floorPlans = useWorkflowStore(s => s.floorPlans);
   const allPins    = useWorkflowStore(s => s.capturePins);
   const captures   = useWorkflowStore(s => s.captures);
+  const ownCaptureIds = isEngineer ? ownCaptureIdSet(captures, user) : null;
   const createCapturePin     = useWorkflowStore(s => s.createCapturePin);
   const deleteCapturePin     = useWorkflowStore(s => s.deleteCapturePin);
   const publishFloorPlanTour = useWorkflowStore(s => s.publishFloorPlanTour);
@@ -204,7 +214,7 @@ export default function FloorPlanViewerPage() {
   // every captured pin shows up.
   const floorPlansForFloor = floorPlans.filter(fp => fp.towerId === (towerId ?? '') && fp.floorId === (floorId ?? ''));
   const floorPlan =
-    floorPlansForFloor.find(fp => allPins.some(p => p.floorPlanId === fp.id && p.captureIds.length > 0)) ??
+    floorPlansForFloor.find(fp => allPins.some(p => p.floorPlanId === fp.id && pinHasOwnCapture(p.captureIds, ownCaptureIds))) ??
     floorPlansForFloor.find(fp => allPins.some(p => p.floorPlanId === fp.id)) ??
     floorPlansForFloor[0] ??
     getFloorPlanByFloor(floorPlans, towerId ?? '', floorId ?? '');
@@ -214,8 +224,9 @@ export default function FloorPlanViewerPage() {
   const pinsAll = (() => {
     if (!floorPlan) return [];
     const byPlan = getCapturePinsByFloorPlan(allPins, floorPlan.id);
-    if (byPlan.length > 0) return byPlan;
-    return [...allPins.filter(p => p.floorId === (floorId ?? ''))].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+    const source = byPlan.length > 0 ? byPlan : [...allPins.filter(p => p.floorId === (floorId ?? ''))].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+    if (!ownCaptureIds) return source;
+    return source.map(p => ({ ...p, captureIds: pinCaptureIdsForUser(p.captureIds, ownCaptureIds) }));
   })();
   const pinsVisible = floorPlan?.pinsVisible !== false;
 
@@ -225,21 +236,35 @@ export default function FloorPlanViewerPage() {
 
   // Derive image / PDF URLs before any early returns
   const planRecord  = floorPlan as (typeof floorPlan & Record<string, unknown>) | null;
-  const mediaAssets = (planRecord?.mediaAssets as { original_url?: string }[] | undefined) ?? [];
-  const imageUrl: string | null =
+  const mediaAssets = (planRecord?.mediaAssets as {
+    original_url?: string;
+    raw_pdf_url?: string | null;
+    rawPdfUrl?: string | null;
+  }[] | undefined) ?? [];
+  const imageUrl: string | null = resolveMediaUrl(
     (planRecord?.fileUrl as string | undefined)
     ?? (planRecord?.file_url as string | undefined)
     ?? mediaAssets[0]?.original_url
-    ?? null;
-  const rawPdfUrl: string | null =
+    ?? null,
+  );
+  const rawPdfUrl: string | null = resolveMediaUrl(
     (planRecord?.rawPdfUrl as string | undefined)
     ?? (planRecord?.raw_pdf_url as string | undefined)
-    ?? null;
+    ?? mediaAssets[0]?.rawPdfUrl
+    ?? mediaAssets[0]?.raw_pdf_url
+    ?? null,
+  );
   const fileFormat = ((planRecord?.format ?? planRecord?.fileType ?? '') as string).toLowerCase();
   // Cloudinary-hosted PDFs are pre-converted to PNG server-side (original_url already
   // points to the PNG render). Only use PDF.js for local/non-Cloudinary PDF sources.
+  // Local storage keeps a PNG preview on fileUrl for room-map/<img>, so detect PDF
+  // via format or rawPdfUrl — not via imageUrl extension (which is often .png).
   const isCloudinaryUrl = imageUrl?.includes('res.cloudinary.com') ?? false;
-  const isPdf = !isCloudinaryUrl && (fileFormat === 'pdf' || (imageUrl?.toLowerCase().includes('.pdf') ?? false));
+  const isPdf = !isCloudinaryUrl && (
+    fileFormat === 'pdf'
+    || !!rawPdfUrl
+    || (imageUrl?.toLowerCase().includes('.pdf') ?? false)
+  );
 
   /* ── state ──────────────────────────────────────────────────────────── */
   const [scale, setScale]               = useState(1);
@@ -253,6 +278,7 @@ export default function FloorPlanViewerPage() {
   // ── Pin capture workflow state ──────────────────────────────────────────────
   const [captureMode, setCaptureMode]     = useState(false);
   const [annotateMode, setAnnotateMode]   = useState(false);
+  const [placeArmed, setPlaceArmed]       = useState(false);
   const [pendingAnnotate, setPendingAnnotate] = useState<{ x: number; y: number } | null>(null);
   const [editingPinId, setEditingPinId] = useState<string | null>(null);
   const [annotateFlat, setAnnotateFlat]   = useState<string>(PREDEF_FLAT_OPTIONS[0]);
@@ -269,15 +295,16 @@ export default function FloorPlanViewerPage() {
   const [errorToast, setErrorToast]       = useState('');
   const [deletePlanOpen, setDeletePlanOpen] = useState(false);
 
-  // Annotate: show labeled points when visible. pinsOnly (gallery/history): only
-  // uploaded green pins. Otherwise: hide empties when toggled off.
-  // Do NOT let annotateMode override pinsVisible — that made Hide look broken
-  // for managers (annotate mode is on by default).
+  // pinsOnly (gallery): only uploaded green pins.
+  // Hide: annotation mode hides every point (they have no captures yet);
+  // review mode hides empty points and keeps captured ones.
   const pins = pinsOnly
-    ? pinsAll.filter(p => (p.captureIds?.length ?? 0) > 0)
+    ? (isEngineer ? pinsAll : pinsAll.filter(p => (p.captureIds?.length ?? 0) > 0))
     : pinsVisible
       ? pinsAll
-      : pinsAll.filter(p => (p.captureIds?.length ?? 0) > 0);
+      : annotateMode
+        ? []
+        : pinsAll.filter(p => (p.captureIds?.length ?? 0) > 0);
 
   // Engineer capture order 1..N (by capture time) — never admin annotation stop #.
   const uploadSeqById = pinsOnly
@@ -286,10 +313,41 @@ export default function FloorPlanViewerPage() {
 
   const selectedPin = pinsAll.find(p => p.id === selectedPinId) ?? pins.find(p => p.id === selectedPinId) ?? null;
   const pinsWithCaptures = pinsAll.filter(p => p.captureIds.length > 0).length;
-  const siblingFloorsWithPins = towerFloors.filter(f =>
-    f.id !== floorId
-    && allPins.some(p => p.floorId === f.id && p.flatName && p.roomName),
-  );
+
+  // Import sources: any other floor in this project that already has labeled
+  // Flat · Room points. Match by floorId OR by a floor-plan record for that floor
+  // (re-uploads can leave pins on an older plan id with drifted floorId).
+  const importSourceFloors = (() => {
+    const projectFloorIds = new Set(
+      floors
+        .filter(f => {
+          const t = towers.find(x => x.id === f.towerId);
+          return t?.projectId === projectId;
+        })
+        .map(f => f.id),
+    );
+    // Prefer floors from this tower first, then other towers in the project.
+    const candidates = [
+      ...towerFloors,
+      ...floors.filter(f => projectFloorIds.has(f.id) && f.towerId !== towerId),
+    ];
+    const seen = new Set<string>();
+    const out: typeof towerFloors = [];
+    for (const f of candidates) {
+      if (!f.id || f.id === floorId || seen.has(f.id)) continue;
+      seen.add(f.id);
+      const planIds = new Set(
+        floorPlans.filter(fp => fp.floorId === f.id).map(fp => fp.id),
+      );
+      const hasLabeled = allPins.some(p => {
+        if (!(p.flatName && p.roomName)) return false;
+        if (p.floorId === f.id) return true;
+        return !!p.floorPlanId && planIds.has(p.floorPlanId);
+      });
+      if (hasLabeled) out.push(f);
+    }
+    return out;
+  })();
 
   // Managers/admins annotate (Flat + Room). Engineers view plans only —
   // pin placement happens in Capture Workflow.
@@ -314,20 +372,27 @@ export default function FloorPlanViewerPage() {
   // Reset timeline view when the selected pin changes
   useEffect(() => { setShowTimeline(false); }, [selectedPinId]);
 
-  // Deep-link from upload: require annotate / offer copy on new floor (once)
+  // Deep-link from upload: require annotate / offer copy on new floor.
+  // Re-run when import sources hydrate so ?copy=1 is not missed.
   useEffect(() => {
     if (!canAnnotate || !floorPlan || pinsOnly) return;
     if (forceAnnotate || floorPlan.needsReannotate) {
       setAnnotateMode(true);
       setCaptureMode(false);
     }
-    if (openCopy && siblingFloorsWithPins.length > 0) {
-      setCopySourceFloorId(siblingFloorsWithPins[0]?.id ?? '');
+    if (openCopy && importSourceFloors.length > 0) {
+      setCopySourceFloorId(prev => prev || importSourceFloors[0]?.id || '');
       setCopyOpen(true);
     }
-    // Intentionally only when floor/plan or deep-link params change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canAnnotate, floorPlan?.id, floorPlan?.needsReannotate, forceAnnotate, openCopy, pinsOnly]);
+  }, [
+    canAnnotate,
+    floorPlan?.id,
+    floorPlan?.needsReannotate,
+    forceAnnotate,
+    openCopy,
+    pinsOnly,
+    importSourceFloors.length,
+  ]);
 
   // SVG viewer state
   const [pageSize, setPageSize]                 = useState({ w: 0, h: 0 });
@@ -370,9 +435,17 @@ export default function FloorPlanViewerPage() {
   const renderingRef    = useRef(false);
   const lastRenderScale = useRef(0);
   const attachingRef    = useRef(false);
+  const pageSizeRef     = useRef(pageSize);
+  const pinsHitRef      = useRef(pins);
+  const placeArmedRef   = useRef(false);
+  const lastPlaceAtRef  = useRef(0);
+  const annotateDialogOpenedAtRef = useRef(0);
 
   useEffect(() => { scaleRef.current  = scale;  }, [scale]);
   useEffect(() => { offsetRef.current = offset; }, [offset]);
+  useEffect(() => { pageSizeRef.current = pageSize; }, [pageSize]);
+  useEffect(() => { pinsHitRef.current = pins; }, [pins]);
+  useEffect(() => { placeArmedRef.current = placeArmed; }, [placeArmed]);
 
   /* ── container size tracking ────────────────────────────────────────── */
   useEffect(() => {
@@ -385,7 +458,7 @@ export default function FloorPlanViewerPage() {
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [fullscreen]);
+  }, [fullscreen, compactChrome]);
 
   /* ── clampOffset: keep floor plan visible, not fully dragged off-screen */
   const clampOffset = useCallback((ox: number, oy: number, s: number): { x: number; y: number } => {
@@ -437,6 +510,18 @@ export default function FloorPlanViewerPage() {
     return () => clearTimeout(t);
   }, [fullscreen, centerImage]);
 
+  /* Re-fit when the viewer actually gets a real size (tablet layout fill / rotate). */
+  const lastFitSizeRef = useRef({ w: 0, h: 0 });
+  useEffect(() => {
+    const { w, h } = containerSize;
+    if (w < 80 || h < 80 || pageSize.w <= 0) return;
+    const prev = lastFitSizeRef.current;
+    if (prev.w > 0 && Math.abs(prev.w - w) < 48 && Math.abs(prev.h - h) < 48) return;
+    lastFitSizeRef.current = { w, h };
+    const t = setTimeout(centerImage, 50);
+    return () => clearTimeout(t);
+  }, [containerSize, pageSize.w, centerImage]);
+
   /* ── PDF.js rendering ───────────────────────────────────────────────── */
   const renderPdf = useCallback(async (renderScale: number) => {
     if (!pdfDocRef.current || renderingRef.current) return;
@@ -468,8 +553,19 @@ export default function FloorPlanViewerPage() {
       return;
     }
     if (isPdf) {
-      // Load the original PDF via PDF.js for true vector quality
-      const pdfSrc = rawPdfUrl || imageUrl;
+      // Prefer the original PDF for vector-sharp PDF.js rendering. Never pass the
+      // raster preview (.png) into getDocument — that fails and falls back to a soft image.
+      const pdfSrc = rawPdfUrl
+        || (imageUrl?.toLowerCase().includes('.pdf') ? imageUrl : null);
+      if (!pdfSrc) {
+        const img = new Image();
+        img.onload = () => {
+          setPageSize({ w: img.naturalWidth, h: img.naturalHeight });
+          setRenderedImageUrl(imageUrl);
+        };
+        img.src = imageUrl;
+        return;
+      }
       let cancelled = false;
       getPdfJs().then(async lib => {
         if (cancelled) return;
@@ -483,7 +579,7 @@ export default function FloorPlanViewerPage() {
         // Initial render at a reasonable resolution; will re-render after centerImage
         await renderPdf(1.5);
       }).catch(() => {
-        // PDF.js failed — fall back to the PNG preview from Cloudinary
+        // PDF.js failed — fall back to the PNG preview
         if (cancelled) return;
         const img = new Image();
         img.onload = () => {
@@ -581,14 +677,67 @@ export default function FloorPlanViewerPage() {
       inertiaRafRef.current = requestAnimationFrame(tick);
     };
 
+    // Screen-space pin hit (more reliable than elementFromPoint on Android WebView).
+    const hitPinIdAt = (clientX: number, clientY: number): string | null => {
+      const ps = pageSizeRef.current;
+      if (!ps.w) return null;
+      const rect = el.getBoundingClientRect();
+      const mx = clientX - rect.left;
+      const my = clientY - rect.top;
+      const s = scaleRef.current;
+      const o = offsetRef.current;
+      let bestId: string | null = null;
+      let bestD = 22;
+      for (const pin of pinsHitRef.current) {
+        const dx = (pin.x / 100) * ps.w * s + o.x - mx;
+        const dy = (pin.y / 100) * ps.h * s + o.y - my;
+        const d = Math.hypot(dx, dy);
+        if (d < bestD) {
+          bestD = d;
+          bestId = pin.id;
+        }
+      }
+      return bestId;
+    };
+
+    const finishTap = (clientX: number, clientY: number) => {
+      const hit = document.elementFromPoint(clientX, clientY) as Element | null;
+      if (hit?.closest?.('[data-no-pan], button, a, input, textarea, [role="dialog"]')) return;
+      const pinId = placeArmedRef.current ? null : hitPinIdAt(clientX, clientY);
+      if (pinId) {
+        selectPinByIdRef.current(pinId);
+        return;
+      }
+      placePinAtClientRef.current(clientX, clientY, null);
+    };
+
+    // Window-level tracking: setPointerCapture on Android WebView often fires
+    // pointercancel immediately, which used to abort the tap before placePin ran.
+    let windowBound = false;
+    const bindWindow = () => {
+      if (windowBound) return;
+      windowBound = true;
+      window.addEventListener('pointermove', onMove, { passive: false });
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onCancel);
+    };
+    const unbindWindow = () => {
+      if (!windowBound) return;
+      windowBound = false;
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+    };
+
     // ── pointer events ───────────────────────────────────────────────────
     const onDown = (e: PointerEvent) => {
       if (e.button !== 0 && e.pointerType === 'mouse') return;
-      if ((e.target as HTMLElement).closest('button, a, [data-no-pan], [data-capture-pin], input, textarea, [role="dialog"]')) return;
+      if ((e.target as HTMLElement).closest('button, a, [data-no-pan], input, textarea, [role="dialog"]')) return;
 
+      e.preventDefault();
       stopInertia();
       activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      el.setPointerCapture(e.pointerId);
+      bindWindow();
 
       if (activePointersRef.current.size === 2) {
         // Second finger down — switch to pinch mode
@@ -604,12 +753,13 @@ export default function FloorPlanViewerPage() {
         draggingRef.current    = true;
         movedRef.current       = false;
         dragStartRef.current   = { x: e.clientX, y: e.clientY, ox: offsetRef.current.x, oy: offsetRef.current.y };
-        setIsDragging(true);
       }
     };
 
     const onMove = (e: PointerEvent) => {
+      if (!activePointersRef.current.has(e.pointerId) && activePointersRef.current.size === 0) return;
       activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (e.cancelable) e.preventDefault();
 
       if (pinchActiveRef.current && activePointersRef.current.size >= 2) {
         // ── Pinch-zoom ──────────────────────────────────────────────────
@@ -636,9 +786,13 @@ export default function FloorPlanViewerPage() {
         const nx = dragStartRef.current.ox + e.clientX - dragStartRef.current.x;
         const ny = dragStartRef.current.oy + e.clientY - dragStartRef.current.y;
 
-        if (Math.hypot(e.clientX - dragStartRef.current.x, e.clientY - dragStartRef.current.y) > 4) {
-          movedRef.current = true;
-        }
+        // Finger taps routinely jitter 8–24px on tablets. Treat that as a tap,
+        // not a pan — otherwise placePin never runs.
+        const slop = e.pointerType === 'mouse' ? 6 : 28;
+        const dist = Math.hypot(e.clientX - dragStartRef.current.x, e.clientY - dragStartRef.current.y);
+        if (dist <= slop && !movedRef.current) return;
+        movedRef.current = true;
+        setIsDragging(true);
 
         // Track velocity for inertia (capped to prevent explosive launch)
         const now = performance.now();
@@ -658,7 +812,7 @@ export default function FloorPlanViewerPage() {
       }
     };
 
-    const onUp = (e: PointerEvent) => {
+    const endGesture = (e: PointerEvent, cancelled: boolean) => {
       activePointersRef.current.delete(e.pointerId);
 
       if (activePointersRef.current.size === 1) {
@@ -677,46 +831,38 @@ export default function FloorPlanViewerPage() {
       }
 
       if (activePointersRef.current.size === 0) {
+        unbindWindow();
         const wasDragging = draggingRef.current;
         const didPan = movedRef.current;
         pinchActiveRef.current = false;
         draggingRef.current    = false;
         setIsDragging(false);
-        // Tap (no pan): select existing pin if hit, otherwise place a new one.
-        // Use elementFromPoint because setPointerCapture retargets e.target to the container.
-        if (!didPan) {
-          const hit = document.elementFromPoint(e.clientX, e.clientY) as Element | null;
-          // Never place/select when interacting with overlays (Edit/Delete panel, etc.).
-          if (hit?.closest?.('[data-no-pan], button, a, input, textarea, [role="dialog"]')) {
-            movedRef.current = false;
-          } else {
-            const pinHost = hit?.closest?.('[data-capture-pin]') as HTMLElement | SVGElement | null;
-            const pinId = pinHost?.getAttribute?.('data-capture-pin');
-            if (pinId) {
-              selectPinByIdRef.current(pinId);
-            } else {
-              placePinAtClientRef.current(e.clientX, e.clientY, e.target);
-            }
-          }
-        }
+        // Tap, or a cancelled tap (Android WebView often cancels before pointerup).
+        if (!didPan) finishTap(e.clientX, e.clientY);
         movedRef.current = false;
-        // Kick off inertia only on single-finger pan release, not pinch
-        if (wasDragging && didPan && !pinchActiveRef.current) {
+        if (!cancelled && wasDragging && didPan && !pinchActiveRef.current) {
           startInertia();
         }
       }
     };
 
-    el.addEventListener('pointerdown',   onDown);
-    el.addEventListener('pointermove',   onMove);
-    el.addEventListener('pointerup',     onUp);
-    el.addEventListener('pointercancel', onUp);
+    const onUp = (e: PointerEvent) => endGesture(e, false);
+    const onCancel = (e: PointerEvent) => endGesture(e, true);
+
+    const swallowGhostClick = (e: MouseEvent) => {
+      if (performance.now() - lastPlaceAtRef.current < 700) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+
+    el.addEventListener('pointerdown', onDown, { passive: false });
+    el.addEventListener('click', swallowGhostClick, true);
 
     return () => {
-      el.removeEventListener('pointerdown',   onDown);
-      el.removeEventListener('pointermove',   onMove);
-      el.removeEventListener('pointerup',     onUp);
-      el.removeEventListener('pointercancel', onUp);
+      unbindWindow();
+      el.removeEventListener('pointerdown', onDown);
+      el.removeEventListener('click', swallowGhostClick, true);
       cancelAnimationFrame(inertiaRafRef.current);
       activePointersRef.current.clear();
     };
@@ -792,13 +938,26 @@ export default function FloorPlanViewerPage() {
     const rect = el.getBoundingClientRect();
     const mx = clientX - rect.left;
     const my = clientY - rect.top;
-    const pageX = (mx - offsetRef.current.x) / scaleRef.current;
-    const pageY = (my - offsetRef.current.y) / scaleRef.current;
-    if (pageX < 0 || pageY < 0 || pageX > pageSize.w || pageY > pageSize.h) return false;
+    if (mx < 0 || my < 0 || mx > rect.width || my > rect.height) return false;
+
+    let pageX = (mx - offsetRef.current.x) / scaleRef.current;
+    let pageY = (my - offsetRef.current.y) / scaleRef.current;
+    // Letterboxed fit-to-screen leaves a grey margin around the drawing.
+    // Clamp onto the page so a tap on that margin still places a point.
+    const pad = Math.max(pageSize.w, pageSize.h) * 0.08;
+    if (pageX < -pad || pageY < -pad || pageX > pageSize.w + pad || pageY > pageSize.h + pad) {
+      setErrorToast('Tap on the floor-plan drawing to place a capture point');
+      return false;
+    }
+    pageX = Math.min(pageSize.w, Math.max(0, pageX));
+    pageY = Math.min(pageSize.h, Math.max(0, pageY));
     const xPct = (pageX / pageSize.w) * 100;
     const yPct = (pageY / pageSize.h) * 100;
 
     if (placingAnnotate) {
+      annotateDialogOpenedAtRef.current = Date.now();
+      lastPlaceAtRef.current = performance.now();
+      setPlaceArmed(false);
       setPendingAnnotate({ x: xPct, y: yPct });
       return true;
     }
@@ -903,10 +1062,8 @@ export default function FloorPlanViewerPage() {
   /* ── Publish the pin-ordered walkthrough ────────────────────────────── */
   const handlePublishWalkthrough = useCallback(() => {
     if (!floorPlan) return;
-    const tourIds = publishFloorPlanTour(floorPlan.id);
-    setPublishToast(tourIds.length
-      ? `Published walkthrough · ${tourIds.length} tour${tourIds.length !== 1 ? 's' : ''} in pin order`
-      : 'No pins with captures to publish yet');
+    const result = publishFloorPlanTour(floorPlan.id);
+    setPublishToast(formatPublishFloorPlanTourMessage(result));
   }, [floorPlan, publishFloorPlanTour]);
 
   if (!project || !tower || !floor) {
@@ -945,8 +1102,15 @@ export default function FloorPlanViewerPage() {
         position: 'relative',
         width: '100%',
         flex: fullscreen ? 1 : undefined,
-        height: fullscreen ? undefined : { xs: pinsOnly ? 'calc(100dvh - 150px)' : 'calc(100dvh - 190px)', sm: 400, md: 'calc(100vh - 280px)' },
-        minHeight: { xs: 340, md: 480 },
+        // Tablets: fill remaining viewport so the page doesn't scroll (scroll
+        // steals the pointer and cancels the tap before a point can be placed).
+        height: fullscreen ? undefined : compactChrome ? '100%' : {
+          xs: pinsOnly ? 'calc(100dvh - 150px)' : 'calc(100dvh - 190px)',
+          sm: pinsOnly ? 'calc(100dvh - 170px)' : 'calc(100dvh - 210px)',
+          md: pinsOnly ? 'calc(100vh - 200px)' : 'calc(100vh - 230px)',
+        },
+        flex: fullscreen || compactChrome ? 1 : undefined,
+        minHeight: fullscreen ? undefined : compactChrome ? 0 : { xs: 360, sm: 560, md: 600 },
         borderRadius: fullscreen ? 0 : '16px',
         overflow: 'hidden',
         backgroundColor: '#f1f3f7',
@@ -957,6 +1121,7 @@ export default function FloorPlanViewerPage() {
           : (captureMode || annotateMode || canAnnotate || canUsePins)
             ? 'crosshair'
             : 'grab',
+        overscrollBehavior: 'none',
         userSelect: 'none',
         touchAction: 'none',
       }}
@@ -1007,7 +1172,7 @@ export default function FloorPlanViewerPage() {
                   <g
                     key={room.id}
                     onClick={e => { e.stopPropagation(); setSelectedRoom(sel ? null : room); }}
-                    style={{ cursor: 'pointer' }}
+                    style={{ cursor: 'pointer', pointerEvents: annotateMode ? 'none' : 'auto' }}
                   >
                     <rect
                       x={rx} y={ry} width={rw} height={rh}
@@ -1132,14 +1297,16 @@ export default function FloorPlanViewerPage() {
           <AddLocationAltRounded sx={{ fontSize: 16, color: '#fff', flexShrink: 0 }} />
               <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#fff', lineHeight: 1.3 }}>
             {annotateMode
-              ? 'Annotating capture points · Flat + Room only (field captures hidden)'
+              ? (placeArmed
+                  ? 'Tap the drawing to drop a capture point'
+                  : 'Tap the drawing to add a capture point · tap an existing point to edit')
               : `Tap plan to place a capture point`}
           </Typography>
         </Box>
       )}
 
       {/* Controls */}
-      <Box sx={{ position: 'absolute', top: fullscreen ? 56 : 12, left: 12, display: 'flex', flexDirection: 'column', gap: 0.625, zIndex: 10 }}>
+      <Box data-no-pan sx={{ position: 'absolute', top: fullscreen ? 56 : 12, left: 12, display: 'flex', flexDirection: 'column', gap: 0.625, zIndex: 20, pointerEvents: 'auto' }}>
         <CtrlBtn title="Zoom in" small={isMobile} onClick={() => {
           const n = Math.min(40, scaleRef.current * 1.35);
           const cx = (viewerRef.current?.clientWidth ?? 0) / 2;
@@ -1164,11 +1331,14 @@ export default function FloorPlanViewerPage() {
         </CtrlBtn>
         {floorPlan && !pinsOnly && (
           <CtrlBtn
-            title={pinsVisible ? 'Hide empty capture points' : 'Show empty capture points'}
+            title={
+              pinsVisible
+                ? (annotateMode ? 'Hide capture points' : 'Hide empty capture points')
+                : (annotateMode ? 'Show capture points' : 'Show empty capture points')
+            }
             small={isMobile}
             onClick={() => {
               const next = !pinsVisible;
-              // Keep every plan record for this floor in sync (re-uploads leave siblings).
               const ids = floorId
                 ? floorPlans.filter(fp => fp.floorId === floorId).map(fp => fp.id)
                 : [floorPlan.id];
@@ -1189,7 +1359,9 @@ export default function FloorPlanViewerPage() {
             onClick={() => {
               setAnnotateMode(v => {
                 const next = !v;
-                if (next) setShowTimeline(false);
+                if (next) {
+                  setShowTimeline(false);
+                }
                 return next;
               });
               setCaptureMode(false);
@@ -1198,12 +1370,12 @@ export default function FloorPlanViewerPage() {
             <EditLocationAltRounded sx={{ fontSize: isMobile ? 15 : 17, color: annotateMode ? '#0f766e' : undefined }} />
           </CtrlBtn>
         )}
-        {canAnnotate && floorPlan && !pinsOnly && siblingFloorsWithPins.length > 0 && (
+        {canAnnotate && floorPlan && !pinsOnly && (
           <CtrlBtn
             title="Import annotations from another annotated floor"
             small={isMobile}
             onClick={() => {
-              setCopySourceFloorId(siblingFloorsWithPins[0]?.id ?? '');
+              setCopySourceFloorId(importSourceFloors[0]?.id ?? '');
               setCopyOpen(true);
             }}
           >
@@ -1248,7 +1420,27 @@ export default function FloorPlanViewerPage() {
 
       {/* Zoom indicator + hint */}
       <Box sx={{ position: 'absolute', bottom: 12, right: 12, zIndex: 10, display: 'flex', alignItems: 'center', gap: 0.625 }}>
-        {!fullscreen && (
+        {annotateMode && canAnnotate && !pinsOnly && (
+          <Box
+            data-no-pan
+            onPointerDown={e => e.stopPropagation()}
+            onClick={() => setPlaceArmed(v => !v)}
+            sx={{
+              display: 'flex', alignItems: 'center', gap: 0.625,
+              px: 1.25, py: 0.75, borderRadius: '10px',
+              backgroundColor: placeArmed ? '#0f766e' : 'rgba(15,118,110,0.95)',
+              color: '#fff', cursor: 'pointer',
+              boxShadow: '0 4px 16px rgba(15,23,42,0.25)',
+              touchAction: 'manipulation',
+            }}
+          >
+            <AddLocationAltRounded sx={{ fontSize: 16 }} />
+            <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, lineHeight: 1 }}>
+              {placeArmed ? 'Tap the plan…' : 'Add point'}
+            </Typography>
+          </Box>
+        )}
+        {!fullscreen && !isTouchUi && (
           <Box sx={{ display: { xs: 'none', sm: 'block' }, px: 1.125, py: 0.375, borderRadius: '6px', backgroundColor: 'rgba(17,24,39,0.55)', backdropFilter: 'blur(8px)' }}>
             <Typography sx={{ fontSize: '0.5625rem', color: 'rgba(255,255,255,0.55)', fontWeight: 500, letterSpacing: '0.04em' }}>Ctrl + Scroll to zoom</Typography>
           </Box>
@@ -1263,7 +1455,7 @@ export default function FloorPlanViewerPage() {
       {selectedPin && !showTimeline && (
         <PinActionPanel
           pin={selectedPin}
-          isMobile={isMobile}
+          isMobile={isMobile || isTouchUi}
           canEdit={!pinsOnly && canAnnotate}
           annotationOnly={annotateMode}
           uploadSequence={pinsOnly ? uploadSeqById?.get(selectedPin.id) : undefined}
@@ -1281,6 +1473,7 @@ export default function FloorPlanViewerPage() {
             setEditingPinId(p.id);
             setPendingAnnotate(null);
             setSelectedPinId(null);
+            annotateDialogOpenedAtRef.current = Date.now();
           }}
           onDelete={p => { deleteCapturePin(p.id); setSelectedPinId(null); }}
           onClose={() => setSelectedPinId(null)}
@@ -1354,13 +1547,28 @@ export default function FloorPlanViewerPage() {
   /* ── normal page ────────────────────────────────────────────────────── */
   return (
     <Box sx={{
-      pb: { xs: 2, sm: 6 },
+      pb: compactChrome ? 0 : { xs: 2, sm: 2, md: 4 },
       opacity: fadeIn ? 1 : 0,
       transform: fadeIn ? 'translateY(0)' : 'translateY(6px)',
       transition: 'opacity 220ms ease, transform 220ms ease',
+      // Fill the dashboard column on tablet so document scroll cannot steal taps.
+      ...(compactChrome ? {
+        display: 'flex',
+        flexDirection: 'column',
+        height: 'calc(100dvh - 56px)',
+        maxHeight: 'calc(100dvh - 56px)',
+        mx: { xs: -1.75, sm: -3, md: -4 },
+        mt: { xs: -2.5, md: -5 },
+        mb: { xs: -2.5, md: -5 },
+        px: { xs: 1.5, sm: 2, md: 2.5 },
+        pt: 1.25,
+        overflow: 'hidden',
+        overscrollBehavior: 'none',
+        touchAction: 'none',
+      } : {}),
     }}>
       {/* Header */}
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: { xs: 1.5, sm: 3 }, gap: 1.5 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: compactChrome ? 1 : { xs: 1.5, sm: 3 }, gap: 1.5, flexShrink: 0 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, minWidth: 0, flex: 1 }}>
           <Box component={Link} to={backDest}
             sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.125, py: 0.625, borderRadius: '9px', border: `1.5px solid ${P.border}`, color: P.muted, textDecoration: 'none', flexShrink: 0, transition: T, '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft }, whiteSpace: 'nowrap', fontSize: '0.8125rem', fontWeight: 600 }}>
@@ -1378,10 +1586,10 @@ export default function FloorPlanViewerPage() {
         </Box>
         {!isEngineer && !pinsOnly && (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            {floorPlan && canAnnotate && siblingFloorsWithPins.length > 0 && (
+            {floorPlan && canAnnotate && (
               <Box
                 onClick={() => {
-                  setCopySourceFloorId(siblingFloorsWithPins[0]?.id ?? '');
+                  setCopySourceFloorId(importSourceFloors[0]?.id ?? '');
                   setCopyOpen(true);
                 }}
                 sx={{
@@ -1439,16 +1647,12 @@ export default function FloorPlanViewerPage() {
         )}
       </Box>
 
-      {/* Legend strip — hidden on mobile to maximise viewer height */}
-      {!pinsOnly && statusCounts && floorPlan && floorPlan.rooms.length > 0 && (
+      {/* Legend strip — desktop only; tablets need the vertical space for annotation */}
+      {!pinsOnly && !annotateMode && statusCounts && floorPlan && floorPlan.rooms.length > 0 && (
         <Box sx={{
-          display: { xs: 'none', sm: 'flex' }, gap: 1, mb: 2.5,
-          overflowX: { xs: 'auto', sm: 'visible' },
-          flexWrap: { xs: 'nowrap', sm: 'wrap' },
-          pb: { xs: 0.5, sm: 0 },
-          '&::-webkit-scrollbar': { height: 3 },
-          '&::-webkit-scrollbar-track': { background: 'transparent' },
-          '&::-webkit-scrollbar-thumb': { background: P.border, borderRadius: '99px' },
+          display: { xs: 'none', md: 'flex' }, gap: 1, mb: 2.5,
+          overflowX: 'visible',
+          flexWrap: 'wrap',
         }}>
           {(Object.entries(STATUS_COLOR) as [string, typeof STATUS_COLOR[string]][]).map(([key, val]) => (
             <Box key={key} sx={{ display: 'flex', alignItems: 'center', gap: 0.625, px: 1.25, py: 0.5, borderRadius: '7px', backgroundColor: P.white, border: `1px solid ${P.border}`, flexShrink: 0 }}>
@@ -1461,14 +1665,14 @@ export default function FloorPlanViewerPage() {
       )}
 
       {/* Viewer + Floor sidebar */}
-      <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start', flexDirection: { xs: 'column', md: 'row' } }}>
-        <Box sx={{ flex: 1, minWidth: 0, width: '100%' }}>{viewerBox}</Box>
+      <Box sx={{ display: 'flex', gap: 1.5, alignItems: compactChrome ? 'stretch' : 'flex-start', flexDirection: { xs: 'column', md: 'row' }, flex: compactChrome ? 1 : undefined, minHeight: compactChrome ? 0 : undefined, overflow: compactChrome ? 'hidden' : undefined }}>
+        <Box sx={{ flex: 1, minWidth: 0, width: '100%', minHeight: compactChrome ? 0 : undefined, display: compactChrome ? 'flex' : undefined, flexDirection: compactChrome ? 'column' : undefined }}>{viewerBox}</Box>
 
         {/* Floor switcher */}
         {!pinsOnly && towerFloors.length > 1 && (
           <>
             {/* Mobile: compact dropdown → bottom sheet */}
-            <Box sx={{ display: { xs: 'block', md: 'none' }, width: '100%' }}>
+            <Box sx={{ display: { xs: 'block', md: 'none' }, width: '100%', flexShrink: 0 }}>
               <Box
                 onClick={() => setFloorSheetOpen(true)}
                 sx={{
@@ -1606,9 +1810,27 @@ export default function FloorPlanViewerPage() {
       {/* Annotate / edit: Flat + Room (with Others free-text) */}
       <Dialog
         open={!!pendingAnnotate || !!editingPinId}
-        onClose={() => { setPendingAnnotate(null); setEditingPinId(null); }}
+        disableRestoreFocus
+        disableAutoFocus
+        onClose={(_, reason) => {
+          // The same tablet tap that placed the point also hits the new backdrop
+          // and would close the dialog before the user can label it.
+          if (reason === 'backdropClick' && Date.now() - annotateDialogOpenedAtRef.current < 800) return;
+          setPendingAnnotate(null);
+          setEditingPinId(null);
+        }}
         maxWidth="xs"
         fullWidth
+        slotProps={{
+          paper: {
+            sx: {
+              m: 2,
+              width: 'min(400px, calc(100% - 32px))',
+              maxWidth: 400,
+              borderRadius: '16px',
+            },
+          },
+        }}
       >
         <DialogTitle sx={{ fontWeight: 800, fontSize: '1.125rem', pb: 1 }}>
           {editingPinId ? 'Edit capture point' : 'Label capture point'}
@@ -1631,7 +1853,7 @@ export default function FloorPlanViewerPage() {
                 setAnnotateCustomRoom('');
               }}
               sx={{ borderRadius: '10px', fontSize: '0.9375rem', fontWeight: 500 }}
-              MenuProps={{ PaperProps: { sx: { maxHeight: 320 } } }}
+              MenuProps={{ slotProps: { paper: { sx: { maxHeight: 320 } } } }}
             >
               {PREDEF_FLAT_OPTIONS.map(f => (
                 <MenuItem key={f} value={f} sx={{ fontSize: '0.9375rem' }}>{f}</MenuItem>
@@ -1657,7 +1879,7 @@ export default function FloorPlanViewerPage() {
                 if (room !== PREDEF_ROOM_OTHER) setAnnotateCustomRoom('');
               }}
               sx={{ borderRadius: '10px', fontSize: '0.9375rem', fontWeight: 500 }}
-              MenuProps={{ PaperProps: { sx: { maxHeight: 320 } } }}
+              MenuProps={{ slotProps: { paper: { sx: { maxHeight: 320 } } } }}
             >
               {roomOptionsForFlat(annotateFlat).map(r => (
                 <MenuItem key={r} value={r} sx={{ fontSize: '0.9375rem' }}>{r}</MenuItem>
@@ -1682,13 +1904,13 @@ export default function FloorPlanViewerPage() {
             </Box>
           )}
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2.5, pt: 1 }}>
-          <Button onClick={() => { setPendingAnnotate(null); setEditingPinId(null); }} sx={{ textTransform: 'none', fontWeight: 600 }}>
+        <DialogActions sx={{ px: 3, pb: { xs: 'max(16px, env(safe-area-inset-bottom))', sm: 2.5 }, pt: 1, gap: 1 }}>
+          <Button onClick={() => { setPendingAnnotate(null); setEditingPinId(null); }} sx={{ textTransform: 'none', fontWeight: 600, minHeight: 44 }}>
             Cancel
           </Button>
           <Button
             variant="contained"
-            sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px', px: 2 }}
+            sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px', px: 2, minHeight: 44 }}
             disabled={
               !annotateFlat
               || !(annotateRoom === PREDEF_ROOM_OTHER ? annotateCustomRoom.trim() : annotateRoom)
@@ -1739,7 +1961,7 @@ export default function FloorPlanViewerPage() {
         </DialogActions>
       </Dialog>
 
-      {/* Import annotations from another annotated floor in the same tower */}
+      {/* Import annotations from another annotated floor in the same project */}
       <Dialog
         open={copyOpen}
         onClose={() => { if (!copyImporting) setCopyOpen(false); }}
@@ -1749,14 +1971,34 @@ export default function FloorPlanViewerPage() {
         <DialogTitle sx={{ fontWeight: 800, fontSize: '1.05rem', pb: 0.5 }}>Import annotations</DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, pt: 1.5 }}>
           <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>
-            Choose an annotated floor plan. Its capture points will be copied here with the same coordinates and Flat · Room names.
+            Choose an annotated floor. Its capture points will be copied here with the same coordinates and Flat · Room names.
           </Typography>
+          {importSourceFloors.length === 0 ? (
+            <Box sx={{
+              py: 4, px: 2, textAlign: 'center', borderRadius: '12px',
+              border: `1.5px dashed ${P.border}`, backgroundColor: P.bg,
+            }}>
+              <ContentCopyRounded sx={{ fontSize: 28, color: P.subtle, mb: 1 }} />
+              <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: P.strong, mb: 0.5 }}>
+                No annotated floors to import from yet
+              </Typography>
+              <Typography sx={{ fontSize: '0.8125rem', color: P.muted, maxWidth: 320, mx: 'auto' }}>
+                Annotate Flat · Room points on another floor in this project first, then return here to import them.
+              </Typography>
+            </Box>
+          ) : (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, maxHeight: 360, overflowY: 'auto', pr: 0.5 }}>
-            {siblingFloorsWithPins.map(f => {
-              const labeledPins = allPins.filter(p => p.floorId === f.id && p.flatName && p.roomName);
-              const plan = getFloorPlanByFloor(floorPlans, towerId ?? '', f.id) as
-                | (ReturnType<typeof getFloorPlanByFloor> & Record<string, unknown>)
-                | undefined;
+            {importSourceFloors.map(f => {
+              const planIds = new Set(floorPlans.filter(fp => fp.floorId === f.id).map(fp => fp.id));
+              const labeledPins = allPins.filter(p =>
+                !!(p.flatName && p.roomName)
+                && (p.floorId === f.id || (!!p.floorPlanId && planIds.has(p.floorPlanId))),
+              );
+              const sourceTower = towers.find(t => t.id === f.towerId);
+              const plan = (
+                getFloorPlanByFloor(floorPlans, f.towerId, f.id)
+                ?? floorPlans.find(fp => fp.floorId === f.id)
+              ) as (ReturnType<typeof getFloorPlanByFloor> & Record<string, unknown>) | undefined;
               const thumbUrl = plan
                 ? ((plan as any).fileUrl ?? (plan as any).file_url
                   ?? ((plan as any).mediaAssets as any)?.[0]?.original_url
@@ -1768,6 +2010,9 @@ export default function FloorPlanViewerPage() {
                 .map(p => `${p.flatName} · ${p.roomName}`)
                 .join(', ');
               const selected = copySourceFloorId === f.id;
+              const title = sourceTower && sourceTower.id !== towerId
+                ? `${sourceTower.name} · ${f.label}`
+                : f.label;
               return (
                 <Box
                   key={f.id}
@@ -1787,14 +2032,14 @@ export default function FloorPlanViewerPage() {
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                   }}>
                     {thumbUrl ? (
-                      <Box component="img" src={thumbUrl} alt={f.label} sx={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      <Box component="img" src={thumbUrl} alt={title} sx={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     ) : (
                       <MapRounded sx={{ fontSize: 22, color: P.subtle }} />
                     )}
                   </Box>
                   <Box sx={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 0.25 }}>
                     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
-                      <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong }}>{f.label}</Typography>
+                      <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong }}>{title}</Typography>
                       <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: selected ? P.blue : P.muted, flexShrink: 0 }}>
                         {labeledPins.length} point{labeledPins.length === 1 ? '' : 's'}
                       </Typography>
@@ -1808,20 +2053,28 @@ export default function FloorPlanViewerPage() {
               );
             })}
           </Box>
+          )}
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button onClick={() => setCopyOpen(false)} disabled={copyImporting}>Cancel</Button>
           <Button
             variant="contained"
-            disabled={!copySourceFloorId || !floorId || !floorPlan || copyImporting}
+            disabled={!copySourceFloorId || !floorId || !floorPlan || copyImporting || importSourceFloors.length === 0}
             onClick={async () => {
               if (!floorId || !floorPlan || !copySourceFloorId) return;
               setCopyImporting(true);
               try {
                 // Prefer the floor-plan record that actually owns the labeled pins
                 // (re-uploads leave annotations on older plans).
-                const sourcePins = allPins.filter(
-                  p => p.floorId === copySourceFloorId && p.flatName && p.roomName,
+                const sourcePlanIds = new Set(
+                  floorPlans.filter(fp => fp.floorId === copySourceFloorId).map(fp => fp.id),
+                );
+                const sourcePins = allPins.filter(p =>
+                  !!(p.flatName && p.roomName)
+                  && (
+                    p.floorId === copySourceFloorId
+                    || (!!p.floorPlanId && sourcePlanIds.has(p.floorPlanId))
+                  ),
                 );
                 const sourcePlanCounts = new Map<string, number>();
                 for (const p of sourcePins) {
@@ -1846,11 +2099,9 @@ export default function FloorPlanViewerPage() {
                 setFloorPlanPinsVisible(floorPlan.id, true);
                 setPublishToast(`Imported ${n} annotation${n === 1 ? '' : 's'}`);
               } catch (err) {
-                if (err instanceof Error && err.message) {
-                  setErrorToast(err.message);
-                } else {
-                  setErrorToast(normaliseError(err).message);
-                }
+                const msg = normaliseError(err).message
+                  || (err instanceof Error ? err.message : '');
+                setErrorToast(msg || 'Import failed. Please try again.');
               } finally {
                 setCopyImporting(false);
               }

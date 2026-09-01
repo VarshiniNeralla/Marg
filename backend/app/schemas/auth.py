@@ -33,6 +33,7 @@ class UserInfo(BaseModel):
     role: str
     org_id: str
     org_name: str
+    org_slug: str = ""
     avatar_url: Optional[str] = None
     assigned_project_ids: list[str] = Field(default_factory=list)
 

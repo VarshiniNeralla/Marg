@@ -10,6 +10,7 @@ import { useAuthStore } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
 import DashboardHero from '@shared/components/DashboardHero/DashboardHero';
 import { filterGalleryCaptures } from '@/utils/captureGallery';
+import { filterOwnCaptures, filterOwnTours } from '@/utils/captureOwnership';
 
 /* ─── palette ────────────────────────────────────────────────────────────── */
 const P = {
@@ -39,6 +40,9 @@ export default function EngineerDashboard() {
   const captures = useWorkflowStore(s => s.captures);
   const capturePins = useWorkflowStore(s => s.capturePins);
   const tours    = useWorkflowStore(s => s.tours);
+  const apiSnapshotStatus = useWorkflowStore(s => s.apiSnapshotStatus);
+  const snapshotLoading = apiSnapshotStatus === 'loading' || apiSnapshotStatus === 'idle';
+  const fmt = (n: number) => (snapshotLoading ? '…' : n);
 
   // Same project scope as Capture History (/my-captures): assigned projects when
   // set, otherwise every active project (do not slice to 3 — that under-counted uploads).
@@ -49,10 +53,17 @@ export default function EngineerDashboard() {
     : projects.filter(p => !p.archived);
 
   // Same count as Capture History cards: one per pin (latest visit), not every visit.
-  const myCaptures = filterGalleryCaptures(captures, capturePins, assignedSet);
+  const ownCaptures = filterOwnCaptures(captures, user);
+  const ownIds = new Set(ownCaptures.map(c => c.id));
+  const myCaptures = filterGalleryCaptures(
+    ownCaptures,
+    capturePins.map(p => ({ ...p, captureIds: p.captureIds.filter(id => ownIds.has(id)) })),
+    assignedSet,
+  );
   const myProjectIds = new Set(myProjects.map(p => p.id));
-  const pendingTours  = tours.filter(t => myProjectIds.has(t.projectId) && t.status === 'published' && !(t as any).managerReviewed);
-  const reviewedTours = tours.filter(t => myProjectIds.has(t.projectId) && (t as any).managerReviewed);
+  const ownTours = filterOwnTours(tours, user);
+  const pendingTours  = ownTours.filter(t => myProjectIds.has(t.projectId) && t.status === 'published' && !(t as any).managerReviewed);
+  const reviewedTours = ownTours.filter(t => myProjectIds.has(t.projectId) && (t as any).managerReviewed);
 
   const hour     = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
@@ -77,10 +88,10 @@ export default function EngineerDashboard() {
       ════════════════════════════════════════════════════════════════════ */}
       <Grid container spacing={2} sx={{ mb: 3 }}>
         {[
-          { label:'Assigned Projects', value: myProjects.length,     sub:'active sites',          color: P.blue,    bg: 'rgba(37,99,235,0.08)',   icon: <FolderOpenRounded /> },
-          { label:'Total Uploads',     value: myCaptures.length,     sub:'captures uploaded',     color: '#0891b2', bg: 'rgba(8,145,178,0.08)',   icon: <CloudUploadRounded /> },
-          { label:'Pending Review',    value: pendingTours.length,   sub:'tours awaiting review', color: '#d97706', bg: 'rgba(217,119,6,0.08)',   icon: <HourglassTopRounded /> },
-          { label:'Reviewed',          value: reviewedTours.length,  sub:'tours reviewed',        color: '#16a34a', bg: 'rgba(22,163,74,0.08)',   icon: <CheckCircleRounded /> },
+          { label:'Assigned Projects', value: fmt(myProjects.length),     sub: snapshotLoading ? 'loading…' : 'active sites',          color: P.blue,    bg: 'rgba(37,99,235,0.08)',   icon: <FolderOpenRounded /> },
+          { label:'Total Uploads',     value: fmt(ownCaptures.length),    sub: snapshotLoading ? 'loading…' : 'captures uploaded',     color: '#0891b2', bg: 'rgba(8,145,178,0.08)',   icon: <CloudUploadRounded /> },
+          { label:'Pending Review',    value: fmt(pendingTours.length),   sub: snapshotLoading ? 'loading…' : 'tours awaiting review', color: '#d97706', bg: 'rgba(217,119,6,0.08)',   icon: <HourglassTopRounded /> },
+          { label:'Reviewed',          value: fmt(reviewedTours.length),  sub: snapshotLoading ? 'loading…' : 'tours reviewed',        color: '#16a34a', bg: 'rgba(22,163,74,0.08)',   icon: <CheckCircleRounded /> },
         ].map(({ label, value, sub, color, bg, icon }) => (
           <Grid key={label} size={{ xs:6, md:3 }}>
             <Box sx={{

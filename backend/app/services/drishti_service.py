@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -25,6 +26,7 @@ from app.core.exceptions import NotFoundException, ValidationException
 from app.schemas.drishti import DrishtiAnswer, DrishtiMessage
 from app.services import drishti_analytics
 from app.services import drishti_llm_client
+from app.services.llm_usage_service import LLMUsageService
 from app.services.drishti_context_service import DrishtiContextService, _COMMON_AREA_FLAT, _find_flat
 from app.services.drishti_forecast_service import DrishtiForecastService
 from app.services.drishti_prompts import DRISHTI_ANSWER_PROMPT
@@ -36,6 +38,24 @@ _FALLBACK_ANSWER_TEXT = (
     "I couldn't structure a confident answer from the available data — try rephrasing, "
     "or asking about a specific floor or flat."
 )
+
+# A DrishtiAnswer response (a paragraph of prose plus a handful of short
+# facts/insights/recommendations/metrics/evidence array entries) never
+# remotely needs more than ~2000 tokens. VLLM_MAX_TOKENS (the shared global
+# default this would otherwise fall back to) is 20000 — sized for the
+# UNRELATED vision-analysis provider (vision_providers/vllm_provider.py),
+# which genuinely can produce long per-room descriptions. Reusing that same
+# 20000 budget here left almost no room in the model's 32768-token context
+# window for input: a real production bug where a two-floor question's
+# ~12.7K-token facts payload combined with a 20000-token output request
+# exceeded the window by exactly 1 token, and the vLLM server's 400
+# response was silently swallowed into the generic "I couldn't structure a
+# confident answer" fallback text, indistinguishable from an actual
+# malformed-JSON failure. Overriding max_tokens here (the same way the
+# classifier call already overrides it to 400) fixes this for every
+# question shape, not just multi-floor ones — confirmed live via a direct
+# vLLM request replay showing the exact 400 error body.
+_ANSWER_MAX_TOKENS = 2000
 
 
 def _utcnow() -> datetime:
@@ -114,7 +134,25 @@ class DrishtiService:
             org_id, user_id, role, project_id, project_context, plan, floor_snapshot,
         )
 
-        answer = await self._generate_answer(question, facts_payload, conversation["messages"][-6:])
+        usage_out: dict[str, Any] = {}
+        answer = await self._generate_answer(
+            question, facts_payload, conversation["messages"][-6:], usage_out,
+        )
+        if usage_out:
+            usage = usage_out.get("usage") or {}
+            await LLMUsageService(self._db).record_usage(
+                org_id=org_id,
+                source="drishti_chat",
+                model=usage_out.get("model"),
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+                latency_ms=usage_out.get("latency_ms"),
+                project_id=project_id,
+                project_name=str(conversation.get("projectName") or ""),
+                requested_by=user_id or None,
+                entity_id=str(conversation["_id"]),
+            )
 
         now = _utcnow()
         user_message: dict[str, Any] = {
@@ -202,7 +240,44 @@ class DrishtiService:
         "whole floor" (see `_TARGETED_INTENTS`), the coarse floor snapshot is
         deliberately withheld — only the specific room/common-area/activity/
         ranking sub-object is sent, so the LLM is never handed a floor-wide
-        dump to search or calculate over itself."""
+        dump to search or calculate over itself.
+
+        A question naming MULTIPLE floors ("rooms captured in Floor 1 and
+        Floor 2", "flat status on Floor 1 and Floor 2") resolves to
+        `plan.floor_ids` instead of a single `plan.floor_id` (see
+        `DrishtiQueryPlanner._resolve_floors`). Rather than re-implementing
+        every intent's retrieval a second time for the multi-floor case, this
+        re-runs the SAME single-floor assembly once per named floor — every
+        intent (flat/room/activity/capture-gap/ranking/...) automatically
+        gains multi-floor support with zero per-intent duplication — and
+        merges the per-floor payloads under "byFloor". This was a real
+        production bug: only "floor_status" originally had a hand-written
+        multi-floor branch, so "Which rooms have been captured in Floor 1
+        and Floor 2?" (capture_gap) fell through to an empty payload and the
+        LLM correctly reported no data, even though both floors were
+        genuinely analyzed."""
+        if plan.floor_ids and not plan.floor_id:
+            per_floor_payloads = []
+            for fid, fname in zip(plan.floor_ids, plan.floor_names):
+                sub_plan = replace(plan, floor_id=fid, floor_name=fname, floor_ids=[], floor_names=[])
+                sub_snapshot = await self._context_service.get_floor_context(org_id, fid)
+                sub_plan = self._planner.resolve_entities(sub_plan, sub_snapshot, {})
+                sub_payload = await self._assemble_facts_payload(
+                    org_id, user_id, role, project_id, project_context, sub_plan, sub_snapshot,
+                )
+                sub_payload.pop("project", None)
+                per_floor_payloads.append({"floorId": fid, "floorName": fname, **sub_payload})
+            return {
+                "project": {
+                    "projectId": project_context["projectId"],
+                    "overallProgressPct": project_context["overallProgressPct"],
+                    "floorsAnalyzed": project_context["floorsAnalyzed"],
+                    "floorsNotYetAnalyzed": project_context["floorsNotYetAnalyzed"],
+                    "summaryCards": project_context["summaryCards"],
+                },
+                "byFloor": per_floor_payloads,
+            }
+
         payload: dict[str, Any] = {
             "project": {
                 "projectId": project_context["projectId"],
@@ -267,17 +342,62 @@ class DrishtiService:
                 rooms = await self._rooms_across_project(
                     org_id, project_context, flats_only=flats_only, common_areas_only=common_areas_only,
                 )
+            items = drishti_analytics.list_activities_by_status(rooms, plan.activity_list_statuses)
+
+            # A room's own activities[] is only ever populated once that
+            # room has actually been captured/assessed — an uncaptured
+            # room's activities is a bare [] in the raw snapshot (confirmed
+            # against production data), so not_assessed/not_observable/
+            # no_evidence activities structurally CANNOT appear via the
+            # room-level path above no matter how many exist. A real
+            # production bug: "what are those 101 activities that did not
+            # start" (statuses not_assessed/no_evidence) always returned an
+            # empty list for this reason. Those statuses only exist in each
+            # snapshot's separate per-floor "activities" rollup (one entry
+            # per activity NAME for the whole floor, no room location) —
+            # fetched here ONLY when actually requested, merged in by name.
+            floor_level_statuses = [
+                s for s in plan.activity_list_statuses
+                if s in ("not_assessed", "not_observable", "no_evidence")
+            ]
+            if floor_level_statuses:
+                if plan.floor_id and floor_snapshot:
+                    floor_activities = {plan.floor_id: floor_snapshot.get("activities", [])}
+                    floor_names = {plan.floor_id: plan.floor_name}
+                else:
+                    floor_ids = [f["floorId"] for t in project_context["towers"] for f in t["floors"]]
+                    snapshots = await self._context_service.get_latest_snapshots_for_floors(org_id, floor_ids)
+                    floor_activities = {fid: snap.get("activities", []) for fid, snap in snapshots.items()}
+                    floor_names = {
+                        f["floorId"]: f["floorName"]
+                        for t in project_context["towers"] for f in t["floors"]
+                    }
+                items = items + drishti_analytics.list_floor_level_activities_by_status(
+                    floor_activities, floor_level_statuses, floor_names,
+                )
+
             payload["activityList"] = {
                 "statuses": plan.activity_list_statuses,
                 "scope": plan.activity_list_scope or "all",
-                "items": drishti_analytics.list_activities_by_status(rooms, plan.activity_list_statuses),
+                "items": items,
             }
 
-        if not plan.floor_id:
-            return payload
-
-        # Whole-floor-grain intents keep today's coarser payload.
-        if plan.intent in ("floor_status", "comparison", "quality_query"):
+        # Whole-floor-grain intents keep today's coarser payload. Guarded
+        # individually (rather than with a shared `if not plan.floor_id:
+        # return payload` above, as this used to be structured) because a
+        # real production bug had exactly that blanket early return sitting
+        # BEFORE the forecast/quality-notes blocks further down too: any
+        # project-wide question ("When is Project A projected to finish?",
+        # intent=project_overview, floor_id=None) hit that return and never
+        # even reached forecast assembly at all — confirmed by calling
+        # _assemble_facts_payload directly against live data, which showed
+        # the returned payload had no "forecast" key whatsoever for this
+        # exact question, despite plan.needs_forecast being True. Every
+        # other block below already independently checks its own required
+        # fields (plan.flat_name, plan.activity_ids, floor_snapshot, etc.)
+        # and is naturally a no-op when floor_id is unset, so only this one
+        # coarse-snapshot block actually needed a floor_id guard at all.
+        if plan.floor_id and plan.intent in ("floor_status", "comparison", "quality_query"):
             coverage = await self._context_service.compute_capture_coverage(org_id, plan.floor_id)
             payload["floor"] = {
                 "floorId": plan.floor_id,
@@ -294,12 +414,12 @@ class DrishtiService:
                 "resolutionStatus": plan.resolution_status.get("flat", "not_configured"),
             }
 
-        if plan.intent == "room_status" and plan.flat_name and plan.room_name:
+        if plan.floor_id and plan.intent == "room_status" and plan.flat_name and plan.room_name:
             payload["room"] = await self._context_service.get_room_context(
                 org_id, plan.floor_id, plan.flat_name, plan.room_name, snapshot=floor_snapshot,
             )
 
-        if plan.intent == "common_area_status" and plan.common_area_name:
+        if plan.floor_id and plan.intent == "common_area_status" and plan.common_area_name:
             payload["commonArea"] = await self._context_service.get_common_area_context(
                 org_id, plan.floor_id, plan.common_area_name, snapshot=floor_snapshot,
             )
@@ -307,15 +427,22 @@ class DrishtiService:
         # "What OTHER activities are pending in the Lift Lobby" / "what's
         # configured in Bedroom-3" — every activity at exactly ONE location,
         # any status, unfiltered by activity name — the "everything here"
-        # question none of the other intents answer on their own.
-        if plan.intent == "location_activities" and (plan.common_area_name or (plan.flat_name and plan.room_name)):
+        # question none of the other intents answer on their own. Requires a
+        # resolved floor — these are all floor-scoped lookups (see
+        # get_room_context/get_common_area_context/get_activity_context/
+        # get_common_area_category_status below, same requirement) that call
+        # get_floor_context(org_id, floor_id) internally when no snapshot is
+        # passed; with floor_id=None that raises, so — unlike before this
+        # block's shared guard was narrowed to just the coarse-snapshot
+        # block above — each of these needs its OWN `plan.floor_id` check.
+        if plan.floor_id and plan.intent == "location_activities" and (plan.common_area_name or (plan.flat_name and plan.room_name)):
             payload["locationActivities"] = await self._context_service.get_location_activities(
                 org_id, plan.floor_id,
                 flat_name=plan.flat_name, room_name=plan.room_name,
                 common_area_name=plan.common_area_name, snapshot=floor_snapshot,
             )
 
-        if plan.intent == "activity_status" and plan.activity_ids:
+        if plan.floor_id and plan.intent == "activity_status" and plan.activity_ids:
             payload["activity"] = await self._context_service.get_activity_context(
                 org_id, plan.floor_id, plan.activity_ids,
                 flat_name=plan.flat_name, room_name=plan.room_name,
@@ -326,7 +453,7 @@ class DrishtiService:
         # activity category, aggregated across EVERY common-area unit on
         # this floor (never restricted to one named unit) — distinguishing
         # captured-and-assessed units from never-captured ones per the spec.
-        if plan.intent == "common_area_activity_status" and plan.activity_ids:
+        if plan.floor_id and plan.intent == "common_area_activity_status" and plan.activity_ids:
             payload["commonAreaActivity"] = await self._context_service.get_common_area_category_status(
                 org_id, plan.floor_id, plan.activity_ids, snapshot=floor_snapshot,
             )
@@ -343,14 +470,32 @@ class DrishtiService:
             elif plan.intent == "unfinished_work":
                 payload["unfinishedWork"] = drishti_analytics.rank_unfinished_work(rooms, flat_name=plan.flat_name)
 
-        if plan.intent == "capture_gap" and floor_snapshot:
-            flat_progress = floor_snapshot.get("flatProgress", [])
-            payload["captureGaps"] = drishti_analytics.find_capture_gaps(flat_progress)
-            payload["capturedRooms"] = drishti_analytics.find_captured_rooms(flat_progress)
+        if plan.intent == "capture_gap":
+            if plan.floor_id and floor_snapshot:
+                flat_progress = floor_snapshot.get("flatProgress", [])
+                payload["captureGaps"] = drishti_analytics.find_capture_gaps(flat_progress)
+                payload["capturedRooms"] = drishti_analytics.find_captured_rooms(flat_progress)
+            elif not plan.floor_id:
+                # "How many total rooms are captured?" / "which rooms have
+                # been captured" with no floor named — a real production
+                # bug: this intent had no project-wide path at all (unlike
+                # activity_status/common_area_activity_status/activity_list,
+                # which all already had one), so the payload came back with
+                # NEITHER "captureGaps" NOR "capturedRooms" and the LLM
+                # truthfully reported it had no data — even though
+                # summaryCards.roomsInProgress/roomsNotStarted prove the
+                # real counts were sitting right there in the project
+                # snapshot the whole time.
+                gaps, captured = await self._capture_status_across_project(org_id, project_context)
+                payload["captureGaps"] = gaps
+                payload["capturedRooms"] = captured
 
         if plan.needs_forecast or plan.intent == "forecast":
             if plan.floor_id:
                 payload["forecast"] = await self._forecast_service.forecast_floor(org_id, plan.floor_id)
+                planned_dates = await self._forecast_service.get_planned_dates(org_id, project_id)
+                if planned_dates:
+                    payload["forecast"]["plannedDates"] = planned_dates
             else:
                 floor_ids = [
                     f["floorId"] for t in project_context["towers"] for f in t["floors"]
@@ -404,10 +549,45 @@ class DrishtiService:
                 rooms.extend(_tag_rooms_with_flat_name(flat))
         return rooms
 
+    async def _capture_status_across_project(
+        self, org_id: str, project_context: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Project-wide counterpart to the floor-scoped capture_gap branch —
+        the project-wide equivalent already exists for activity_status/
+        common_area_activity_status/activity_list, but capture_gap had no
+        such path. `find_capture_gaps`/`find_captured_rooms` are pure
+        functions over a `flatProgress`-shaped list; run them once per
+        analyzed floor (batched via `get_latest_snapshots_for_floors`,
+        never a per-floor query) and merge, tagging each hit with its
+        `floorName` so a project-wide answer can still say WHERE a gap is."""
+        floor_lookup = {
+            f["floorId"]: f["floorName"]
+            for t in project_context.get("towers", []) for f in t.get("floors", [])
+        }
+        snapshots = await self._context_service.get_latest_snapshots_for_floors(
+            org_id, list(floor_lookup.keys()),
+        )
+        gaps: list[dict[str, Any]] = []
+        captured: list[dict[str, Any]] = []
+        for floor_id, snapshot in snapshots.items():
+            flat_progress = snapshot.get("flatProgress", [])
+            floor_name = floor_lookup.get(floor_id)
+            for gap in drishti_analytics.find_capture_gaps(flat_progress):
+                gaps.append({**gap, "floorId": floor_id, "floorName": floor_name})
+            for room in drishti_analytics.find_captured_rooms(flat_progress):
+                captured.append({**room, "floorId": floor_id, "floorName": floor_name})
+        gaps.sort(key=lambda g: g["capturesCount"])
+        captured.sort(key=lambda r: r["capturesCount"], reverse=True)
+        return gaps, captured
+
     # ── LLM call + validation guardrail ───────────────────────────────────
 
     async def _generate_answer(
-        self, question: str, facts_payload: dict[str, Any], recent_messages: list[dict[str, Any]]
+        self,
+        question: str,
+        facts_payload: dict[str, Any],
+        recent_messages: list[dict[str, Any]],
+        usage_out: dict[str, Any],
     ) -> DrishtiAnswer:
         history_text = "\n".join(
             f"{m['role']}: {m['content']}" for m in recent_messages
@@ -419,7 +599,10 @@ class DrishtiService:
         )
 
         try:
-            raw = await drishti_llm_client.chat_completion_json(DRISHTI_ANSWER_PROMPT, user_prompt)
+            raw = await drishti_llm_client.chat_completion_json(
+                DRISHTI_ANSWER_PROMPT, user_prompt, max_tokens=_ANSWER_MAX_TOKENS,
+                usage_out=usage_out,
+            )
             return DrishtiAnswer.model_validate(raw)
         except (drishti_llm_client.DrishtiLLMError, ValidationError) as first_error:
             retry_prompt = (
@@ -427,7 +610,10 @@ class DrishtiService:
                 f"schema ({first_error}). Return ONLY valid JSON matching the schema exactly."
             )
             try:
-                raw = await drishti_llm_client.chat_completion_json(DRISHTI_ANSWER_PROMPT, retry_prompt)
+                raw = await drishti_llm_client.chat_completion_json(
+                    DRISHTI_ANSWER_PROMPT, retry_prompt, max_tokens=_ANSWER_MAX_TOKENS,
+                    usage_out=usage_out,
+                )
                 return DrishtiAnswer.model_validate(raw)
             except (drishti_llm_client.DrishtiLLMError, ValidationError):
                 return DrishtiAnswer(answer=_FALLBACK_ANSWER_TEXT)

@@ -12,7 +12,8 @@ import { statusConfig } from '@/data/mockData';
 import type { MockTour } from '@/data/mockData';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { useWorkflowStore } from '@store/workflowStore';
-import { useAuthStore , getRoleLandingPath } from '@store/authStore';
+import { useAuthStore, getRoleLandingPath } from '@store/authStore';
+import { can } from '@/utils/permissions';
 import { useFavoriteToursStore, EMPTY_FAVORITES } from '@store/favoriteToursStore';
 import { buildFloorOptions, floorSelectionLabel, locationFilterMenuPaperSx, locationFilterToolbarSx, type FloorOption } from '@/utils/locationFilters';
 import { resolveTourThumbnailUrl } from '@/utils/captureMedia';
@@ -37,7 +38,7 @@ const P = {
   bg:       '#f7f8fa',
 };
 
-const TOURS_PAGE_SIZE_DESKTOP = 8; // 4 columns × 2 rows
+const TOURS_PAGE_SIZE_DESKTOP = 8; // 4 colum ns × 2 rows
 const TOURS_PAGE_SIZE_MOBILE = 9;  // 3 columns × 3 rows
 
 const TOURS_GRID_SX = {
@@ -66,7 +67,7 @@ function TourCard({
   compact?: boolean;
   isFavorite: boolean;
   onToggleFavorite: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
 }) {
   const st = (statusConfig.tour as Record<string, { label: string; color: string; bg: string }>)[tour.status] ?? statusConfig.tour.draft;
   const dot = STATUS_DOT[tour.status] ?? P.subtle;
@@ -157,14 +158,16 @@ function TourCard({
         </Box>
         {/* Always visible on touch devices (xs/sm) — hover-to-reveal only applies
             where a real hover exists, otherwise the button is unreachable. */}
-        <Box className="tour-delete" sx={{ position: 'absolute', bottom: 8, right: 8, zIndex: 10, opacity: { xs: 1, sm: 1, md: 0 }, transition: `opacity ${motion.durationNormal} ${motion.easeOut}` }}>
-          <Box
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(); }}
-            sx={{ width: 32, height: 32, borderRadius: '8px', backgroundColor: 'rgba(239,68,68,0.9)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'background-color 150ms ease, transform 150ms ease', '&:hover': { backgroundColor: 'rgba(220,38,38,1)', transform: 'scale(1.05)' } }}
-          >
-            <DeleteRounded sx={{ color: '#fff', fontSize: 16 }} />
+        {onDelete && (
+          <Box className="tour-delete" sx={{ position: 'absolute', bottom: 8, right: 8, zIndex: 10, opacity: { xs: 1, sm: 1, md: 0 }, transition: `opacity ${motion.durationNormal} ${motion.easeOut}` }}>
+            <Box
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(); }}
+              sx={{ width: 32, height: 32, borderRadius: '8px', backgroundColor: 'rgba(239,68,68,0.9)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'background-color 150ms ease, transform 150ms ease', '&:hover': { backgroundColor: 'rgba(220,38,38,1)', transform: 'scale(1.05)' } }}
+            >
+              <DeleteRounded sx={{ color: '#fff', fontSize: 16 }} />
+            </Box>
           </Box>
-        </Box>
+        )}
       </Box>
 
       <Box sx={{ pt: { xs: 0.5, sm: 1.25 }, px: 0, minWidth: 0 }}>
@@ -192,11 +195,11 @@ export default function ToursPage() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const user = useAuthStore(s => s.user);
-  const role = user?.role || 'default';
+  const sessionUserKey = user?.id || user?.role || 'default';
   
-  const [projectId, setProjectId] = useState<string>(() => sessionStorage.getItem(`tours_projectId_${role}`) || '');
-  const [towerId, setTowerId]     = useState<string>(() => sessionStorage.getItem(`tours_towerId_${role}`) || '');
-  const [floorId, setFloorId]     = useState<string>(() => sessionStorage.getItem(`tours_floorId_${role}`) || '');
+  const [projectId, setProjectId] = useState<string>(() => sessionStorage.getItem(`tours_projectId_${sessionUserKey}`) || '');
+  const [towerId, setTowerId]     = useState<string>(() => sessionStorage.getItem(`tours_towerId_${sessionUserKey}`) || '');
+  const [floorId, setFloorId]     = useState<string>(() => sessionStorage.getItem(`tours_floorId_${sessionUserKey}`) || '');
   
   const [sortOrder, setSortOrder]     = useState<'latest' | 'oldest'>('latest');
   const [viewMode, setViewMode]       = useState<'all' | 'favorites'>('all');
@@ -230,18 +233,18 @@ export default function ToursPage() {
 
   const handleProjectSelect = (id: string) => { 
     setProjectId(id); setTowerId(id === 'all' ? '' : 'all'); setFloorId(id === 'all' ? '' : 'all'); setMenuAnchor(null); 
-    sessionStorage.setItem(`tours_projectId_${role}`, id);
-    sessionStorage.setItem(`tours_towerId_${role}`, id === 'all' ? '' : 'all');
-    sessionStorage.setItem(`tours_floorId_${role}`, id === 'all' ? '' : 'all');
+    sessionStorage.setItem(`tours_projectId_${sessionUserKey}`, id);
+    sessionStorage.setItem(`tours_towerId_${sessionUserKey}`, id === 'all' ? '' : 'all');
+    sessionStorage.setItem(`tours_floorId_${sessionUserKey}`, id === 'all' ? '' : 'all');
   };
   const handleTowerSelect = (id: string) => { 
     setTowerId(id); setFloorId('all'); setTowerMenuAnchor(null); 
-    sessionStorage.setItem(`tours_towerId_${role}`, id);
-    sessionStorage.setItem(`tours_floorId_${role}`, 'all');
+    sessionStorage.setItem(`tours_towerId_${sessionUserKey}`, id);
+    sessionStorage.setItem(`tours_floorId_${sessionUserKey}`, 'all');
   };
   const handleFloorSelect = (id: string) => { 
     setFloorId(id); setFloorMenuAnchor(null); 
-    sessionStorage.setItem(`tours_floorId_${role}`, id);
+    sessionStorage.setItem(`tours_floorId_${sessionUserKey}`, id);
   };
 
   const projects = useMemo(() => allProjects.filter(p => !p.archived), [allProjects]);
@@ -569,7 +572,7 @@ export default function ToursPage() {
             {towerTourCount('all')}
           </Box>
           {towerId === 'all' && <CheckRounded sx={{ fontSize: 17, color: colors.primary }} />}
-        </MenuItem>
+        </MenuItem> 
         {availableTowers.map(t => {
           const isActive = towerId === t.id;
           return (
@@ -666,7 +669,7 @@ export default function ToursPage() {
               compact={isMobile}
               isFavorite={favoriteIds.has(tour.id)}
               onToggleFavorite={() => { if (user?.id) toggleFavorite(user.id, tour.id); }}
-              onDelete={() => setDeleteTarget(tour)}
+              onDelete={can(user?.role, 'tours', 'delete') ? () => setDeleteTarget(tour) : undefined}
             />
           ))}
         </Box>

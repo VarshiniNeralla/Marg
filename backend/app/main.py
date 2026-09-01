@@ -106,6 +106,46 @@ def create_app() -> FastAPI:
     # ── Routers ───────────────────────────────────────────────────────────────
     app.include_router(api_router, prefix="/api/v1")
 
+    # Local media (MEDIA_STORAGE=local). Auth-gated — not world-readable StaticFiles.
+    from fastapi import HTTPException, Query, Request
+    from fastapi.responses import FileResponse
+
+    from app.services.local_media_service import ensure_upload_root, upload_root
+    from app.services.media_access import authorize_media_request
+
+    media_root = ensure_upload_root()
+
+    @app.get("/media/{file_path:path}", include_in_schema=False)
+    async def serve_local_media(
+        file_path: str,
+        request: Request,
+        access_token: str | None = Query(default=None),
+        exp: str | None = Query(default=None),
+        sig: str | None = Query(default=None),
+    ):
+        authorize_media_request(
+            request,
+            file_path,
+            access_token=access_token,
+            exp=exp,
+            sig=sig,
+        )
+        root = upload_root().resolve()
+        full = (root / file_path).resolve()
+        try:
+            full.relative_to(root)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Not found") from exc
+        if not full.is_file():
+            raise HTTPException(status_code=404, detail="Not found")
+        return FileResponse(full)
+
+    logger.info(
+        f"Media storage={settings.MEDIA_STORAGE} root={media_root} "
+        f"require_auth={settings.MEDIA_REQUIRE_AUTH} "
+        f"public_base={settings.MEDIA_PUBLIC_BASE_URL or '(relative /media)'}"
+    )
+
     # ── Root + health — no auth, no rate limiting ─────────────────────────────
     @app.api_route("/", methods=["GET", "HEAD"], tags=["Meta"], include_in_schema=False)
     async def root():

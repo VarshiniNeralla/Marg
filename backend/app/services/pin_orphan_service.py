@@ -166,7 +166,9 @@ async def heal_unlocated_pins_for_floor(
     # normal (engineer placement wins). Snapshot was flooding logs with dozens
     # of identical lines on every load.
     if unlocated:
-        logger.debug(
+        # Snapshot load can hit this for every floor; keep it off the default
+        # DEBUG stream (engineers placing pins on walls/corridors is normal).
+        logger.trace(
             "[pin-orphan] {} pin(s) outside room polygons on floor={} (coordinates left as-is)",
             unlocated,
             floor_id,

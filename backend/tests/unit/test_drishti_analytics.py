@@ -7,6 +7,7 @@ from app.services.drishti_analytics import (
     find_capture_gaps,
     find_captured_rooms,
     list_activities_by_status,
+    list_floor_level_activities_by_status,
     rank_activities,
     rank_common_areas,
     rank_flats,
@@ -128,6 +129,72 @@ class TestListActivitiesByStatus:
         ]
         result = list_activities_by_status(rooms, ["in_progress"])
         assert [r["activityName"] for r in result] == ["Alpha Activity", "Zebra Activity"]
+
+
+class TestListFloorLevelActivitiesByStatus:
+    """Regression coverage for a real production bug: "what are those 101
+    activities that did not start" (statuses not_assessed/no_evidence)
+    always returned an empty activityList.items, because
+    list_activities_by_status reads room-level rooms[].activities[] — and
+    an uncaptured room's activities is a bare [] in real production data
+    (confirmed directly against the database), so not_assessed activities
+    can NEVER appear there no matter how many exist. Those statuses only
+    exist in each snapshot's separate per-floor "activities" rollup (one
+    entry per activity NAME for the whole floor, keyed "name" not
+    "activityName", with no room/flat location at all)."""
+
+    def _floor_activity(self, name, status, activity_id="a1"):
+        return {"activityId": activity_id, "name": name, "status": status, "completionPct": 0.0}
+
+    def test_lists_matching_status_from_floor_rollup(self):
+        floor_activities = {
+            "f1": [
+                self._floor_activity("Main Door Frame", "not_assessed"),
+                self._floor_activity("Wall Punning", "in_progress"),
+                self._floor_activity("Corecutting", "not_observable"),
+            ],
+        }
+        result = list_floor_level_activities_by_status(floor_activities, ["not_assessed"], {"f1": "Floor 1"})
+        assert len(result) == 1
+        assert result[0]["activityName"] == "Main Door Frame"
+        assert result[0]["floorName"] == "Floor 1"
+        # No room/flat location exists for a floor-rollup entry.
+        assert "roomName" not in result[0]
+        assert "flatName" not in result[0]
+
+    def test_merges_multiple_statuses(self):
+        floor_activities = {
+            "f1": [
+                self._floor_activity("Main Door Frame", "not_assessed"),
+                self._floor_activity("Corecutting", "not_observable"),
+            ],
+        }
+        result = list_floor_level_activities_by_status(
+            floor_activities, ["not_assessed", "not_observable"], {"f1": "Floor 1"},
+        )
+        assert len(result) == 2
+
+    def test_groups_across_multiple_floors_sorted_by_floor_then_name(self):
+        floor_activities = {
+            "f2": [self._floor_activity("Zebra Activity", "not_assessed")],
+            "f1": [self._floor_activity("Alpha Activity", "not_assessed")],
+        }
+        result = list_floor_level_activities_by_status(
+            floor_activities, ["not_assessed"], {"f1": "Floor 1", "f2": "Floor 2"},
+        )
+        assert [(r["floorName"], r["activityName"]) for r in result] == [
+            ("Floor 1", "Alpha Activity"), ("Floor 2", "Zebra Activity"),
+        ]
+
+    def test_empty_when_nothing_matches(self):
+        floor_activities = {"f1": [self._floor_activity("Wall Punning", "in_progress")]}
+        assert list_floor_level_activities_by_status(floor_activities, ["not_assessed"], {"f1": "Floor 1"}) == []
+
+    def test_works_without_floor_names_mapping(self):
+        floor_activities = {"f1": [self._floor_activity("Main Door Frame", "not_assessed")]}
+        result = list_floor_level_activities_by_status(floor_activities, ["not_assessed"])
+        assert result[0]["floorName"] is None
+        assert result[0]["floorId"] == "f1"
 
 
 class TestRankFlats:

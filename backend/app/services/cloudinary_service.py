@@ -23,7 +23,7 @@ from app.services.panorama_service import (
     validate_stitched_content,
     validate_stitched_output,
 )
-from app.services.fisheye_stitch import StitchResult, stitch_equirectangular
+from app.services.fisheye_stitch import StitchResult, stitch_equirectangular_with_recovery
 
 
 def _stitch_raw_360(raw: bytes, filename: str) -> Optional[StitchResult]:
@@ -32,7 +32,7 @@ def _stitch_raw_360(raw: bytes, filename: str) -> Optional[StitchResult]:
 
     try:
         logger.info(f"[capture-pipeline] stitching started file={filename} bytes={len(raw)}")
-        result = stitch_equirectangular(raw, filename)
+        result = stitch_equirectangular_with_recovery(raw, filename)
         if result is None:
             logger.error(f"[capture-pipeline] stitching returned None for {filename}")
             return None
@@ -40,7 +40,9 @@ def _stitch_raw_360(raw: bytes, filename: str) -> Optional[StitchResult]:
         logger.info(
             f"[capture-pipeline] stitching completed file={filename} "
             f"output={result.width}x{result.height} aspect={aspect:.3f} "
-            f"projection={result.projection} camera={result.camera_model}"
+            f"projection={result.projection} camera={result.camera_model} "
+            f"attempt={(result.metadata or {}).get('stitch_attempt', 'default')} "
+            f"coverage={(result.metadata or {}).get('sphere_coverage')}"
         )
         return result
     except Exception as exc:
@@ -154,6 +156,198 @@ def _thumbnail_url(public_id: str, resource_type: str, secure_url: str, filename
     )
 
 
+def _cloudinary_configured() -> bool:
+    return bool(
+        settings.CLOUDINARY_CLOUD_NAME
+        and settings.CLOUDINARY_API_KEY
+        and settings.CLOUDINARY_API_SECRET
+    )
+
+
+def _media_kind_from_folder(folder: str) -> str:
+    """Extract kind (captures|floorplans|…) from a SiteVision/… folder path."""
+    parts = [p.lower() for p in (folder or "").replace("\\", "/").split("/") if p]
+    for kind in ("floorplans", "captures", "avatars", "tours", "projects", "thumbnails"):
+        if kind in parts:
+            return kind
+    if len(parts) >= 2:
+        return parts[1]
+    return ""
+
+
+def _resolve_media_storage(*, folder: str = "", force: Optional[str] = None) -> str:
+    """
+    Hybrid routing:
+      floorplans → Cloudinary always (high-quality PDF page renders)
+      captures   → local when MEDIA_STORAGE=local
+      other      → MEDIA_STORAGE
+    """
+    if force in {"local", "cloudinary"}:
+        return force
+    kind = _media_kind_from_folder(folder)
+    if kind == "floorplans":
+        return "cloudinary"
+    mode = get_settings().MEDIA_STORAGE
+    if kind == "captures":
+        return "local" if mode == "local" else "cloudinary"
+    return mode if mode in {"local", "cloudinary"} else "local"
+
+
+async def _upload_bytes_to_cloudinary(
+    *,
+    data: bytes,
+    upload_filename: str,
+    folder: str,
+    effective_resource_type: str,
+    original_filename: str,
+    stitch_meta: Optional[dict],
+) -> dict:
+    configure_cloudinary()
+    ext = Path(upload_filename).suffix.lower()
+
+    # Free-plan Cloudinary caps ~10MB/file; 8K stitches often exceed that.
+    if effective_resource_type == "image" and ext in {".jpg", ".jpeg", ".png", ".webp"}:
+        data = await to_thread.run_sync(ensure_under_size, data, settings.MAX_UPLOAD_BYTES)
+
+    def _upload() -> dict:
+        return cloudinary.uploader.upload(
+            BytesIO(data),
+            folder=folder,
+            resource_type=effective_resource_type,
+            use_filename=True,
+            unique_filename=True,
+            filename_override=upload_filename,
+            timeout=settings.CLOUDINARY_UPLOAD_TIMEOUT,
+        )
+
+    try:
+        result = await to_thread.run_sync(_upload)
+    except Exception as exc:
+        from loguru import logger
+        logger.error(
+            f"Cloudinary upload failed: file={upload_filename} "
+            f"resource_type={effective_resource_type} error={exc!r}"
+        )
+        raise ValidationException(f"Media upload failed: {exc}") from exc
+
+    public_id = result["public_id"]
+    secure_url = result["secure_url"]
+    fmt = result.get("format") or ext.lstrip(".")
+    size = int(result.get("bytes") or 0)
+    uploaded_at = result.get("created_at") or datetime.now(timezone.utc).isoformat()
+    resource = result.get("resource_type", "image")
+    out_w = result.get("width")
+    out_h = result.get("height")
+
+    from loguru import logger
+    logger.info(
+        f"[capture-pipeline] cloudinary_upload_complete filename={upload_filename} "
+        f"public_id={public_id} resource_type={resource} "
+        f"dimensions={out_w}x{out_h} url={secure_url}"
+    )
+    if stitch_meta is not None and out_w and out_h:
+        logger.info(
+            f"[capture-pipeline] panorama_url={secure_url} "
+            f"aspect={out_w / max(out_h, 1):.3f} projection={stitch_meta.get('projection')}"
+        )
+
+    is_pdf = _is_pdf(original_filename, fmt)
+    preview_url = _pdf_image_url(public_id) if is_pdf else secure_url
+
+    return {
+        "original_url": preview_url,
+        "thumbnail_url": _thumbnail_url(public_id, resource, secure_url, original_filename, fmt),
+        "public_id": public_id,
+        "format": fmt,
+        "size": size,
+        "uploaded_at": uploaded_at,
+        "resource_type": resource,
+        "width": result.get("width"),
+        "height": result.get("height"),
+        "pages": result.get("pages"),
+        "original_filename": original_filename,
+        "raw_pdf_url": None,
+        "storage": "cloudinary",
+        "stitch": stitch_meta,
+    }
+
+
+async def _persist_processed_bytes(
+    *,
+    data: bytes,
+    upload_filename: str,
+    folder: str,
+    effective_resource_type: str,
+    original_filename: str,
+    stitch_meta: Optional[dict],
+    force_storage: Optional[str] = None,
+) -> dict:
+    """
+    Persist processed media bytes.
+
+    Routing (hybrid):
+      • floorplans → always Cloudinary (sharp PDF→PNG delivery; avoids soft local raster)
+      • captures   → local disk when MEDIA_STORAGE=local (Cloudinary on local failure)
+      • everything else → MEDIA_STORAGE setting
+
+    force_storage: optional "local" | "cloudinary" override.
+    """
+    from loguru import logger
+    from app.services.local_media_service import save_media_locally
+
+    backend = _resolve_media_storage(folder=folder, force=force_storage)
+    prefer_local = backend == "local"
+    logger.info(
+        f"[media-storage] routing filename={upload_filename} folder={folder} → {backend}"
+    )
+
+    if prefer_local:
+        try:
+            asset = await save_media_locally(
+                data=data,
+                filename=upload_filename,
+                folder=folder,
+            )
+            asset["original_filename"] = original_filename
+            asset["stitch"] = stitch_meta
+            logger.info(
+                f"[capture-pipeline] local_upload_complete filename={upload_filename} "
+                f"public_id={asset.get('public_id')} url={asset.get('original_url')}"
+            )
+            if stitch_meta is not None and asset.get("width") and asset.get("height"):
+                w, h = int(asset["width"]), int(asset["height"])
+                logger.info(
+                    f"[capture-pipeline] panorama_url={asset.get('original_url')} "
+                    f"aspect={w / max(h, 1):.3f} projection={stitch_meta.get('projection')}"
+                )
+            return asset
+        except Exception as exc:
+            logger.error(
+                f"[media-storage] local save failed for {upload_filename}; "
+                f"falling back to Cloudinary (ops alert): {exc!r}"
+            )
+            if not _cloudinary_configured():
+                raise ValidationException(
+                    "Local media save failed and Cloudinary is not configured as a fallback. "
+                    f"Details: {exc}"
+                ) from exc
+
+    if not _cloudinary_configured():
+        raise ValidationException(
+            "Cloudinary credentials are not configured "
+            "(required for floor plans, or when MEDIA_STORAGE=cloudinary / local fallback)."
+        )
+
+    return await _upload_bytes_to_cloudinary(
+        data=data,
+        upload_filename=upload_filename,
+        folder=folder,
+        effective_resource_type=effective_resource_type,
+        original_filename=original_filename,
+        stitch_meta=stitch_meta,
+    )
+
+
 async def upload_media(
     *,
     file_obj: BinaryIO,
@@ -162,7 +356,6 @@ async def upload_media(
     resource_type: str = "auto",
     tag_if_panorama: bool = False,
 ) -> dict:
-    configure_cloudinary()
     ext = Path(filename).suffix.lower()
     # Upload PDFs as resource_type="image" so Cloudinary renders them as images.
     effective_resource_type = "image" if ext == ".pdf" else resource_type
@@ -221,7 +414,12 @@ async def upload_media(
         else:
             try:
                 validate_stitched_output(result.width, result.height, filename=filename)
-                validate_stitched_content(result.processed_image, filename=filename)
+                coverage = (result.metadata or {}).get("sphere_coverage")
+                validate_stitched_content(
+                    result.processed_image,
+                    filename=filename,
+                    sphere_coverage=float(coverage) if coverage is not None else None,
+                )
             except PanoramaValidationError as exc:
                 raise ValidationException(str(exc)) from exc
 
@@ -246,7 +444,8 @@ async def upload_media(
             logger.info(
                 f"[capture-pipeline] upload_source=stitched_jpg filename={upload_filename} "
                 f"dimensions={result.width}x{result.height} "
-                f"aspect={result.width / max(result.height, 1):.3f}"
+                f"aspect={result.width / max(result.height, 1):.3f} "
+                f"bytes={len(tagged)}"
             )
 
     # Non-raw captures: if the image is already a 2:1 equirectangular export
@@ -269,74 +468,24 @@ async def upload_media(
             # Flat (non-panorama) capture — same safety net: an oversized
             # phone/camera photo shouldn't fail outright when a lower-quality
             # re-encode would let it upload fine.
-            raw = await to_thread.run_sync(ensure_under_size, raw, settings.MAX_UPLOAD_BYTES)
+            raw = await to_thread.run_sync(ensure_under_size, raw, get_settings().MAX_UPLOAD_BYTES)
             upload_source = BytesIO(raw)
 
-    def _upload() -> dict:
-        return cloudinary.uploader.upload(
-            upload_source,
-            folder=folder,
-            resource_type=effective_resource_type,
-            use_filename=True,
-            unique_filename=True,
-            filename_override=upload_filename,
-            timeout=settings.CLOUDINARY_UPLOAD_TIMEOUT,
-        )
+    data = upload_source.read() if hasattr(upload_source, "read") else bytes(upload_source)
+    if isinstance(upload_source, BytesIO):
+        upload_source.seek(0)
+    # file_obj may already have been consumed above; ensure we hold the bytes.
+    if not isinstance(data, (bytes, bytearray)):
+        data = bytes(data)
 
-    try:
-        result = await to_thread.run_sync(_upload)
-    except Exception as exc:
-        # Log the full Cloudinary error so upload failures are diagnosable, then
-        # surface a clean 4xx (the generic handler would otherwise make it a 500).
-        from loguru import logger
-        logger.error(
-            f"Cloudinary upload failed: file={upload_filename} "
-            f"resource_type={effective_resource_type} error={exc!r}"
-        )
-        raise ValidationException(f"Media upload failed: {exc}") from exc
-    public_id = result["public_id"]
-    secure_url = result["secure_url"]
-    fmt = result.get("format") or ext.lstrip(".")
-    size = int(result.get("bytes") or 0)
-    uploaded_at = result.get("created_at") or datetime.now(timezone.utc).isoformat()
-    resource = result.get("resource_type", "image")
-    out_w = result.get("width")
-    out_h = result.get("height")
-
-    from loguru import logger
-    logger.info(
-        f"[capture-pipeline] cloudinary_upload_complete filename={upload_filename} "
-        f"public_id={public_id} resource_type={resource} "
-        f"dimensions={out_w}x{out_h} url={secure_url}"
+    return await _persist_processed_bytes(
+        data=bytes(data),
+        upload_filename=upload_filename,
+        folder=folder,
+        effective_resource_type=effective_resource_type,
+        original_filename=filename,
+        stitch_meta=stitch_meta,
     )
-    if stitch_meta is not None and out_w and out_h:
-        logger.info(
-            f"[capture-pipeline] panorama_url={secure_url} "
-            f"aspect={out_w / max(out_h, 1):.3f} projection={stitch_meta.get('projection')}"
-        )
-
-    # For PDFs uploaded as resource_type="image", Cloudinary already converts them.
-    # original_url points to the PNG render (public, no auth). raw_pdf_url would
-    # require a signed request on most plans — omit it to avoid 401s in the browser.
-    is_pdf = _is_pdf(filename, fmt)
-    preview_url = _pdf_image_url(public_id) if is_pdf else secure_url
-
-    return {
-        "original_url": preview_url,
-        "thumbnail_url": _thumbnail_url(public_id, resource, secure_url, filename, fmt),
-        "public_id": public_id,
-        "format": fmt,
-        "size": size,
-        "uploaded_at": uploaded_at,
-        "resource_type": resource,
-        "width": result.get("width"),
-        "height": result.get("height"),
-        "pages": result.get("pages"),
-        "original_filename": filename,
-        "raw_pdf_url": None,
-        # Present when a raw dual-fisheye was stitched to equirectangular server-side.
-        "stitch": stitch_meta,
-    }
 
 
 async def cloudinary_asset_exists(public_id: str, resource_type: str = "image") -> Optional[bool]:
@@ -379,7 +528,7 @@ async def cloudinary_asset_exists(public_id: str, resource_type: str = "image") 
 
 async def delete_media_assets(media_assets: list[dict]) -> None:
     """
-    Best-effort Cloudinary cleanup for one or more previously-uploaded assets.
+    Best-effort cleanup for previously-uploaded assets (local disk and/or Cloudinary).
 
     Deleting a capture/floor-plan/etc. in Mongo used to leave its Cloudinary
     file behind forever — the API only ever called `upload`, never `destroy`,
@@ -393,19 +542,27 @@ async def delete_media_assets(media_assets: list[dict]) -> None:
     not the source of truth for whether the delete succeeded.
     """
     from loguru import logger
+    from app.services.local_media_service import delete_local_asset, is_local_public_id
 
     if not media_assets:
         return
 
+    cloudinary_ready = False
     try:
         configure_cloudinary()
+        cloudinary_ready = True
     except Exception as exc:
-        logger.warning(f"[cloudinary] skipping cleanup, not configured: {exc!r}")
-        return
+        logger.warning(f"[cloudinary] cleanup unavailable (not configured): {exc!r}")
 
     for asset in media_assets:
         public_id = (asset or {}).get("public_id")
         if not public_id:
+            continue
+        storage = (asset or {}).get("storage") or ""
+        if storage == "local" or is_local_public_id(public_id):
+            delete_local_asset(public_id)
+            continue
+        if not cloudinary_ready:
             continue
         resource_type = (asset or {}).get("resource_type") or "image"
         try:

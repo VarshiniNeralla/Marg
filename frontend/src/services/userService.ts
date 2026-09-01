@@ -36,6 +36,10 @@ export const userService = {
     return data.data!;
   },
 
+  async setUserPassword(userId: string, newPassword: string): Promise<void> {
+    await apiClient.put(`/users/${userId}/password`, { new_password: newPassword });
+  },
+
   async deactivateUser(userId: string): Promise<void> {
     await apiClient.delete(`/users/${userId}`);
   },

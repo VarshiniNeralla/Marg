@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
+import { setMediaAccessToken } from '@/config/env';
 import { AUTH_STORE_KEY, STORE_VERSION, safeParseJson } from './persistence';
 
 // Three primary application roles.
@@ -74,10 +75,12 @@ export const useAuthStore = create<AuthState>()(
       sessionKind: null,
 
       setAuth(token, user, sessionKind = 'live') {
+        setMediaAccessToken(token);
         set({ accessToken: token, user, isAuthenticated: true, sessionKind });
       },
 
       setAccessToken(token) {
+        setMediaAccessToken(token);
         set({ accessToken: token, isAuthenticated: true });
       },
 
@@ -86,6 +89,7 @@ export const useAuthStore = create<AuthState>()(
       },
 
       clearAuth() {
+        setMediaAccessToken(null);
         set({ accessToken: null, user: null, isAuthenticated: false, sessionKind: null });
       },
 
@@ -157,6 +161,7 @@ export function getRoleLandingPath(role: AppRole | undefined): string {
     case 'super_admin': return '/dashboard/admin';
     case 'manager':     return '/dashboard/manager';
     case 'field_engineer': return '/dashboard/engineer';
-    default: return '/dashboard/admin';
+    // Unknown / corrupt roles must never land on the admin chrome.
+    default: return '/login';
   }
 }

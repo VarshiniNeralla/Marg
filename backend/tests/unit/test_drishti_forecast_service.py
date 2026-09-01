@@ -4,8 +4,15 @@ completion estimator. No db access; timelines are handcrafted dicts matching
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock
 
-from app.services.drishti_forecast_service import compute_assumption_based_estimate, compute_velocity_forecast
+import pytest
+
+from app.services.drishti_forecast_service import (
+    DrishtiForecastService,
+    compute_assumption_based_estimate,
+    compute_velocity_forecast,
+)
 
 
 def _dt(days_from_epoch: int) -> datetime:
@@ -152,3 +159,130 @@ class TestAssumptionBasedEstimate:
         # Must not raise even without an explicit as_of reference date.
         estimate = compute_assumption_based_estimate(40.0)
         assert estimate is not None
+
+
+def _fake_db_with_project(project_doc):
+    """Project documents are schema-less (`workflow.py` persists whatever
+    the create-project form sends verbatim) — this fakes just the one
+    `db["projects"].find_one(...)` call `get_planned_dates` needs."""
+    collection = MagicMock()
+    collection.find_one = AsyncMock(return_value=project_doc)
+    db = MagicMock()
+    db.__getitem__ = MagicMock(return_value=collection)
+    return db
+
+
+class TestGetPlannedDates:
+    """A real production bug: a project created with admin-entered
+    startDate/endDate (NewProjectPage.tsx) still returned "no forecast data
+    available" for "When is Project A projected to finish?" because no
+    forecast code path ever looked at the project's own configured dates —
+    only at snapshot-derived velocity or a generic assumption. This is the
+    fetch that closes that gap."""
+
+    @pytest.mark.asyncio
+    async def test_returns_start_and_end_date_when_present(self):
+        db = _fake_db_with_project({"orgId": "org1", "startDate": "2026-01-01", "endDate": "2026-12-31"})
+        service = DrishtiForecastService(db)
+        result = await service.get_planned_dates("org1", "p1")
+        assert result == {
+            "startDate": "2026-01-01", "endDate": "2026-12-31",
+            "startDateDisplay": "January 1, 2026", "endDateDisplay": "December 31, 2026",
+        }
+
+    @pytest.mark.asyncio
+    async def test_none_when_project_not_found(self):
+        db = _fake_db_with_project(None)
+        service = DrishtiForecastService(db)
+        assert await service.get_planned_dates("org1", "missing") is None
+
+    @pytest.mark.asyncio
+    async def test_none_when_end_date_missing(self):
+        db = _fake_db_with_project({"orgId": "org1", "startDate": "2026-01-01"})
+        service = DrishtiForecastService(db)
+        assert await service.get_planned_dates("org1", "p1") is None
+
+    @pytest.mark.asyncio
+    async def test_end_date_present_without_start_date(self):
+        db = _fake_db_with_project({"orgId": "org1", "endDate": "2026-12-31"})
+        service = DrishtiForecastService(db)
+        result = await service.get_planned_dates("org1", "p1")
+        assert result == {
+            "startDate": None, "endDate": "2026-12-31",
+            "startDateDisplay": None, "endDateDisplay": "December 31, 2026",
+        }
+
+
+class TestFormatDateDisplay:
+    """Regression coverage for a real production bug: the backend correctly
+    stored and retrieved endDate "2028-05-12" (confirmed by directly
+    querying the live database), yet Drishti's answer stated "October 15,
+    2024" — the small local LLM was handed the exact correct raw ISO string
+    and hallucinated a completely different date while trying to reformat
+    it into prose. Doing the formatting here in Python means the LLM only
+    ever has to copy a ready-made string, never parse/reformat one itself."""
+
+    def test_formats_iso_date_to_readable_string(self):
+        from app.services.drishti_forecast_service import _format_date_display
+        assert _format_date_display("2028-05-12") == "May 12, 2028"
+        assert _format_date_display("2026-01-01") == "January 1, 2026"
+
+    def test_none_for_missing_or_empty(self):
+        from app.services.drishti_forecast_service import _format_date_display
+        assert _format_date_display(None) is None
+        assert _format_date_display("") is None
+
+    def test_none_for_unparseable_string(self):
+        from app.services.drishti_forecast_service import _format_date_display
+        assert _format_date_display("not a date") is None
+
+
+class TestForecastProjectSurfacesPlannedDates:
+    """The exact regression from the live bug report: a project with no
+    floors yet (or no floor with enough velocity history) must still answer
+    "when will it finish" from its own planned end date, never fall through
+    to a bare "insufficient_data" with no plannedDates attached at all."""
+
+    @pytest.mark.asyncio
+    async def test_no_floors_still_surfaces_planned_dates(self):
+        db = _fake_db_with_project({"orgId": "org1", "startDate": "2026-01-01", "endDate": "2026-12-31"})
+        service = DrishtiForecastService(db)
+        result = await service.forecast_project("org1", "p1", [])
+        assert result["status"] == "insufficient_data"
+        assert result["plannedDates"]["startDate"] == "2026-01-01"
+        assert result["plannedDates"]["endDate"] == "2026-12-31"
+        assert result["plannedDates"]["endDateDisplay"] == "December 31, 2026"
+
+    @pytest.mark.asyncio
+    async def test_no_floors_and_no_planned_dates_omits_key(self):
+        db = _fake_db_with_project(None)
+        service = DrishtiForecastService(db)
+        result = await service.forecast_project("org1", "p1", [])
+        assert result["status"] == "insufficient_data"
+        assert "plannedDates" not in result
+
+    @pytest.mark.asyncio
+    async def test_insufficient_velocity_data_still_surfaces_planned_dates(self, monkeypatch):
+        db = _fake_db_with_project({"orgId": "org1", "startDate": "2026-01-01", "endDate": "2026-12-31"})
+        service = DrishtiForecastService(db)
+        monkeypatch.setattr(
+            service, "forecast_floor",
+            AsyncMock(return_value={"status": "insufficient_data", "reason": "no history"}),
+        )
+        result = await service.forecast_project("org1", "p1", ["f1", "f2"])
+        assert result["status"] == "insufficient_data"
+        assert result["plannedDates"]["startDate"] == "2026-01-01"
+        assert result["plannedDates"]["endDate"] == "2026-12-31"
+        assert result["plannedDates"]["endDateDisplay"] == "December 31, 2026"
+
+    @pytest.mark.asyncio
+    async def test_ok_forecast_also_carries_planned_dates(self, monkeypatch):
+        db = _fake_db_with_project({"orgId": "org1", "startDate": "2026-01-01", "endDate": "2026-12-31"})
+        service = DrishtiForecastService(db)
+        ok_forecast = {"status": "ok", "daysToComplete": 30.0}
+        monkeypatch.setattr(service, "forecast_floor", AsyncMock(return_value=ok_forecast))
+        result = await service.forecast_project("org1", "p1", ["f1"])
+        assert result["status"] == "ok"
+        assert result["plannedDates"]["startDate"] == "2026-01-01"
+        assert result["plannedDates"]["endDate"] == "2026-12-31"
+        assert result["plannedDates"]["endDateDisplay"] == "December 31, 2026"

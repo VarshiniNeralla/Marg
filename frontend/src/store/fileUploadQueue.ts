@@ -30,7 +30,8 @@ import { Preferences } from '@capacitor/preferences';
 import { Network } from '@capacitor/network';
 import { useAuthStore } from './authStore';
 import { useWorkflowStore } from './workflowStore';
-import { uploadCaptureFiles, getCaptureStitchJob } from '@/services/uploadService';
+import { uploadCaptureFiles, getCaptureStitchJob, retryCaptureStitchJob, type UploadedFileResponse } from '@/services/uploadService';
+import { captureAwaitingPanorama, captureStitchJobId } from '@/utils/captureMedia';
 import { setPendingUploadPins, removePendingUploadPin, addPendingUploadPin } from './pendingUploadRegistry';
 import { isTombstoned } from './tombstones';
 
@@ -67,8 +68,8 @@ export const FILE_UPLOAD_SUCCEEDED_EVENT = 'workflow:file-upload-succeeded';
 export const SYNC_ERROR_EVENT = 'workflow:sync-error';
 
 export type FileUploadStatus = 'queued' | 'uploading' | 'processing' | 'failed';
-/** Why a queue entry is stuck in 'failed' — drives Retry vs Capture Again. */
-export type FileUploadFailKind = 'corrupt' | 'upload';
+/** Why a queue entry is stuck in 'failed' — drives Retry vs Capture Again vs Studio JPEG. */
+export type FileUploadFailKind = 'corrupt' | 'upload' | 'stitch';
 
 export interface PendingFileUpload {
   id: string;              // `fq${Date.now()}_${seq++}`
@@ -95,6 +96,14 @@ export interface PendingFileUpload {
    * recovered by re-uploading.
    */
   stitchJobId?: string;
+  /**
+   * Successful `/uploads/captures` response kept on the entry so a later
+   * attachCaptureToPin failure (missing room / hydrate race) can retry the
+   * attach WITHOUT re-POSTing the same multi-MB file (observed as endless
+   * dedup-HIT spam while the pin stayed "Queued").
+   */
+  uploadedFiles?: UploadedFileResponse[];
+  uploadedFileCount?: number;
   /** Set when status === 'failed'. */
   failKind?: FileUploadFailKind;
   /** User-facing reason shown on the pin panel. */
@@ -200,10 +209,131 @@ function pinUploadForbidden(pinId: string): boolean {
   return isTombstoned(pinId);
 }
 
+/** True when this queue entry's uploaded asset is already linked on the pin. */
+function captureHasUsablePanorama(cap: {
+  public_id?: string;
+  processedPanoramaUrl?: string | null;
+  processed_panorama_url?: string | null;
+  original_url?: string | null;
+  originalFileUrl?: string | null;
+  mediaAssets?: {
+    public_id?: string;
+    processed_panorama_url?: string | null;
+    processedPanoramaUrl?: string | null;
+    original_url?: string | null;
+  }[];
+}): boolean {
+  const first = cap.mediaAssets?.[0];
+  const publicId = cap.public_id || first?.public_id;
+  if (!publicId) return false;
+  const url =
+    first?.processed_panorama_url
+    || first?.processedPanoramaUrl
+    || cap.processedPanoramaUrl
+    || cap.processed_panorama_url
+    || first?.original_url
+    || cap.original_url
+    || cap.originalFileUrl;
+  return !!url;
+}
+
+function entryAlreadyAttachedToPin(entry: PendingFileUpload): boolean {
+  // Still stitching — never drop local bytes based on a placeholder match.
+  if (entry.stitchJobId && (entry.status === 'processing' || entry.status === 'queued')) {
+    const pinEarly = useWorkflowStore.getState().capturePins.find(p => p.id === entry.pinId);
+    if (pinEarly?.captureIds?.length) {
+      const captures = useWorkflowStore.getState().captures;
+      const matched = pinEarly.captureIds.some(cid => {
+        const cap = captures.find(c => c.id === cid) as
+          | { stitchJobId?: string; mediaAssets?: { stitchJobId?: string }[] }
+          | undefined;
+        if (!cap) return false;
+        const job =
+          cap.stitchJobId
+          || cap.mediaAssets?.[0]?.stitchJobId;
+        return job === entry.stitchJobId && captureHasUsablePanorama(cap as Parameters<typeof captureHasUsablePanorama>[0]);
+      });
+      if (matched) return true;
+    }
+    return false;
+  }
+
+  const pin = useWorkflowStore.getState().capturePins.find(p => p.id === entry.pinId);
+  if (!pin?.captureIds?.length) return false;
+  const captures = useWorkflowStore.getState().captures;
+
+  const publicIds = new Set(
+    (entry.uploadedFiles ?? [])
+      .map(f => f.public_id)
+      .filter((id): id is string => !!id),
+  );
+  const fileName = (entry.fileName || '').trim().toLowerCase();
+
+  for (const cid of pin.captureIds) {
+    const cap = captures.find(c => c.id === cid) as
+      | {
+          mediaAssets?: {
+            public_id?: string;
+            original_filename?: string;
+            originalFilename?: string;
+            processed_panorama_url?: string | null;
+            processedPanoramaUrl?: string | null;
+            original_url?: string | null;
+            stitchJobId?: string;
+          }[];
+          public_id?: string;
+          stitchJobId?: string;
+          processedPanoramaUrl?: string | null;
+          processed_panorama_url?: string | null;
+          original_url?: string | null;
+          originalFileUrl?: string | null;
+        }
+      | undefined;
+    if (!cap) continue;
+    if (!captureHasUsablePanorama(cap)) continue;
+
+    if (cap.public_id && publicIds.has(cap.public_id)) return true;
+    for (const asset of cap.mediaAssets ?? []) {
+      if (asset.public_id && publicIds.has(asset.public_id)) return true;
+    }
+
+    // Filename match only after a real panorama exists — cameras often reuse
+    // names across visits; matching placeholders used to discard the queue mid-stitch.
+    if (fileName) {
+      for (const asset of cap.mediaAssets ?? []) {
+        const assetName = (asset.original_filename || asset.originalFilename || '')
+          .trim()
+          .toLowerCase();
+        if (assetName && assetName === fileName) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Drop other unfinished queue rows for the same pin + filename (duplicate retries). */
+async function discardSiblingDuplicates(entry: PendingFileUpload): Promise<void> {
+  const siblings = queue.filter(
+    e =>
+      e.id !== entry.id
+      && e.pinId === entry.pinId
+      && e.fileName === entry.fileName
+      && e.status !== 'processing',
+  );
+  if (!siblings.length) return;
+  for (const s of siblings) {
+    releaseEntryBytes(s);
+    void deleteLocalFile(s);
+  }
+  queue = queue.filter(e => !siblings.some(s => s.id === e.id));
+}
+
 async function discardEntry(entry: PendingFileUpload): Promise<void> {
   releaseEntryBytes(entry);
   queue = queue.filter(e => e.id !== entry.id);
-  removePendingUploadPin(entry.pinId);
+  if (!queue.some(e => e.pinId === entry.pinId)) {
+    removePendingUploadPin(entry.pinId);
+  }
   await persist();
   await deleteLocalFile(entry);
 }
@@ -435,25 +565,44 @@ function messageFor(status: number): string {
 const CORRUPT_CAPTURE_MESSAGE =
   'This capture is corrupted or unsupported — please capture again.';
 
+const STITCH_FAILED_MESSAGE =
+  'Stitching produced an unusable panorama. Retry stitch, or upload an equirectangular JPEG from Insta360 Studio.';
+
 /**
  * Background stitch failures that will never succeed with the same bytes
  * (corrupt .insp, unsupported layout). Transient cases (timeout / lost spool)
- * should re-upload; permanent ones must stop the retry loop and ask for a
- * fresh capture.
+ * should re-upload; blank/unusable stitch can retry server-side if raw is kept.
  */
-function isPermanentStitchFailure(error: string | null | undefined): boolean {
-  if (!error) return true;
+function isTransientStitchFailure(error: string | null | undefined): boolean {
+  if (!error) return false;
   const e = error.toLowerCase();
-  if (
+  return (
     e.includes('timed out') ||
     e.includes('spooled upload missing') ||
     e.includes('no spooled file') ||
-    e.includes('orphaned')
-  ) {
-    return false;
-  }
+    e.includes('orphaned') ||
+    e.includes('no longer available') ||
+    e.includes('no longer on the server')
+  );
+}
+
+function isStitchQualityFailure(error: string | null | undefined): boolean {
+  if (!error) return false;
+  const e = error.toLowerCase();
   return (
-    e.includes('could not stitch') ||
+    e.includes('blank') ||
+    e.includes('unusable panorama') ||
+    e.includes('insta360 studio') ||
+    e.includes('low_sphere_coverage') ||
+    e.includes('could not stitch')
+  );
+}
+
+function isPermanentCorruptFailure(error: string | null | undefined): boolean {
+  if (!error) return true;
+  if (isTransientStitchFailure(error) || isStitchQualityFailure(error)) return false;
+  const e = error.toLowerCase();
+  return (
     e.includes('corrupt') ||
     e.includes('unsupported') ||
     e.includes('could not decode') ||
@@ -481,7 +630,39 @@ async function markEntryCorruptFailed(
   emitError(message, entry.pinId);
 }
 
-// ── Upload one entry ──────────────────────────────────────────────────────────
+/** Keep the capture + stitchJobId so Retry Stitch / Studio JPEG can recover. */
+async function markEntryStitchFailed(
+  entry: PendingFileUpload,
+  message: string = STITCH_FAILED_MESSAGE,
+): Promise<void> {
+  entry.status = 'failed';
+  entry.failKind = 'stitch';
+  entry.errorMessage = message;
+  // Keep stitchJobId — server may still have the raw spool for retry.
+  await persist();
+  emitError(message, entry.pinId);
+}
+
+/** Drop failed queue rows for a pin and unlink any stitch-dead capture they left behind. */
+async function clearFailedUploadStateForPin(pinId: string): Promise<void> {
+  const priorFailed = queue.filter(e => e.pinId === pinId && e.status === 'failed');
+  if (!priorFailed.length) return;
+
+  for (const e of priorFailed) {
+    if (e.stitchJobId) {
+      useWorkflowStore.getState().discardStitchFailedCapture(pinId, e.stitchJobId);
+    }
+    releaseEntryBytes(e);
+    void deleteLocalFile(e);
+  }
+  const abort = uploadAbortControllers.get(pinId);
+  if (abort) {
+    abort.abort();
+    uploadAbortControllers.delete(pinId);
+  }
+  queue = queue.filter(e => !(e.pinId === pinId && e.status === 'failed'));
+  await persist();
+}
 
 /** The stitchJobId of a still-processing upload response, if there is one. */
 function pendingJobIdOf(result: { files: { stitchJobId?: string; processing_status?: string }[] }): string | undefined {
@@ -506,39 +687,56 @@ function releaseEntryBytes(entry: PendingFileUpload): void {
  * the bytes but is still stitching (entry stays queued as 'processing').
  */
 async function uploadEntry(entry: PendingFileUpload): Promise<boolean> {
-  // Prefer the in-memory File from enqueue (same-session fast path). Fall back
-  // to the on-device base64 copy after an app restart / process death.
-  let file = memoryFiles.get(entry.id);
-  if (!file) {
-    if (!entry.fileUri || entry.bytesReady === false) {
-      const err = new Error('Capture bytes not yet durable and not in memory') as Error & { status: number };
-      err.status = 0;
-      throw err;
-    }
-    const { data } = await Filesystem.readFile({
-      path: entry.fileUri,
-      directory: Directory.Data,
-    });
-    file = await base64ToFile(data as string, entry.fileName, entry.mimeType);
-  }
+  // Prefer a prior successful POST (attach-only retry). Re-uploading the same
+  // bytes after attachCaptureToPin failed only produces dedup noise and keeps
+  // the pin stuck on "Queued" while the file is already under /uploads.
+  let resultFiles = entry.uploadedFiles;
+  let fileCount = entry.uploadedFileCount ?? resultFiles?.length ?? 1;
 
-  const controller = new AbortController();
-  uploadAbortControllers.set(entry.pinId, controller);
-  let result: Awaited<ReturnType<typeof uploadCaptureFiles>>;
-  try {
-    result = await uploadCaptureFiles([file], undefined, undefined, controller.signal);
-  } finally {
-    if (uploadAbortControllers.get(entry.pinId) === controller) {
-      uploadAbortControllers.delete(entry.pinId);
+  if (!resultFiles?.length) {
+    // Prefer the in-memory File from enqueue (same-session fast path). Fall back
+    // to the on-device base64 copy after an app restart / process death.
+    let file = memoryFiles.get(entry.id);
+    if (!file) {
+      if (!entry.fileUri || entry.bytesReady === false) {
+        const err = new Error('Capture bytes not yet durable and not in memory') as Error & { status: number };
+        err.status = 0;
+        throw err;
+      }
+      const { data } = await Filesystem.readFile({
+        path: entry.fileUri,
+        directory: Directory.Data,
+      });
+      file = await base64ToFile(data as string, entry.fileName, entry.mimeType);
     }
+
+    const controller = new AbortController();
+    uploadAbortControllers.set(entry.pinId, controller);
+    let result: Awaited<ReturnType<typeof uploadCaptureFiles>>;
+    try {
+      result = await uploadCaptureFiles([file], undefined, undefined, controller.signal);
+    } finally {
+      if (uploadAbortControllers.get(entry.pinId) === controller) {
+        uploadAbortControllers.delete(entry.pinId);
+      }
+    }
+    resultFiles = result.files ?? [];
+    fileCount = result.count || resultFiles.length || 1;
+    // Persist immediately so a crash mid-attach still skips the next POST.
+    entry.uploadedFiles = resultFiles;
+    entry.uploadedFileCount = fileCount;
+    await persist();
   }
-  const fileCount = result.count || 1;
 
   // Attach immediately either way, so the pin registers the capture the moment
   // the bytes are safe rather than ~25s later when stitching ends. For a pending
   // asset the panorama URL is null and processingStatus is 'processing'; the
   // real asset replaces it once the job completes.
-  const captureId = useWorkflowStore.getState().attachCaptureToPin(entry.pinId, fileCount, result.files);
+  const captureId = useWorkflowStore.getState().attachCaptureToPin(
+    entry.pinId,
+    fileCount,
+    resultFiles,
+  );
   if (!captureId) {
     // Tombstoned pin → permanent discard. Missing pin/room (hydrate race) →
     // retry as unreachable without burning attempts — never treat that as
@@ -553,7 +751,7 @@ async function uploadEntry(entry: PendingFileUpload): Promise<boolean> {
     throw err;
   }
 
-  const jobId = pendingJobIdOf(result);
+  const jobId = pendingJobIdOf({ files: resultFiles });
   if (jobId) {
     entry.stitchJobId = jobId;
     entry.status = 'processing';
@@ -576,11 +774,12 @@ async function uploadEntry(entry: PendingFileUpload): Promise<boolean> {
  *  - 'done' — asset attached, entry finishable
  *  - 'pending' — still stitching
  *  - 'retry' — transient server loss; re-upload same bytes
+ *  - 'stitch_failed' — blank/unusable; keep job for Retry Stitch / Studio JPEG
  *  - 'permanent' — corrupt/unsupported; do not re-upload
  */
 async function pollStitchEntry(
   entry: PendingFileUpload,
-): Promise<'done' | 'pending' | 'retry' | 'permanent'> {
+): Promise<'done' | 'pending' | 'retry' | 'stitch_failed' | 'permanent'> {
   const jobId = entry.stitchJobId as string;
   const job = await getCaptureStitchJob(jobId);
   if (job.status === 'completed' && job.asset) {
@@ -596,7 +795,14 @@ async function pollStitchEntry(
     return 'done';
   }
   if (job.status === 'failed') {
-    return isPermanentStitchFailure(job.error) ? 'permanent' : 'retry';
+    if (isTransientStitchFailure(job.error)) return 'retry';
+    if (job.canRetry || isStitchQualityFailure(job.error)) {
+      entry.errorMessage = job.error || STITCH_FAILED_MESSAGE;
+      return 'stitch_failed';
+    }
+    if (isPermanentCorruptFailure(job.error)) return 'permanent';
+    entry.errorMessage = job.error || STITCH_FAILED_MESSAGE;
+    return 'stitch_failed';
   }
   return 'pending';
 }
@@ -689,6 +895,18 @@ async function flushOnce(): Promise<void> {
           continue;
         }
 
+        // Capture already linked (prior attach succeeded; leftover retry rows
+        // kept the pin UI stuck on "Queued" / "Saved — uploading…").
+        if (entryAlreadyAttachedToPin(entry)) {
+          await discardSiblingDuplicates(entry);
+          queue = queue.filter(e => e.id !== entry.id);
+          releaseEntryBytes(entry);
+          void deleteLocalFile(entry);
+          await persist();
+          emitUploadSucceeded(entry.pinId);
+          continue;
+        }
+
         // Already on the server and stitching: poll the job instead of
         // re-uploading. Re-sending the bytes would be wasteful (the backend
         // dedups it anyway) and would restart this pin's chain needlessly.
@@ -696,7 +914,11 @@ async function flushOnce(): Promise<void> {
           try {
             const outcome = await pollStitchEntry(entry);
             if (outcome === 'done') {
+              await discardSiblingDuplicates(entry);
               queue = queue.filter(e => e.id !== entry.id);
+              if (!queue.some(e => e.pinId === entry.pinId)) {
+                removePendingUploadPin(entry.pinId);
+              }
               await persist();
               emitUploadSucceeded(entry.pinId);
               continue;
@@ -705,6 +927,13 @@ async function flushOnce(): Promise<void> {
               // Corrupt / unsupported file — keep the pin as failed and ask
               // for a fresh capture. Re-sending the same bytes cannot succeed.
               await markEntryCorruptFailed(entry);
+              break;
+            }
+            if (outcome === 'stitch_failed') {
+              await markEntryStitchFailed(
+                entry,
+                entry.errorMessage || STITCH_FAILED_MESSAGE,
+              );
               break;
             }
             if (outcome === 'retry') {
@@ -735,9 +964,11 @@ async function flushOnce(): Promise<void> {
           }
         }
 
-        // Need bytes in memory or a finished disk copy before starting the POST.
+        // Need bytes in memory, a finished disk copy, OR a prior successful POST
+        // (attach-only retry) before continuing.
+        const canAttachOnly = !!(entry.uploadedFiles && entry.uploadedFiles.length);
         const diskReady = !!entry.fileUri && entry.bytesReady !== false;
-        if (!memoryFiles.has(entry.id) && !diskReady) {
+        if (!canAttachOnly && !memoryFiles.has(entry.id) && !diskReady) {
           hadBacklog = true;
           break;
         }
@@ -752,7 +983,11 @@ async function flushOnce(): Promise<void> {
             hadBacklog = true;
             break;
           }
+          await discardSiblingDuplicates(entry);
           queue = queue.filter(e => e.id !== entry.id);
+          if (!queue.some(e => e.pinId === entry.pinId)) {
+            removePendingUploadPin(entry.pinId);
+          }
           await persist();
           emitUploadSucceeded(entry.pinId);
         } catch (error) {
@@ -792,6 +1027,10 @@ async function flushOnce(): Promise<void> {
             // like. Never counts toward MAX_ATTEMPTS: a field capture must
             // survive however many hours it takes to get signal back, not
             // get silently dropped by a fixed retry counter.
+            //
+            // When bytes are already POSTed (attach-only), a status-0 failure
+            // is usually a hydrate race (pin/room not in local store yet).
+            // Keep retrying indefinitely — never burn MAX_ATTEMPTS here.
             entry.status = 'queued';
             await persist();
             break;
@@ -911,13 +1150,23 @@ export async function enqueueFileUpload(
   // A fresh photo on this pin replaces any prior failed attempt (corrupt
   // stitch / exhausted retries). Do not leave the old bytes queued beside
   // the new ones — that would re-send the bad file or block flush.
-  const priorFailed = queue.filter(e => e.pinId === pinId && e.status === 'failed');
-  if (priorFailed.length) {
-    for (const e of priorFailed) {
-      releaseEntryBytes(e);
-      void deleteLocalFile(e);
+  await clearFailedUploadStateForPin(pinId);
+
+  // Do not stack another row for the exact same file still waiting/uploading —
+  // that is how Flat 02 stayed "Queued" after View History already worked.
+  const duplicateQueued = queue.find(
+    e =>
+      e.pinId === pinId
+      && e.fileName === file.name
+      && (e.status === 'queued' || e.status === 'uploading'),
+  );
+  if (duplicateQueued && !opts?.stitchJobId) {
+    if (!memoryFiles.has(duplicateQueued.id)) {
+      memoryFiles.set(duplicateQueued.id, file);
     }
-    queue = queue.filter(e => !(e.pinId === pinId && e.status === 'failed'));
+    await persist();
+    void flush();
+    return;
   }
 
   const id = `fq${Date.now()}_${seq++}`;
@@ -948,9 +1197,73 @@ export function flushFileUploadQueue(): void {
   void flush();
 }
 
+/**
+ * After a snapshot hydrate (or when Capture History looks stuck on
+ * "Processing 360°"), pull finished stitch assets onto captures that still
+ * have no panorama. Covers: tab closed mid-stitch, poll timer stopped, or
+ * server patched Mongo while the local store kept a placeholder.
+ */
+export async function reconcileStitchedCaptureMedia(): Promise<number> {
+  if (!useAuthStore.getState().isAuthenticated) return 0;
+  const state = useWorkflowStore.getState();
+  let fixed = 0;
+  for (const cap of state.captures) {
+    const rec = cap as Parameters<typeof captureAwaitingPanorama>[0];
+    if (!captureAwaitingPanorama(rec)) continue;
+    const jobId = captureStitchJobId(rec);
+    if (!jobId) continue;
+    try {
+      const job = await getCaptureStitchJob(jobId);
+      if (job.status === 'failed') {
+        const pin = state.capturePins.find(p => p.captureIds.includes(cap.id));
+        if (!pin) continue;
+        // Recoverable stitch failure: leave the capture linked so Retry Stitch /
+        // Studio JPEG can replace it. Only discard truly dead jobs.
+        if (job.canRetry || isStitchQualityFailure(job.error)) {
+          const existing = queue.find(e => e.pinId === pin.id && e.stitchJobId === jobId);
+          if (!existing) {
+            queue.push({
+              id: `fq${Date.now()}_${seq++}`,
+              pinId: pin.id,
+              fileUri: '',
+              fileName: 'stitch-retry',
+              mimeType: 'application/octet-stream',
+              attempts: 0,
+              createdAt: Date.now(),
+              status: 'failed',
+              failKind: 'stitch',
+              errorMessage: job.error || STITCH_FAILED_MESSAGE,
+              stitchJobId: jobId,
+            });
+            await persist();
+            fixed += 1;
+          }
+          continue;
+        }
+        useWorkflowStore.getState().discardStitchFailedCapture(pin.id, jobId);
+        fixed += 1;
+        continue;
+      }
+      if (job.status !== 'completed' || !job.asset) continue;
+      const asset = { ...job.asset, stitchJobId: job.asset.stitchJobId ?? jobId };
+      useWorkflowStore.getState().finalizeCaptureMedia(cap.id, 1, [asset]);
+      fixed += 1;
+    } catch {
+      // 404 / network — leave placeholder; next hydrate or poll may recover.
+    }
+  }
+  return fixed;
+}
+
 /** Current status of a pin's queued upload, if any (drives the pin marker UI). */
 export function fileUploadStatusForPin(pinId: string): FileUploadStatus | undefined {
   return queue.find(e => e.pinId === pinId)?.status;
+}
+
+/** True when bytes already reached the server and only attach/link is pending. */
+export function fileUploadAwaitingAttach(pinId: string): boolean {
+  const entry = queue.find(e => e.pinId === pinId);
+  return !!(entry && entry.uploadedFiles && entry.uploadedFiles.length && entry.status === 'queued');
 }
 
 /**
@@ -1005,11 +1318,34 @@ export async function allQueuedPinStatuses(): Promise<Record<string, FileUploadS
  * again with no real second chance.
  *
  * Corrupt captures cannot be fixed by re-sending: no-op so the UI must
- * offer Capture Again instead.
+ * offer Capture Again instead. Stitch quality failures call the server
+ * retry endpoint when a job id is still on the entry.
  */
 export function retryFileUpload(pinId: string): void {
   const entry = queue.find(e => e.pinId === pinId && e.status === 'failed');
   if (!entry || entry.failKind === 'corrupt') return;
+
+  if (entry.failKind === 'stitch' && entry.stitchJobId) {
+    const jobId = entry.stitchJobId;
+    entry.attempts = 0;
+    entry.status = 'processing';
+    delete entry.failKind;
+    delete entry.errorMessage;
+    void persist()
+      .then(() => retryCaptureStitchJob(jobId))
+      .then(() => void flush())
+      .catch(async (err) => {
+        entry.status = 'failed';
+        entry.failKind = 'stitch';
+        entry.errorMessage =
+          (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+          || STITCH_FAILED_MESSAGE;
+        await persist();
+        emitError(entry.errorMessage, pinId);
+      });
+    return;
+  }
+
   entry.attempts = 0;
   entry.status = 'queued';
   delete entry.failKind;
@@ -1023,9 +1359,14 @@ export function fileUploadErrorForPin(pinId: string): string | undefined {
   return entry?.errorMessage;
 }
 
-/** 'corrupt' → Capture Again; 'upload' → Retry Upload still makes sense. */
+/** 'corrupt' → Capture Again; 'upload' → Retry Upload; 'stitch' → Retry Stitch. */
 export function fileUploadFailKindForPin(pinId: string): FileUploadFailKind | undefined {
   return queue.find(e => e.pinId === pinId && e.status === 'failed')?.failKind;
+}
+
+/** Stitch job id still attached to a failed pin (for Studio-JPEG replace flows). */
+export function fileUploadStitchJobIdForPin(pinId: string): string | undefined {
+  return queue.find(e => e.pinId === pinId)?.stitchJobId;
 }
 
 /** Drop a pin's queued upload and its on-device file (e.g. the pin itself was deleted). */
@@ -1057,6 +1398,30 @@ export async function discardFileUpload(pinId: string): Promise<void> {
 
 export function pendingFileUploadCount(): number {
   return queue.length;
+}
+
+export async function clearFileUploadQueue(): Promise<void> {
+  await load();
+  const entries = [...queue];
+  queue = [];
+  for (const entry of entries) {
+    diskPersistCancelled.add(entry.id);
+    memoryFiles.delete(entry.id);
+    const abort = uploadAbortControllers.get(entry.pinId);
+    if (abort) {
+      abort.abort();
+      uploadAbortControllers.delete(entry.pinId);
+    }
+    if (entry.pinId) removePendingUploadPin(entry.pinId);
+  }
+  await persist();
+  await Promise.all(
+    entries.map(entry =>
+      entry.fileUri
+        ? Filesystem.deleteFile({ path: entry.fileUri, directory: Directory.Data }).catch(() => {})
+        : Promise.resolve(),
+    ),
+  );
 }
 
 // ── Triggers ─────────────────────────────────────────────────────────────────

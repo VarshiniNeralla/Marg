@@ -285,6 +285,16 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         name="construction_progress_reviews_snapshot",
     )
 
+    # ── construction_progress_analyze_jobs (background floor re-analysis) ────
+    await db.construction_progress_analyze_jobs.create_index(
+        [("orgId", ASCENDING), ("floorId", ASCENDING), ("status", ASCENDING), ("createdAt", DESCENDING)],
+        name="cp_analyze_job_floor_status",
+    )
+    await db.construction_progress_analyze_jobs.create_index(
+        [("orgId", ASCENDING), ("status", ASCENDING), ("heartbeatAt", ASCENDING)],
+        name="cp_analyze_job_heartbeat",
+    )
+
     # ── capture_derived_views (equirect→perspective cache — T4) ─────────────
     await db.capture_derived_views.create_index(
         [("orgId", ASCENDING), ("captureId", ASCENDING), ("rigVersion", ASCENDING)],

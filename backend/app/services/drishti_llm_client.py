@@ -41,7 +41,12 @@ async def chat_completion_json(
     settings: Optional[Settings] = None,
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
+    usage_out: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    """Returns the parsed JSON content (unchanged contract). When `usage_out`
+    is passed, it is mutated in place with `model`, `usage` (the raw
+    OpenAI-shaped usage object), and `latency_ms` on success — callers that
+    don't care about token accounting simply omit it."""
     settings = settings or get_settings()
     base = (settings.VLLM_BASE_URL or "http://127.0.0.1:8000").strip().rstrip("/")
     chat_url = f"{base}/v1/chat/completions"
@@ -89,12 +94,30 @@ async def chat_completion_json(
             raw_content = (choices[0].get("message") or {}).get("content") or ""
             parsed = _parse_json_content(raw_content)
             logger.info("Drishti LLM call completed model={} latency_ms={:.0f}", model, latency_ms)
+            if usage_out is not None:
+                usage_out["model"] = model
+                usage_out["usage"] = body.get("usage") or {}
+                usage_out["latency_ms"] = latency_ms
             return parsed
         except httpx.TimeoutException as exc:
             last_error = exc
         except httpx.HTTPStatusError as exc:
             last_error = exc
             if exc.response.status_code < 500:
+                # A 4xx here (e.g. context-length exceeded) previously
+                # surfaced as a bare status code with the server's actual
+                # explanation discarded — a real bug where a 400 "context
+                # window exceeded" was indistinguishable from a genuine
+                # malformed-request error, and both looked identical to the
+                # caller's generic "couldn't structure a confident answer"
+                # fallback text with no way to diagnose which one occurred
+                # short of manually replaying the request. Logging the
+                # response body means this class of failure is visible in
+                # server logs going forward instead of requiring that.
+                logger.warning(
+                    "Drishti LLM API rejected request status={} body={}",
+                    exc.response.status_code, exc.response.text[:2000],
+                )
                 raise DrishtiLLMError(f"Drishti LLM API rejected request: {exc.response.status_code}") from exc
         except DrishtiLLMError:
             raise

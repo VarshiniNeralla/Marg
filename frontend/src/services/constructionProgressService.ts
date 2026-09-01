@@ -231,6 +231,20 @@ export interface ProgressReviewSummary {
   byVersion: ProgressReviewVersionSummary[];
 }
 
+export type AnalyzeJobStatus = 'pending' | 'processing' | 'completed' | 'failed';
+
+export interface AnalyzeJob {
+  jobId: string;
+  floorId: string;
+  status: AnalyzeJobStatus;
+  snapshotId?: string | null;
+  error?: string | null;
+  createdAt?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  updatedAt?: string | null;
+}
+
 async function unwrap<T>(promise: Promise<{ data: ApiResponse<T> }>): Promise<T> {
   const { data } = await promise;
   return data.data as T;
@@ -249,17 +263,25 @@ export const constructionProgressService = {
     return unwrap(apiClient.get(`/construction-progress/floors/${floorId}`));
   },
 
-  analyzeFloor(floorId: string): Promise<FloorProgressSnapshot> {
-    // Room-map extraction + per-capture scoring routinely exceeds the shared
-    // apiClient 180s timeout (observed 3–4+ minutes on multi-flat floors).
-    // Timing out early dismisses the UI while the backend is still working and
-    // often triggers a second overlapping analyze. Give this call its own budget.
+  analyzeFloor(floorId: string): Promise<AnalyzeJob> {
+    // Starts a background job — the HTTP call returns immediately. Poll
+    // getAnalyzeJob / getActiveAnalyzeJob until completed|failed.
     return unwrap(
-      apiClient.post(
-        `/construction-progress/floors/${floorId}/analyze`,
-        undefined,
-        { timeout: 900_000 },
-      ),
+      apiClient.post(`/construction-progress/floors/${floorId}/analyze`, undefined, {
+        timeout: 60_000,
+      }),
+    );
+  },
+
+  getAnalyzeJob(floorId: string, jobId: string): Promise<AnalyzeJob> {
+    return unwrap(
+      apiClient.get(`/construction-progress/floors/${floorId}/analyze/jobs/${jobId}`),
+    );
+  },
+
+  getActiveAnalyzeJob(floorId: string): Promise<AnalyzeJob | null> {
+    return unwrap(
+      apiClient.get(`/construction-progress/floors/${floorId}/analyze/active`),
     );
   },
 

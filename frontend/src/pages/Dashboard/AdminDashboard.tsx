@@ -79,6 +79,11 @@ export default function AdminDashboard() {
   const defects    = useWorkflowStore(s => s.defects);
   const notifications = useWorkflowStore(s => s.notifications);
   const auditLogs  = useWorkflowStore(s => s.auditLogs);
+  const apiSnapshotError = useWorkflowStore(s => s.apiSnapshotError);
+  const apiSnapshotStatus = useWorkflowStore(s => s.apiSnapshotStatus);
+  const retryApiSnapshot = useWorkflowStore(s => s.retryApiSnapshot);
+  const snapshotLoading = apiSnapshotStatus === 'loading' || apiSnapshotStatus === 'idle';
+  const fmt = (n: number) => (snapshotLoading ? '…' : String(n));
 
   const [realUserCount, setRealUserCount] = useState<number | null>(null);
 
@@ -94,6 +99,21 @@ export default function AdminDashboard() {
 
   return (
     <Box sx={{ maxWidth: 800, mx: 'auto' }}>
+      {apiSnapshotError && (
+        <Box sx={{ mb: 2.5, p: 1.5, borderRadius: '12px', border: '1px solid #fecaca', backgroundColor: '#fef2f2', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1.5 }}>
+          <Typography sx={{ fontSize: '0.8125rem', color: '#b91c1c' }}>
+            Could not load workspace data. {apiSnapshotError}
+          </Typography>
+          <Box
+            component="button"
+            type="button"
+            onClick={() => retryApiSnapshot()}
+            sx={{ border: 'none', background: '#b91c1c', color: '#fff', borderRadius: '8px', px: 1.25, py: 0.5, fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer' }}
+          >
+            Retry
+          </Box>
+        </Box>
+      )}
       <DashboardHero
         eyebrow="My Overview"
         greeting={`${greeting}, ${user?.name?.split(' ')[0] ?? 'Admin'}`}
@@ -122,10 +142,10 @@ export default function AdminDashboard() {
         '&::-webkit-scrollbar': { display: 'none' },
       }}>
         {[
-          { label: 'Projects',        value: String(stats.projectCount),                           sub: `${stats.activeProjectCount} active`,        color: colors.primary, icon: <FolderRounded />,     to: '/projects' },
+          { label: 'Projects',        value: fmt(stats.projectCount),                              sub: snapshotLoading ? 'loading…' : `${stats.activeProjectCount} active`,        color: colors.primary, icon: <FolderRounded />,     to: '/projects' },
           { label: 'Members',         value: realUserCount !== null ? String(realUserCount) : '—', sub: 'all roles',                                 color: '#7c3aed',     icon: <PeopleRounded />,      to: '/users' },
-          { label: 'Captures',        value: String(stats.captureCount),                           sub: `${stats.pendingReviews} pending`,           color: '#0891b2',     icon: <CameraAltRounded />,   to: '/captures' },
-          { label: 'Published',       value: String(stats.publishedTourCount),                     sub: 'engineer walkthroughs',                     color: '#059669',     icon: <ViewInArRounded />,    to: '/tours' },
+          { label: 'Captures',        value: fmt(stats.captureCount),                              sub: snapshotLoading ? 'loading…' : `${stats.pendingReviews} pending`,           color: '#0891b2',     icon: <CameraAltRounded />,   to: '/captures' },
+          { label: 'Published',       value: fmt(stats.publishedTourCount),                        sub: snapshotLoading ? 'loading…' : 'engineer walkthroughs',                     color: '#059669',     icon: <ViewInArRounded />,    to: '/tours' },
         ].map((s) => (
           <StatCard key={s.label} {...s} />
         ))}

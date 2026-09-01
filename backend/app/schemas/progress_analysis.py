@@ -167,6 +167,8 @@ class ProgressReportDetail(ProgressReportSummary):
 
 class ProgressAnalysisAuditEntry(BaseModel):
     report_id: str = Field(..., alias="reportId")
+    source: str = ""
+    source_label: str = Field(default="", alias="sourceLabel")
     project_id: str = Field(default="", alias="projectId")
     project_name: str = Field(default="", alias="projectName")
     tower: str = ""

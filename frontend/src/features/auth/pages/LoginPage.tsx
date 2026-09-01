@@ -8,7 +8,7 @@ import { loginSchema, type LoginFormValues } from '../schemas/authSchemas';
 import { authService } from '../services/authService';
 import { authService as backendAuth } from '@services/authService';
 import { useAuthStore, getRoleLandingPath } from '@store/authStore';
-import { useSettingsStore } from '@store/settingsStore';
+import { clearClientSessionState, seedSettingsFromUser } from '@store/sessionIsolation';
 import { normaliseError } from '@services/apiClient';
 import AuthCard from '../components/AuthCard';
 import Input from '@shared/components/Input/Input';
@@ -93,7 +93,6 @@ export default function LoginPage() {
   const theme = useTheme();
   const isDesktop = useMediaQuery(theme.breakpoints.up('md'));
   const setAuth = useAuthStore((s) => s.setAuth);
-  const patchProfile = useSettingsStore((s) => s.patchProfile);
 
   const [serverError, setServerError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -141,6 +140,14 @@ export default function LoginPage() {
         return;
       }
 
+      clearClientSessionState();
+      seedSettingsFromUser({
+        name: data.user.name,
+        email: data.user.email,
+        org_name: data.user.org_name,
+        avatar_url: data.user.avatar_url,
+      });
+
       // setAuth MUST run before backendAuth.me(): apiClient's request
       // interceptor reads the access token straight from the auth store, so
       // calling me() first sends it with NO Authorization header at all
@@ -181,8 +188,6 @@ export default function LoginPage() {
       } catch {
         // partial data — the login response's profile fields are already set
       }
-      // Clear any stale profile data from a previously logged-in user
-      patchProfile({ name: '', designation: '', phone: '', bio: '', avatarUrl: '' });
       navigate(from ?? getRoleLandingPath(authedRole), { replace: true });
     } catch (err) {
       const e = normaliseError(err);
@@ -350,7 +355,8 @@ export default function LoginPage() {
           Sign in
         </Button>
 
-        {/* Demo credentials — collapsible on mobile */}
+        {/* Demo credentials — development only */}
+        {!import.meta.env.PROD && (
         <Box sx={{ mt: { xs: 2, md: 3 }, pt: { xs: 1.5, md: 2.5 }, borderTop: '1px solid rgba(0,0,0,0.06)' }}>
           <Box
             onClick={() => setDemoOpen(v => !v)}
@@ -424,6 +430,7 @@ export default function LoginPage() {
             </Box>
           </Collapse>
         </Box>
+        )}
       </Box>
     </AuthCard>
   );

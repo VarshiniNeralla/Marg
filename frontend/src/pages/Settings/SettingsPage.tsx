@@ -82,12 +82,17 @@ function AccountTab({ onSaved }: { onSaved: () => void }) {
       setIsEditing(false);
       return;
     }
-    patchAccount({ name: form.name, email: form.email, phone: form.phone, designation: form.designation });
-    setSaved(form);
+    patchAccount({ name: form.name, email: saved.email, phone: form.phone, designation: form.designation });
+    setSaved({ ...form, email: saved.email });
     updateUser({ name: form.name });
-    // Persist name to backend so it survives logout/login
+    // Persist name + designation to backend (email changes require a dedicated flow).
     if (user?.id) {
-      try { await userService.updateUser(user.id, { name: form.name }); } catch { /* non-fatal */ }
+      try {
+        await userService.updateUser(user.id, {
+          name: form.name,
+          designation: form.designation || undefined,
+        });
+      } catch { /* non-fatal */ }
     }
     setIsEditing(false);
     onSaved();
@@ -105,12 +110,8 @@ function AccountTab({ onSaved }: { onSaved: () => void }) {
             <Typography sx={{ fontSize: '0.9375rem', color: colors.textStrong, py: 1 }}>{form.name}</Typography>
           )}
         </FieldRow>
-        <FieldRow label="Email address" helper="Used for login and notifications">
-          {isEditing ? (
-            <TextField fullWidth value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} size="small" sx={fieldSx} />
-          ) : (
-            <Typography sx={{ fontSize: '0.9375rem', color: colors.textStrong, py: 1 }}>{form.email}</Typography>
-          )}
+        <FieldRow label="Email address" helper="Used for login — contact an admin to change it">
+          <Typography sx={{ fontSize: '0.9375rem', color: colors.textStrong, py: 1 }}>{form.email}</Typography>
         </FieldRow>
         <FieldRow label="Phone" helper="Optional — for SMS notifications">
           {isEditing ? (
@@ -357,21 +358,24 @@ function AdvancedTab() {
 
       <SectionCard title="Application Data">
         <Typography sx={{ fontSize: '0.875rem', color: colors.textMuted, mb: 2, lineHeight: 1.6 }}>
-          Reset all locally stored application data including projects, captures, tours, settings, and session state.
-          This returns the app to its initial seeded state. This action cannot be undone.
+          {import.meta.env.PROD
+            ? 'Clearing seeded demo data is disabled in production builds. Contact support if you need a full org reset.'
+            : 'Reset all locally stored application data including projects, captures, tours, settings, and session state. This returns the app to its initial seeded state. This action cannot be undone.'}
         </Typography>
-        <Box
-          onClick={() => setConfirmOpen(true)}
-          sx={{
-            display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.5, py: 1,
-            borderRadius: '8px', border: `1.5px solid ${colors.danger}`, color: colors.danger,
-            fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer',
-            '&:hover': { backgroundColor: colors.dangerBg },
-            transition: `all ${motion.durationFast}`,
-          }}
-        >
-          Reset Application Data
-        </Box>
+        {!import.meta.env.PROD && (
+          <Box
+            onClick={() => setConfirmOpen(true)}
+            sx={{
+              display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.5, py: 1,
+              borderRadius: '8px', border: `1.5px solid ${colors.danger}`, color: colors.danger,
+              fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer',
+              '&:hover': { backgroundColor: colors.dangerBg },
+              transition: `all ${motion.durationFast}`,
+            }}
+          >
+            Reset Application Data
+          </Box>
+        )}
       </SectionCard>
 
       <ConfirmDialog

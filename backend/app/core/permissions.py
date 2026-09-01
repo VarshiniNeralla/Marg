@@ -91,8 +91,8 @@ _PERMISSIONS: dict[str, dict[Module, set[Action]]] = {
         "towers":        {"view"},
         "floors":        {"view"},
         "flats":         {"view"},
-        # pins/rooms are created AND renamed/resequenced as part of the capture
-        # + pin-delete workflow, so field engineers need create+edit+delete here.
+        # pins/rooms are created as part of the capture workflow; deleting a
+        # capture POINT itself is manager/admin-only (floorPlans:delete).
         "rooms":         {"view", "create", "edit", "delete"},
         "captures":      {"view", "upload", "create", "edit", "delete"},
         "floorPlans":    {"view", "create", "upload", "edit"},

@@ -4,14 +4,14 @@ import { useAuthStore } from './authStore';
 import { useWorkflowStore } from './workflowStore';
 import type { WorkflowDataState } from './workflowStore';
 import { useFavoriteToursStore } from './favoriteToursStore';
+import { filterOwnCaptures, filterOwnTours } from '@/utils/captureOwnership';
 import { flushWriteQueue } from './writeQueue';
-import { flushFileUploadQueue } from './fileUploadQueue';
+import { flushFileUploadQueue, reconcileStitchedCaptureMedia } from './fileUploadQueue';
 
 /**
- * Scopes captures / pins / floor plans to an engineer's assigned projects for
- * day-to-day capture work. Tours are intentionally left alone — Virtual Tours
- * must be identical for admin, manager, and engineer (engineer-uploaded
- * walkthroughs only; filtering happens in hydrate).
+ * Scopes captures / pins / floor plans / tours to an engineer's assigned projects
+ * for day-to-day capture work. Captures and tours are also filtered to the signed-in
+ * engineer; admins and managers receive the org-wide snapshot.
  */
 function scopeSnapshotToProjects(
   data: Partial<WorkflowDataState>,
@@ -39,8 +39,7 @@ function scopeSnapshotToProjects(
     flats,
     rooms,
     captures: (data.captures ?? []).filter(c => projectSet.has(c.projectId) || roomSet.has(c.roomId)),
-    // Keep the org-wide tour list so every role sees the same Virtual Tours catalog.
-    tours: data.tours ?? [],
+    tours: (data.tours ?? []).filter(t => projectSet.has(t.projectId)),
     floorPlans: (data.floorPlans ?? []).filter(fp => projectSet.has(fp.projectId) && towerSet.has(fp.towerId) && floorSet.has(fp.floorId)),
     capturePins: (data.capturePins ?? []).filter(pin => projectSet.has(pin.projectId) && floorSet.has(pin.floorId)),
     defects: (data.defects ?? []).filter(d => projectSet.has(d.projectId)),
@@ -51,57 +50,76 @@ export default function WorkflowApiBootstrap() {
   const isAuthenticated = useAuthStore(s => s.isAuthenticated);
   const user = useAuthStore(s => s.user);
   const hydrateFromApi = useWorkflowStore(s => s.hydrateFromApi);
-  const loadedRef = useRef(false);
-  // Track the key we last loaded for: userId + sorted assigned project IDs
-  // so the store re-scopes when assignments arrive after the initial login render
+  const setApiSnapshotError = useWorkflowStore(s => s.setApiSnapshotError);
+  const setApiSnapshotStatus = useWorkflowStore(s => s.setApiSnapshotStatus);
+  const retryNonce = useWorkflowStore(s => s.apiSnapshotRetryNonce);
   const loadedKeyRef = useRef<string | null>(null);
+  const requestGenRef = useRef(0);
 
   useEffect(() => {
-    if (!isAuthenticated || !user) return;
+    // Logout / session clear: drop the gate so the next login always re-fetches.
+    // A prior bug left loadedRef=true across logout→login, so the dashboard
+    // stayed at zeros after clearClientSessionState() wiped the store.
+    if (!isAuthenticated || !user) {
+      loadedKeyRef.current = null;
+      requestGenRef.current += 1;
+      return;
+    }
 
     const assignedIds = user.role === 'field_engineer' ? (user.assignedProjectIds ?? []) : [];
-    const loadKey = `${user.id}|${[...assignedIds].sort().join(',')}`;
+    const loadKey = `${user.id}|${[...assignedIds].sort().join(',')}|${retryNonce}`;
 
-    // Re-fetch when the user changes or when their project assignments are populated
-    if (loadedRef.current && loadedKeyRef.current === loadKey) return;
-    loadedRef.current = true;
+    if (loadedKeyRef.current === loadKey) return;
     loadedKeyRef.current = loadKey;
+    const gen = ++requestGenRef.current;
 
-    // Replay any writes queued before this session was authenticated (e.g. a pin
-    // placed while briefly offline, or just after login before the token landed).
-    // Also replay any queued PHOTO uploads for the same reason: fileUploadQueue's
-    // own flush() silently no-ops (and never starts its retry poll timer) if
-    // isAuthenticated was false the instant it ran — e.g. a capture taken right
-    // as an access token expired, mid-refresh. Without a flush retriggered here,
-    // that photo would sit at 'queued' forever with nothing to wake it back up
-    // except an unrelated online/focus/network event (reproduced: server logs
-    // showed a capture's pin/room/audit-log writes all landing normally around
-    // an auth/refresh, but its /uploads/captures POST never being sent at all).
+    setApiSnapshotStatus('loading');
+    setApiSnapshotError(null);
+
     flushWriteQueue();
     flushFileUploadQueue();
 
-    // Favorites live on the user document so they survive logout, device
-    // switches, and localStorage quota loss — sync after auth is ready.
     void useFavoriteToursStore.getState().syncFromServer(user.id);
 
     workflowApiService
       .snapshot()
       .then(data => {
-        const payload = assignedIds.length
+        if (gen !== requestGenRef.current) return; // stale response after logout/re-login
+        const scoped = assignedIds.length
           ? scopeSnapshotToProjects(data, assignedIds)
           : data;
-        // Always replace so a previous role/session can't leave stale tours or
-        // captures in the shared localStorage-backed store.
+        const payload = user.role === 'field_engineer'
+          ? {
+              ...scoped,
+              captures: filterOwnCaptures(scoped.captures ?? [], user),
+              tours: filterOwnTours(scoped.tours ?? [], user),
+            }
+          : scoped;
         hydrateFromApi(payload, { replace: true });
+        setApiSnapshotError(null);
+        setApiSnapshotStatus('ready');
         flushWriteQueue();
         flushFileUploadQueue();
+        void reconcileStitchedCaptureMedia();
       })
       .catch(error => {
-        loadedRef.current = false;
+        if (gen !== requestGenRef.current) return;
         loadedKeyRef.current = null;
+        const message = error instanceof Error
+          ? error.message
+          : 'Failed to load workspace data';
+        setApiSnapshotError(message || 'Failed to load workspace data');
+        setApiSnapshotStatus('error');
         console.error('[workflow-api] snapshot failed', error);
       });
-  }, [hydrateFromApi, isAuthenticated, user]);
+  }, [
+    hydrateFromApi,
+    isAuthenticated,
+    user,
+    retryNonce,
+    setApiSnapshotError,
+    setApiSnapshotStatus,
+  ]);
 
   return null;
 }

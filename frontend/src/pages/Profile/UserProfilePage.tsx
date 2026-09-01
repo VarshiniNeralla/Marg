@@ -1,13 +1,15 @@
 import React, { useState, useRef } from 'react';
-import { Box, Typography, TextField, Chip, Grid, Snackbar, Alert } from '@mui/material';
-import { CameraAltRounded, CheckCircleRounded, AccessTimeRounded, ViewInArRounded, WarningAmberRounded } from '@mui/icons-material';
+import { Box, Typography, TextField, Chip, Grid, Snackbar, Alert, Button } from '@mui/material';
+import { CameraAltRounded, CheckCircleRounded, AccessTimeRounded, ViewInArRounded, WarningAmberRounded, LockRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useSettingsStore } from '@store/settingsStore';
 import ActivityFeed from '@shared/components/ActivityFeed/ActivityFeed';
-import { useAuthStore } from '@store/authStore';
+import { useAuthStore, isAdmin, isFieldEngineer } from '@store/authStore';
+import { filterOwnCaptures, filterOwnTours } from '@/utils/captureOwnership';
 import { uploadAvatarFiles } from '@/services/uploadService';
 import { userService } from '@/services/userService';
+import { authService } from '@/services/authService';
 
 const fieldSx = {
   '& .MuiOutlinedInput-root': {
@@ -46,7 +48,13 @@ export default function UserProfilePage() {
   const [saved, setSaved] = useState(initial);
   const [toastOpen, setToastOpen] = useState(false);
   const [showSavedState, setShowSavedState] = useState(false);
+  const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' });
+  const [pwError, setPwError] = useState('');
+  const [pwSaving, setPwSaving] = useState(false);
+  const [pwToast, setPwToast] = useState(false);
   const isDirty = JSON.stringify(form) !== JSON.stringify(saved);
+  // Admins change password in Settings; managers/engineers use Profile.
+  const showPasswordSection = !isAdmin(user);
 
   const captures  = useWorkflowStore(s => s.captures);
   const tours     = useWorkflowStore(s => s.tours);
@@ -59,9 +67,11 @@ export default function UserProfilePage() {
     : projects.filter(p => !p.archived);
 
   const displayName = form.name || user?.name || '';
-  const myCaptures = captures.filter(c => c.uploadedBy === displayName || c.uploadedBy === user?.name).length;
-  const myTours = tours.filter(t => t.status === 'published').length;
-  const pending = captures.filter(c => c.status === 'review').length;
+  const visibleCaptures = isFieldEngineer(user) ? filterOwnCaptures(captures, user) : captures;
+  const myCaptures = visibleCaptures.length;
+  const visibleTours = isFieldEngineer(user) ? filterOwnTours(tours, user) : tours;
+  const myTours = visibleTours.filter(t => t.status === 'published').length;
+  const pending = visibleCaptures.filter(c => c.status === 'review').length;
 
   const initials = displayName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
 
@@ -114,6 +124,36 @@ export default function UserProfilePage() {
       console.error('[avatar-upload]', error);
     }
     e.target.value = '';
+  }
+
+  async function handlePasswordSave() {
+    if (!pwForm.current || !pwForm.next || !pwForm.confirm) {
+      setPwError('Please fill in all password fields.');
+      return;
+    }
+    if (pwForm.next !== pwForm.confirm) {
+      setPwError('New passwords do not match.');
+      return;
+    }
+    if (pwForm.next.length < 8) {
+      setPwError('New password must be at least 8 characters.');
+      return;
+    }
+    setPwError('');
+    setPwSaving(true);
+    try {
+      await authService.changePassword({
+        current_password: pwForm.current,
+        new_password: pwForm.next,
+      });
+      setPwForm({ current: '', next: '', confirm: '' });
+      setPwToast(true);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : 'Failed to change password. Check your current password.';
+      setPwError(message);
+    } finally {
+      setPwSaving(false);
+    }
   }
 
   return (
@@ -195,6 +235,43 @@ export default function UserProfilePage() {
           </Box>
         </Grid>
 
+        {showPasswordSection && (
+          <Grid size={{ xs: 12 }}>
+            <Box sx={{ borderRadius: '20px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', p: 3 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                <LockRounded sx={{ fontSize: 18, color: colors.textMuted }} />
+                <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600, color: colors.textStrong }}>Change Password</Typography>
+              </Box>
+              {pwError && <Alert severity="error" sx={{ mb: 2, borderRadius: '10px' }}>{pwError}</Alert>}
+              <Grid container spacing={2}>
+                <Grid size={{ xs: 12, sm: 4 }}>
+                  <Typography component="label" sx={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Current password</Typography>
+                  <TextField fullWidth type="password" value={pwForm.current} onChange={e => setPwForm(f => ({ ...f, current: e.target.value }))} size="small" autoComplete="current-password" sx={fieldSx} />
+                </Grid>
+                <Grid size={{ xs: 12, sm: 4 }}>
+                  <Typography component="label" sx={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>New password</Typography>
+                  <TextField fullWidth type="password" value={pwForm.next} onChange={e => setPwForm(f => ({ ...f, next: e.target.value }))} size="small" autoComplete="new-password" sx={fieldSx} />
+                </Grid>
+                <Grid size={{ xs: 12, sm: 4 }}>
+                  <Typography component="label" sx={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: colors.textSecondary, mb: 0.75 }}>Confirm new password</Typography>
+                  <TextField fullWidth type="password" value={pwForm.confirm} onChange={e => setPwForm(f => ({ ...f, confirm: e.target.value }))} size="small" autoComplete="new-password" sx={fieldSx} />
+                </Grid>
+              </Grid>
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 2 }}>
+                <Button
+                  variant="contained"
+                  disableElevation
+                  disabled={pwSaving || !(pwForm.current || pwForm.next || pwForm.confirm)}
+                  onClick={() => void handlePasswordSave()}
+                  sx={{ textTransform: 'none', borderRadius: '10px', fontWeight: 600, px: 2.5 }}
+                >
+                  {pwSaving ? 'Saving…' : 'Update password'}
+                </Button>
+              </Box>
+            </Box>
+          </Grid>
+        )}
+
         {/* Bottom Left: Stats */}
         <Grid size={{ xs: 12, md: 7 }}>
           <Box sx={{ borderRadius: '20px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', p: 3, height: '100%' }}>
@@ -244,6 +321,11 @@ export default function UserProfilePage() {
       <Snackbar open={toastOpen} autoHideDuration={3000} onClose={() => setToastOpen(false)} anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}>
         <Alert severity="success" sx={{ borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }} onClose={() => setToastOpen(false)}>
           Profile updated successfully
+        </Alert>
+      </Snackbar>
+      <Snackbar open={pwToast} autoHideDuration={3000} onClose={() => setPwToast(false)} anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}>
+        <Alert severity="success" sx={{ borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }} onClose={() => setPwToast(false)}>
+          Password updated successfully
         </Alert>
       </Snackbar>
     </Box>

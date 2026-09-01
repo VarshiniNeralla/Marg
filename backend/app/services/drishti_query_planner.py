@@ -252,6 +252,39 @@ def _scan_question_for_common_area(question: str) -> Optional[str]:
     return None
 
 
+# Deterministic safety net for flat/floor identifiers named directly in the
+# raw question — a real production bug: "what about flat 02 of floor 1?"
+# was answered "no entry for Flat 02 mapped to Floor 1" because the
+# classifier's scopeHints did not reliably carry a clean flatName/floorName
+# for this phrasing (word order "flat X OF floor Y" is less common in
+# training data than "floor Y's flat X"), and relying on the classifier
+# alone for these two hints has repeatedly proven unreliable in this
+# codebase (see _scan_question_for_activity_keyword/_scan_question_for_common_area
+# docstrings for the same lesson learned earlier this session). These scans
+# run directly against the question text, independent of the classifier,
+# and only fill a gap — they never override a hint the classifier DID supply.
+_FLAT_NUMBER_PATTERN = re.compile(
+    r"\b(?:flat|apartment|unit)\s*[-#]?\s*(\d+)\b", re.IGNORECASE,
+)
+_FLOOR_NUMBER_PATTERN = re.compile(
+    r"\bfloor\s*[-#]?\s*(\d+)\b", re.IGNORECASE,
+)
+
+
+def _scan_question_for_flat_name(question: str) -> Optional[str]:
+    match = _FLAT_NUMBER_PATTERN.search(question)
+    if not match:
+        return None
+    return f"Flat {int(match.group(1)):02d}"
+
+
+def _scan_question_for_floor_name(question: str) -> Optional[str]:
+    match = _FLOOR_NUMBER_PATTERN.search(question)
+    if not match:
+        return None
+    return f"Floor {int(match.group(1))}"
+
+
 # Regex patterns matched against the raw question text for the two intents
 # most prone to LLM misclassification in practice — both involve a subtler
 # distinction ("all common areas" vs "one area"; "everything here" vs "one
@@ -318,6 +351,12 @@ class QueryPlan:
     tower_name: Optional[str] = None
     floor_id: Optional[str] = None
     floor_name: Optional[str] = None
+    # Populated instead of floor_id/floor_name when the question names TWO OR
+    # MORE floors at once ("progress for Floor 1 and Floor 2") — floor_status
+    # is the only intent that consumes this; every other intent keeps using
+    # the single floor_id/floor_name fields untouched.
+    floor_ids: list[str] = field(default_factory=list)
+    floor_names: list[str] = field(default_factory=list)
     flat_name: Optional[str] = None
     room_name: Optional[str] = None
     common_area_name: Optional[str] = None
@@ -380,6 +419,20 @@ class DrishtiQueryPlanner:
         scope_hints = raw.get("scopeHints") or {}
         tower_id, tower_name = self._resolve_tower(scope_hints.get("towerName"), known_entities)
         floor_id, floor_name = self._resolve_floor(scope_hints.get("floorName"), known_entities)
+        floor_ids, floor_names = self._resolve_floors(scope_hints.get("floorNames"), known_entities)
+
+        # Deterministic safety net: a small local classifier model does not
+        # reliably populate floorName for every phrasing that names a floor
+        # (e.g. "flat 02 OF floor 1" — less common word order than "floor
+        # 1's flat 02"), confirmed live — a "Floor N" question with no
+        # classifier-provided floorName silently fell through to whatever
+        # the sticky-scope fallback below produced (or nothing at all), even
+        # though the floor number was sitting right there in the question.
+        # Never overrides a hint the classifier DID resolve.
+        if not floor_id and not floor_ids:
+            scanned_floor_name = _scan_question_for_floor_name(question)
+            if scanned_floor_name:
+                floor_id, floor_name = self._resolve_floor(scanned_floor_name, known_entities)
 
         # Sticky tower/floor fallback for follow-ups ("why is that?") that
         # don't restate scope — only when the intent isn't explicitly
@@ -426,14 +479,21 @@ class DrishtiQueryPlanner:
         if intent == "activity_list":
             activity_list_scope = _scan_question_for_activity_list_scope(question)
 
+        flat_name_hint = scope_hints.get("flatName") or None
+        if not flat_name_hint and intent in (
+            "flat_status", "room_status", "activity_status", "location_activities",
+        ):
+            flat_name_hint = _scan_question_for_flat_name(question)
+
         plan = QueryPlan(
             intent=intent,
             tower_id=tower_id, tower_name=tower_name,
             floor_id=floor_id, floor_name=floor_name,
+            floor_ids=floor_ids, floor_names=floor_names,
             # Raw hints carried through for phase 2 to resolve against a
             # real snapshot; sticky fallback for these happens there too,
             # once we know whether phase-2 resolution found anything.
-            flat_name=scope_hints.get("flatName") or None,
+            flat_name=flat_name_hint,
             room_name=scope_hints.get("roomName") or None,
             common_area_name=common_area_hint,
             activity_name=activity_name_hint,
@@ -494,6 +554,7 @@ class DrishtiQueryPlanner:
         )
         resolved_flat_name = None
         if flat_hint:
+            flat_hint = _strip_trailing_location_qualifier(flat_hint)
             candidates = [f.get("flatName") or "" for f in real_flats]
             match = _closest_identifier_match(flat_hint, candidates)
             if match:
@@ -507,6 +568,7 @@ class DrishtiQueryPlanner:
         # ── Room (within the resolved flat) ──
         room_hint = plan.room_name or (previous_scope.get("roomName") if plan.intent not in ("project_overview", "general") else None)
         if room_hint and resolved_flat_name:
+            room_hint = _strip_trailing_location_qualifier(room_hint)
             flat_doc = next((f for f in real_flats if f.get("flatName") == resolved_flat_name), None)
             room_candidates = [r.get("roomName") or "" for r in (flat_doc or {}).get("rooms", [])]
             match = _closest_identifier_match(room_hint, room_candidates)
@@ -605,6 +667,31 @@ class DrishtiQueryPlanner:
                 return f.get("floorId"), f.get("floorName")
         return None, None
 
+    def _resolve_floors(
+        self, hints: Optional[list[str]], known_entities: dict[str, Any]
+    ) -> tuple[list[str], list[str]]:
+        """Resolves a "floorNames" list (2+ floors named in one question,
+        e.g. "Floor 1 and Floor 2") against the real floor roster the same
+        fuzzy-match way `_resolve_floor` does for a single name. Silently
+        drops any hint that doesn't match a real floor rather than raising —
+        the rest of the plan still proceeds with whatever DID resolve."""
+        if not hints:
+            return [], []
+        all_floors = [f for t in known_entities.get("towers", []) for f in t.get("floors", [])]
+        names = [f.get("floorName") or "" for f in all_floors]
+        resolved_ids: list[str] = []
+        resolved_names: list[str] = []
+        for hint in hints:
+            match = _closest_match(hint, names)
+            if not match:
+                continue
+            for f in all_floors:
+                if f.get("floorName") == match and f.get("floorId") not in resolved_ids:
+                    resolved_ids.append(f.get("floorId"))
+                    resolved_names.append(f.get("floorName"))
+                    break
+        return resolved_ids, resolved_names
+
     def _fallback_plan(self, previous_scope: dict[str, Any]) -> QueryPlan:
         has_scope = any(previous_scope.get(k) for k in ("towerId", "floorId", "flatName"))
         return QueryPlan(
@@ -637,6 +724,24 @@ def _closest_match(hint: str, candidates: list[str]) -> Optional[str]:
 
 
 _TRAILING_DIGITS = re.compile(r"(\d+)\s*$")
+
+# Strips a trailing tower/floor qualifier clause from a flat/room hint before
+# digit-matching — a real production bug: the classifier (or a user's own
+# phrasing, "flat 02 OF FLOOR 1") sometimes returns the flat/room hint with
+# the floor name still attached, e.g. "Flat 02 of Floor 1". _TRAILING_DIGITS
+# matches digits at the END of the string, so on that unstripped hint it
+# would grab "1" (from "Floor 1") instead of "02" — searching for a flat
+# ending in 1 and missing "Flat 02" entirely, reported as "not_configured"
+# even though the flat plainly exists. Stripping this clause first ensures
+# the trailing-digit extraction always operates on the flat/room's own
+# number, never a floor/tower number that happens to trail the hint.
+_TRAILING_LOCATION_QUALIFIER = re.compile(
+    r"\s+(?:of|on|in)\s+(?:the\s+)?(?:tower|floor)\s+\S+\s*$", re.IGNORECASE,
+)
+
+
+def _strip_trailing_location_qualifier(hint: str) -> str:
+    return _TRAILING_LOCATION_QUALIFIER.sub("", hint).strip()
 
 
 def _closest_identifier_match(hint: str, candidates: list[str]) -> Optional[str]:

@@ -15,6 +15,7 @@ from app.schemas.progress_analysis import (
     SaveProgressReportResponse,
 )
 from app.services.ai_progress_service import AIProgressService
+from app.services.llm_usage_service import LLMUsageService
 from app.utils.pagination import paginated_response
 
 router = APIRouter(prefix="/progress-analysis", tags=["Progress Analysis"])
@@ -77,10 +78,11 @@ async def list_progress_analysis_audit(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=20, ge=1, le=100),
 ):
-    """Return per-analysis input/output/total token counts for the admin Audit view."""
-    service = AIProgressService(db)
+    """Return per-call input/output/total token counts across all LLM features
+    (construction progress analysis, Drishti chat) for the admin Audit view."""
+    service = LLMUsageService(db)
     skip = (page - 1) * limit
-    items, total, summary_raw = await service.list_token_audit(
+    items, total, summary_raw = await service.list_audit(
         ctx.org_id,
         skip=skip,
         limit=limit,
@@ -163,6 +165,7 @@ async def start_progress_analysis(
     payload: ProgressAnalysisRequest,
     ctx: CallerContext,
     db: DB,
+    _manager_or_admin: ManagerOrAdminUser,
 ) -> ApiResponse[ProgressAnalysisStartResponse]:
     """
     Compare two timeline captures at the same location and generate a
@@ -220,6 +223,7 @@ async def get_progress_analysis_job(
     job_id: str,
     ctx: CallerContext,
     db: DB,
+    _manager_or_admin: ManagerOrAdminUser,
 ) -> ApiResponse[ProgressAnalysisJobResponse]:
     """Poll an in-progress analysis job until it completes or fails."""
     service = AIProgressService(db)

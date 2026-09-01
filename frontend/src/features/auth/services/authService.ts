@@ -76,13 +76,19 @@ export const authService = {
         sessionKind: 'live' as const,
         user: {
           ...data.user,
-          org_slug: 'default',
+          org_slug: data.user.org_slug || 'default',
           role: (data.user.role === 'user' ? 'field_engineer' : data.user.role) as AuthUser['role'],
           assignedProjectIds: data.user.assigned_project_ids,
         } satisfies AuthUser,
       };
     } catch (err: unknown) {
-      // If backend is unreachable (network error), fall through to mock login.
+      // Production never falls back to mock accounts — that would grant a fake
+      // admin session against seed data while the API is down.
+      if (import.meta.env.PROD) {
+        throw err;
+      }
+
+      // Dev-only: if backend is unreachable, allow mock login for local UI work.
       const isNetworkError =
         typeof err === 'object' && err !== null &&
         ('code' in err

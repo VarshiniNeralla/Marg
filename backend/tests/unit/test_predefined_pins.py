@@ -6,9 +6,11 @@ import pytest
 from app.services.predefined_pins_service import (
     apply_nearest_label,
     assert_same_tower,
+    assert_same_project,
     find_nearest_labeled_pin,
     pick_location_from_pin,
     pin_distance_pct,
+    room_upsert_update,
 )
 
 
@@ -95,3 +97,37 @@ def test_assert_same_tower_rejects_mismatch():
 def test_assert_same_tower_rejects_empty():
     with pytest.raises(ValueError, match="same tower"):
         assert_same_tower("", "tower-1")
+
+
+def test_assert_same_project_ok():
+    assert_same_project("proj-1", "proj-1")
+
+
+def test_assert_same_project_rejects_mismatch():
+    with pytest.raises(ValueError, match="same project"):
+        assert_same_project("proj-1", "proj-2")
+
+
+def test_assert_same_project_allows_empty():
+    # Legacy records may omit projectId; org scoping still applies upstream.
+    assert_same_project("", "proj-1")
+    assert_same_project("proj-1", "")
+    assert_same_project("", "")
+
+
+def test_room_upsert_does_not_repeat_paths_in_set_and_set_on_insert():
+    ops = room_upsert_update(
+        {"towerId": "t1", "projectId": "p1", "floorId": "f1"},
+        room_id="room-1",
+        org_id="org-1",
+        room_name="Kitchen",
+        seq=3,
+    )
+    insert_keys = set(ops["$setOnInsert"])
+    set_keys = set(ops["$set"])
+    assert not (insert_keys & set_keys)
+    assert ops["$set"]["towerId"] == "t1"
+    assert ops["$set"]["projectId"] == "p1"
+    assert ops["$set"]["floorId"] == "f1"
+    assert ops["$set"]["name"] == "Kitchen"
+    assert "towerId" not in ops["$setOnInsert"]

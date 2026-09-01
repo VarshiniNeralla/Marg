@@ -1,16 +1,13 @@
-import io
+import re
 from typing import Optional
 
-import cloudinary
-import cloudinary.uploader
-from anyio import to_thread
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Query, status
 from loguru import logger
 
-from app.core.config import get_settings
 from app.core.dependencies import get_current_user
 from app.models.user import UserDocument
 from app.schemas.auth import ApiResponse
+from app.services.cloudinary_service import _persist_processed_bytes
 
 router = APIRouter(prefix="/uploads", tags=["Uploads"])
 
@@ -27,6 +24,7 @@ _IMAGE_MAGIC = (
     (b"GIF89a", "image/gif"),
     (b"RIFF", "image/webp"),                  # WebP starts RIFF....WEBP
 )
+_SAFE_FOLDER = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 
 
 def _sniff_image_type(data: bytes) -> str | None:
@@ -54,21 +52,10 @@ def _is_allowed_image(file: UploadFile, data: bytes | None = None) -> bool:
     return False
 
 
-def _get_cloudinary():
-    s = get_settings()
-    cloudinary.config(
-        cloud_name=s.CLOUDINARY_CLOUD_NAME,
-        api_key=s.CLOUDINARY_API_KEY,
-        api_secret=s.CLOUDINARY_API_SECRET,
-        secure=True,
-    )
-    return cloudinary
-
-
 @router.post(
     "/image",
     response_model=ApiResponse[dict],
-    summary="Upload a single image (thumbnail, avatar, cover) to Cloudinary",
+    summary="Upload a single image (thumbnail, avatar, cover) — local disk primary, Cloudinary fallback",
 )
 async def upload_image(
     file: UploadFile = File(...),
@@ -98,30 +85,35 @@ async def upload_image(
             detail="Empty file. Please choose another image.",
         )
 
+    folder_name = (folder or "thumbnails").strip() or "thumbnails"
+    if not _SAFE_FOLDER.match(folder_name):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid folder name.",
+        )
+
+    storage_folder = f"SiteVision/{folder_name}"
+    filename = file.filename or "image.jpg"
+
     try:
-        _get_cloudinary()
-        s = get_settings()
-
-        def _upload():
-            # Synchronous Cloudinary SDK call — run in a worker thread so it does
-            # NOT block the event loop for the full network upload duration.
-            return cloudinary.uploader.upload(
-                io.BytesIO(data),
-                folder=f"sitevision/{folder}",
-                resource_type="image",
-                transformation=[{"width": 1200, "crop": "limit", "quality": "auto"}],
-                timeout=s.CLOUDINARY_UPLOAD_TIMEOUT,
-            )
-
-        result = await to_thread.run_sync(_upload)
+        # Shared helper: floorplans→Cloudinary; captures→local when MEDIA_STORAGE=local.
+        asset = await _persist_processed_bytes(
+            data=data,
+            upload_filename=filename,
+            folder=storage_folder,
+            effective_resource_type="image",
+            original_filename=filename,
+            stitch_meta=None,
+        )
         return ApiResponse(success=True, data={
-            "url": result.get("secure_url"),
-            "public_id": result.get("public_id"),
-            "width": result.get("width"),
-            "height": result.get("height"),
+            "url": asset.get("original_url"),
+            "public_id": asset.get("public_id"),
+            "width": asset.get("width"),
+            "height": asset.get("height"),
+            "storage": asset.get("storage") or "unknown",
         })
     except Exception as exc:
-        logger.error(f"Cloudinary upload failed: {exc}")
+        logger.error(f"Image upload failed: {exc}")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Image upload failed. Please try again.",

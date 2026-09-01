@@ -15,6 +15,9 @@ import { useTheme } from '@mui/material/styles';
 import { colors, motion, zIndex } from '@theme/tokens';
 import { useAuthStore, isAdmin, isManager, isFieldEngineer, getRoleLabel } from '@store/authStore';
 import { authService } from '@features/auth/services/authService';
+import { clearClientSessionState } from '@store/sessionIsolation';
+import { pendingFileUploadCount } from '@store/fileUploadQueue';
+import { pendingWriteCount, failedWriteCount } from '@store/writeQueue';
 import NotificationCenter from '@/shared/components/NotificationCenter/NotificationCenter';
 import DrishtiFloatingLauncher from '@/components/drishti/DrishtiFloatingLauncher';
 
@@ -41,6 +44,7 @@ const ADMIN_NAV: NavSection[] = [
       { label: 'Floor Plans', path: '/floor-plans', icon: <MapRounded /> },
       { label: 'Captures',   path: '/captures',    icon: <CameraAltRounded /> },
       { label: 'Tours',       path: '/tours',       icon: <ViewInArRounded /> },
+      { label: 'Reviews',     path: '/reviews',     icon: <RateReviewRounded /> },
       { label: 'Progress Reports', path: '/progress-reports', icon: <AutoAwesomeRounded /> },
       { label: 'Construction Progress', path: '/construction-progress', icon: <InsightsRounded /> },
       { label: 'Drishti',     path: '/drishti',     icon: <ChatBubbleOutlineRounded /> },
@@ -50,9 +54,10 @@ const ADMIN_NAV: NavSection[] = [
   {
     heading: 'Administration',
     items: [
-      { label: 'Users',    path: '/users',    icon: <PeopleRounded /> },
-      { label: 'Media',         path: '/admin/media',   icon: <StorageRounded /> },
-      { label: 'Settings',      path: '/settings',      icon: <TuneRounded /> },
+      { label: 'Users',         path: '/users',          icon: <PeopleRounded /> },
+      { label: 'Media',         path: '/admin/media',    icon: <StorageRounded /> },
+      { label: 'Audit',         path: '/admin/audit',    icon: <HistoryRounded /> },
+      { label: 'Settings',      path: '/settings',       icon: <TuneRounded /> },
     ],
   },
 ];
@@ -145,12 +150,26 @@ export default function DashboardLayout() {
     isAdmin(user)         ? ADMIN_NAV :
     isManager(user)       ? MANAGER_NAV :
     isFieldEngineer(user) ? ENGINEER_NAV :
-    ADMIN_NAV;
+    ENGINEER_NAV;
 
   const badge = roleBadge(user?.role);
 
   async function handleLogout() {
+    const pendingUploads = pendingFileUploadCount();
+    const pendingWrites = pendingWriteCount();
+    const failedWrites = failedWriteCount();
+    if (pendingUploads > 0 || pendingWrites > 0 || failedWrites > 0) {
+      const ok = window.confirm(
+        pendingUploads > 0
+          ? `${pendingUploads} photo(s) are still waiting to upload. Log out anyway? They will be discarded.`
+          : failedWrites > 0
+            ? `${failedWrites} change(s) failed to sync and are saved for retry. Log out anyway?`
+            : `${pendingWrites} change(s) have not synced yet. Log out anyway?`,
+      );
+      if (!ok) return;
+    }
     try { await authService.logout(); } catch { /* ignore */ }
+    clearClientSessionState();
     clearAuth();
     navigate('/login');
   }

@@ -13,8 +13,8 @@ from pymongo import ReturnDocument
 from fastapi import Depends
 
 from app.core.config import get_settings
-from app.core.dependencies import CallerContext, DB
-from app.core.exceptions import NotFoundException, ValidationException
+from app.core.dependencies import CallerContext, DB, require_admin
+from app.core.exceptions import ForbiddenException, NotFoundException, ValidationException
 from app.core.permissions import require_permission
 from loguru import logger
 
@@ -88,10 +88,288 @@ async def _resolve_user_display_name(db: AsyncIOMotorDatabase, user_id: str) -> 
     )
 
 
-def _stamp_uploader(payload: dict[str, Any], display_name: str) -> None:
+async def _user_display_aliases(db: AsyncIOMotorDatabase, user_id: str) -> list[str]:
+    """Known legacy uploader strings for this user.
+
+    Older records may have been stamped with name, full_name, or email before we
+    standardized on uploadedByUserId. Use all non-empty variants for safe
+    same-user backfill.
+    """
+    try:
+        user = await db["users"].find_one(
+            {"_id": _id_filter(user_id)}, {"name": 1, "email": 1, "full_name": 1}
+        )
+    except Exception as exc:  # never block reads on alias lookup failure
+        logger.warning(f"[workflow] alias lookup failed for {user_id}: {exc!r}")
+        return [user_id]
+    if not user:
+        return [user_id]
+    aliases: list[str] = []
+    for value in (user.get("name"), user.get("full_name"), user.get("email"), user_id):
+        text = str(value or "").strip()
+        if text and text not in aliases:
+            aliases.append(text)
+    return aliases
+
+
+def _stamp_uploader(payload: dict[str, Any], display_name: str, user_id: str | None = None) -> None:
     """Overwrite client placeholders like 'You' with the authenticated actor."""
     payload["uploadedBy"] = display_name
     payload["uploaded_by"] = display_name
+    if user_id:
+        payload["uploadedByUserId"] = user_id
+        payload["uploaded_by_user_id"] = user_id
+
+
+def _is_field_engineer(ctx: CallerContext) -> bool:
+    return str(ctx.role or "") == "field_engineer"
+
+
+def _own_captures_filter(ctx: CallerContext, display_name: str | None = None) -> dict[str, Any] | None:
+    """Field engineers only receive their own capture documents.
+
+    Labeled capture *points* stay org-shared; photos/history do not.
+    """
+    if not _is_field_engineer(ctx):
+        return None
+    uid = str(ctx.user_id or "").strip()
+    clauses: list[dict[str, Any]] = [
+        {"uploadedByUserId": uid},
+        {"uploaded_by_user_id": uid},
+    ]
+    name = (display_name or "").strip()
+    if name:
+        # Legacy captures predating uploadedByUserId.
+        clauses.append({
+            "$and": [
+                {"uploadedByUserId": {"$exists": False}},
+                {"uploaded_by_user_id": {"$exists": False}},
+                {"$or": [{"uploadedBy": name}, {"uploaded_by": name}]},
+            ]
+        })
+    return {"$or": clauses}
+
+
+def _legacy_uploader_match(aliases: list[str]) -> dict[str, Any] | None:
+    names = [a.strip() for a in aliases if str(a).strip()]
+    if not names:
+        return None
+    return {
+        "$and": [
+            {"uploadedByUserId": {"$exists": False}},
+            {"uploaded_by_user_id": {"$exists": False}},
+            {"$or": [{"uploadedBy": {"$in": names}}, {"uploaded_by": {"$in": names}}]},
+        ]
+    }
+
+
+async def _backfill_legacy_uploader_records(
+    db: AsyncIOMotorDatabase,
+    ctx: CallerContext,
+    collection: str,
+    aliases: list[str],
+) -> None:
+    """Stamp this engineer's legacy records with uploadedByUserId on read.
+
+    This is a one-time healing step for historical captures/tours created before
+    owner ids were stored. It only claims records in the same org whose
+    uploader string matches one of this user's known historical aliases.
+    """
+    if not _is_field_engineer(ctx):
+        return
+    uid = str(ctx.user_id or "").strip()
+    if not uid:
+        return
+    match = _legacy_uploader_match(aliases)
+    if not match:
+        return
+    try:
+        await db[collection].update_many(
+            {"orgId": ctx.org_id, **match},
+            {
+                "$set": {
+                    "uploadedByUserId": uid,
+                    "uploaded_by_user_id": uid,
+                    "updatedAt": _now(),
+                }
+            },
+        )
+    except Exception:
+        logger.exception(
+            "[workflow] failed legacy uploader backfill org={} user={} collection={}",
+            ctx.org_id,
+            uid,
+            collection,
+        )
+
+
+async def _backfill_legacy_tours_from_capture_ownership(
+    db: AsyncIOMotorDatabase,
+    ctx: CallerContext,
+    aliases: list[str],
+) -> None:
+    """Claim legacy tours whose linked captures already belong to this engineer."""
+    if not _is_field_engineer(ctx):
+        return
+    uid = str(ctx.user_id or "").strip()
+    if not uid:
+        return
+    own_caps = _own_captures_filter(ctx, aliases[0] if aliases else None)
+    if not own_caps:
+        return
+    capture_ids = {
+        str(doc.get("_id") or doc.get("id"))
+        for doc in await db["captures"]
+        .find({"orgId": ctx.org_id, **own_caps}, {"_id": 1, "id": 1})
+        .to_list(length=5000)
+        if str(doc.get("_id") or doc.get("id") or "").strip()
+    }
+    if not capture_ids:
+        return
+    legacy_tours = await db["tours"].find(
+        {
+            "orgId": ctx.org_id,
+            "uploadedByUserId": {"$exists": False},
+            "uploaded_by_user_id": {"$exists": False},
+        },
+        {"_id": 1, "id": 1, "captureId": 1, "capture_id": 1, "steps": 1},
+    ).to_list(length=2000)
+    for tour in legacy_tours:
+        linked_ids = {
+            str(tour.get("captureId") or tour.get("capture_id") or "").strip()
+        }
+        for step in tour.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            cid = str(step.get("captureId") or step.get("capture_id") or "").strip()
+            if cid:
+                linked_ids.add(cid)
+        linked_ids.discard("")
+        if not (linked_ids & capture_ids):
+            continue
+        try:
+            await db["tours"].update_one(
+                {"_id": tour["_id"], "orgId": ctx.org_id},
+                {
+                    "$set": {
+                        "uploadedByUserId": uid,
+                        "uploaded_by_user_id": uid,
+                        "updatedAt": _now(),
+                    }
+                },
+            )
+        except Exception:
+            logger.exception(
+                "[workflow] failed capture-linked tour backfill org={} user={} tour={}",
+                ctx.org_id,
+                uid,
+                tour.get("_id"),
+            )
+
+
+def _capture_owner_id(doc: dict[str, Any]) -> str:
+    return str(doc.get("uploadedByUserId") or doc.get("uploaded_by_user_id") or "").strip()
+
+
+def _notification_owner_filter(ctx: CallerContext) -> dict[str, Any]:
+    uid = str(ctx.user_id or "").strip()
+    return {
+        "$or": [
+            {"recipientUserId": uid},
+            {"recipient_user_id": uid},
+            {"userId": uid},
+            {"user_id": uid},
+        ]
+    }
+
+
+def _assert_can_access_capture(ctx: CallerContext, doc: dict[str, Any], display_name: str = "") -> None:
+    if not _is_field_engineer(ctx):
+        return
+    owner = _capture_owner_id(doc)
+    if owner and owner == str(ctx.user_id):
+        return
+    if not owner:
+        by = str(doc.get("uploadedBy") or doc.get("uploaded_by") or "").strip()
+        if display_name and by == display_name:
+            return
+    raise ForbiddenException("You can only access your own captures")
+
+
+def _own_tours_filter(ctx: CallerContext, display_name: str | None = None) -> dict[str, Any] | None:
+    """Field engineers only receive tours they published."""
+    return _own_captures_filter(ctx, display_name)
+
+
+def _tour_owner_id(doc: dict[str, Any]) -> str:
+    return _capture_owner_id(doc)
+
+
+def _assert_can_access_tour(ctx: CallerContext, doc: dict[str, Any], display_name: str = "") -> None:
+    if not _is_field_engineer(ctx):
+        return
+    owner = _tour_owner_id(doc)
+    if owner and owner == str(ctx.user_id):
+        return
+    if not owner:
+        by = str(doc.get("uploadedBy") or doc.get("uploaded_by") or "").strip()
+        if display_name and by == display_name:
+            return
+    raise ForbiddenException("You can only access your own tours")
+
+
+async def _own_capture_ids_for_ctx(
+    db: AsyncIOMotorDatabase,
+    ctx: CallerContext,
+    display_name: str | None = None,
+) -> set[str] | None:
+    if not _is_field_engineer(ctx):
+        return None
+    aliases = await _user_display_aliases(db, ctx.user_id)
+    await _backfill_legacy_uploader_records(db, ctx, "captures", aliases)
+    name = display_name if display_name is not None else await _resolve_user_display_name(db, ctx.user_id)
+    own = _own_captures_filter(ctx, name)
+    docs = await db["captures"].find(
+        {"orgId": ctx.org_id, **(own or {})},
+        {"_id": 1, "id": 1},
+    ).to_list(length=5000)
+    return {
+        str(doc.get("_id") or doc.get("id") or "").strip()
+        for doc in docs
+        if str(doc.get("_id") or doc.get("id") or "").strip()
+    }
+
+
+def _pin_capture_ids(doc: dict[str, Any]) -> list[str]:
+    return [
+        cid for cid in (doc.get("captureIds") or doc.get("capture_ids") or [])
+        if isinstance(cid, str) and cid
+    ]
+
+
+def _scope_pin_doc_to_capture_ids(doc: dict[str, Any], own_capture_ids: set[str] | None) -> dict[str, Any]:
+    if own_capture_ids is None:
+        return doc
+    scoped = dict(doc)
+    filtered = [cid for cid in _pin_capture_ids(doc) if cid in own_capture_ids]
+    scoped["captureIds"] = filtered
+    scoped["capture_ids"] = filtered
+    return scoped
+
+
+async def _assert_capture_ids_owned(
+    db: AsyncIOMotorDatabase,
+    ctx: CallerContext,
+    capture_ids: list[str],
+    display_name: str,
+) -> None:
+    if not _is_field_engineer(ctx):
+        return
+    for cid in capture_ids:
+        cap = await db["captures"].find_one({"_id": _id_filter(cid), "orgId": ctx.org_id})
+        if not cap:
+            continue
+        _assert_can_access_capture(ctx, cap, display_name)
 
 
 def _serialise(doc: dict[str, Any]) -> dict[str, Any]:
@@ -138,6 +416,7 @@ def _with_tenant(payload: dict[str, Any], ctx: CallerContext, entity_id: Optiona
         "sequenceNumber": "sequence_number",
         "createdBy": "created_by",
         "uploadedBy": "uploaded_by",
+        "uploadedByUserId": "uploaded_by_user_id",
         "reviewedBy": "reviewed_by",
         "assignedTo": "assigned_to",
         "reviewStatus": "review_status",
@@ -237,15 +516,124 @@ def _pending_asset_payload(
 # Raw capture bytes outlive the request only if written to disk: the background
 # stitch job runs after the response is sent, by which point UploadFile is
 # closed. Keyed by dedup hash so a duplicate upload reuses the same spool file
-# rather than writing a second copy of a ~13MB payload.
+# rather than writing a second copy of a ~13MB payload. Spool lives under
+# UPLOAD_ROOT so multi-worker hosts sharing that volume can recover orphans.
 def _spool_raw_upload(dedup_key: str, raw_bytes: bytes, ext: str) -> Path:
-    spool_dir = Path(tempfile.gettempdir()) / "sitevision-stitch-spool"
+    from app.services.local_media_service import ensure_upload_root
+
+    spool_dir = ensure_upload_root() / "stitch-spool"
     spool_dir.mkdir(parents=True, exist_ok=True)
     safe_name = dedup_key.rsplit(":", 1)[-1]
     path = spool_dir / f"{safe_name}{ext or '.bin'}"
     if not path.exists():
         path.write_bytes(raw_bytes)
     return path
+
+
+def _asset_has_real_media(asset: Optional[dict[str, Any]]) -> bool:
+    """True when an asset payload has a durable public_id and a viewable URL."""
+    if not asset:
+        return False
+    if not asset.get("public_id"):
+        return False
+    url = (
+        asset.get("processed_panorama_url")
+        or asset.get("original_url")
+        or asset.get("original_file_url")
+    )
+    return bool(url)
+
+
+_PROCESSING_BLOCKED_FOR_TOUR = frozenset({"processing", "pending", "queued", "failed", "error"})
+
+
+def _capture_media_assets(capture: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = capture.get("mediaAssets") or capture.get("media_assets") or []
+    return [a for a in raw if isinstance(a, dict)]
+
+
+def _capture_panorama_url(capture: dict[str, Any]) -> str | None:
+    for asset in _capture_media_assets(capture):
+        url = (
+            asset.get("processed_panorama_url")
+            or asset.get("original_file_url")
+            or asset.get("original_url")
+        )
+        if url:
+            return str(url)
+    for key in ("processedPanoramaUrl", "processed_panorama_url", "original_url"):
+        val = capture.get(key)
+        if val:
+            return str(val)
+    return None
+
+
+def _capture_processing_status(capture: dict[str, Any]) -> str:
+    st = capture.get("processingStatus") or capture.get("processing_status")
+    if st:
+        return str(st).lower()
+    assets = _capture_media_assets(capture)
+    if assets:
+        a0 = assets[0]
+        return str(a0.get("processingStatus") or a0.get("processing_status") or "uploaded").lower()
+    return "uploaded"
+
+
+def _assert_capture_publishable(
+    ctx: CallerContext,
+    capture: dict[str, Any],
+    display_name: str,
+    *,
+    capture_id_label: str,
+) -> None:
+    _assert_can_access_capture(ctx, capture, display_name)
+    status = _capture_processing_status(capture)
+    if status in _PROCESSING_BLOCKED_FOR_TOUR:
+        raise ValidationException(
+            f"Capture {capture_id_label} is not ready for tour publish (status={status})"
+        )
+    if not _capture_panorama_url(capture):
+        raise ValidationException(f"Capture {capture_id_label} has no panorama URL")
+
+
+async def _validate_tour_capture_refs(
+    db: AsyncIOMotorDatabase,
+    ctx: CallerContext,
+    payload: dict[str, Any],
+    display_name: str,
+) -> None:
+    """Every capture referenced by a tour (top-level or steps[]) must be owned and publishable."""
+    capture_ids: list[str] = []
+    top = payload.get("captureId") or payload.get("capture_id")
+    if top:
+        capture_ids.append(str(top))
+    steps = payload.get("steps") or []
+    if steps is not None and not isinstance(steps, list):
+        raise ValidationException("Tour steps must be an array")
+    for i, step in enumerate(steps or []):
+        if not isinstance(step, dict):
+            raise ValidationException(f"Tour step {i + 1} must be an object")
+        cid = step.get("captureId") or step.get("capture_id")
+        if not cid:
+            raise ValidationException(f"Tour step {i + 1} missing captureId")
+        capture_ids.append(str(cid))
+    seen: set[str] = set()
+    for cid in capture_ids:
+        if cid in seen:
+            continue
+        seen.add(cid)
+        cap = await db["captures"].find_one({"_id": _id_filter(cid), "orgId": ctx.org_id})
+        if not cap:
+            raise ValidationException(f"Capture {cid} not found")
+        _assert_capture_publishable(ctx, cap, display_name, capture_id_label=cid)
+    tour_status = str(payload.get("status") or "").lower()
+    if tour_status == "published":
+        for i, step in enumerate(steps or []):
+            if not isinstance(step, dict):
+                continue
+            pano = step.get("panoramaUrl") or step.get("panorama_url")
+            if not pano:
+                raise ValidationException(f"Tour step {i + 1} missing panoramaUrl")
 
 
 # Content-type prefixes accepted per upload kind (defense-in-depth alongside the
@@ -264,12 +652,13 @@ def _validate_upload_size(file: UploadFile, *, will_be_reprocessed: bool = False
     """Returns the file size in bytes, raising if it exceeds the configured cap.
     Uses seek/tell so we don't buffer the whole file in memory just to size it.
 
-    Raw 360 files (.dng/.insp/.insv) are STITCHED down to a small equirectangular
-    JPEG before they reach Cloudinary, and a plain capture JPEG that's still over
-    Cloudinary's cap gets re-encoded down to fit (see panorama_service.ensure_
-    under_size) — both cases get a larger pre-check cap here because only the
-    FINAL, already-shrunk bytes actually need to fit Cloudinary's limit, not
-    whatever the camera originally handed us."""
+    Raw 360 files (.dng/.insp/.insv) are STITCHED into an equirectangular
+    JPEG (default ~8K @ high quality; see STITCH_OUTPUT_* settings) before
+    storage, and a plain capture JPEG that's still over Cloudinary's cap gets
+    re-encoded down to fit (see panorama_service.ensure_under_size) — both
+    cases get a larger pre-check cap here because only the FINAL bytes need
+    to fit Cloudinary's limit when that backend is used, not whatever the
+    camera originally handed us."""
     try:
         file.file.seek(0, 2)   # seek to end
         size = file.file.tell()
@@ -303,27 +692,49 @@ _UPLOAD_DEDUP_COLLECTION = "capture_upload_dedup"
 _PROJECT_AUDIT_FILTER: dict[str, Any] = {"logCategory": {"$ne": SECURITY_CATEGORY}}
 
 
+def _dedup_asset_matches_capture_storage(asset: dict[str, Any]) -> bool:
+    """
+    When captures are routed to local disk, refuse to reuse a Cloudinary-only
+    dedup cache entry — otherwise a re-upload of the same bytes never lands
+    under UPLOAD_ROOT (hybrid MEDIA_STORAGE=local + floorplans→Cloudinary).
+    """
+    from app.services.cloudinary_service import _resolve_media_storage
+    from app.services.local_media_service import is_local_public_id
+
+    preferred = _resolve_media_storage(folder="SiteVision/captures")
+    if preferred != "local":
+        return True
+    storage = (asset.get("storage") or "").lower()
+    if storage == "local" or is_local_public_id(asset.get("public_id")):
+        return True
+    url = str(asset.get("original_url") or "")
+    if url.startswith("/media/") or "/media/" in url.split("?", 1)[0]:
+        return True
+    return False
+
+
 async def _dedup_asset_is_live(asset: dict[str, Any]) -> bool:
     """
-    True only if the cached asset's Cloudinary file is still actually
-    fetchable AND lives on the currently-configured Cloudinary account. The
-    dedup cache is keyed on a hash of the raw bytes and never expires, but
-    the Cloudinary asset it points to can vanish independently (manual
-    cleanup, account TTL, ...) — confirmed in production: a capture
-    uploaded days after an identical-bytes upload got handed back the old
-    cache entry's URL, which by then 404'd, so the "upload" silently
-    produced a dead capture instead of a real one. Reusing a cache entry is
-    only safe once we know the URL it points to is real.
+    True only if the cached asset's file is still actually fetchable.
 
-    The account check matters independently of liveness: after a Cloudinary
-    credential migration, entries created under the old cloud name can stay
-    live (still resolvable) indefinitely, so a pure HEAD check would keep
-    silently handing back old-account assets forever instead of migrating
-    fresh uploads to the new account.
+    Local assets: confirm the file still exists under UPLOAD_ROOT.
+    Cloudinary assets: confirm the URL belongs to the configured account and
+    the Admin API (or delivery HEAD) still sees it. The dedup cache is keyed
+    on a hash of the raw bytes and never expires, but the backing file can
+    vanish independently — reusing a cache entry is only safe once we know
+    the URL it points to is real.
     """
     url = asset.get("original_url")
     if not url:
         return False
+
+    from app.services.local_media_service import is_local_public_id, local_asset_exists
+
+    public_id = asset.get("public_id")
+    storage = asset.get("storage") or ""
+    if storage == "local" or is_local_public_id(public_id):
+        return local_asset_exists(public_id)
+
     cloud_name = get_settings().CLOUDINARY_CLOUD_NAME
     if cloud_name and f"res.cloudinary.com/{cloud_name}/" not in url:
         return False
@@ -331,7 +742,6 @@ async def _dedup_asset_is_live(asset: dict[str, Any]) -> bool:
     # Ask the account, not the CDN edge — a destroyed asset keeps serving over
     # the CDN for a while, and trusting that 200 is how a destroyed asset got
     # handed back from this cache and produced a capture that went dead later.
-    public_id = asset.get("public_id")
     if public_id:
         exists = await cloudinary_asset_exists(
             public_id, asset.get("resource_type") or "image"
@@ -389,6 +799,16 @@ async def _dedup_lookup(db: Optional[AsyncIOMotorDatabase], key: str) -> Optiona
         return None
     asset = (doc or {}).get("asset")
     if asset is None:
+        return None
+    if not _dedup_asset_matches_capture_storage(asset):
+        logger.info(
+            f"[capture-upload] dedup entry key={key[-12:]} is Cloudinary but captures "
+            f"prefer local disk ({asset.get('original_url')}) — discarding cache and re-uploading"
+        )
+        try:
+            await db[_UPLOAD_DEDUP_COLLECTION].delete_one({"_id": key})
+        except Exception as exc:
+            logger.warning(f"[capture-upload] failed to evict mismatched dedup entry: {exc!r}")
         return None
     if await _dedup_asset_is_live(asset) and await _dedup_asset_has_content(asset):
         return asset
@@ -565,7 +985,8 @@ async def _upload_files(
             if cached is not None:
                 logger.info(
                     f"[capture-upload] dedup HIT file={file.filename} "
-                    f"key={dedup_key[-12:]} — skipping stitch + Cloudinary upload"
+                    f"key={dedup_key[-12:]} storage={cached.get('storage')} "
+                    f"— skipping stitch + re-upload"
                 )
                 uploaded.append(_asset_payload(cached, kind=kind, entity_id=entity_id, ext=ext))
                 continue
@@ -712,6 +1133,30 @@ _CAPTURE_MEDIA_URL_FIELDS = {
     "public_id",
 }
 
+# Allowlists for review/publish/status endpoints — never accept a full client
+# document $set (ownership, media, orgId, etc. must stay server-controlled).
+_CAPTURE_REVIEW_FIELDS = {
+    "status",
+    "reviewStatus", "review_status",
+    "reviewedBy", "reviewed_by",
+    "reviewNotes", "review_notes",
+    "assignedTo", "assigned_to",
+    "processingStatus", "processing_status",
+    # replaceCapture reuses the review endpoint for a narrow metadata reset
+    "fileCount", "file_count",
+    "sizeMb", "size_mb",
+    "uploadedAt", "uploaded_at",
+}
+_CAPTURE_PUBLISH_FIELDS = {
+    "status",
+    "reviewStatus", "review_status",
+    "processingStatus", "processing_status",
+}
+_TOUR_STATUS_FIELDS = {
+    "status",
+    "managerReviewed", "manager_reviewed",
+}
+
 
 async def _patch(
     db: AsyncIOMotorDatabase,
@@ -719,8 +1164,12 @@ async def _patch(
     id: str,
     payload: dict[str, Any],
     ctx: CallerContext,
+    *,
+    allowed_fields: set[str] | None = None,
 ) -> dict[str, Any]:
     update = dict(payload)
+    if allowed_fields is not None:
+        update = {k: v for k, v in update.items() if k in allowed_fields}
     # Review/publish used to $set the entire client capture object — including
     # null processedPanoramaUrl / thumbnailUrl while a stitch was still running,
     # which wiped a good (or pending) panorama out of Mongo. Drop null media
@@ -746,6 +1195,46 @@ async def _delete(db: AsyncIOMotorDatabase, collection: str, id: str, ctx: Calle
         raise NotFoundException(collection.rstrip("s").replace("_", " "), id)
 
 
+async def _list_all_for_snapshot(
+    db: AsyncIOMotorDatabase,
+    collection: str,
+    ctx: CallerContext,
+    *,
+    extra_filter: Optional[dict[str, Any]] = None,
+    page_size: int = 2000,
+    sort: Optional[list[tuple[str, int]]] = None,
+) -> list[dict[str, Any]]:
+    """
+    Fetch every matching document for the org snapshot.
+
+    The old hard cap of 500 silently truncated capture_pins / captures (newest
+    first), so older floor-plan pins vanished from the UI on every hydrate even
+    though they were still in Mongo — observed as pin counts stepping down
+    (114 → 82 → 48) with no user deletes.
+    """
+    query: dict[str, Any] = {"orgId": ctx.org_id, **(extra_filter or {})}
+    order = sort or [("createdAt", 1), ("_id", 1)]
+    items: list[dict[str, Any]] = []
+    skip = 0
+    while True:
+        cursor = db[collection].find(query).sort(order).skip(skip).limit(page_size)
+        batch = [_serialise(d) for d in await cursor.to_list(length=page_size)]
+        items.extend(batch)
+        if len(batch) < page_size:
+            break
+        skip += page_size
+        # Safety valve — pathological orgs shouldn't hang the request forever.
+        if skip >= 50_000:
+            logger.error(
+                "[workflow-snapshot] truncated collection={} at {} docs org={}",
+                collection,
+                skip,
+                ctx.org_id,
+            )
+            break
+    return items
+
+
 @router.get("/workflow/snapshot", summary="Get all workflow data for the current organization")
 async def workflow_snapshot(ctx: CallerContext, db: DB):
     # Heal pins deleted while their captures survived (gallery shows Pin N,
@@ -759,12 +1248,47 @@ async def workflow_snapshot(ctx: CallerContext, db: DB):
         logger.exception("[workflow-snapshot] orphan pin restore failed org={}", ctx.org_id)
 
     data = {}
+    engineer_name = None
+    engineer_aliases: list[str] = []
+    if _is_field_engineer(ctx):
+        engineer_name = await _resolve_user_display_name(db, ctx.user_id)
+        engineer_aliases = await _user_display_aliases(db, ctx.user_id)
+        await _backfill_legacy_uploader_records(db, ctx, "captures", engineer_aliases)
+        await _backfill_legacy_uploader_records(db, ctx, "tours", engineer_aliases)
+        await _backfill_legacy_tours_from_capture_ownership(db, ctx, engineer_aliases)
+    own_capture_ids: set[str] | None = None
     for key, collection in COLLECTIONS.items():
         # The snapshot feeds the dashboard activity feed, so it carries project
         # activity only — security/identity events are read separately via
         # /audit-logs/security (see _PROJECT_AUDIT_FILTER).
+        if collection == "audit_logs" and _is_field_engineer(ctx):
+            data[key] = []
+            continue
         extra = _PROJECT_AUDIT_FILTER if collection == "audit_logs" else None
-        data[key] = (await _list(db, collection, ctx, limit=500, extra_filter=extra))["items"]
+        if collection == "captures":
+            own = _own_captures_filter(ctx, engineer_name)
+            extra = {**(extra or {}), **(own or {})} if (extra or own) else extra
+        if collection == "tours":
+            own = _own_tours_filter(ctx, engineer_name)
+            extra = {**(extra or {}), **(own or {})} if (extra or own) else extra
+        if collection == "notifications":
+            own = _notification_owner_filter(ctx)
+            extra = {**(extra or {}), **own} if extra else own
+        # Audit feed stays capped; everything else must be complete so replace
+        # hydrate cannot drop pins/captures that still exist on the server.
+        if collection == "audit_logs":
+            items = (await _list(db, collection, ctx, limit=200, extra_filter=extra))["items"]
+        else:
+            items = await _list_all_for_snapshot(db, collection, ctx, extra_filter=extra)
+        if collection == "captures" and _is_field_engineer(ctx):
+            own_capture_ids = {
+                str(item.get("id") or "").strip()
+                for item in items
+                if str(item.get("id") or "").strip()
+            }
+        if collection == "capture_pins" and _is_field_engineer(ctx):
+            items = [_scope_pin_doc_to_capture_ids(item, own_capture_ids or set()) for item in items]
+        data[key] = items
     return success_response(data=data)
 
 
@@ -879,7 +1403,14 @@ async def update_room(room_id: str, payload: dict[str, Any], ctx: CallerContext,
 @router.delete("/rooms/{room_id}", summary="Delete room")
 async def delete_room(room_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("rooms", "delete"))):
     # Drop captures that lived only on this room so Media Library can't resurface them.
+    engineer_name = await _resolve_user_display_name(db, ctx.user_id) if _is_field_engineer(ctx) else ""
     room_captures = await db["captures"].find({"orgId": ctx.org_id, "roomId": room_id}).to_list(length=None)
+    await _assert_capture_ids_owned(
+        db,
+        ctx,
+        [str(cap.get("_id") or cap.get("id") or "") for cap in room_captures if str(cap.get("_id") or cap.get("id") or "").strip()],
+        engineer_name,
+    )
     await db["captures"].delete_many({"orgId": ctx.org_id, "roomId": room_id})
     for cap in room_captures:
         await _release_capture_assets(db, ctx, cap.get("mediaAssets") or cap.get("media_assets") or [])
@@ -897,8 +1428,17 @@ async def delete_room(room_id: str, ctx: CallerContext, db: DB, _=Depends(requir
 
 @router.get("/captures", summary="List captures")
 async def list_captures(ctx: CallerContext, db: DB, project_id: Optional[str] = None, skip: int = 0, limit: int = 100):
-    filters = {"projectId": project_id} if project_id else None
-    return success_response(data=await _list(db, "captures", ctx, skip, limit, filters))
+    filters: dict[str, Any] = {}
+    if project_id:
+        filters["projectId"] = project_id
+    if _is_field_engineer(ctx):
+        aliases = await _user_display_aliases(db, ctx.user_id)
+        await _backfill_legacy_uploader_records(db, ctx, "captures", aliases)
+        name = await _resolve_user_display_name(db, ctx.user_id)
+        own = _own_captures_filter(ctx, name)
+        if own:
+            filters = {**filters, **own} if filters else own
+    return success_response(data=await _list(db, "captures", ctx, skip, limit, filters or None))
 
 
 @router.post("/captures", status_code=status.HTTP_201_CREATED, summary="Create capture")
@@ -941,23 +1481,30 @@ async def create_capture(payload: dict[str, Any], ctx: CallerContext, db: DB, _=
 
     # Attribution is server-owned: clients historically sent uploadedBy="You".
     display_name = await _resolve_user_display_name(db, ctx.user_id)
-    _stamp_uploader(payload, display_name)
+    _stamp_uploader(payload, display_name, ctx.user_id)
 
     # Media fields are server-owned once written: a late client replay carrying
-    # nulls must never clobber a panorama the stitch job produced.
+    # nulls must never clobber a panorama the stitch job produced. But when this
+    # request already carries a *completed* stitch asset (real public_id + URL),
+    # we must $set those fields — otherwise a placeholder inserted earlier can
+    # never be healed (insert_only would leave null panoramas forever).
+    media_insert_only = {
+        "mediaAssets", "media_assets",
+        "processingStatus", "processing_status",
+        "original_url", "originalFileUrl",
+        "processedPanoramaUrl", "processed_panorama_url",
+        "thumbnail_url", "thumbnailUrl", "previewUrl",
+        "public_id", "format", "size", "uploaded_at",
+    }
+    if _asset_has_real_media(first_asset if isinstance(first_asset, dict) else None):
+        media_insert_only = set()
+
     stored = await _upsert_preserving(
         db,
         "captures",
         payload,
         ctx,
-        insert_only_fields={
-            "mediaAssets", "media_assets",
-            "processingStatus", "processing_status",
-            "original_url", "originalFileUrl",
-            "processedPanoramaUrl", "processed_panorama_url",
-            "thumbnail_url", "thumbnailUrl", "previewUrl",
-            "public_id", "format", "size", "uploaded_at",
-        },
+        insert_only_fields=media_insert_only,
     )
     # Pin.captureIds used to be updated in a SEPARATE client write that often
     # lagged or never landed (writeQueue / hydrate race). Analysis only follows
@@ -970,17 +1517,31 @@ async def create_capture(payload: dict[str, Any], ctx: CallerContext, db: DB, _=
 
 @router.get("/captures/{capture_id}", summary="Get capture")
 async def get_capture(capture_id: str, ctx: CallerContext, db: DB):
-    return success_response(data=await _get(db, "captures", capture_id, ctx))
+    if _is_field_engineer(ctx):
+        aliases = await _user_display_aliases(db, ctx.user_id)
+        await _backfill_legacy_uploader_records(db, ctx, "captures", aliases)
+    doc = await _get(db, "captures", capture_id, ctx)
+    name = await _resolve_user_display_name(db, ctx.user_id) if _is_field_engineer(ctx) else ""
+    _assert_can_access_capture(ctx, doc, name)
+    return success_response(data=doc)
 
 
 @router.put("/captures/{capture_id}/review", summary="Update capture review")
 async def update_capture_review(capture_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "approve"))):
-    return success_response(data=await _patch(db, "captures", capture_id, payload, ctx), message="Capture review updated")
+    # Clients historically $set the entire capture document; only review fields
+    # may change here so a crafted body cannot overwrite media, ownership, etc.
+    return success_response(
+        data=await _patch(db, "captures", capture_id, payload, ctx, allowed_fields=_CAPTURE_REVIEW_FIELDS),
+        message="Capture review updated",
+    )
 
 
 @router.put("/captures/{capture_id}/publish", summary="Publish or unpublish capture")
 async def publish_capture(capture_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "approve"))):
-    return success_response(data=await _patch(db, "captures", capture_id, payload, ctx), message="Capture publish state updated")
+    return success_response(
+        data=await _patch(db, "captures", capture_id, payload, ctx, allowed_fields=_CAPTURE_PUBLISH_FIELDS),
+        message="Capture publish state updated",
+    )
 
 
 @router.delete("/captures/{capture_id}", summary="Delete capture")
@@ -988,10 +1549,18 @@ async def delete_capture(capture_id: str, ctx: CallerContext, db: DB, _=Depends(
     # Fetch first so we still have its mediaAssets (Cloudinary public_id/
     # resource_type) after the Mongo document is gone — deleting the doc
     # without this left the actual image orphaned on Cloudinary forever.
+    if _is_field_engineer(ctx):
+        aliases = await _user_display_aliases(db, ctx.user_id)
+        await _backfill_legacy_uploader_records(db, ctx, "captures", aliases)
     capture = await db["captures"].find_one({"_id": _id_filter(capture_id), "orgId": ctx.org_id})
+    if capture:
+        name = await _resolve_user_display_name(db, ctx.user_id) if _is_field_engineer(ctx) else ""
+        _assert_can_access_capture(ctx, capture, name)
     await _delete(db, "captures", capture_id, ctx)
     # Keep pin timelines clean even if the client never follows up with
     # updateCapturePin — dangling ids made copy-from treat pins as "has captures".
+    # Do NOT delete the pin itself: capture points stay on the plan so the
+    # engineer can re-upload at the same annotated location.
     await db["capture_pins"].update_many(
         {"orgId": ctx.org_id, "captureIds": capture_id},
         {"$pull": {"captureIds": capture_id}, "$set": {"updatedAt": _now()}},
@@ -1052,6 +1621,19 @@ async def get_capture_stitch_job(job_id: str, ctx: CallerContext, db: DB, _=Depe
     return success_response(data=job)
 
 
+@router.post("/uploads/captures/jobs/{job_id}/retry", summary="Retry a failed stitch using retained raw file")
+async def retry_capture_stitch_job(job_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "upload"))):
+    svc = CaptureStitchService(db)
+    existing = await svc.get_job(org_id=ctx.org_id, job_id=job_id)
+    if not existing:
+        raise NotFoundException("stitch job", job_id)
+    try:
+        job = await svc.retry_job(org_id=ctx.org_id, job_id=job_id)
+    except KeyError:
+        raise NotFoundException("stitch job", job_id) from None
+    return success_response(data=job, message="Stitch retry queued")
+
+
 @router.post("/uploads/floorplans", status_code=status.HTTP_201_CREATED, summary="Upload floor plan file")
 async def upload_floor_plan_files(ctx: CallerContext, files: list[UploadFile] = File(...), floor_plan_id: Optional[str] = None, _=Depends(require_permission("floorPlans", "upload"))):
     uploaded, _pending = await _upload_files(ctx=ctx, kind="floorplans", files=files, entity_id=floor_plan_id)
@@ -1079,45 +1661,97 @@ async def upload_tour_files(ctx: CallerContext, files: list[UploadFile] = File(.
 
 @router.get("/tours", summary="List tours")
 async def list_tours(ctx: CallerContext, db: DB, project_id: Optional[str] = None, skip: int = 0, limit: int = 100):
-    filters = {"projectId": project_id} if project_id else None
-    return success_response(data=await _list(db, "tours", ctx, skip, limit, filters))
+    filters: dict[str, Any] = {}
+    if project_id:
+        filters["projectId"] = project_id
+    if _is_field_engineer(ctx):
+        aliases = await _user_display_aliases(db, ctx.user_id)
+        await _backfill_legacy_uploader_records(db, ctx, "tours", aliases)
+        await _backfill_legacy_tours_from_capture_ownership(db, ctx, aliases)
+        name = await _resolve_user_display_name(db, ctx.user_id)
+        own = _own_tours_filter(ctx, name)
+        if own:
+            filters = {**filters, **own} if filters else own
+    return success_response(data=await _list(db, "tours", ctx, skip, limit, filters or None))
 
 
 @router.post("/tours", status_code=status.HTTP_201_CREATED, summary="Generate tour")
 async def create_tour(payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("tours", "create"))):
+    display_name = await _resolve_user_display_name(db, ctx.user_id)
+    await _validate_tour_capture_refs(db, ctx, payload, display_name)
     capture_id = payload.get("captureId") or payload.get("capture_id")
     if capture_id:
         capture = await db["captures"].find_one({"_id": _id_filter(capture_id), "orgId": ctx.org_id})
         if capture:
-            assets = capture.get("mediaAssets") or capture.get("media_assets") or []
+            assets = _capture_media_assets(capture)
             panorama_urls = [
-                asset.get("processed_panorama_url") or asset.get("original_file_url") or asset.get("original_url")
-                for asset in assets
-                if asset.get("processed_panorama_url") or asset.get("original_file_url") or asset.get("original_url")
+                url for url in (_capture_panorama_url(capture),)
+                if url
             ]
+            if not panorama_urls:
+                panorama_urls = [
+                    asset.get("processed_panorama_url") or asset.get("original_file_url") or asset.get("original_url")
+                    for asset in assets
+                    if asset.get("processed_panorama_url") or asset.get("original_file_url") or asset.get("original_url")
+                ]
             if panorama_urls:
                 payload["panoramaUrls"] = panorama_urls
                 payload["panorama_urls"] = panorama_urls
                 payload["processedPanoramaUrl"] = panorama_urls[0]
                 payload["processed_panorama_url"] = panorama_urls[0]
-                payload["thumbnailUrl"] = (assets[0].get("thumbnail_url") or assets[0].get("preview_url"))
-                payload["thumbnail_url"] = payload["thumbnailUrl"]
+                if assets:
+                    payload["thumbnailUrl"] = (assets[0].get("thumbnail_url") or assets[0].get("preview_url"))
+                    payload["thumbnail_url"] = payload["thumbnailUrl"]
+    _stamp_uploader(payload, display_name, ctx.user_id)
     return success_response(data=await _upsert(db, "tours", payload, ctx), message="Tour generated")
 
 
 @router.get("/tours/{tour_id}", summary="Get tour")
 async def get_tour(tour_id: str, ctx: CallerContext, db: DB):
-    return success_response(data=await _get(db, "tours", tour_id, ctx))
+    if _is_field_engineer(ctx):
+        aliases = await _user_display_aliases(db, ctx.user_id)
+        await _backfill_legacy_uploader_records(db, ctx, "tours", aliases)
+        await _backfill_legacy_tours_from_capture_ownership(db, ctx, aliases)
+    doc = await db["tours"].find_one({"_id": _id_filter(tour_id), "orgId": ctx.org_id})
+    if not doc:
+        raise NotFoundException("tour", tour_id)
+    if _is_field_engineer(ctx):
+        name = await _resolve_user_display_name(db, ctx.user_id)
+        _assert_can_access_tour(ctx, doc, name)
+    return success_response(data=_serialise(doc))
 
 
 @router.put("/tours/{tour_id}/status", summary="Update tour status")
 async def update_tour_status(tour_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("tours", "publish"))):
-    return success_response(data=await _patch(db, "tours", tour_id, payload, ctx), message="Tour status updated")
+    if _is_field_engineer(ctx):
+        aliases = await _user_display_aliases(db, ctx.user_id)
+        await _backfill_legacy_uploader_records(db, ctx, "tours", aliases)
+        await _backfill_legacy_tours_from_capture_ownership(db, ctx, aliases)
+        doc = await db["tours"].find_one({"_id": _id_filter(tour_id), "orgId": ctx.org_id})
+        if doc:
+            name = await _resolve_user_display_name(db, ctx.user_id)
+            _assert_can_access_tour(ctx, doc, name)
+    return success_response(
+        data=await _patch(db, "tours", tour_id, payload, ctx, allowed_fields=_TOUR_STATUS_FIELDS),
+        message="Tour status updated",
+    )
 
 
 @router.delete("/tours/{tour_id}", summary="Delete tour")
 async def delete_tour(tour_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("tours", "delete"))):
-    await _delete(db, "tours", tour_id, ctx)
+    if _is_field_engineer(ctx):
+        aliases = await _user_display_aliases(db, ctx.user_id)
+        await _backfill_legacy_uploader_records(db, ctx, "tours", aliases)
+        await _backfill_legacy_tours_from_capture_ownership(db, ctx, aliases)
+        doc = await db["tours"].find_one({"_id": _id_filter(tour_id), "orgId": ctx.org_id})
+        if doc:
+            name = await _resolve_user_display_name(db, ctx.user_id)
+            _assert_can_access_tour(ctx, doc, name)
+    # Idempotent: client reconcile often re-DELETEs after a successful first
+    # delete (hydrate still briefly contains the id). Treat missing as success.
+    result = await db["tours"].delete_one({"_id": _id_filter(tour_id), "orgId": ctx.org_id})
+    if result.deleted_count == 0:
+        return success_response(message="Tour already deleted")
     return success_response(message="Tour deleted")
 
 
@@ -1135,6 +1769,12 @@ async def create_floor_plan(payload: dict[str, Any], ctx: CallerContext, db: DB,
         payload["uploaded_at"] = asset.get("uploaded_at")
         payload["page_count"] = asset.get("pages") or 1
         payload["pageCount"] = payload["page_count"]
+        # Keep the original PDF URL so the floor-plan viewer can use PDF.js
+        # (vector-sharp). original_url may be a raster preview for room-map / <img>.
+        raw_pdf = asset.get("raw_pdf_url") or asset.get("rawPdfUrl")
+        if raw_pdf:
+            payload["raw_pdf_url"] = raw_pdf
+            payload["rawPdfUrl"] = raw_pdf
         width = asset.get("width")
         height = asset.get("height")
         payload["dimensions"] = {"width": width, "height": height} if width and height else None
@@ -1142,15 +1782,24 @@ async def create_floor_plan(payload: dict[str, Any], ctx: CallerContext, db: DB,
     display_name = await _resolve_user_display_name(db, ctx.user_id)
     _stamp_uploader(payload, display_name)
 
-    # New / replaced drawing always starts as draft until points are annotated
-    # (or copied from another floor in the same tower).
     floor_id = str(payload.get("floorId") or "")
     prior = None
+    duplicates: list[dict[str, Any]] = []
     if floor_id:
-        prior = await db["floor_plans"].find_one(
+        duplicates = await db["floor_plans"].find(
             {"orgId": ctx.org_id, "floorId": floor_id},
             sort=[("createdAt", -1)],
-        )
+        ).to_list(length=50)
+        if duplicates:
+            pin_plan_ids = set(
+                await db["capture_pins"].distinct("floorPlanId", {"orgId": ctx.org_id, "floorId": floor_id})
+            )
+            prior = next((plan for plan in duplicates if str(plan.get("id") or plan.get("_id") or "") in pin_plan_ids), None)
+            if not prior:
+                prior = duplicates[0]
+            prior_id = str(prior.get("id") or prior.get("_id") or "").strip()
+            if prior_id:
+                payload["id"] = prior_id
     payload.setdefault("pinsVisible", True)
     payload["pinLayoutStatus"] = "draft"
     payload["needsReannotate"] = bool(prior)
@@ -1179,6 +1828,30 @@ async def create_floor_plan(payload: dict[str, Any], ctx: CallerContext, db: DB,
             )
         except Exception:
             logger.exception("Failed to mark floor plan {} for re-annotation", result.get("id"))
+
+    # Self-heal plan-id drift for this floor: keep one canonical plan id and move
+    # pins/tours off any superseded duplicates.
+    canonical_id = str(result.get("id") or result.get("_id") or "").strip()
+    if floor_id and canonical_id and duplicates:
+        stale_ids = [
+            str(plan.get("id") or plan.get("_id") or "").strip()
+            for plan in duplicates
+            if str(plan.get("id") or plan.get("_id") or "").strip() and str(plan.get("id") or plan.get("_id") or "").strip() != canonical_id
+        ]
+        if stale_ids:
+            await db["capture_pins"].update_many(
+                {"orgId": ctx.org_id, "floorId": floor_id, "floorPlanId": {"$in": stale_ids}},
+                {"$set": {"floorPlanId": canonical_id, "floor_plan_id": canonical_id, "updatedAt": _now()}},
+            )
+            await db["tours"].update_many(
+                {"orgId": ctx.org_id, "floorId": floor_id, "floorPlanId": {"$in": stale_ids}},
+                {"$set": {"floorPlanId": canonical_id, "floor_plan_id": canonical_id, "updatedAt": _now()}},
+            )
+            await db["floor_plans"].delete_many({"orgId": ctx.org_id, "_id": {"$in": stale_ids}})
+            await db["floors"].update_one(
+                {"orgId": ctx.org_id, "_id": _id_filter(floor_id)},
+                {"$set": {"floorPlanId": canonical_id, "updatedAt": _now()}},
+            )
 
     return success_response(data=result, message="Floor plan uploaded")
 
@@ -1334,10 +2007,20 @@ async def _link_capture_to_pin_by_room(
     room_id = str(capture.get("roomId") or capture.get("room_id") or "")
     if not cap_id or not room_id:
         return
-    pin = await db["capture_pins"].find_one({
+    pin_id_hint = str(capture.get("pinId") or capture.get("pin_id") or "")
+    floor_plan_id = str(capture.get("floorPlanId") or capture.get("floor_plan_id") or "")
+    pin: dict[str, Any] | None = None
+    if pin_id_hint:
+        pin = await db["capture_pins"].find_one({"_id": _id_filter(pin_id_hint), "orgId": ctx.org_id})
+    room_query: dict[str, Any] = {
         "orgId": ctx.org_id,
         "$or": [{"roomId": room_id}, {"room_id": room_id}],
-    })
+    }
+    if not pin:
+        if floor_plan_id:
+            pin = await db["capture_pins"].find_one({**room_query, "floorPlanId": floor_plan_id})
+        if not pin:
+            pin = await db["capture_pins"].find_one(room_query)
     if not pin:
         # Infer floorId from roomId prefix (t72554-f3-f72557-flat-a-rN → floor).
         parts = room_id.split("-")
@@ -1347,10 +2030,10 @@ async def _link_capture_to_pin_by_room(
             await restore_orphan_pins_for_floor(
                 db, org_id=ctx.org_id, floor_id=floor_id, resequence=True,
             )
-            pin = await db["capture_pins"].find_one({
-                "orgId": ctx.org_id,
-                "$or": [{"roomId": room_id}, {"room_id": room_id}],
-            })
+            if floor_plan_id:
+                pin = await db["capture_pins"].find_one({**room_query, "floorPlanId": floor_plan_id})
+            if not pin:
+                pin = await db["capture_pins"].find_one(room_query)
         if not pin:
             return
     pin_id = pin.get("_id") or pin.get("id")
@@ -1380,15 +2063,23 @@ async def _resequence_pins_on_plan(
 # ── Capture Pins ────────────────────────────────────────────────────────────
 @router.get("/floor-plans/{floor_plan_id}/pins", summary="List capture pins for a floor plan")
 async def list_capture_pins(floor_plan_id: str, ctx: CallerContext, db: DB):
-    return success_response(data=await _list(
+    result = await _list(
         db, "capture_pins", ctx,
         extra_filter={"floorPlanId": floor_plan_id},
         sort=[("sequenceNumber", 1)],
-    ))
+    )
+    if _is_field_engineer(ctx):
+        own_capture_ids = await _own_capture_ids_for_ctx(db, ctx)
+        result["items"] = [
+            _scope_pin_doc_to_capture_ids(item, own_capture_ids or set())
+            for item in result["items"]
+        ]
+    return success_response(data=result)
 
 
-# Capture pins are managed as part of the capture workflow, so they follow the
-# same permission family as captures (field engineers create/move/delete pins).
+# Capture-point placement/upload uses the captures permission family.
+# Deleting a capture POINT (annotation layout) is manager/admin only —
+# field engineers may click existing points and upload, never remove them.
 @router.post("/floor-plans/{floor_plan_id}/pins", status_code=status.HTTP_201_CREATED, summary="Create capture pin")
 async def create_capture_pin(floor_plan_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "create"))):
     payload.setdefault("floorPlanId", floor_plan_id)
@@ -1438,6 +2129,13 @@ async def update_capture_pin(pin_id: str, payload: dict[str, Any], ctx: CallerCo
         pin = await db["capture_pins"].find_one({"_id": _id_filter(pin_id), "orgId": ctx.org_id})
         if not pin:
             raise NotFoundException("capture pin", pin_id)
+        display_name = await _resolve_user_display_name(db, ctx.user_id) if _is_field_engineer(ctx) else ""
+        await _assert_capture_ids_owned(
+            db,
+            ctx,
+            [cid for cid in incoming_ids if isinstance(cid, str) and cid],
+            display_name,
+        )
         existing = [
             cid for cid in (pin.get("captureIds") or pin.get("capture_ids") or [])
             if isinstance(cid, str) and cid
@@ -1478,7 +2176,11 @@ async def update_capture_pin(pin_id: str, payload: dict[str, Any], ctx: CallerCo
 
 
 @router.delete("/pins/{pin_id}", summary="Delete capture pin")
-async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "delete"))):
+async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("floorPlans", "delete"))):
+    # Layout ownership: only manager/admin (floorPlans:delete) may remove capture
+    # points. Field engineers keep captures:delete for their own media, but must
+    # never erase annotated points from the plan.
+    #
     # Cascade: removing a pin must also remove its capture timeline. Otherwise
     # orphaned captures stay in Mongo and reappear in Media Library / snapshot.
     #
@@ -1494,6 +2196,16 @@ async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(
         if isinstance(cid, str) and cid
     ]
     room_id = pin.get("roomId") or pin.get("room_id")
+    engineer_name = await _resolve_user_display_name(db, ctx.user_id) if _is_field_engineer(ctx) else ""
+    await _assert_capture_ids_owned(db, ctx, capture_ids, engineer_name)
+    if room_id:
+        room_caps = await db["captures"].find({"orgId": ctx.org_id, "roomId": str(room_id)}).to_list(length=None)
+        await _assert_capture_ids_owned(
+            db,
+            ctx,
+            [str(cap.get("_id") or cap.get("id") or "") for cap in room_caps if str(cap.get("_id") or cap.get("id") or "").strip()],
+            engineer_name,
+        )
     for cid in capture_ids:
         cap = await db["captures"].find_one({"_id": _id_filter(cid), "orgId": ctx.org_id})
         await db["captures"].delete_one({"_id": _id_filter(cid), "orgId": ctx.org_id})
@@ -1613,7 +2325,7 @@ async def set_pins_visibility(
     payload: dict[str, Any],
     ctx: CallerContext,
     db: DB,
-    _=Depends(require_permission("floorPlans", "view")),
+    _=Depends(require_permission("floorPlans", "edit")),
 ):
     visible = payload.get("visible")
     if visible is None:
@@ -1633,7 +2345,7 @@ async def set_pins_visibility(
 
 @router.post(
     "/floors/{floor_id}/pins/copy-from",
-    summary="Copy labeled capture points from another floor in the same tower",
+    summary="Copy labeled capture points from another floor in the same project",
 )
 async def copy_pins_from_floor(
     floor_id: str,
@@ -1683,35 +2395,63 @@ async def update_defect(defect_id: str, payload: dict[str, Any], ctx: CallerCont
 
 @router.get("/notifications", summary="List notifications")
 async def list_notifications(ctx: CallerContext, db: DB, skip: int = 0, limit: int = 100, read: Optional[bool] = None):
-    filters = {"read": read} if read is not None else None
+    filters: dict[str, Any] = _notification_owner_filter(ctx)
+    if read is not None:
+        filters["read"] = read
     return success_response(data=await _list(db, "notifications", ctx, skip, limit, filters))
 
 
 @router.post("/notifications", status_code=status.HTTP_201_CREATED, summary="Create notification")
 async def create_notification(payload: dict[str, Any], ctx: CallerContext, db: DB):
+    uid = str(ctx.user_id or "").strip()
+    payload["recipientUserId"] = uid
+    payload["recipient_user_id"] = uid
+    payload["userId"] = uid
+    payload["user_id"] = uid
     return success_response(data=await _upsert(db, "notifications", payload, ctx), message="Notification created")
 
 
 @router.put("/notifications/{notification_id}/read", summary="Mark notification read")
 async def mark_notification_read(notification_id: str, ctx: CallerContext, db: DB):
+    doc = await db["notifications"].find_one({"_id": _id_filter(notification_id), "orgId": ctx.org_id})
+    if not doc:
+        raise NotFoundException("notification", notification_id)
+    if not any(
+        str(doc.get(key) or "").strip() == str(ctx.user_id or "").strip()
+        for key in ("recipientUserId", "recipient_user_id", "userId", "user_id")
+    ):
+        raise ForbiddenException("You can only access your own notifications")
     return success_response(data=await _patch(db, "notifications", notification_id, {"read": True}, ctx))
 
 
 @router.put("/notifications/read-all", summary="Mark all notifications read")
 async def mark_all_notifications_read(ctx: CallerContext, db: DB):
-    await db["notifications"].update_many({"orgId": ctx.org_id}, {"$set": {"read": True, "updatedAt": _now()}})
+    await db["notifications"].update_many(
+        {"orgId": ctx.org_id, **_notification_owner_filter(ctx)},
+        {"$set": {"read": True, "updatedAt": _now()}},
+    )
     return success_response(message="Notifications marked read")
 
 
 @router.delete("/notifications/{notification_id}", summary="Dismiss notification")
 async def delete_notification(notification_id: str, ctx: CallerContext, db: DB):
+    doc = await db["notifications"].find_one({"_id": _id_filter(notification_id), "orgId": ctx.org_id})
+    if not doc:
+        raise NotFoundException("notification", notification_id)
+    if not any(
+        str(doc.get(key) or "").strip() == str(ctx.user_id or "").strip()
+        for key in ("recipientUserId", "recipient_user_id", "userId", "user_id")
+    ):
+        raise ForbiddenException("You can only access your own notifications")
     await _delete(db, "notifications", notification_id, ctx)
     return success_response(message="Notification dismissed")
 
 
 @router.get("/notifications/unread-count", summary="Get unread notification count")
 async def unread_notification_count(ctx: CallerContext, db: DB):
-    count = await db["notifications"].count_documents({"orgId": ctx.org_id, "read": False})
+    count = await db["notifications"].count_documents(
+        {"orgId": ctx.org_id, "read": False, **_notification_owner_filter(ctx)}
+    )
     return success_response(data={"count": count})
 
 
@@ -1748,25 +2488,36 @@ async def list_security_audit_logs(
 @router.post("/audit-logs", status_code=status.HTTP_201_CREATED, summary="Create audit log")
 async def create_audit_log(payload: dict[str, Any], ctx: CallerContext, db: DB):
     """
-    Record one audit event. Identity and timestamp are stamped from the
-    authenticated request and always overwrite whatever the client sent.
-
-    An audit trail the client can fill in freely is not a trail: this endpoint
-    used to store the payload verbatim, and the client sent
-    actorId="u1" / actorName="You" / createdAt="Just now" — a literal string,
-    not a timestamp. Every entry was therefore unsortable and attributed to
-    nobody, which is precisely why a run of disappearing captures could not be
-    traced through the log and had to be reconstructed from storage side
-    effects instead.
+    Record one project-activity audit event. Identity/timestamp are stamped from
+    the authenticated request. Event types are allowlisted so clients cannot
+    invent arbitrary identity/security events.
     """
+    allowed_events = {
+        "project_created", "project_updated", "project_deleted", "project_archived",
+        "capture_uploaded", "capture_deleted", "capture_approved", "capture_rejected",
+        "capture_pin_deleted", "review_assigned",
+        "tour_published", "tour_deleted", "tour_draft",
+        "floor_plan_uploaded", "floor_plan_deleted",
+        "defect_created", "defect_resolved",
+        "room_deleted", "pin_created", "pin_deleted",
+        "user_invited", "user_role_changed",
+        "progress_analysis_completed",
+    }
+    event_type = str(payload.get("eventType") or payload.get("action") or "").strip()
+    if event_type and event_type not in allowed_events:
+        raise ValidationException(
+            f"Unsupported audit event type '{event_type}'. "
+            "Only project-activity events may be written by clients."
+        )
+
     now = datetime.now(timezone.utc)
     payload["actorId"] = ctx.user_id
     payload["actorRole"] = ctx.role
     payload["createdAt"] = now.isoformat()
     payload["created_at"] = now.isoformat()
+    # Never let clients classify as security logs.
+    payload.pop("logCategory", None)
 
-    # Resolve a human-readable actor once, so the feed does not have to join
-    # against users (and still reads correctly if the user is later removed).
     payload["actorName"] = await _resolve_user_display_name(db, ctx.user_id)
     try:
         user = await db["users"].find_one(
@@ -1782,7 +2533,11 @@ async def create_audit_log(payload: dict[str, Any], ctx: CallerContext, db: DB):
 
 
 @router.get("/admin/media", summary="Get media storage dashboard stats")
-async def media_dashboard(ctx: CallerContext, db: DB):
+async def media_dashboard(
+    ctx: CallerContext,
+    db: DB,
+    _admin=Depends(require_admin),
+):
     captures = await db["captures"].find({"orgId": ctx.org_id}).to_list(length=1000)
     floor_plans = await db["floor_plans"].find({"orgId": ctx.org_id}).to_list(length=1000)
     tours = await db["tours"].find({"orgId": ctx.org_id}).to_list(length=1000)

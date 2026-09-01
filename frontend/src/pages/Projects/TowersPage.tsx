@@ -5,7 +5,7 @@ import { ArrowBackRounded, AddRounded, DomainRounded, DeleteRounded, EditRounded
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, isAdmin } from '@store/authStore';
-import { getProjectById, getTowersByProject } from '@store/workflowSelectors';
+import { getProjectById, getTowersByProject, getCapturesByTowerScope } from '@store/workflowSelectors';
 
 export default function TowersPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -19,6 +19,7 @@ export default function TowersPage() {
   const floors      = useWorkflowStore(s => s.floors);
   const rooms       = useWorkflowStore(s => s.rooms);
   const captures    = useWorkflowStore(s => s.captures);
+  const capturePins = useWorkflowStore(s => s.capturePins);
   const { user }    = useAuthStore();
   const hasAdminRole = isAdmin(user);
 
@@ -137,10 +138,7 @@ export default function TowersPage() {
       }}>
         {pagedTowers.map(tower => {
           const towerFloors = floors.filter(f => f.towerId === tower.id);
-          const towerFloorIds = new Set(towerFloors.map(f => f.id));
-          const towerRooms = rooms.filter(r => towerFloorIds.has(r.floorId));
-          const towerRoomIds = new Set(towerRooms.map(r => r.id));
-          const towerCaptures = captures.filter(c => towerRoomIds.has(c.roomId));
+          const towerCaptures = getCapturesByTowerScope({ rooms, captures, capturePins }, tower.id);
           return (
             <Box
               key={tower.id}

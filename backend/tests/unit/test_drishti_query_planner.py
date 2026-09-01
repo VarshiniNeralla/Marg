@@ -561,3 +561,178 @@ class TestLocationActivitiesCorrectionRequiresLocationSignal:
         assert _correct_intent_from_question(
             "activity_list", "What other activities are pending in the Lift Lobby?",
         ) == "location_activities"
+
+
+class TestMultiFloorResolution:
+    """Regression coverage for a real production bug: "What is the progress
+    percentage for Floor 1 and Floor 2?" resolved only a single (or zero)
+    floor_id, so the LLM was handed almost no floor data and answered "not
+    provided" even though both floors had been analyzed. floor_status now
+    resolves a "floorNames" list into floor_ids/floor_names instead of
+    forcing everything through the single-floor floor_id/floor_name fields."""
+
+    @pytest.mark.asyncio
+    async def test_two_named_floors_resolve_to_floor_ids_list(self, monkeypatch):
+        monkeypatch.setattr(
+            planner_module.drishti_llm_client, "chat_completion_json",
+            AsyncMock(return_value={
+                "intent": "floor_status",
+                "scopeHints": {"floorName": None, "floorNames": ["Floor 1", "Floor 2"]},
+            }),
+        )
+        plan = await DrishtiQueryPlanner().plan(
+            question="What is the progress percentage for Floor 1 and Floor 2?",
+            conversation_history=[], known_entities=_KNOWN_ENTITIES, previous_scope={},
+        )
+        assert plan.floor_ids == ["f1", "f2"]
+        assert plan.floor_names == ["Floor 1", "Floor 2"]
+        assert plan.floor_id is None
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_matches_each_named_floor(self, monkeypatch):
+        monkeypatch.setattr(
+            planner_module.drishti_llm_client, "chat_completion_json",
+            AsyncMock(return_value={
+                "intent": "floor_status",
+                "scopeHints": {"floorName": None, "floorNames": ["floor 1", "floor 3"]},
+            }),
+        )
+        plan = await DrishtiQueryPlanner().plan(
+            question="Compare floor 1 and floor 3",
+            conversation_history=[], known_entities=_KNOWN_ENTITIES, previous_scope={},
+        )
+        assert plan.floor_ids == ["f1", "f3"]
+        assert plan.floor_names == ["Floor 1", "Floor 3"]
+
+    @pytest.mark.asyncio
+    async def test_unmatched_floor_name_is_dropped_not_fatal(self, monkeypatch):
+        monkeypatch.setattr(
+            planner_module.drishti_llm_client, "chat_completion_json",
+            AsyncMock(return_value={
+                "intent": "floor_status",
+                "scopeHints": {"floorName": None, "floorNames": ["Floor 1", "Nonexistent Floor"]},
+            }),
+        )
+        plan = await DrishtiQueryPlanner().plan(
+            question="What about Floor 1 and Nonexistent Floor?",
+            conversation_history=[], known_entities=_KNOWN_ENTITIES, previous_scope={},
+        )
+        assert plan.floor_ids == ["f1"]
+        assert plan.floor_names == ["Floor 1"]
+
+    @pytest.mark.asyncio
+    async def test_single_floor_question_still_uses_singular_fields(self, monkeypatch):
+        monkeypatch.setattr(
+            planner_module.drishti_llm_client, "chat_completion_json",
+            AsyncMock(return_value={
+                "intent": "floor_status",
+                "scopeHints": {"floorName": "Floor 2", "floorNames": None},
+            }),
+        )
+        plan = await DrishtiQueryPlanner().plan(
+            question="What is Floor 2's progress?",
+            conversation_history=[], known_entities=_KNOWN_ENTITIES, previous_scope={},
+        )
+        assert plan.floor_id == "f2"
+        assert plan.floor_ids == []
+
+
+class TestFlatHintStripsTrailingLocationQualifier:
+    """Regression coverage for a real production bug: "what about flat 02 of
+    floor 1?" (explicitly re-naming both flat and floor after a prior
+    capture_gap turn on Floor 1) was answered "no entry for Flat 02
+    specifically mapped to Floor 1" even though the flat plainly exists.
+    Root cause: the flat hint reaching resolution carried the trailing
+    "of Floor 1" clause attached ("Flat 02 of Floor 1"), and
+    _closest_identifier_match's trailing-digit rule grabbed the "1" from
+    "Floor 1" instead of the "02" from the flat name — searching for a flat
+    ending in 1 and missing "Flat 02" entirely."""
+
+    def test_strip_trailing_of_floor_clause(self):
+        from app.services.drishti_query_planner import _strip_trailing_location_qualifier
+        assert _strip_trailing_location_qualifier("Flat 02 of Floor 1") == "Flat 02"
+        assert _strip_trailing_location_qualifier("Flat 02 on Floor 1") == "Flat 02"
+        assert _strip_trailing_location_qualifier("Bedroom-3 in Tower A") == "Bedroom-3"
+
+    def test_leaves_plain_hint_unchanged(self):
+        from app.services.drishti_query_planner import _strip_trailing_location_qualifier
+        assert _strip_trailing_location_qualifier("Flat 02") == "Flat 02"
+
+    @pytest.mark.asyncio
+    async def test_flat_with_trailing_floor_clause_resolves_correctly(self, monkeypatch):
+        from app.services.drishti_query_planner import DrishtiQueryPlanner as _P
+
+        planner = _P()
+        floor_snapshot = {
+            "flatProgress": [
+                {"flatName": "Flat 01", "rooms": []},
+                {"flatName": "Flat 02", "rooms": []},
+            ],
+        }
+        plan = QueryPlan(intent="flat_status", floor_id="f1", flat_name="Flat 02 of Floor 1")
+        resolved = planner.resolve_entities(plan, floor_snapshot, {})
+        assert resolved.flat_name == "Flat 02"
+        assert resolved.resolution_status["flat"] == "found"
+
+
+class TestDeterministicFlatAndFloorScans:
+    """The trailing-qualifier-stripping fix alone did not close the live
+    bug — restarting the backend and re-asking "what about flat 02 of floor
+    1?" still failed, meaning the classifier itself likely never populated
+    a usable floorName/flatName hint for this phrasing at all (word order
+    "flat X OF floor Y" is less common in training data than "floor Y's
+    flat X"). These deterministic scans — mirroring the existing
+    _scan_question_for_activity_keyword/_scan_question_for_common_area
+    pattern — resolve flat/floor numbers directly from the question text,
+    independent of the classifier, so this class of question no longer
+    depends on the classifier getting the phrasing right at all."""
+
+    def test_scan_extracts_flat_number_various_phrasings(self):
+        from app.services.drishti_query_planner import _scan_question_for_flat_name
+        assert _scan_question_for_flat_name("what about flat 02 of floor 1?") == "Flat 02"
+        assert _scan_question_for_flat_name("Flat 2 status") == "Flat 02"
+        assert _scan_question_for_flat_name("apartment 5 progress") == "Flat 05"
+        assert _scan_question_for_flat_name("unit-12 finishing") == "Flat 12"
+        assert _scan_question_for_flat_name("how is the project doing") is None
+
+    def test_scan_extracts_floor_number_various_phrasings(self):
+        from app.services.drishti_query_planner import _scan_question_for_floor_name
+        assert _scan_question_for_floor_name("what about flat 02 of floor 1?") == "Floor 1"
+        assert _scan_question_for_floor_name("Floor-3 progress") == "Floor 3"
+        assert _scan_question_for_floor_name("floor 12 status") == "Floor 12"
+        assert _scan_question_for_floor_name("how is the project doing") is None
+
+    @pytest.mark.asyncio
+    async def test_flat_status_resolves_floor_and_flat_from_question_when_classifier_omits_both(self, monkeypatch):
+        """Simulates the exact live failure: classifier returns flat_status
+        but leaves both floorName and flatName null/empty for this
+        phrasing — the deterministic scans must still resolve both."""
+        monkeypatch.setattr(
+            planner_module.drishti_llm_client, "chat_completion_json",
+            AsyncMock(return_value={
+                "intent": "flat_status",
+                "scopeHints": {"floorName": None, "flatName": None},
+            }),
+        )
+        plan = await DrishtiQueryPlanner().plan(
+            question="what about flat 02 of floor 1?",
+            conversation_history=[], known_entities=_KNOWN_ENTITIES, previous_scope={},
+        )
+        assert plan.floor_id == "f1"
+        assert plan.flat_name == "Flat 02"
+
+    @pytest.mark.asyncio
+    async def test_does_not_override_classifier_supplied_floor_name(self, monkeypatch):
+        monkeypatch.setattr(
+            planner_module.drishti_llm_client, "chat_completion_json",
+            AsyncMock(return_value={
+                "intent": "flat_status",
+                "scopeHints": {"floorName": "Floor 2", "flatName": None},
+            }),
+        )
+        plan = await DrishtiQueryPlanner().plan(
+            question="what about flat 02 of floor 1?",  # question mentions floor 1, classifier says floor 2
+            conversation_history=[], known_entities=_KNOWN_ENTITIES, previous_scope={},
+        )
+        # Classifier's explicit hint wins — the scan only fills a gap, never overrides.
+        assert plan.floor_id == "f2"

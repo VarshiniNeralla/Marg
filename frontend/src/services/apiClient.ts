@@ -3,6 +3,7 @@ import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore } from '@store/authStore';
 import { API_V1_URL } from '@/config/env';
 import { restoreSessionFromCookie } from '@/services/sessionRefresh';
+import { clearClientSessionState } from '@store/sessionIsolation';
 
 // ── Main client ───────────────────────────────────────────────────────────────
 
@@ -93,6 +94,7 @@ apiClient.interceptors.response.use(
       // The server was actually reached and confirmed there is no valid
       // session (expired/revoked cookie, or no persisted session at all) —
       // this is the one case that legitimately means "log out".
+      clearClientSessionState();
       useAuthStore.getState().clearAuth();
       if (!window.location.pathname.startsWith('/login')) {
         window.location.replace('/login');

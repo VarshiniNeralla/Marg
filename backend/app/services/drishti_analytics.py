@@ -101,6 +101,50 @@ def list_activities_by_status(
     return items
 
 
+def list_floor_level_activities_by_status(
+    floor_activities_by_floor: dict[str, list[dict[str, Any]]],
+    statuses: list[str],
+    floor_names: Optional[dict[str, str]] = None,
+) -> list[dict[str, Any]]:
+    """Lists activities from the per-FLOOR activity rollup (a snapshot
+    document's top-level "activities" array — one entry per activity NAME
+    for the whole floor, e.g. {"name": "Main Door Frame", "status":
+    "not_assessed", ...}) — a fundamentally different data source from
+    `list_activities_by_status`'s per-ROOM `rooms[].activities[]`.
+
+    This split is REQUIRED, not a convenience: a room's own `activities[]`
+    is only ever populated once that room has actually been captured and
+    assessed — an uncaptured room's `activities` is a bare `[]` in the raw
+    snapshot, confirmed directly against production data. So
+    not_assessed/not_observable/no_evidence activities structurally CANNOT
+    appear via the room-level path at all; they only exist in this
+    per-floor rollup, which in turn has no per-room location to report
+    (it's a floor-wide count per activity name, not a per-instance record).
+    A real production bug: "what are those 101 activities that did not
+    start" returned an empty list because it queried the room-level source,
+    which can never contain a not_assessed entry no matter how many exist.
+
+    Returns activity NAMES grouped by floor (no room/flat — that granularity
+    genuinely doesn't exist for these statuses), sorted by floor then name."""
+    status_set = set(statuses)
+    items: list[dict[str, Any]] = []
+    for floor_id, activities in floor_activities_by_floor.items():
+        floor_name = (floor_names or {}).get(floor_id)
+        for activity in activities:
+            status = activity.get("status")
+            if status not in status_set:
+                continue
+            items.append({
+                "activityName": activity.get("name"),
+                "activityId": activity.get("activityId"),
+                "floorId": floor_id,
+                "floorName": floor_name,
+                "status": status,
+            })
+    items.sort(key=lambda x: (x["floorName"] or "", x["activityName"] or ""))
+    return items
+
+
 def rank_flats(
     flat_progress: list[dict[str, Any]], direction: str = "most_progressed",
 ) -> list[dict[str, Any]]:

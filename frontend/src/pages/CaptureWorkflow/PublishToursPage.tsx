@@ -8,9 +8,9 @@ import {
 } from '@mui/icons-material';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/authStore';
-import { useWorkflowStore } from '@store/workflowStore';
+import { useWorkflowStore, formatPublishFloorPlanTourMessage } from '@store/workflowStore';
 import { getFloorsByTower, resolveFloorPlanForFloor, getCapturePinsForFloor } from '@store/workflowSelectors';
-import { resolveCaptureThumbnailUrl } from '@/utils/captureMedia';
+import { resolveCaptureThumbnailUrl, captureAwaitingPanorama } from '@/utils/captureMedia';
 import type { MockCapture } from '@/data/mockData';
 
 const P = {
@@ -70,14 +70,67 @@ export default function PublishToursPage() {
   const myProjects  = assignedIds.size
     ? projects.filter(p => assignedIds.has(p.id) && !p.archived)
     : projects.filter(p => !p.archived);
-  const myTowers = [...towers.filter(t => t.projectId === projectId)].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-  const myFloors = [...getFloorsByTower(floors, towerId)].sort((a, b) => a.number - b.number);
+
+  // Publish Tours should only offer towers/floors that already have media —
+  // empty locations confuse engineers into thinking a tour can be published there.
+  const liveCaptureIds = useMemo(
+    () => new Set(captures.map(c => c.id)),
+    [captures],
+  );
+  const floorIdsWithUploads = useMemo(() => {
+    const ids = new Set<string>();
+    for (const p of allPins) {
+      if (!p.floorId) continue;
+      if (p.captureIds.some(id => liveCaptureIds.has(id))) ids.add(p.floorId);
+    }
+    return ids;
+  }, [allPins, liveCaptureIds]);
+  const towerIdsWithUploads = useMemo(() => {
+    const ids = new Set<string>();
+    for (const p of allPins) {
+      if (!p.towerId) continue;
+      if (p.captureIds.some(id => liveCaptureIds.has(id))) ids.add(p.towerId);
+    }
+    // Also include towers that own a floor with uploads (pin.towerId can lag).
+    for (const f of floors) {
+      if (floorIdsWithUploads.has(f.id) && f.towerId) ids.add(f.towerId);
+    }
+    return ids;
+  }, [allPins, liveCaptureIds, floors, floorIdsWithUploads]);
+
+  const myTowers = useMemo(
+    () => [...towers.filter(t => t.projectId === projectId && towerIdsWithUploads.has(t.id))]
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })),
+    [towers, projectId, towerIdsWithUploads],
+  );
+  const myFloors = useMemo(
+    () => [...getFloorsByTower(floors, towerId).filter(f => floorIdsWithUploads.has(f.id))]
+      .sort((a, b) => a.number - b.number),
+    [floors, towerId, floorIdsWithUploads],
+  );
+
+  // Drop stale selections when the filtered lists shrink (e.g. after deletes).
+  useEffect(() => {
+    if (towerId && !myTowers.some(t => t.id === towerId)) {
+      setTowerId('');
+      setFloorId('');
+    }
+  }, [towerId, myTowers]);
+  useEffect(() => {
+    if (floorId && !myFloors.some(f => f.id === floorId)) {
+      setFloorId('');
+    }
+  }, [floorId, myFloors]);
 
   const floorPlan = resolveFloorPlanForFloor(floorPlans, allPins, towerId, floorId);
   const pins = floorId ? getCapturePinsForFloor(allPins, floorId, floorPlan?.id) : [];
-  // Ready = has at least one live capture document (not just a dangling captureIds entry).
+  // Ready = live capture with a viewable panorama (not still stitching).
   const pinsWithCapture = pins.filter(p =>
-    p.captureIds.some(id => captures.some(c => c.id === id)),
+    p.captureIds.some(id => {
+      const cap = captures.find(c => c.id === id) as (MockCapture & Record<string, unknown>) | undefined;
+      if (!cap) return false;
+      return !captureAwaitingPanorama(cap);
+    }),
   );
   const readyIds = useMemo(() => pinsWithCapture.map(p => p.id), [pinsWithCapture]);
   const readyKey = readyIds.join('|');
@@ -131,13 +184,13 @@ export default function PublishToursPage() {
       return;
     }
     setPublishing(true);
-    const tourIds = publishFloorPlanTour(publishPlanId, [...selectedIds]);
+    const result = publishFloorPlanTour(publishPlanId, [...selectedIds]);
     setPublishing(false);
-    if (tourIds.length) {
-      setToast(`Walkthrough published · ${selectedCount} stop${selectedCount !== 1 ? 's' : ''} in pin order`);
-      setTimeout(() => navigate(`/tours/${tourIds[0]}`), 600);
+    if (result.tourIds.length) {
+      setToast(formatPublishFloorPlanTourMessage(result));
+      setTimeout(() => navigate(`/tours/${result.tourIds[0]}`), 600);
     } else {
-      setToast('No selected pins with captures to publish yet');
+      setToast(formatPublishFloorPlanTourMessage(result));
     }
   }
 
@@ -207,7 +260,9 @@ export default function PublishToursPage() {
           <Box component="select" value={towerId} disabled={!projectId}
             onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setTowerId(e.target.value); setFloorId(''); setPinPage(0); }}
             sx={isMobile ? { ...fieldSxCompact, opacity: projectId ? 1 : 0.5 } : { ...fieldSx, opacity: projectId ? 1 : 0.5 }}>
-            <option value="">Select tower</option>
+            <option value="">
+              {!projectId ? 'Select tower' : myTowers.length ? 'Select tower' : 'No towers with uploads'}
+            </option>
             {myTowers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
           </Box>
         </Field>
@@ -215,7 +270,9 @@ export default function PublishToursPage() {
           <Box component="select" value={floorId} disabled={!towerId}
             onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setFloorId(e.target.value); setPinPage(0); }}
             sx={isMobile ? { ...fieldSxCompact, opacity: towerId ? 1 : 0.5 } : { ...fieldSx, opacity: towerId ? 1 : 0.5 }}>
-            <option value="">Select floor</option>
+            <option value="">
+              {!towerId ? 'Select floor' : myFloors.length ? 'Select floor' : 'No floors with uploads'}
+            </option>
             {myFloors.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
           </Box>
         </Field>

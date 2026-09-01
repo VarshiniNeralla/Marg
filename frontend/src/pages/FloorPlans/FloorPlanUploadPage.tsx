@@ -25,6 +25,7 @@ export default function FloorPlanUploadPage() {
   const floor = useWorkflowStore(s => s.floors.find(f => f.id === floorId));
   const floorPlans = useWorkflowStore(s => s.floorPlans);
   const allPins = useWorkflowStore(s => s.capturePins);
+  const towers = useWorkflowStore(s => s.towers);
   const uploadFloorPlan = useWorkflowStore(s => s.uploadFloorPlan);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -43,9 +44,17 @@ export default function FloorPlanUploadPage() {
   const existingPlanForFloor = floorPlans.some(
     fp => fp.towerId === towerId && fp.floorId === floorId,
   );
-  const siblingHasLabeledPins = allPins.some(
-    p => p.towerId === towerId && p.floorId !== floorId && p.flatName && p.roomName,
+  // Any other floor in this project with labeled Flat · Room points can be imported.
+  const projectTowerIds = new Set(
+    towers.filter(t => t.projectId === projectId).map(t => t.id),
   );
+  const siblingHasLabeledPins = allPins.some(p => {
+    if (!(p.flatName && p.roomName)) return false;
+    if (p.floorId === floorId) return false;
+    if (p.towerId && projectTowerIds.has(p.towerId)) return true;
+    const plan = floorPlans.find(fp => fp.id === p.floorPlanId);
+    return !!plan && projectTowerIds.has(plan.towerId) && plan.floorId !== floorId;
+  });
 
   if (!project || !tower || !floor) {
     return (
@@ -84,7 +93,9 @@ export default function FloorPlanUploadPage() {
     setProgress(0);
     setError('');
     const replacing = existingPlanForFloor;
-    const offerCopy = !replacing && siblingHasLabeledPins;
+    // Offer import whenever another annotated floor exists in the project —
+    // including after a plan replace (coords may need remapping, but import is still useful).
+    const offerCopy = siblingHasLabeledPins;
     try {
       const result = await uploadFloorPlanFiles([file], setProgress, `fp-${towerId}-${floorId}`);
       const ext = file.type === 'application/pdf' ? 'pdf' : file.type === 'image/png' ? 'png' : 'jpg';
@@ -220,7 +231,7 @@ export default function FloorPlanUploadPage() {
               {wasReplace
                 ? 'Re-annotate labeled capture points on the new drawing before field capture.'
                 : canCopyFromSibling
-                  ? 'Annotate points on this plan, or import annotations (coordinates + names) from another floor in this tower.'
+                  ? 'Annotate points on this plan, or import annotations (coordinates + names) from another floor in this project.'
                   : 'Next: annotate labeled capture points (Flat + Room) on the plan.'}
             </Typography>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25, alignItems: 'center' }}>

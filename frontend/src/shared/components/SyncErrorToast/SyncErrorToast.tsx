@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Snackbar, Alert } from '@mui/material';
-import { SYNC_ERROR_EVENT, SYNC_RECOVERED_EVENT } from '@store/writeQueue';
+import { Snackbar, Alert, Box } from '@mui/material';
+import { SYNC_ERROR_EVENT, SYNC_RECOVERED_EVENT, retryFailedWrites, failedWriteCount } from '@store/writeQueue';
 
-type Toast = { message: string; severity: 'warning' | 'success' };
+type Toast = { message: string; severity: 'warning' | 'success'; showRetry?: boolean };
 
 /**
  * Global listener for backend-sync state emitted by the durable write queue.
@@ -26,6 +26,7 @@ export default function SyncErrorToast() {
       setToast({
         message: detail?.message ?? 'A change could not be saved to the server.',
         severity: 'warning',
+        showRetry: failedWriteCount() > 0,
       });
     }
     function onSyncRecovered() {
@@ -51,6 +52,28 @@ export default function SyncErrorToast() {
         variant="filled"
         onClose={() => setToast(null)}
         sx={{ maxWidth: 420 }}
+        action={toast?.showRetry ? (
+          <Box
+            component="button"
+            type="button"
+            onClick={() => {
+              retryFailedWrites();
+              setToast(null);
+            }}
+            sx={{
+              border: 0,
+              background: 'transparent',
+              color: 'inherit',
+              cursor: 'pointer',
+              fontWeight: 700,
+              fontSize: '0.8125rem',
+              textDecoration: 'underline',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Retry sync
+          </Box>
+        ) : undefined}
       >
         {toast?.message}
       </Alert>

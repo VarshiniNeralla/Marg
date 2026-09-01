@@ -286,6 +286,174 @@ class TestJsonDumpsRegression:
         assert "True" not in prompt or '"true"' in prompt.lower()
 
 
+class TestAnswerCallUsesBoundedMaxTokens:
+    """Regression coverage for a real production bug: the answer-generation
+    LLM call had no max_tokens override, so it fell back to the shared
+    global VLLM_MAX_TOKENS default (20000) — a value sized for the UNRELATED
+    vision-analysis provider, not a short JSON answer. Combined with the
+    model's 32768-token context window, a moderately large facts payload
+    (e.g. a two-floor question, ~12.7K input tokens) pushed input+output
+    over the limit, and the vLLM server's 400 response was silently
+    swallowed into the exact same generic fallback text used for a genuine
+    malformed-JSON failure — confirmed live by replaying the real request
+    directly against the vLLM server and capturing its actual error body."""
+
+    @pytest.mark.asyncio
+    async def test_answer_call_passes_bounded_max_tokens(self, monkeypatch):
+        _wire_common_mocks(monkeypatch)
+        captured = {}
+
+        async def fake_chat(system_prompt, user_prompt, **kwargs):
+            captured["kwargs"] = kwargs
+            return {"answer": "ok"}
+
+        monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        await service.ask("org1", "user1", "manager", "p1", "question")
+
+        assert captured["kwargs"].get("max_tokens") == service_module._ANSWER_MAX_TOKENS
+        assert service_module._ANSWER_MAX_TOKENS < 20000
+
+
+class TestCaptureGapAcrossProject:
+    """Regression coverage for a real production bug: "How many total rooms
+    are captured?" (intent=capture_gap, no floor named) answered "the
+    provided data does not specify" even though every activity/capture
+    count was sitting right in the underlying snapshots. capture_gap had a
+    floor-scoped path only — unlike activity_status/
+    common_area_activity_status/activity_list, which already had a
+    project-wide counterpart — so a project-wide capture question got
+    neither "captureGaps" nor "capturedRooms" in its payload at all."""
+
+    @pytest.mark.asyncio
+    async def test_capture_gap_with_no_floor_aggregates_across_project(self, monkeypatch):
+        plan = QueryPlan(intent="capture_gap", floor_id=None, resolved_scope_for_persistence={})
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "get_project_context", AsyncMock(return_value=_PROJECT_CONTEXT),
+        )
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "plan", AsyncMock(return_value=plan))
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "resolve_entities", lambda self, p, snap, prev: plan)
+
+        snapshot_f1 = {
+            "floorId": "f1",
+            "flatProgress": [
+                {"flatName": "Flat 01", "rooms": [
+                    {"roomName": "Kitchen", "capturesCount": 2, "pinNumbers": [1, 2]},
+                    {"roomName": "Bedroom-1", "capturesCount": 0, "pinNumbers": []},
+                ]},
+            ],
+        }
+        snapshot_f2 = {
+            "floorId": "f2",
+            "flatProgress": [
+                {"flatName": "Flat 02", "rooms": [
+                    {"roomName": "Living Room", "capturesCount": 1, "pinNumbers": [3]},
+                ]},
+            ],
+        }
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "get_latest_snapshots_for_floors",
+            AsyncMock(return_value={"f1": snapshot_f1, "f2": snapshot_f2}),
+        )
+
+        captured = {}
+
+        async def fake_chat(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"answer": "2 rooms have been captured across the project so far."}
+
+        monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        result = await service.ask("org1", "user1", "manager", "p1", "How many total rooms are captured?")
+
+        prompt = captured["user_prompt"]
+        assert '"capturedRooms"' in prompt
+        assert '"captureGaps"' in prompt
+        assert '"Kitchen"' in prompt
+        assert '"Living Room"' in prompt
+        assert '"Bedroom-1"' in prompt
+        assert result["message"]["content"] != _FALLBACK_ANSWER_TEXT
+
+
+class TestForecastReachableWithoutFloor:
+    """Regression coverage for a real production bug: "When is Project A
+    projected to finish?" (intent=project_overview, needs_forecast=True, no
+    floor named) never even reached the forecast-assembly block. A blanket
+    `if not plan.floor_id: return payload` guard sat BEFORE the forecast
+    block, so any project-wide question returned a payload with no
+    "forecast" key at all — confirmed by calling _assemble_facts_payload
+    directly against live data. The LLM was then truthfully told there was
+    no forecast data, and (separately) sometimes hallucinated a fabricated
+    date instead of reporting it as missing. Fixed by scoping the early
+    return to only the floor-only-dependent blocks."""
+
+    @pytest.mark.asyncio
+    async def test_project_wide_forecast_question_reaches_forecast_block(self, monkeypatch):
+        plan = QueryPlan(
+            intent="project_overview", needs_forecast=True,
+            resolved_scope_for_persistence={},
+        )
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "get_project_context", AsyncMock(return_value=_PROJECT_CONTEXT),
+        )
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "plan", AsyncMock(return_value=plan))
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "resolve_entities", lambda self, p, snap, prev: p)
+        monkeypatch.setattr(
+            service_module.DrishtiForecastService, "forecast_project",
+            AsyncMock(return_value={"status": "ok", "meanDaysToComplete": 10.0}),
+        )
+
+        captured = {}
+
+        async def fake_chat(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"answer": "ok"}
+
+        monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        await service.ask("org1", "user1", "manager", "p1", "When is this project projected to finish?")
+
+        assert '"forecast"' in captured["user_prompt"]
+        assert '"meanDaysToComplete": 10.0' in captured["user_prompt"]
+
+    @pytest.mark.asyncio
+    async def test_project_wide_quality_query_reaches_quality_notes_block(self, monkeypatch):
+        plan = QueryPlan(
+            intent="quality_query", needs_quality_notes=True,
+            resolved_scope_for_persistence={},
+        )
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "get_project_context", AsyncMock(return_value=_PROJECT_CONTEXT),
+        )
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "plan", AsyncMock(return_value=plan))
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "resolve_entities", lambda self, p, snap, prev: p)
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "get_quality_notes",
+            AsyncMock(return_value=[{"note": "cracked tile in Flat 02"}]),
+        )
+
+        captured = {}
+
+        async def fake_chat(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"answer": "ok"}
+
+        monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        await service.ask("org1", "user1", "manager", "p1", "Are there any quality issues project-wide?")
+
+        assert '"qualityNotes"' in captured["user_prompt"]
+        assert "cracked tile" in captured["user_prompt"]
+
+
 class TestTargetedPayloadAssembly:
     @pytest.mark.asyncio
     async def test_room_status_excludes_whole_floor_snapshot_key(self, monkeypatch):
@@ -308,6 +476,151 @@ class TestTargetedPayloadAssembly:
         prompt = captured["user_prompt"]
         assert '"room"' in prompt
         assert '"executiveSummary"' not in prompt  # only present in the coarse floor-wide payload
+
+
+class TestMultiFloorStatusPayload:
+    """Regression coverage for a real production bug, in two parts. Part 1:
+    "What is the progress percentage for Floor 1 and Floor 2?" resolved to
+    at most one floor_id (or none), so the LLM was handed almost no floor
+    data and answered "not provided" for floors that had genuinely been
+    analyzed. Part 2 (found immediately after fixing part 1): the first fix
+    only special-cased "floor_status" — a DIFFERENT multi-floor question
+    ("Which rooms have been captured in Floor 1 and Floor 2?", intent
+    capture_gap) still fell through to nothing, because every other intent
+    never learned about floor_ids at all. The real fix re-runs the SAME
+    single-floor assembly once per named floor (via `dataclasses.replace`
+    on the plan) so EVERY intent — not just floor_status — automatically
+    gets multi-floor support, merged under "byFloor"."""
+
+    def _wire_multi_floor_mocks(self, monkeypatch, plan, snapshots, *, coverage=None):
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "get_project_context", AsyncMock(return_value=_PROJECT_CONTEXT),
+        )
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "plan", AsyncMock(return_value=plan))
+        # Real resolve_entities is exercised elsewhere (test_drishti_query_planner.py);
+        # here it just needs to be a harmless identity passthrough so the
+        # recursive per-floor call in _assemble_facts_payload doesn't need a
+        # live snapshot-fuzzy-matching implementation to run.
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "resolve_entities", lambda self, p, snap, prev: p)
+
+        async def fake_get_floor_context(self, org_id, floor_id):
+            return snapshots.get(floor_id)
+
+        monkeypatch.setattr(service_module.DrishtiContextService, "get_floor_context", fake_get_floor_context)
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "compute_capture_coverage",
+            AsyncMock(return_value=coverage or {"coveragePct": 5.5}),
+        )
+
+    @pytest.mark.asyncio
+    async def test_floor_status_reports_each_named_floor_individually(self, monkeypatch):
+        plan = QueryPlan(
+            intent="floor_status",
+            floor_ids=["f1", "f2"], floor_names=["Floor 1", "Floor 2"],
+            resolved_scope_for_persistence={},
+        )
+        self._wire_multi_floor_mocks(monkeypatch, plan, {
+            "f1": {"overallProgressPct": 5.0, "flatProgress": []},
+            "f2": {"overallProgressPct": 2.0, "flatProgress": []},
+        })
+
+        captured = {}
+
+        async def fake_chat(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"answer": "Floor 1 is 5% complete; Floor 2 is 2% complete."}
+
+        monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        result = await service.ask(
+            "org1", "user1", "manager", "p1",
+            "What is the progress percentage for Floor 1 and Floor 2?",
+        )
+
+        prompt = captured["user_prompt"]
+        assert '"byFloor"' in prompt
+        assert '"Floor 1"' in prompt and '"Floor 2"' in prompt
+        assert result["message"]["content"] != _FALLBACK_ANSWER_TEXT
+
+    @pytest.mark.asyncio
+    async def test_unanalyzed_floor_reports_analyzed_false_not_missing(self, monkeypatch):
+        """A named floor that was never captured must still appear in
+        "byFloor" with its "floor" sub-object showing no snapshot — never
+        silently dropped, which would make it indistinguishable from a
+        floor the classifier failed to resolve at all."""
+        plan = QueryPlan(
+            intent="floor_status",
+            floor_ids=["f1"], floor_names=["Floor 1"],
+            resolved_scope_for_persistence={},
+        )
+        self._wire_multi_floor_mocks(monkeypatch, plan, {"f1": None}, coverage={"coveragePct": 0.0})
+
+        captured = {}
+
+        async def fake_chat(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"answer": "Floor 1 has not been analyzed yet."}
+
+        monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        await service.ask("org1", "user1", "manager", "p1", "What about Floor 1?")
+
+        prompt = captured["user_prompt"]
+        assert '"byFloor"' in prompt
+        assert '"snapshot": null' in prompt
+
+    @pytest.mark.asyncio
+    async def test_capture_gap_intent_also_works_across_multiple_floors(self, monkeypatch):
+        """The exact second bug from the live report: "Which rooms have been
+        captured in Floor 1 and Floor 2?" is intent=capture_gap, not
+        floor_status — a hand-written floor_status-only branch would miss
+        this entirely. The generic per-floor recursion must cover it too."""
+        plan = QueryPlan(
+            intent="capture_gap",
+            floor_ids=["f1", "f2"], floor_names=["Floor 1", "Floor 2"],
+            resolved_scope_for_persistence={},
+        )
+        flat_progress_f1 = [{
+            "flatName": "Flat 01", "rooms": [
+                {"roomName": "Bedroom-1", "capturesCount": 1, "pinNumbers": [1], "activities": []},
+            ],
+        }]
+        flat_progress_f2 = [{
+            "flatName": "Flat 03", "rooms": [
+                {"roomName": "Kitchen", "capturesCount": 0, "pinNumbers": [], "activities": []},
+            ],
+        }]
+        self._wire_multi_floor_mocks(monkeypatch, plan, {
+            "f1": {"overallProgressPct": 5.0, "flatProgress": flat_progress_f1},
+            "f2": {"overallProgressPct": 2.0, "flatProgress": flat_progress_f2},
+        })
+
+        captured = {}
+
+        async def fake_chat(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"answer": "Bedroom-1 has been captured on Floor 1; Kitchen has not been captured on Floor 2."}
+
+        monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        result = await service.ask(
+            "org1", "user1", "manager", "p1",
+            "Which rooms have been captured in Floor 1 and Floor 2?",
+        )
+
+        prompt = captured["user_prompt"]
+        assert '"byFloor"' in prompt
+        assert '"capturedRooms"' in prompt
+        assert '"captureGaps"' in prompt
+        assert '"Bedroom-1"' in prompt
+        assert '"Kitchen"' in prompt
+        assert result["message"]["content"] != _FALLBACK_ANSWER_TEXT
 
 
 class TestConversationTimestampsSerializeAsUtc:
@@ -528,6 +841,61 @@ class TestActivityListFollowUp:
 
         assert '"activityList"' in captured["user_prompt"]
         assert "Toilet Grouting" in captured["user_prompt"]
+
+    @pytest.mark.asyncio
+    async def test_not_started_statuses_pull_from_floor_level_rollup_not_empty_rooms(self, monkeypatch):
+        """The exact live bug: "what are those 101 activities that did not
+        start" (statuses not_assessed + no_evidence) returned an empty list
+        because real uncaptured rooms have activities: [] — the room-level
+        source structurally cannot contain a not_assessed entry. Every
+        snapshot's separate per-floor "activities" rollup DOES carry these
+        statuses (by activity name, no room location) and must be merged in."""
+        plan = QueryPlan(
+            intent="activity_list", floor_id="f1", floor_name="Floor 1",
+            activity_list_statuses=["not_assessed", "no_evidence"], resolved_scope_for_persistence={},
+        )
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "get_project_context", AsyncMock(return_value=_PROJECT_CONTEXT),
+        )
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "plan", AsyncMock(return_value=plan))
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "resolve_entities", lambda self, p, snap, prev: plan)
+
+        # Realistic production shape: rooms have NO activities at all yet
+        # (never captured), but the floor-level rollup has real statuses.
+        snapshot = {
+            "floorId": "f1",
+            "flatProgress": [
+                {"flatName": "Flat 01", "rooms": [
+                    {"roomName": "Bedroom-1", "capturesCount": 0, "activities": []},
+                ]},
+            ],
+            "activities": [
+                {"activityId": "flat.main_door_frame_5", "name": "Main Door Frame", "status": "not_assessed"},
+                {"activityId": "flat.wall_punning_4", "name": "Wall Punning", "status": "in_progress"},
+            ],
+        }
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "get_floor_context", AsyncMock(return_value=snapshot),
+        )
+
+        captured = {}
+
+        async def fake_chat(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"answer": "Main Door Frame has not been assessed yet on Floor 1."}
+
+        monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        result = await service.ask(
+            "org1", "user1", "manager", "p1", "what are those activities that did not start on floor 1",
+        )
+
+        prompt = captured["user_prompt"]
+        assert '"Main Door Frame"' in prompt
+        assert '"Wall Punning"' not in prompt  # in_progress must not leak into a not-started listing
+        assert result["message"]["content"] != _FALLBACK_ANSWER_TEXT
 
 
 _LIFT_LOBBY_FLOOR_SNAPSHOT = {

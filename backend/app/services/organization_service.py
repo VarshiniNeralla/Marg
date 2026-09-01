@@ -85,13 +85,19 @@ class OrganizationService:
         if not org:
             raise NotFoundException("Organization")
 
-        # Live stats: count documents in related collections
+        # Live stats: count documents in related collections (orgId + legacy org_id)
+        org_oid = ObjectId(org_id) if ObjectId.is_valid(org_id) else org_id
         total_users = await self._db.users.count_documents(
-            {"org_id": ObjectId(org_id) if ObjectId.is_valid(org_id) else org_id, "is_active": True}
+            {"org_id": org_oid, "is_active": True}
         )
-        total_projects = await self._db.projects.count_documents(
-            {"org_id": ObjectId(org_id) if ObjectId.is_valid(org_id) else org_id}
-        )
+        total_projects = await self._db.projects.count_documents({
+            "$or": [
+                {"orgId": org_id},
+                {"org_id": org_id},
+                {"orgId": org_oid},
+                {"org_id": org_oid},
+            ],
+        })
 
         return OrganizationMeResponse(
             id=org.id,

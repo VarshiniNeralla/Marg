@@ -45,10 +45,17 @@ class UserProjectService:
         if not target_user:
             raise NotFoundException("User", payload.user_id)
 
-        # 2. Verify project exists in this org
+        # 2. Verify project exists in this org (workflow uses orgId; legacy org_id)
+        oid = ObjectId(project_id) if ObjectId.is_valid(project_id) else project_id
+        org_key = ObjectId(org_id) if ObjectId.is_valid(org_id) else org_id
         proj_doc = await self._db.projects.find_one({
-            "_id": ObjectId(project_id) if ObjectId.is_valid(project_id) else project_id,
-            "org_id": ObjectId(org_id) if ObjectId.is_valid(org_id) else org_id,
+            "_id": oid,
+            "$or": [
+                {"orgId": org_id},
+                {"org_id": org_id},
+                {"orgId": org_key},
+                {"org_id": org_key},
+            ],
         })
         if not proj_doc:
             raise NotFoundException("Project", project_id)

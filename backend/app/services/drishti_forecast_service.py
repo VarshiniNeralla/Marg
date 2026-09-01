@@ -13,6 +13,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.services.construction_progress_service import ConstructionProgressService
@@ -34,10 +35,67 @@ _ASSUMED_PCT_PER_DAY = 1.0
 _ASSUMED_RANGE_PCT = 0.5
 
 
+def _oid_or_str(value: str):
+    return ObjectId(value) if ObjectId.is_valid(value) else value
+
+
+def _format_date_display(raw: Optional[str]) -> Optional[str]:
+    """Pre-renders a stored "YYYY-MM-DD" date string into an unambiguous
+    human-readable form (e.g. "May 12, 2028") in Python, rather than
+    handing the LLM a raw ISO string and trusting it to read/reformat that
+    string correctly in prose. Confirmed live: a small local classifier
+    model handed the exact correct "endDate": "2028-05-12" and, asked to
+    state it in an answer, hallucinated "October 15, 2024" instead — the
+    payload was right, but reformatting an ISO date into prose is exactly
+    the kind of small transformation this model has repeatedly proven
+    unreliable at (see the activity/common-area/floor/flat resolution
+    fixes earlier in this codebase's history for the same lesson). Doing
+    the formatting here means the LLM only ever has to copy a ready-made
+    string, never parse or recompute one. Returns None unchanged (never a
+    formatted "None") if the stored value is missing or unparseable."""
+    if not raw:
+        return None
+    try:
+        parsed = datetime.strptime(raw[:10], "%Y-%m-%d")
+    except ValueError:
+        return None
+    return parsed.strftime("%B %d, %Y").replace(" 0", " ")
+
+
 class DrishtiForecastService:
     def __init__(self, db: AsyncIOMotorDatabase) -> None:
         self._db = db
         self._progress_service = ConstructionProgressService(db)
+
+    async def get_planned_dates(self, org_id: str, project_id: str) -> Optional[dict[str, Any]]:
+        """The project document is schema-less (`workflow.py` persists
+        whatever the create-project form sends verbatim), so admin-entered
+        `startDate`/`endDate` strings live there, not in any snapshot/progress
+        collection the rest of this service reads from. A forecast must
+        surface this planned end date even when there is no velocity history
+        yet to measure against — that is the ONE case this module previously
+        had no path to answer from at all, always falling through to
+        insufficient_data/assumption-based guessing instead of the project's
+        own stated plan."""
+        doc = await self._db["projects"].find_one(
+            {"orgId": org_id, "$or": [{"_id": _oid_or_str(project_id)}, {"id": project_id}]}
+        )
+        if not doc:
+            return None
+        end_date = doc.get("endDate") or None
+        start_date = doc.get("startDate") or None
+        if not end_date:
+            return None
+        return {
+            "startDate": start_date,
+            "endDate": end_date,
+            # Pre-formatted, human-readable copies — the answer prompt tells
+            # the model to quote these verbatim rather than reformat the raw
+            # ISO strings above itself (see _format_date_display's docstring
+            # for the real hallucination this closes).
+            "startDateDisplay": _format_date_display(start_date),
+            "endDateDisplay": _format_date_display(end_date),
+        }
 
     async def forecast_floor(self, org_id: str, floor_id: str) -> dict[str, Any]:
         timeline = await self._progress_service.get_timeline(org_id, floor_id)
@@ -58,8 +116,13 @@ class DrishtiForecastService:
         isn't done until its slowest floor is) and a softer mean-of-floors
         estimate, so an answer can name the actual bottleneck rather than
         blend it away into one misleading number."""
+        planned_dates = await self.get_planned_dates(org_id, project_id)
+
         if not floor_ids:
-            return {"status": "insufficient_data", "reason": "This project has no floors yet."}
+            result: dict[str, Any] = {"status": "insufficient_data", "reason": "This project has no floors yet."}
+            if planned_dates:
+                result["plannedDates"] = planned_dates
+            return result
 
         forecasts = await asyncio.gather(
             *(self.forecast_floor(org_id, fid) for fid in floor_ids)
@@ -92,12 +155,14 @@ class DrishtiForecastService:
                         "velocity and should not be treated as a committed schedule."
                     ),
                 }
+            if planned_dates:
+                result["plannedDates"] = planned_dates
             return result
 
         critical_floor_id, critical_forecast = max(ok_forecasts, key=lambda pair: pair[1]["daysToComplete"])
         mean_days = sum(f["daysToComplete"] for _fid, f in ok_forecasts) / len(ok_forecasts)
 
-        return {
+        result = {
             "status": "ok",
             "criticalPathFloorId": critical_floor_id,
             "criticalPathForecast": critical_forecast,
@@ -105,6 +170,9 @@ class DrishtiForecastService:
             "floorsWithForecast": len(ok_forecasts),
             "floorsTotal": len(floor_ids),
         }
+        if planned_dates:
+            result["plannedDates"] = planned_dates
+        return result
 
 
 def _confidence_bucket(snapshot_count: int, span_days: int) -> str:

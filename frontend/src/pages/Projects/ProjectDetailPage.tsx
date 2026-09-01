@@ -9,7 +9,7 @@ import {
 import { colors, motion } from '@theme/tokens';
 import { statusConfig } from '@store/workflowSelectors';
 import {
-  getProjectById, getTowersByProject,
+  getProjectById, getTowersByProject, getCapturesByProjectScope, getCapturesByTowerScope,
 } from '@store/workflowSelectors';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, isAdmin } from '@store/authStore';
@@ -21,6 +21,7 @@ export default function ProjectDetailPage() {
   const floors      = useWorkflowStore(s => s.floors);
   const rooms       = useWorkflowStore(s => s.rooms);
   const captures    = useWorkflowStore(s => s.captures);
+  const capturePins = useWorkflowStore(s => s.capturePins);
   const { user: currentUser } = useAuthStore();
   const hasAdminRole = isAdmin(currentUser);
   const [towerPage, setTowerPage] = useState(1);
@@ -45,7 +46,7 @@ export default function ProjectDetailPage() {
   const projectFloorIds  = new Set(projectFloors.map(f => f.id));
   const projectRooms     = rooms.filter(r => projectFloorIds.has(r.floorId));
   const projectRoomIds   = new Set(projectRooms.map(r => r.id));
-  const projectCaptures  = captures.filter(c => projectRoomIds.has(c.roomId));
+  const projectCaptures  = getCapturesByProjectScope({ rooms, captures, capturePins }, project.id);
   const st = statusConfig.project[project.status];
 
   const TOWERS_PER_PAGE = 6; // 3 columns × 2 rows
@@ -134,12 +135,13 @@ export default function ProjectDetailPage() {
             const towerFloorCount = projectFloors.filter(f => f.towerId === tower.id).length;
             const towerFloorIds = new Set(projectFloors.filter(f => f.towerId === tower.id).map(f => f.id));
             const towerRoomIds = new Set(projectRooms.filter(r => towerFloorIds.has(r.floorId)).map(r => r.id));
-            const towerCaptureCount = projectCaptures.filter(c => towerRoomIds.has(c.roomId)).length;
+            const towerCaptureCount = getCapturesByTowerScope({ rooms, captures: projectCaptures, capturePins }, tower.id).length;
             return (
               <Box
                 key={tower.id}
-                {...(hasAdminRole ? { component: Link, to: `/projects/${project.id}/towers/${tower.id}` } : {})}
-                sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', p: 1.25, borderRadius: '12px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', textDecoration: 'none', transition: `all ${motion.durationNormal}`, ...(hasAdminRole && { '&:hover': { boxShadow: '0 8px 32px rgba(15,23,42,0.10)', transform: 'translateY(-2px)' } }) }}
+                component={Link}
+                to={`/projects/${project.id}/towers/${tower.id}`}
+                sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', p: 1.25, borderRadius: '12px', backgroundColor: colors.card, boxShadow: '0 2px 8px rgba(15,23,42,0.05)', textDecoration: 'none', transition: `all ${motion.durationNormal}`, '&:hover': { boxShadow: '0 8px 32px rgba(15,23,42,0.10)', transform: 'translateY(-2px)' } }}
               >
                 <Box sx={{ width: 40, height: 40, borderRadius: '10px', background: project.gradient, display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 1 }}>
                   <DomainRounded sx={{ color: '#fff', fontSize: 18 }} />

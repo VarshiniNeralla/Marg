@@ -9,6 +9,7 @@ import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, isAdmin , getRoleLandingPath } from '@store/authStore';
 import { useSettingsStore } from '@store/settingsStore';
+import { getCapturesByProjectScope } from '@store/workflowSelectors';
 
 const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
   active:  { label: 'Active',      color: colors.success,   bg: colors.successBg },
@@ -25,6 +26,7 @@ export default function ProjectsPage() {
   const floors = useWorkflowStore(s => s.floors);
   const rooms = useWorkflowStore(s => s.rooms);
   const captures = useWorkflowStore(s => s.captures);
+  const capturePins = useWorkflowStore(s => s.capturePins);
   const archiveProject = useWorkflowStore(s => s.archiveProject);
   const { user } = useAuthStore();
   const orgName = useSettingsStore(s => s.organization.name);
@@ -111,7 +113,7 @@ export default function ProjectsPage() {
           const projectFloorIds = new Set(projectFloors.map(f => f.id));
           const projectRooms = rooms.filter(r => projectFloorIds.has(r.floorId));
           const projectRoomIds = new Set(projectRooms.map(r => r.id));
-          const projectCaptures = captures.filter(c => projectRoomIds.has(c.roomId));
+          const projectCaptures = getCapturesByProjectScope({ rooms, captures, capturePins }, project.id);
           const liveCounts = {
             towers: projectTowerIds.size,
             floors: projectFloors.length,

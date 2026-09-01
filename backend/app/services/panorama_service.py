@@ -8,11 +8,19 @@ This module validates dimensions and injects XMP GPano metadata for viewers.
 from __future__ import annotations
 
 import io
+import json
+import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from loguru import logger
+
+# Fraction of equirect pixels that must fall inside at least one fisheye
+# validity mask. Below this the stitch left black holes / unusable gaps.
+MIN_SPHERE_COVERAGE = 0.88
+_SAFE_STEM = re.compile(r"[^A-Za-z0-9._-]+")
 
 try:
     from PIL import Image
@@ -131,12 +139,93 @@ def panorama_content_is_blank(
         return False
 
 
-def validate_stitched_content(data: bytes, *, filename: str = "") -> None:
-    """Raise when stitch JPEG is blank/near-blank (aspect already validated)."""
+def sphere_coverage_is_low(coverage: Optional[float], *, minimum: float = MIN_SPHERE_COVERAGE) -> bool:
+    """True when fisheye→sphere remaps leave too many uncovered pixels."""
+    if coverage is None:
+        return False
+    try:
+        return float(coverage) < float(minimum)
+    except (TypeError, ValueError):
+        return False
+
+
+def stitched_output_is_unusable(
+    data: bytes,
+    *,
+    sphere_coverage: Optional[float] = None,
+) -> tuple[bool, str]:
+    """
+    Return (unusable, reason) for a stitch JPEG + optional coverage metric.
+
+    Coverage is measured inside fisheye_stitch; blank-check catches solid
+    grey/black outputs that still report high coverage.
+    """
+    if sphere_coverage_is_low(sphere_coverage):
+        return True, f"low_sphere_coverage:{float(sphere_coverage):.3f}"
     if panorama_content_is_blank(data):
+        return True, "blank_or_near_blank"
+    return False, ""
+
+
+def save_stitch_failure_artifact(
+    *,
+    jpeg: bytes,
+    filename: str,
+    reason: str,
+    metadata: Optional[dict[str, Any]] = None,
+) -> Optional[Path]:
+    """
+    Persist a rejected stitch JPEG + JSON sidecar under uploads/stitch_failures/.
+
+    Returns the JPEG path when written, else None. Best-effort — never raises
+    into the upload path.
+    """
+    try:
+        from app.services.local_media_service import ensure_upload_root
+
+        root = ensure_upload_root() / "stitch_failures"
+        root.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stem = _SAFE_STEM.sub("_", Path(filename).stem)[:80] or "capture"
+        jpg_path = root / f"{stamp}_{stem}.jpg"
+        meta_path = root / f"{stamp}_{stem}.json"
+        jpg_path.write_bytes(jpeg or b"")
+        payload = {
+            "filename": filename,
+            "reason": reason,
+            "jpegBytes": len(jpeg or b""),
+            "savedAt": stamp,
+            "metadata": metadata or {},
+        }
+        meta_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
         logger.error(
-            f"Stitch output is blank/near-blank for '{filename}' "
-            f"({len(data)} bytes) — refusing to upload"
+            f"[stitch-failure] saved artifact jpg={jpg_path.name} "
+            f"reason={reason} bytes={len(jpeg or b'')}"
+        )
+        return jpg_path
+    except Exception as exc:
+        logger.warning(f"[stitch-failure] could not save artifact for {filename}: {exc!r}")
+        return None
+
+
+def validate_stitched_content(
+    data: bytes,
+    *,
+    filename: str = "",
+    sphere_coverage: Optional[float] = None,
+) -> None:
+    """Raise when stitch JPEG is blank/near-blank or coverage is too low."""
+    unusable, reason = stitched_output_is_unusable(data, sphere_coverage=sphere_coverage)
+    if unusable:
+        logger.error(
+            f"Stitch output unusable for '{filename}' "
+            f"({len(data)} bytes, reason={reason}) — refusing to upload"
+        )
+        save_stitch_failure_artifact(
+            jpeg=data,
+            filename=filename,
+            reason=reason,
+            metadata={"sphere_coverage": sphere_coverage},
         )
         raise PanoramaValidationError(
             "Stitching produced a blank or unusable panorama. "

@@ -51,7 +51,7 @@ export default function FloorPlansPage() {
   const user       = useAuthStore(s => s.user);
   const isEngineer = isFieldEngineer(user);
   const canManagePlans = isManagerOrAdmin(user);
-  const role = user?.role || 'default';
+  const sessionUserKey = user?.id || user?.role || 'default';
 
   const [page, setPage] = useState(1);
   const [deleteTarget, setDeleteTarget] = useState<{ planId: string; floorLabel: string } | null>(null);
@@ -64,6 +64,7 @@ export default function FloorPlansPage() {
   const captures   = useWorkflowStore(s => s.captures);
   const tours      = useWorkflowStore(s => s.tours);
   const floorPlans = useWorkflowStore(s => s.floorPlans);
+  const capturePins = useWorkflowStore(s => s.capturePins);
   const deleteFloorPlan = useWorkflowStore(s => s.deleteFloorPlan);
   const [searchParams] = useSearchParams();
 
@@ -79,7 +80,7 @@ export default function FloorPlansPage() {
     return assignedProjectIds ? base.filter(p => assignedProjectIds.has(p.id)) : base;
   }, [projects, towers, assignedProjectIds]);
 
-  const storageKey = (kind: 'project' | 'tower') => `floorplans_${kind}Id_${role}`;
+  const storageKey = (kind: 'project' | 'tower') => `floorplans_${kind}Id_${sessionUserKey}`;
 
   const [projectId, setProjectId] = useState(() => {
     const fromUrl = searchParams.get('project');
@@ -133,7 +134,7 @@ export default function FloorPlansPage() {
       if (towerId) sessionStorage.setItem(storageKey('tower'), towerId);
       else sessionStorage.removeItem(storageKey('tower'));
     } catch { /* ignore */ }
-  }, [projectId, towerId, role]);
+  }, [projectId, towerId, sessionUserKey]);
 
   const tower = projectTowers.find(t => t.id === towerId) ?? null;
 
@@ -161,7 +162,7 @@ export default function FloorPlansPage() {
     setPage(1);
   }
 
-  const dataSlice = { flats, rooms, captures, tours, floorPlans };
+  const dataSlice = { flats, rooms, captures, tours, floorPlans, capturePins };
   const mappedCount = towerFloors.filter(f => getFloorPlanByFloor(floorPlans, tower?.id ?? '', f.id)).length;
   const plansPerPage = isMobile ? PLANS_PAGE_SIZE_MOBILE : PLANS_PAGE_SIZE_DESKTOP;
   const totalPages = Math.max(1, Math.ceil(visibleFloors.length / plansPerPage));

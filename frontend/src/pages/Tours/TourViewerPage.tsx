@@ -25,8 +25,11 @@ import { formatPinLocationLabel, formatCaptureDateTime } from '@/utils/pinLabels
 import { toast } from 'react-toastify';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getFloorPlanByFloor, getCapturePinsByFloorPlan } from '@store/workflowSelectors';
-import { useAuthStore, isManagerOrAdmin, isManager } from '@store/authStore';
+import { useAuthStore, isManagerOrAdmin, isManager, isFieldEngineer } from '@store/authStore';
+import { ownCaptureIdSet, pinCaptureIdsForUser } from '@/utils/captureOwnership';
+import { getCapturePinsForFloor } from '@store/workflowSelectors';
 import type { MockCapture } from '@/data/mockData';
+import { resolveMediaUrl } from '@/config/env';
 
 // Placeholder equirectangular panoramas — one per tour, keyed by tourId.
 // Replace these with real Cloudinary secure_url values from the API.
@@ -518,7 +521,7 @@ function resolveCapturePanoramaUrl(
   cap?: MockCapture & Record<string, unknown>,
 ): string | null {
   const first = mediaAssets?.[0];
-  return (
+  const raw =
     first?.processed_panorama_url ??
     first?.processedPanoramaUrl ??
     (cap?.processedPanoramaUrl as string | undefined) ??
@@ -526,8 +529,8 @@ function resolveCapturePanoramaUrl(
     first?.original_url ??
     first?.secure_url ??
     (cap?.originalFileUrl as string | undefined) ??
-    null
-  );
+    null;
+  return resolveMediaUrl(raw);
 }
 
 // How a capture should be projected in the viewer.
@@ -694,9 +697,11 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, pan
           loadingTxt: '',
           loadingImg: '',
           plugins: [
-            // Official plugin: continuous yaw at a stable rpm (no RAF / before-rotate fights).
+            // Official plugin — continuous yaw at a stable rpm.
+            // autostartDelay MUST be null: 0 (or the default 2000) starts rotation
+            // on idle without the toolbar button, which confused tour viewers.
             AutorotatePlugin.withConfig({
-              autostartDelay: 0,
+              autostartDelay: null,
               autostartOnIdle: false,
               autorotateSpeed: '1.5rpm',
             }),
@@ -709,11 +714,14 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, pan
         viewer.addEventListener('ready', () => {
           if (destroyed) return;
           setLoading(false);
-          if (autoRotateRef.current) {
-            try {
-              viewer.getPlugin(AutorotatePlugin)?.start();
-            } catch { /* plugin not ready */ }
-          }
+          try {
+            const plugin = viewer.getPlugin(AutorotatePlugin);
+            if (!plugin) return;
+            // Belt-and-suspenders: never leave the plugin spinning unless the
+            // toolbar toggle is on.
+            if (autoRotateRef.current) plugin.start();
+            else plugin.stop();
+          } catch { /* plugin not ready */ }
         });
 
         viewer.addEventListener('error' as never, () => {
@@ -868,6 +876,8 @@ export default function TourViewerPage() {
   const floors = useWorkflowStore(s => s.floors);
   const user = useAuthStore(s => s.user);
   const canViewPreviousReports = isManagerOrAdmin(user);
+  const ownCaptureIds = isFieldEngineer(user) ? ownCaptureIdSet(captures, user) : null;
+  const floorPlans = useWorkflowStore(s => s.floorPlans);
   const tour = tours.find(t => t.id === tourId) ?? getTourById(tourId ?? '');
 
   const navState = location.state as { from?: string; fromLabel?: string } | null;
@@ -879,7 +889,6 @@ export default function TourViewerPage() {
   }, [tour?.id, tour?.managerReviewed]);
 
   const capturePins = useWorkflowStore(s => s.capturePins);
-  const floorPlans = useWorkflowStore(s => s.floorPlans);
 
   const [fullscreen, setFullscreen] = useState(false);
   // Floor-plan navigator stays available in normal and fullscreen view.
@@ -925,8 +934,12 @@ export default function TourViewerPage() {
   const derivedSteps = useMemo(() => {
     const tourFloorPlanId = (tourMedia as unknown as Record<string, unknown>)?.floorPlanId as string | undefined;
     if (!tourFloorPlanId) return [];
-    const pins = capturePins
-      .filter(p => p.floorPlanId === tourFloorPlanId)
+    const tourFloorId =
+      floorPlans.find(fp => fp.id === tourFloorPlanId)?.floorId
+      || ((tourMedia as unknown as Record<string, unknown>)?.floorId as string | undefined)
+      || '';
+    const pins = getCapturePinsForFloor(capturePins, tourFloorId, tourFloorPlanId)
+      .map(p => ({ ...p, captureIds: pinCaptureIdsForUser(p.captureIds, ownCaptureIds) }))
       .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
     return pins.flatMap(pin => {
       const latestCaptureId = pin.captureIds[pin.captureIds.length - 1];
@@ -943,21 +956,37 @@ export default function TourViewerPage() {
         thumbnailUrl: (mediaAssets[0]?.thumbnail_url ?? (cap?.thumbnailUrl as string | undefined)) ?? null,
       }];
     });
-  }, [tourMedia, capturePins, captures]);
+  }, [tourMedia, capturePins, captures, ownCaptureIds, floorPlans]);
 
   const steps = useMemo(() => {
-    // Prefer live pin-derived steps so add/remove pins stays accurate; stored
-    // tour.steps can be stale after captures/pins change without a republish.
-    const raw = derivedSteps.length > 0
-      ? derivedSteps
-      : (tourMedia?.steps && tourMedia.steps.length > 0 ? tourMedia.steps : []);
-    // Remap stored "Pin N" labels to live Flat · Room.
+    // Prefer stored tour.steps when the publisher selected a subset of pins.
+    // Live derivation is only a fallback for legacy tours that never stored steps,
+    // or when every stored stop vanished after deletes.
+    const stored = tourMedia?.steps && tourMedia.steps.length > 0 ? tourMedia.steps : null;
+    const raw = stored ?? derivedSteps;
+    // Remap stored "Pin N" labels to live Flat · Room; refresh panorama URLs
+    // from live captures so stitch completion shows without republishing.
     return raw.map(s => {
-      const pin = capturePins.find(p => p.id === s.pinId)
-        ?? (s.captureId ? capturePins.find(p => p.captureIds.includes(s.captureId)) : undefined);
-      return { ...s, label: formatPinLocationLabel(pin, s.label || `Stop ${s.sequenceNumber}`) };
+      const pin = capturePins.find(p => p.id === s.pinId);
+      const cap = captures.find(c => c.id === s.captureId) as
+        | (MockCapture & Record<string, unknown>)
+        | undefined;
+      const mediaAssets = (cap?.mediaAssets as CaptureMediaAsset[] | undefined) ?? [];
+      const livePano = cap ? resolveCapturePanoramaUrl(mediaAssets, cap) : null;
+      return {
+        ...s,
+        label: pin
+          ? formatPinLocationLabel(pin, s.label || `Stop ${s.sequenceNumber}`)
+          : (s.label || `Stop ${s.sequenceNumber}`),
+        panoramaUrl: livePano || s.panoramaUrl,
+        thumbnailUrl:
+          (mediaAssets[0]?.thumbnail_url
+            ?? (cap?.thumbnailUrl as string | undefined)
+            ?? s.thumbnailUrl)
+          || null,
+      };
     });
-  }, [tourMedia, derivedSteps, capturePins]);
+  }, [tourMedia, derivedSteps, capturePins, captures]);
   // Chevrons navigate between PINS (walkthrough stops), not temporal visits on
   // the same pin — those use the capture timeline below the viewer.
   const isWalkthrough = steps.length > 1;
@@ -1000,25 +1029,30 @@ export default function TourViewerPage() {
     // deleted and re-captured (new pin IDs). Fall back through increasingly loose
     // keys so the timeline never silently disappears.
     const tourFloorPlanId = (tourMedia as unknown as Record<string, unknown>)?.floorPlanId as string | undefined;
+    const tourFloorId =
+      (tourFloorPlanId ? floorPlans.find(fp => fp.id === tourFloorPlanId)?.floorId : undefined)
+      || ((tourMedia as unknown as Record<string, unknown>)?.floorId as string | undefined)
+      || '';
     const pin =
       capturePins.find(p => p.id === currentStep.pinId) ??
       (currentStep.captureId
         ? capturePins.find(p => p.captureIds.includes(currentStep.captureId))
         : undefined) ??
-      (tourFloorPlanId
-        ? capturePins.find(p => p.floorPlanId === tourFloorPlanId && p.sequenceNumber === currentStep.sequenceNumber)
+      (tourFloorId
+        ? getCapturePinsForFloor(capturePins, tourFloorId, tourFloorPlanId).find(p => p.sequenceNumber === currentStep.sequenceNumber)
         : undefined);
+    const scopedPin = pin ? { ...pin, captureIds: pinCaptureIdsForUser(pin.captureIds, ownCaptureIds) } : undefined;
 
     const toSnapshot = (id: string): CaptureSnapshot => {
       const cap = captures.find(c => c.id === id) as (MockCapture & Record<string, unknown>) | undefined;
-      const capIndex = pin?.captureIds.indexOf(id) ?? 0;
+      const capIndex = scopedPin?.captureIds.indexOf(id) ?? 0;
       const uploadedAt = (cap?.uploadedAt as string | undefined) ?? '';
       const capturedAt = (cap?.capturedAt as string | undefined) ?? '';
       const dateLabel = formatCaptureDateTime(capturedAt, uploadedAt) || `Visit ${capIndex + 1}`;
       return {
         id,
         baseCaptureId: id,
-        roomId: cap?.roomId ?? pin?.roomId ?? '',
+        roomId: cap?.roomId ?? scopedPin?.roomId ?? '',
         date: capturedAt || uploadedAt,
         dateLabel,
         monthLabel: '',
@@ -1033,8 +1067,8 @@ export default function TourViewerPage() {
     };
 
     // Preferred: full multi-visit history from the live pin — sorted oldest → newest.
-    if (pin && pin.captureIds.length > 0) {
-      const snapshots = pin.captureIds.map(id => toSnapshot(id));
+    if (scopedPin && scopedPin.captureIds.length > 0) {
+      const snapshots = scopedPin.captureIds.map(id => toSnapshot(id));
       snapshots.sort((a, b) => {
         const tA = parseCaptureTimestamp(a.date, a.dateLabel);
         const tB = parseCaptureTimestamp(b.date, b.dateLabel);
@@ -1056,7 +1090,7 @@ export default function TourViewerPage() {
     }
 
     return [];
-  }, [currentStep, capturePins, captures, tourMedia]);
+  }, [currentStep, capturePins, captures, tourMedia, ownCaptureIds, floorPlans]);
 
   // The snapshot currently shown (defaults to latest). Validate against the
   // current pin's timeline so a stale selection from a previously-viewed pin
@@ -1478,17 +1512,27 @@ export default function TourViewerPage() {
             </IconButton>
           </Tooltip>
         )}
-        <Tooltip title={autoRotate ? 'Stop auto rotate' : 'Auto rotate smoothly'}>
+        <Tooltip title={autoRotate ? 'Stop auto rotate' : 'Auto rotate — tap to spin the tour'}>
           <IconButton
             onClick={() => setAutoRotate(v => !v)}
             size="small"
             aria-pressed={autoRotate}
+            aria-label={autoRotate ? 'Stop auto rotate' : 'Start auto rotate'}
             sx={{
-              backgroundColor: autoRotate ? 'rgba(37,99,235,0.9)' : 'rgba(0,0,0,0.45)',
+              // Idle: still “highlighted” so the control is obvious on first entry
+              // (soft blue ring + pulse). Active: solid blue = currently rotating.
+              backgroundColor: autoRotate ? 'rgba(37,99,235,0.95)' : 'rgba(37,99,235,0.55)',
               color: '#fff',
               backdropFilter: 'blur(8px)',
-              boxShadow: autoRotate ? '0 0 0 2px rgba(37,99,235,0.35)' : 'none',
-              '&:hover': { backgroundColor: autoRotate ? 'rgba(37,99,235,1)' : 'rgba(0,0,0,0.6)' },
+              boxShadow: autoRotate
+                ? '0 0 0 2px rgba(147,197,253,0.9)'
+                : '0 0 0 2px rgba(147,197,253,0.75)',
+              animation: autoRotate ? 'none' : 'tourAutoRotateHint 1.8s ease-in-out 2',
+              '@keyframes tourAutoRotateHint': {
+                '0%, 100%': { boxShadow: '0 0 0 2px rgba(147,197,253,0.55)' },
+                '50%': { boxShadow: '0 0 0 4px rgba(147,197,253,0.95)' },
+              },
+              '&:hover': { backgroundColor: autoRotate ? 'rgba(37,99,235,1)' : 'rgba(37,99,235,0.75)' },
             }}
           >
             {autoRotate ? <PauseRounded sx={{ fontSize: 16 }} /> : <PlayArrowRounded sx={{ fontSize: 16 }} />}

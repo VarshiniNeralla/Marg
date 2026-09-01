@@ -3,7 +3,7 @@ import { Box, Typography, Modal, IconButton, CircularProgress } from '@mui/mater
 import { MapRounded, CloseRounded, ImageNotSupportedRounded } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
-import { getCapturePinsByFloorPlan } from '@store/workflowSelectors';
+import { getCapturePinsForFloor } from '@store/workflowSelectors';
 import type {
   HeatmapPinMarker,
   RoomHeatmapEntry,
@@ -168,7 +168,9 @@ export default function FloorPlanHeatmapOverlay({
   const [imgLoaded, setImgLoaded] = useState(false);
   const allPins = useWorkflowStore(s => s.capturePins);
   const allCaptures = useWorkflowStore(s => s.captures);
-  const livePins = floorPlanId ? getCapturePinsByFloorPlan(allPins, floorPlanId) : [];
+  const floorPlans = useWorkflowStore(s => s.floorPlans);
+  const floorId = floorPlans.find(fp => fp.id === floorPlanId)?.floorId ?? null;
+  const livePins = floorId ? getCapturePinsForFloor(allPins, floorId, floorPlanId) : [];
   const uploadSeq = useMemo(
     () => uploadSequenceByPinId(livePins, allCaptures),
     [livePins, allCaptures],

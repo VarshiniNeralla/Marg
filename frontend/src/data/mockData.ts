@@ -97,6 +97,8 @@ export interface MockCapture {
   status: CaptureStatus;
   reviewStatus: ReviewStatus;
   uploadedBy: string;
+  /** Stable owner id — field engineers only see captures they uploaded. */
+  uploadedByUserId?: string;
   uploadedAt: string;
   capturedAt?: string;       // real ISO timestamp recorded at upload — drives the timeline
   reviewedBy: string | null;
@@ -135,6 +137,11 @@ export interface MockTour {
   lastCapture: string;
   gradient: string;
   viewCount: number;
+  /** Floor plan this walkthrough was published from (one tour per engineer per plan). */
+  floorPlanId?: string;
+  /** Who published this tour — used to isolate engineer walkthroughs. */
+  uploadedBy?: string;
+  uploadedByUserId?: string;
   /** Manager has completed their review walkthrough. */
   managerReviewed?: boolean;
   // Sequential walkthrough steps — one per pin, in pin order (1 → 2 → 3 …).
@@ -218,6 +225,7 @@ export interface MockNotification {
   link: string;
   read: boolean;
   createdAt: string;
+  recipientUserId?: string;
 }
 
 export const mockNotifications: MockNotification[] = [];

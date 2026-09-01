@@ -19,6 +19,7 @@ export default function FloorListPage() {
   const captures = useWorkflowStore(s => s.captures);
   const tours = useWorkflowStore(s => s.tours);
   const floorPlans = useWorkflowStore(s => s.floorPlans);
+  const capturePins = useWorkflowStore(s => s.capturePins);
   const deleteFloor = useWorkflowStore(s => s.deleteFloor);
   const createFloor = useWorkflowStore(s => s.createFloor);
   const updateFloor = useWorkflowStore(s => s.updateFloor);
@@ -28,7 +29,9 @@ export default function FloorListPage() {
   const project = getProjectById(projects, projectId ?? '');
   const tower = towers.find(t => t.id === towerId);
   const towerFloors = getFloorsByTower(floors, towerId ?? '');
-  const dataSlice = { flats, rooms, captures, tours, floorPlans };
+  const towerRooms = rooms.filter(r => r.towerId === towerId);
+  const towerFlats = flats.filter(f => f.towerId === towerId);
+  const dataSlice = { flats, rooms, captures, tours, floorPlans, capturePins };
 
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [editTarget, setEditTarget]     = useState<string | null>(null);
@@ -108,7 +111,7 @@ export default function FloorListPage() {
 
       <Box sx={{ mb: 2 }}>
         <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, color: colors.textStrong }}>{tower.name}</Typography>
-        <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{towerFloors.length} floors · {flats.filter(f => f.towerId === tower.id).length} flats · {tower.rooms} total rooms</Typography>
+        <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>{towerFloors.length} floors · {towerFlats.length} flats · {towerRooms.length} total rooms</Typography>
       </Box>
 
       <Box sx={{
@@ -163,6 +166,9 @@ export default function FloorListPage() {
                 </Box>
                 <Box sx={{ p: { xs: 1.25, sm: 2 }, textAlign: 'center' }}>
                   <Typography noWrap sx={{ fontSize: { xs: '0.8125rem', sm: '0.9375rem' }, fontWeight: 700, color: colors.textStrong, letterSpacing: '-0.02em', mb: { xs: 0.625, sm: 1 } }}>{floor.label}</Typography>
+                  <Typography sx={{ fontSize: { xs: '0.6875rem', sm: '0.75rem' }, color: colors.textMuted, mb: 0.75 }}>
+                    {stats.roomCount} rooms · {stats.capturesOnFloor.length} captures
+                  </Typography>
                   <Box sx={{
                     display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1, py: 0.375, borderRadius: '99px',
                     backgroundColor: planUploaded ? 'rgba(22,163,74,0.1)' : colors.bgDeep, maxWidth: '100%',

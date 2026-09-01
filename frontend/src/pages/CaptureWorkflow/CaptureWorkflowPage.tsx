@@ -5,11 +5,11 @@ import {
   CheckCircleRounded, ArrowForwardRounded, ArrowBackRounded,
   CloudUploadRounded, AddLocationAltRounded, ZoomInRounded, ZoomOutRounded,
   CenterFocusStrongRounded, FullscreenRounded, FullscreenExitRounded,
-  AddAPhotoRounded, HistoryRounded, DeleteOutlineRounded, CloseRounded,
+  AddAPhotoRounded, HistoryRounded, CloseRounded,
   CameraAltRounded, VisibilityRounded, VisibilityOffRounded,
 } from '@mui/icons-material';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAuthStore } from '@store/authStore';
+import { useAuthStore, isFieldEngineer } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getFloorPlanByFloor, getFloorsWithPlanByTower, countFloorsWithPlanByTower } from '@store/workflowSelectors';
 import { uploadCaptureFiles } from '@/services/uploadService';
@@ -17,6 +17,7 @@ import {
   enqueueFileUpload, discardFileUpload, retryFileUpload,
   fileUploadStatusForPin, allQueuedPinStatuses, queuedPinStatuses,
   fileUploadErrorForPin, fileUploadFailKindForPin, fileUploadCreatedAtForPin,
+  fileUploadAwaitingAttach, fileUploadStitchJobIdForPin,
   FILE_QUEUE_CHANGED_EVENT, FILE_UPLOAD_SUCCEEDED_EVENT,
 } from '@store/fileUploadQueue';
 import { pendingUploadPins } from '@store/pendingUploadRegistry';
@@ -24,6 +25,8 @@ import { useDeviceType, usesCameraCapture } from '@/hooks/useDeviceType';
 import { useDoubleTap } from '@/hooks/useDoubleTap';
 import CameraCaptureDialog from '@/features/capturePins/CameraCaptureDialog';
 import { Insta360Camera } from '@/plugins/insta360Camera';
+import { ownCaptureIdSet, pinHasOwnCapture } from '@/utils/captureOwnership';
+import { resolveMediaUrl } from '@/config/env';
 
 /* ── palette ────────────────────────────────────────────────────────────── */
 const P = {
@@ -67,9 +70,13 @@ interface LastCaptureLocation {
   floorId: string;
 }
 
-function loadLastCaptureLocation(): LastCaptureLocation | null {
+function captureLocationStorageKey(userId?: string | null): string {
+  return `${LAST_CAPTURE_LOCATION_KEY}:${(userId || 'anon').trim() || 'anon'}`;
+}
+
+function loadLastCaptureLocation(userId?: string | null): LastCaptureLocation | null {
   try {
-    const raw = localStorage.getItem(LAST_CAPTURE_LOCATION_KEY);
+    const raw = localStorage.getItem(captureLocationStorageKey(userId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<LastCaptureLocation>;
     if (!parsed.step || !parsed.projectId) return null;
@@ -84,9 +91,9 @@ function loadLastCaptureLocation(): LastCaptureLocation | null {
   }
 }
 
-function saveLastCaptureLocation(loc: LastCaptureLocation): void {
+function saveLastCaptureLocation(userId: string | null | undefined, loc: LastCaptureLocation): void {
   try {
-    localStorage.setItem(LAST_CAPTURE_LOCATION_KEY, JSON.stringify(loc));
+    localStorage.setItem(captureLocationStorageKey(userId), JSON.stringify(loc));
   } catch {
     /* best-effort — losing this only means landing on Overview, not data loss */
   }
@@ -940,7 +947,12 @@ function FloorPlanWithPin({
   }
 
   const imageUrl = floorPlan
-    ? ((floorPlan as any).fileUrl ?? (floorPlan as any).file_url ?? ((floorPlan as any).mediaAssets as any)?.[0]?.original_url ?? null)
+    ? resolveMediaUrl(
+        (floorPlan as any).fileUrl
+        ?? (floorPlan as any).file_url
+        ?? ((floorPlan as any).mediaAssets as any)?.[0]?.original_url
+        ?? null,
+      )
     : null;
 
   const controls = (
@@ -970,8 +982,11 @@ function FloorPlanWithPin({
           key={i}
           title={b.title}
           aria-label={b.title}
+          data-no-pan
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); b.fn(); }}
-          sx={{ width: 28, height: 28, borderRadius: '7px', backgroundColor: 'rgba(255,255,255,0.1)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#fff', transition: T, '&:hover': { backgroundColor: 'rgba(37,99,235,0.7)' } }}
+          sx={{ width: 28, height: 28, borderRadius: '7px', backgroundColor: 'rgba(255,255,255,0.1)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#fff', touchAction: 'manipulation', transition: T, '&:hover': { backgroundColor: 'rgba(37,99,235,0.7)' } }}
         >
           {b.icon}
         </Box>
@@ -1171,20 +1186,21 @@ export default function CaptureWorkflowPage() {
   // attachCaptureToPin is called from fileUploadQueue.ts now (via getState()),
   // not from this component — the queue may finish an upload long after this
   // page unmounts (offline capture, app restart, later reconnect).
-  const deleteCapturePin   = useWorkflowStore(s => s.deleteCapturePin);
+  // Site Engineers must never delete capture points (click / upload only).
   const setFloorPlanPinsVisible = useWorkflowStore(s => s.setFloorPlanPinsVisible);
   const navigate = useNavigate();
 
   const deviceType  = useDeviceType();
   const isMobile    = usesCameraCapture(deviceType);
+  const ownCaptureIds = isFieldEngineer(user) ? ownCaptureIdSet(allCaptures, user) : null;
 
   // Lazy initializers so a restored location is present on the FIRST render
   // (myTowers/myFloors below already filter correctly) rather than flashing
   // an empty Overview step before an effect could restore it.
-  const [step, setStep]               = useState<Step>(() => loadLastCaptureLocation()?.step ?? 'project');
-  const [selectedProject, setProject] = useState<string>(() => loadLastCaptureLocation()?.projectId ?? '');
-  const [selectedTower, setTower]     = useState<string>(() => loadLastCaptureLocation()?.towerId ?? '');
-  const [selectedFloor, setFloor]     = useState<string>(() => loadLastCaptureLocation()?.floorId ?? '');
+  const [step, setStep]               = useState<Step>(() => loadLastCaptureLocation(user?.id)?.step ?? 'project');
+  const [selectedProject, setProject] = useState<string>(() => loadLastCaptureLocation(user?.id)?.projectId ?? '');
+  const [selectedTower, setTower]     = useState<string>(() => loadLastCaptureLocation(user?.id)?.towerId ?? '');
+  const [selectedFloor, setFloor]     = useState<string>(() => loadLastCaptureLocation(user?.id)?.floorId ?? '');
   const [pinPos, setPinPos]           = useState<{ x: number; y: number } | null>(null);
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
   const [activeCapturePinId, setActiveCapturePinId] = useState<string | null>(null);
@@ -1283,7 +1299,7 @@ export default function CaptureWorkflowPage() {
     fp => fp.towerId === selectedTower && fp.floorId === selectedFloor,
   );
   const floorPlan =
-    floorPlansForFloor.find(fp => allPins.some(p => p.floorPlanId === fp.id && p.captureIds.length > 0)) ??
+    floorPlansForFloor.find(fp => allPins.some(p => p.floorPlanId === fp.id && pinHasOwnCapture(p.captureIds, ownCaptureIds))) ??
     floorPlansForFloor.find(fp => allPins.some(p => p.floorPlanId === fp.id)) ??
     floorPlansForFloor[0] ??
     getFloorPlanByFloor(floorPlans, selectedTower, selectedFloor);
@@ -1301,12 +1317,14 @@ export default function CaptureWorkflowPage() {
             sequenceNumber: p.sequenceNumber,
             x: p.x,
             y: p.y,
-            hasCapture: p.captureIds.length > 0,
+            hasCapture: pinHasOwnCapture(p.captureIds, ownCaptureIds),
             status: pinStatus[p.id],
             roomName: p.roomName,
             flatName: p.flatName,
             label: p.label,
-            captureIds: p.captureIds as string[],
+            captureIds: ownCaptureIds
+              ? p.captureIds.filter(id => ownCaptureIds.has(id))
+              : p.captureIds as string[],
           }));
 
         // Upload order on this floor (1 = first capture / queued upload),
@@ -1370,8 +1388,8 @@ export default function CaptureWorkflowPage() {
   // Persist the current location on every change so a force-close during
   // capture reopens on the same floor plan instead of the Overview step.
   useEffect(() => {
-    saveLastCaptureLocation({ step, projectId: selectedProject, towerId: selectedTower, floorId: selectedFloor });
-  }, [step, selectedProject, selectedTower, selectedFloor]);
+    saveLastCaptureLocation(user?.id, { step, projectId: selectedProject, towerId: selectedTower, floorId: selectedFloor });
+  }, [step, selectedProject, selectedTower, selectedFloor, user?.id]);
 
   function handlePinClick(pinId: string) {
     setSelectedPinId(prev => (prev === pinId ? null : pinId));
@@ -1451,17 +1469,25 @@ export default function CaptureWorkflowPage() {
     }
   }
 
-  /** Remove empty free-place duplicates left by accidental plan taps. */
+  /** Accidental unlabeled free-place taps only — never auto-delete real pins. */
   function pruneAccidentalFreeplacePins(floorId?: string) {
     const fid = floorId || selectedFloor;
     if (!fid) return;
-    const n = useWorkflowStore.getState().pruneEmptyFreeplacePinsOnFloor(fid);
-    if (n > 0) {
-      setToast(`Removed ${n} accidental free-place point${n === 1 ? '' : 's'}`);
-    }
+    // Disabled as a silent mass-delete path. Empty freeplace pins with Flat·Room
+    // labels were being wiped whenever a manager opened a floor (especially after
+    // stitch failures emptied captureIds). Manual cleanup remains in Settings.
+    void fid;
   }
 
   const selectedPinObj = selectedPinId ? allPins.find(p => p.id === selectedPinId) ?? null : null;
+  const selectedPinHasCapture = selectedPinObj
+    ? pinHasOwnCapture(selectedPinObj.captureIds, ownCaptureIds)
+    : false;
+  const selectedPinMineIds = selectedPinObj
+    ? (ownCaptureIds
+        ? selectedPinObj.captureIds.filter(id => ownCaptureIds.has(id))
+        : selectedPinObj.captureIds)
+    : [];
 
   const stepIdx = STEPS.findIndex(s => s.key === step);
   const selectedProjectObj = projects.find(p => p.id === selectedProject);
@@ -1513,6 +1539,7 @@ export default function CaptureWorkflowPage() {
      listener below. */
   async function runPinUpload(pinId: string, files: File[]) {
     uploadingPinsRef.current.add(pinId);            // synchronous — blocks double-fire
+    failedFilesRef.current.delete(pinId);         // fresh capture supersedes a disk-write failure
     setPinStatus(s => ({ ...s, [pinId]: 'queued' }));
     try {
       // Every file goes through the durable queue. Same-session uploads still
@@ -1593,6 +1620,9 @@ export default function CaptureWorkflowPage() {
             // queue" must not clear the 'queued' marker for an in-progress save;
             // this event is global and fires on every other pin's queue write.
             if (prev[pinId]) next[pinId] = prev[pinId];
+          } else if (prev[pinId] === 'failed' && !failedFilesRef.current.has(pinId)) {
+            // Failed queue row was cleared (Capture Again) — drop stale red chrome.
+            changed = true;
           } else if (prev[pinId] !== 'failed' || failedFilesRef.current.has(pinId)) {
             // Queue entry is gone (uploaded, or never queued e.g. legacy
             // in-memory retry) — drop the status unless it's a writeFile-
@@ -1620,6 +1650,15 @@ export default function CaptureWorkflowPage() {
     function onUploadSucceeded(e: Event) {
       const pinId = (e as CustomEvent<{ pinId: string }>).detail?.pinId;
       if (!pinId) return;
+      // Clear stuck Queued/Uploading chrome once this pin has no remaining
+      // queue rows (View History can already show while a leftover entry lingered).
+      if (!fileUploadStatusForPin(pinId)) {
+        setPinStatus(s => {
+          if (!(pinId in s)) return s;
+          const { [pinId]: _gone, ...rest } = s;
+          return rest;
+        });
+      }
       const pin = useWorkflowStore.getState().capturePins.find(p => p.id === pinId);
       const loc = pin?.roomName
         ? `${pin.flatName ? `${pin.flatName} · ` : ''}${pin.roomName}`
@@ -1971,18 +2010,20 @@ export default function CaptureWorkflowPage() {
             const failMessage =
               selStatus === 'failed'
                 ? (fileUploadErrorForPin(selectedPinObj.id)
-                  || (failKind === 'corrupt'
-                    ? 'This capture is corrupted or unsupported — please capture again.'
-                    : 'Upload failed — retry or capture again'))
+                  || (failKind === 'stitch'
+                    ? 'Stitching failed — retry stitch or upload a Studio JPEG'
+                    : failKind === 'corrupt'
+                      ? 'This capture is corrupted or unsupported — please capture again.'
+                      : 'Upload failed — retry or capture again'))
                 : undefined;
             return (
             <Box sx={{ mb: 2.5, p: 2, borderRadius: '14px', border: `1.5px solid ${selStatus === 'failed' ? '#fca5a5' : P.border}`, backgroundColor: P.white, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0 }}>
                 <Box sx={{
                   width: 14, height: 14, borderRadius: '50%', flexShrink: 0,
-                  backgroundColor: selStatus === 'failed' ? '#dc2626' : selectedPinObj.captureIds.length > 0 ? '#16a34a' : '#2563eb',
+                  backgroundColor: selStatus === 'failed' ? '#dc2626' : selectedPinHasCapture ? '#16a34a' : '#2563eb',
                   border: '2px solid #fff',
-                  boxShadow: selectedPinObj.captureIds.length > 0
+                  boxShadow: selectedPinHasCapture
                     ? '0 0 0 2px rgba(22,163,74,0.35)'
                     : '0 0 0 2px rgba(37,99,235,0.35)',
                 }} />
@@ -1998,10 +2039,14 @@ export default function CaptureWorkflowPage() {
                       : selStatus === 'processing'
                         ? 'Uploaded — stitching 360° in background'
                         : selStatus === 'queued'
-                          ? 'Saved on device — will upload once online'
+                          ? (fileUploadAwaitingAttach(selectedPinObj.id)
+                            ? 'Uploaded — linking to this point…'
+                            : (typeof navigator !== 'undefined' && navigator.onLine
+                              ? 'Saved — uploading…'
+                              : 'Saved on device — will upload once online'))
                           : selStatus === 'failed'
                             ? failMessage
-                            : selectedPinObj.captureIds.length > 0
+                            : selectedPinHasCapture
                               ? `Uploaded · #${floorPins.find(p => p.id === selectedPinObj.id)?.uploadSequence ?? '—'}`
                               : 'No capture yet — tap Upload Capture'}
                   </Typography>
@@ -2028,8 +2073,45 @@ export default function CaptureWorkflowPage() {
                         <AddAPhotoRounded sx={{ fontSize: 15 }} /> Capture Again
                       </Box>
                     )}
+                    {/* Stitch quality failure: re-run server stitch on retained raw. */}
+                    {failKind === 'stitch' && (
+                      <Box
+                        onClick={() => { retryPinUpload(selectedPinObj.id); }}
+                        sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue } }}
+                      >
+                        <CloudUploadRounded sx={{ fontSize: 15 }} /> Retry Stitch
+                      </Box>
+                    )}
+                    {/* Studio equirect JPEG replaces the failed raw stitch. */}
+                    {failKind === 'stitch' && (
+                      <Box
+                        component="label"
+                        sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue } }}
+                      >
+                        <AddAPhotoRounded sx={{ fontSize: 15 }} /> Upload Studio JPEG
+                        <Box
+                          component="input"
+                          type="file"
+                          accept=".jpg,.jpeg,.png"
+                          sx={{ display: 'none' }}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                            const file = e.target.files?.[0];
+                            (e.target as HTMLInputElement).value = '';
+                            if (!file) return;
+                            void (async () => {
+                              const jobId = fileUploadStitchJobIdForPin(selectedPinObj.id);
+                              await discardFileUpload(selectedPinObj.id);
+                              if (jobId) {
+                                useWorkflowStore.getState().discardStitchFailedCapture(selectedPinObj.id, jobId);
+                              }
+                              await enqueueFileUpload(selectedPinObj.id, file);
+                            })();
+                          }}
+                        />
+                      </Box>
+                    )}
                     {/* Retry only when re-sending the same bytes could help. */}
-                    {failKind !== 'corrupt' && (
+                    {failKind === 'upload' && (
                       <Box
                         onClick={() => { retryPinUpload(selectedPinObj.id); }}
                         sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue } }}
@@ -2047,7 +2129,8 @@ export default function CaptureWorkflowPage() {
                 )}
                 {selStatus === 'queued' && (
                   <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600 }}>
-                    <CloudUploadRounded sx={{ fontSize: 15 }} /> Queued
+                    <CloudUploadRounded sx={{ fontSize: 15 }} />
+                    {fileUploadAwaitingAttach(selectedPinObj.id) ? 'Linking…' : 'Queued'}
                   </Box>
                 )}
                 {/* Capture Again / Take Picture — available whenever the pin isn't
@@ -2060,7 +2143,7 @@ export default function CaptureWorkflowPage() {
                     sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
                   >
                     <CameraAltRounded sx={{ fontSize: 15 }} />
-                    {selectedPinObj.captureIds.length > 0 ? 'Capture Again' : 'Take Picture'}
+                    {selectedPinHasCapture ? 'Capture Again' : 'Take Picture'}
                   </Box>
                 ) : (
                   <Box
@@ -2068,11 +2151,11 @@ export default function CaptureWorkflowPage() {
                     sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
                   >
                     <AddAPhotoRounded sx={{ fontSize: 15 }} />
-                    {selectedPinObj.captureIds.length > 0 ? 'Capture Again' : 'Upload Capture'}
+                    {selectedPinHasCapture ? 'Capture Again' : 'Upload Capture'}
                   </Box>
                 ))}
                 {(() => {
-                  const latestCaptureId = selectedPinObj.captureIds[selectedPinObj.captureIds.length - 1];
+                  const latestCaptureId = selectedPinMineIds[selectedPinMineIds.length - 1];
                   const captureExists = latestCaptureId && allCaptures.some(c => c.id === latestCaptureId);
                   return captureExists ? (
                     <Box
@@ -2084,24 +2167,9 @@ export default function CaptureWorkflowPage() {
                   ) : null;
                 })()}
                 <Box
-                  onClick={() => {
-                    // Drop any upload tracking for the pin along with the pin itself
-                    // — including its on-device queued file, if any, so a deleted
-                    // pin can never come back via a queued upload finishing later.
-                    failedFilesRef.current.delete(selectedPinObj.id);
-                    void discardFileUpload(selectedPinObj.id);
-                    setPinStatus(s => {
-                      const { [selectedPinObj.id]: _gone, ...rest } = s;
-                      return rest;
-                    });
-                    deleteCapturePin(selectedPinObj.id);
-                    setSelectedPinId(null);
-                  }}
-                  sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.125, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', cursor: 'pointer', '&:hover': { borderColor: '#ef4444', color: '#ef4444', backgroundColor: 'rgba(239,68,68,0.05)' } }}
+                  onClick={() => setSelectedPinId(null)}
+                  sx={{ display: 'inline-flex', alignItems: 'center', px: 0.75, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, cursor: 'pointer', '&:hover': { color: P.strong } }}
                 >
-                  <DeleteOutlineRounded sx={{ fontSize: 15 }} />
-                </Box>
-                <Box onClick={() => setSelectedPinId(null)} sx={{ display: 'inline-flex', alignItems: 'center', px: 0.75, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, cursor: 'pointer', '&:hover': { color: P.strong } }}>
                   <CloseRounded sx={{ fontSize: 15 }} />
                 </Box>
               </Box>
@@ -2190,11 +2258,11 @@ export default function CaptureWorkflowPage() {
                         : 'Upload Capture Image'}
                     </Typography>
                     <Typography sx={{ fontSize: '0.8125rem', color: P.muted, mb: 1 }}>Drag & drop or click to browse</Typography>
-                    <Typography sx={{ fontSize: '0.6875rem', color: P.subtle, mb: 2 }}>Supported: .jpg .jpeg .png .dng .insp</Typography>
+                    <Typography sx={{ fontSize: '0.6875rem', color: P.subtle, mb: 2 }}>Supported: .jpg .jpeg .png .dng .insp .insv</Typography>
                     <Box component="label" htmlFor="capture-file-input" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 2, py: 0.875, borderRadius: '8px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, cursor: isUploading ? 'default' : 'pointer', fontSize: '0.8125rem', fontWeight: 700, color: P.white, boxShadow: '0 4px 14px rgba(37,99,235,0.3)', opacity: isUploading ? 0.7 : 1, '&:hover': { opacity: isUploading ? 0.7 : 0.9 } }}>
                       <PhotoCameraRounded sx={{ fontSize: 16 }} /> {isUploading ? 'Uploading…' : 'Browse & Upload'}
                     </Box>
-                    <Box component="input" id="capture-file-input" type="file" multiple accept=".jpg,.jpeg,.png,.dng,.insp" disabled={isUploading} onChange={(e: React.ChangeEvent<HTMLInputElement>) => { void handleCaptureFiles(e.target.files); (e.target as HTMLInputElement).value = ''; }} sx={{ display: 'none' }} />
+                    <Box component="input" id="capture-file-input" type="file" multiple accept=".jpg,.jpeg,.png,.dng,.insp,.insv" disabled={isUploading} onChange={(e: React.ChangeEvent<HTMLInputElement>) => { void handleCaptureFiles(e.target.files); (e.target as HTMLInputElement).value = ''; }} sx={{ display: 'none' }} />
                     {uploadError && <Typography sx={{ mt: 1.75, fontSize: '0.8125rem', color: P.red }}>{uploadError}</Typography>}
                   </>
                 ) : (

@@ -2,6 +2,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.dependencies import (
     OrgContext,
@@ -12,10 +13,8 @@ from app.core.dependencies import (
     require_manager_or_admin,
 )
 from app.core.exceptions import ForbiddenException
-from pydantic import BaseModel, Field
-
 from app.models.user import UserDocument
-from app.schemas.auth import ApiResponse
+from app.schemas.auth import ApiResponse, _validate_password
 from app.schemas.user import UpdateUserRequest, UserDetailResponse, UserListResponse, UserResponse
 from app.services.auth_service import AuthService
 from app.services.user_service import UserService
@@ -25,6 +24,15 @@ router = APIRouter(prefix="/users", tags=["Users"])
 
 class SetUserProjectsRequest(BaseModel):
     project_ids: list[str] = Field(default_factory=list)
+
+
+class AdminSetPasswordRequest(BaseModel):
+    new_password: str = Field(..., min_length=8)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_policy(cls, v: str) -> str:
+        return _validate_password(v)
 
 
 @router.get(
@@ -200,6 +208,27 @@ async def set_user_projects(
         data={"assigned_project_ids": assigned},
         message="Project assignments updated",
     )
+
+
+@router.put(
+    "/{user_id}/password",
+    response_model=ApiResponse[None],
+    summary="Admin sets another user's password",
+)
+async def admin_set_user_password(
+    user_id: str,
+    payload: AdminSetPasswordRequest,
+    caller: UserDocument = Depends(require_admin),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+) -> ApiResponse[None]:
+    service = UserService(db)
+    await service.set_password_as_admin(
+        target_user_id=user_id,
+        org_id=str(caller.org_id),
+        caller_id=caller.id,
+        new_password=payload.new_password,
+    )
+    return ApiResponse(success=True, data=None, message="Password updated")
 
 
 @router.delete(
