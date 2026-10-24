@@ -1,0 +1,21 @@
+# Keep the build context small; deps are installed fresh inside the image.
+node_modules/
+dist/
+.pdf-preview/
+
+# Local env files — VITE_* values are passed as build args instead
+.env
+.env.*
+
+# Native Android shell (Capacitor) is not part of the web image
+android/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+Dockerfile
+.dockerignore
+.git
+.gitignore

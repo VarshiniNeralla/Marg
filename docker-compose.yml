@@ -1,0 +1,122 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SiteVision — local Docker stack
+#
+#   browser ──► frontend (nginx :8080) ──/api, /media──► backend (FastAPI :8002)
+#                                                          ├─► MongoDB Atlas   (MONGO_URI)
+#                                                          ├─► Upstash Redis   (REDIS_URL)
+#                                                          ├─► Cloudinary      (floor plans)
+#                                                          ├─► Gemma / vLLM    (VLLM_BASE_URL)
+#                                                          └─► ./uploads       (captures on disk)
+#
+# Start:  docker compose up -d --build      Open: http://localhost:8080
+# Full guide: docker_setup.md
+#
+# Values written as ${NAME:-default} can be changed in a .env file next to this
+# file (see .env.example). App secrets live in backend/.env (never in images).
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: sitevision
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: sitevision-backend:${IMAGE_TAG:-latest}
+    container_name: sitevision-backend
+    restart: unless-stopped
+    init: true
+
+    # All app settings/secrets (Mongo Atlas, JWT, Cloudinary, Redis, Groq, ...).
+    env_file:
+      - ./backend/.env
+
+    # Docker-specific overrides — these win over backend/.env.
+    environment:
+      # Uploads go to the mounted folder below, not the Windows path in .env.
+      UPLOAD_ROOT: /srv/uploads
+      # Browser reaches the API through nginx on the SAME origin, so the
+      # refresh cookie needs no cross-site mode. Blank = "lax" in development.
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-}
+      # Used to build password-reset links in emails.
+      FRONTEND_URL: ${FRONTEND_PUBLIC_URL:-http://localhost:8080}
+      # Gemma (vLLM). Inside a container 127.0.0.1 is the container itself;
+      # host.docker.internal = "the Windows machine running Docker Desktop".
+      VLLM_BASE_URL: ${VLLM_BASE_URL:-http://host.docker.internal:8000}
+
+    volumes:
+      # Captures / 360 stitches / stitch-spool. Bind-mounted to the repo's
+      # uploads/ folder (gitignored) so files are visible in Explorer and
+      # survive container/image rebuilds.
+      - ./uploads:/srv/uploads
+      # Human review log the app appends to (repo-root manual_review.json).
+      - ./manual_review.json:/srv/manual_review.json
+
+    # Makes host.docker.internal work on Linux hosts too (built in on Docker Desktop).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # Direct API access for Swagger (/docs), the Android app and debugging.
+    # Remove this mapping if only the browser UI is needed.
+    ports:
+      - "${BACKEND_PORT:-8002}:8002"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+    stop_grace_period: 30s
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # "/" = call the API on the same origin (nginx proxies it). See Dockerfile.
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/}
+        VITE_CLOUDINARY_CLOUD_NAME: ${VITE_CLOUDINARY_CLOUD_NAME:-}
+        VITE_CLOUDINARY_UPLOAD_PRESET: ${VITE_CLOUDINARY_UPLOAD_PRESET:-}
+    image: sitevision-frontend:${IMAGE_TAG:-latest}
+    container_name: sitevision-frontend
+    restart: unless-stopped
+
+    environment:
+      BACKEND_UPSTREAM: backend:8002
+
+    ports:
+      - "${FRONTEND_PORT:-8080}:8080"
+
+    # nginx resolves "backend" at start-up, so wait until the API is healthy.
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging: *default-logging
+
+# Both services join the default "sitevision_default" bridge network and reach
+# each other by service name (backend, frontend).
+#
+# The subnet is pinned on purpose: Docker otherwise auto-picks from 172.17–31.x,
+# and the office LAN is 172.20.0.0/16 — an overlap makes LAN hosts such as the
+# Gemma server unreachable from the containers ("No route to host").
+# If this range is ever used on your network, change DOCKER_SUBNET in .env.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${DOCKER_SUBNET:-192.168.213.0/24}

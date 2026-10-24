@@ -1,0 +1,42 @@
+# Keep the build context small and secret-free.
+
+# Secrets / local config — injected at run time, never baked into the image
+.env
+.env.*
+!.env.example
+
+# Python / tooling caches
+.venv/
+venv/
+__pycache__/
+*.py[oc]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+wheels/
+
+# Media and debug output (uploads are mounted as a volume at run time)
+uploads/
+stitch-spool/
+Debug files/
+debug_*
+debug_dir_*/
+debug_out/
+debug_thumbnails/
+*_test.jpg
+
+# Not needed at run time
+tests/
+tools/
+inspect_*.py
+*.md
+uv.lock
+pyproject.toml
+.python-version
+Dockerfile
+.dockerignore
+.git
+.gitignore

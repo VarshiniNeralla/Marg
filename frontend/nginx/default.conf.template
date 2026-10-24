@@ -1,0 +1,71 @@
+# Rendered at container start by envsubst (nginx image entrypoint):
+#   ${BACKEND_UPSTREAM}, ${CLIENT_MAX_BODY_SIZE}, ${PROXY_TIMEOUT}
+
+server {
+    listen 8080;
+    server_name _;
+
+    root  /usr/share/nginx/html;
+    index index.html;
+
+    # Raw 360 captures (.dng/.insp) are up to 64 MB each and several can be sent
+    # in one multipart request.
+    client_max_body_size ${CLIENT_MAX_BODY_SIZE};
+
+    gzip on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+
+    # Security headers for the SPA. (nginx drops inherited add_header lines in
+    # any location that sets its own, so those locations repeat them below.)
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    add_header X-Frame-Options SAMEORIGIN always;
+
+    # Container health probe (no backend dependency).
+    location = /nginx-health {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # ── API + media → FastAPI backend ────────────────────────────────────────
+    location /api/ {
+        proxy_pass http://${BACKEND_UPSTREAM};
+        include /etc/nginx/conf.d/proxy_common.inc;
+    }
+
+    location /media/ {
+        proxy_pass http://${BACKEND_UPSTREAM};
+        include /etc/nginx/conf.d/proxy_common.inc;
+    }
+
+    # Backend health + API docs (docs only exist when APP_ENV != production).
+    location ~ ^/(health(/ready)?|docs(/.*)?|redoc|openapi\.json)$ {
+        proxy_pass http://${BACKEND_UPSTREAM};
+        include /etc/nginx/conf.d/proxy_common.inc;
+    }
+
+    # ── Static SPA ───────────────────────────────────────────────────────────
+    # Vite emits content-hashed files under /assets → safe to cache forever.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options nosniff always;
+        try_files $uri =404;
+    }
+
+    # Client-side routing: unknown paths fall back to index.html. index.html
+    # itself is never cached so new deploys are picked up immediately.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
+        add_header X-Frame-Options SAMEORIGIN always;
+    }
+}
