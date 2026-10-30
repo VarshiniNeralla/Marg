@@ -34,6 +34,14 @@ class SecurityHeadersMiddleware:
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
+                # Multi-tenant: responses depend on the Host; never let a shared cache mix tenants,
+                # and never cache authenticated API data.
+                from app.core.tenancy import multi_tenant_enabled
+
+                if multi_tenant_enabled():
+                    headers.append("Vary", "Host")
+                    if str(scope.get("path", "")).startswith("/api/"):
+                        headers.setdefault("Cache-Control", "no-store")
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 headers.setdefault("X-Frame-Options", "DENY")
                 headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")

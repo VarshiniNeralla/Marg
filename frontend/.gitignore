@@ -2,6 +2,11 @@ node_modules
 dist
 .env
 .env.*
+# tenant build configs contain no secrets (API URLs only) and are meant to be shared
+!.env.kohinoor
+!.env.myhome
+!.env.kohinoor-production
+!.env.myhome-production
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

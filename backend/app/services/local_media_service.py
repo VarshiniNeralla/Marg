@@ -33,6 +33,43 @@ def upload_root() -> Path:
     return (Path(__file__).resolve().parents[3] / "uploads").resolve()
 
 
+def private_work_dir(name: str) -> Path:
+    """
+    Private processing directory (raw spool, failure artifacts). Never served.
+    Legacy layout: <root>/<name> (unchanged). Tenant layout: <root>/<tenant>/_work/<name>, which is both
+    tenant-scoped and under the `_work` segment that /media refuses to serve.
+    """
+    from app.core.tenancy import storage_tenant
+
+    root = ensure_upload_root()
+    tenant = storage_tenant()
+    if tenant is not None:
+        return root / tenant.slug / "_work" / name
+    return root / name
+
+
+def resolve_stored_file(rel: str) -> Path | None:
+    """
+    The file for a stored relative path. A legacy SiteVision/... path whose original is gone falls back to the
+    verified copy under <tenant>/sites|users/... (same bytes), so originals can later be retired without
+    rewriting any database reference. Never leaves the upload root.
+    """
+    from app.core.tenancy import legacy_to_tenant_relpath
+
+    root = upload_root().resolve()
+    for candidate_rel in (rel, legacy_to_tenant_relpath(rel)):
+        if not candidate_rel:
+            continue
+        cand = (root / candidate_rel).resolve()
+        try:
+            cand.relative_to(root)
+        except ValueError:
+            continue
+        if cand.is_file():
+            return cand
+    return None
+
+
 def ensure_upload_root() -> Path:
     root = upload_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -108,15 +145,29 @@ def media_url_for_public_id(public_id: str) -> str:
 def local_asset_exists(public_id: str | None) -> bool:
     if not is_local_public_id(public_id):
         return False
+    from app.services import object_store
+
     try:
-        return disk_path_for_public_id(public_id).is_file()
+        if disk_path_for_public_id(public_id).is_file():
+            return True
     except Exception:
-        return False
+        pass
+    if object_store.s3_enabled():
+        rel = relative_path_from_public_id(public_id)
+        from app.core.tenancy import legacy_to_tenant_relpath
+
+        return any(object_store.object_exists(k) for k in (rel, legacy_to_tenant_relpath(rel)) if k)
+    return False
 
 
 def delete_local_asset(public_id: str | None) -> bool:
     """Best-effort delete of the original plus preview/thumbnail siblings."""
     if not is_local_public_id(public_id):
+        return False
+    from app.core.tenancy import media_path_allowed
+
+    if not media_path_allowed(relative_path_from_public_id(public_id)):
+        logger.warning(f"[local-media] refusing cross-tenant delete: {public_id!r}")
         return False
     try:
         path = disk_path_for_public_id(public_id)
@@ -124,14 +175,24 @@ def delete_local_asset(public_id: str | None) -> bool:
         logger.warning(f"[local-media] invalid public_id for delete: {public_id!r} ({exc})")
         return False
     deleted = False
-    siblings = (
-        path,
-        # Thumbs live under …/thumbs/ so the capture folder is not cluttered.
-        path.parent / "thumbs" / f"{path.stem}_thumb.jpg",
-        # Legacy: thumb written beside the original.
-        path.with_name(f"{path.stem}_thumb.jpg"),
-        path.with_name(f"{path.stem}_preview.png"),
-    )
+    bases = [path]
+    # A legacy SiteVision/ asset may also have a verified copy under <tenant>/sites|users/: remove both, so
+    # deleting a capture never leaves an orphaned duplicate behind.
+    from app.core.tenancy import legacy_to_tenant_relpath
+
+    alt_rel = legacy_to_tenant_relpath(relative_path_from_public_id(public_id))
+    if alt_rel:
+        bases.append(upload_root() / alt_rel)
+    siblings = []
+    for base in bases:
+        siblings += [
+            base,
+            # Thumbs live under …/thumbs/ so the capture folder is not cluttered.
+            base.parent / "thumbs" / f"{base.stem}_thumb.jpg",
+            # Legacy: thumb written beside the original.
+            base.with_name(f"{base.stem}_thumb.jpg"),
+            base.with_name(f"{base.stem}_preview.png"),
+        ]
     for candidate in siblings:
         try:
             if candidate.is_file():
@@ -140,6 +201,27 @@ def delete_local_asset(public_id: str | None) -> bool:
                 logger.info(f"[local-media] deleted {candidate}")
         except Exception as exc:
             logger.warning(f"[local-media] failed to delete {candidate}: {exc!r}")
+    from app.services import object_store
+
+    if object_store.s3_enabled():
+        from pathlib import PurePosixPath
+
+        rels = [relative_path_from_public_id(public_id)] + ([alt_rel] if alt_rel else [])
+        for r in rels:
+            p = PurePosixPath(r)
+            for key in (
+                r,
+                (p.parent / "thumbs" / f"{p.stem}_thumb.jpg").as_posix(),
+                (p.parent / "thumbs" / f"{p.stem}_thumb.png").as_posix(),
+                p.with_name(f"{p.stem}_thumb.jpg").as_posix(),
+                p.with_name(f"{p.stem}_preview.png").as_posix(),
+            ):
+                try:
+                    if object_store.delete_object(key):
+                        deleted = True
+                        logger.info(f"[local-media] deleted s3://{object_store.bucket_name()}/{key}")
+                except Exception as exc:
+                    logger.warning(f"[local-media] failed to delete s3 key {key}: {exc!r}")
     return deleted
 
 
@@ -225,12 +307,29 @@ def _rasterize_pdf_page1(data: bytes, *, dpi: int = 300) -> Optional[tuple[bytes
         return None
 
 
+def _persist(rel: str, data: bytes) -> None:
+    """Store one object under its relative path: in S3 when MEDIA_OBJECT_STORE=s3, else on disk under UPLOAD_ROOT."""
+    from app.services import object_store
+
+    if object_store.s3_enabled():
+        object_store.put_object(rel, data)
+        return
+    root = ensure_upload_root()
+    dest = (root / Path(rel)).resolve()
+    if not _is_under_root(dest, root):
+        raise RuntimeError("Refusing to write outside upload root")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+
+
 def _write_local_sync(
     *,
     data: bytes,
     filename: str,
     folder: str,
 ) -> dict:
+    from app.services import object_store
+
     root = ensure_upload_root()
     safe_folder = _safe_folder(folder)
     safe_name = _safe_filename(filename)
@@ -239,8 +338,8 @@ def _write_local_sync(
     dest = (root / Path(rel)).resolve()
     if not _is_under_root(dest, root):
         raise RuntimeError("Refusing to write outside upload root")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(data)
+    _persist(rel, data)
+    store = "s3" if object_store.s3_enabled() else "disk"
 
     public_id = f"{_LOCAL_PUBLIC_ID_PREFIX}{rel}"
     fmt = _guess_format(filename, data)
@@ -259,17 +358,14 @@ def _write_local_sync(
         if rendered is not None:
             png_bytes, width, height = rendered
             preview_name = f"{dest.stem}_preview.png"
-            preview_path = dest.with_name(preview_name)
-            preview_path.write_bytes(png_bytes)
             preview_rel = f"{safe_folder}/{preview_name}".replace("\\", "/")
+            _persist(preview_rel, png_bytes)
             original_url = media_url_for_public_id(f"{_LOCAL_PUBLIC_ID_PREFIX}{preview_rel}")
             thumb_bytes = _make_thumbnail_bytes(png_bytes, preview_name)
             if thumb_bytes is not None:
                 thumb_name = f"{dest.stem}_thumb.jpg"
-                thumb_dir = dest.parent / "thumbs"
-                thumb_dir.mkdir(parents=True, exist_ok=True)
-                (thumb_dir / thumb_name).write_bytes(thumb_bytes)
                 thumb_rel = f"{safe_folder}/thumbs/{thumb_name}".replace("\\", "/")
+                _persist(thumb_rel, thumb_bytes)
                 thumb_url = media_url_for_public_id(f"{_LOCAL_PUBLIC_ID_PREFIX}{thumb_rel}")
             else:
                 thumb_url = original_url
@@ -289,10 +385,8 @@ def _write_local_sync(
             # Keep gallery thumbs out of the main captures folder so Explorer
             # shows one file per capture (not original + *_thumb.jpg twins).
             thumb_name = f"{Path(unique).stem}_thumb.jpg"
-            thumb_dir = dest.parent / "thumbs"
-            thumb_dir.mkdir(parents=True, exist_ok=True)
-            (thumb_dir / thumb_name).write_bytes(thumb_bytes)
             thumb_rel = f"{safe_folder}/thumbs/{thumb_name}".replace("\\", "/")
+            _persist(thumb_rel, thumb_bytes)
             thumb_url = media_url_for_public_id(f"{_LOCAL_PUBLIC_ID_PREFIX}{thumb_rel}")
         try:
             with Image.open(BytesIO(data)) as img:
@@ -317,7 +411,9 @@ def _write_local_sync(
         "pages": pages,
         "original_filename": filename,
         "raw_pdf_url": raw_pdf_url,
+        # "local" = app-managed /media store (the public_id contract); "store" says where the bytes live.
         "storage": "local",
+        "store": store,
     }
 
 

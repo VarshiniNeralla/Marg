@@ -34,7 +34,12 @@ RUN npm run build
 
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
-FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
+FROM nginxinc/nginx-unprivileged:1.28-alpine AS runtime
+
+# Pick up OS security patches published after the base image was built (openssl, curl, libxml2, ...).
+USER root
+RUN apk upgrade --no-cache
+USER 101
 
 # Where nginx forwards /api and /media. "backend:8002" is the Compose service
 # name; on AWS ECS set it to e.g. "localhost:8002" (same task) or an internal

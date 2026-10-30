@@ -34,6 +34,17 @@ import { uploadCaptureFiles, getCaptureStitchJob, retryCaptureStitchJob, type Up
 import { captureAwaitingPanorama, captureStitchJobId } from '@/utils/captureMedia';
 import { setPendingUploadPins, removePendingUploadPin, addPendingUploadPin } from './pendingUploadRegistry';
 import { isTombstoned } from './tombstones';
+import { SingleFlight, healCopy, writeVerifiedCopy, type FsLike } from './safeFileCopy';
+
+/** The real filesystem, shaped for safeFileCopy (which is tested against a fake one). */
+const realFs: FsLike = {
+  writeFile: o => Filesystem.writeFile({ path: o.path, data: o.data, directory: o.directory as Directory, recursive: o.recursive }),
+  appendFile: o => Filesystem.appendFile({ path: o.path, data: o.data, directory: o.directory as Directory }),
+  stat: async o => ({ size: (await Filesystem.stat({ path: o.path, directory: o.directory as Directory })).size }),
+  copy: o => Filesystem.copy({ from: o.from, to: o.to, directory: o.directory as Directory, toDirectory: o.toDirectory as Directory }),
+  deleteFile: o => Filesystem.deleteFile({ path: o.path, directory: o.directory as Directory }),
+  mkdir: o => Filesystem.mkdir({ path: o.path, directory: o.directory as Directory, recursive: o.recursive }),
+};
 
 const QUEUE_KEY = 'sitesurelabs-file-upload-queue-v1';
 const FILE_DIR = 'pending-uploads';
@@ -52,6 +63,8 @@ const MAX_MEMORY_FILES = 2;
 /** Binary chunk size for durable writes. Keeps each base64 string ~340KB so we
  *  never allocate one giant 16MB+ string on the JS heap. */
 const DISK_CHUNK_BYTES = 256 * 1024;
+/** The stored copy of a photo is damaged and could not be repaired. The photo is KEPT; nothing is deleted. */
+const DAMAGED_COPY_STATUS = -2;
 /** Attach/upload aborted because the pin was intentionally deleted. Not a
  *  network failure — must discard the queue entry, never retry/repost. */
 const PIN_DELETED_STATUS = 410;
@@ -86,7 +99,11 @@ export interface PendingFileUpload {
   bytesReady?: boolean;
   fileName: string;          // original captured filename, for the multipart part
   mimeType: string;
+  /** Exact size of the photo when it was queued. A stored copy with any other size is damaged and is repaired or
+   *  refused, never uploaded. */
+  expectedBytes?: number;
   attempts: number;
+  /** When the photo was TAKEN (queue time). Used as the capture's capturedAt, so pin numbers follow shooting order. */
   createdAt: number;
   status: FileUploadStatus;
   /**
@@ -410,32 +427,22 @@ function blobToBase64(blob: Blob): Promise<string> {
  * mid-write (caller must delete any partial file).
  */
 async function writeFileChunked(entryId: string, file: File, fileUri: string): Promise<boolean> {
-  let offset = 0;
-  let first = true;
-  while (offset < file.size) {
-    if (diskPersistCancelled.has(entryId)) return false;
-    const end = Math.min(offset + DISK_CHUNK_BYTES, file.size);
-    const base64 = await blobToBase64(file.slice(offset, end));
-    if (first) {
-      await Filesystem.writeFile({
-        path: fileUri,
-        data: base64,
-        directory: Directory.Data,
-        recursive: true,
-      });
-      first = false;
-    } else {
-      await Filesystem.appendFile({
-        path: fileUri,
-        data: base64,
-        directory: Directory.Data,
-      });
-    }
-    offset = end;
+  // Verified copy (see safeFileCopy.ts): a native copy of the camera download when it exists, otherwise chunked
+  // writes; either way the result is only "ok" when its size on disk equals the photo's size.
+  const result = await writeVerifiedCopy(realFs, {
+    file,
+    path: fileUri,
+    dir: Directory.Data,
+    folder: FILE_DIR,
+    cacheName: file.name,
+    cacheDir: Directory.Cache,
+    chunkBytes: DISK_CHUNK_BYTES,
+    toBase64: blobToBase64,
+    cancelled: () => diskPersistCancelled.has(entryId),
     // Yield so upload XHR / React can breathe between ~256KB chunks.
-    await new Promise<void>(r => setTimeout(r, 0));
-  }
-  return !diskPersistCancelled.has(entryId);
+    yieldFn: () => new Promise<void>(r => setTimeout(r, 0)),
+  });
+  return result.ok;
 }
 
 /**
@@ -472,7 +479,19 @@ async function spillOldestMemoryFile(): Promise<void> {
   await new Promise<void>(r => setTimeout(r, 250));
 }
 
-async function persistEntryToDisk(entryId: string, file: File): Promise<void> {
+/**
+ * ONE writer per photo. The background writer (scheduleDiskPersist) and the memory-pressure spill
+ * (spillOldestMemoryFile) can both ask to persist the same entry while its chunked write is still running (the entry
+ * is marked bytesReady=false meanwhile). Two writers appending to one path interleave and duplicate chunks, which is
+ * exactly how photos on the tablet ended up 2% to 105% larger than the camera original and un-stitchable.
+ */
+const diskWrites = new SingleFlight();
+
+function persistEntryToDisk(entryId: string, file: File): Promise<void> {
+  return diskWrites.run(entryId, () => persistEntryToDiskOnce(entryId, file));
+}
+
+async function persistEntryToDiskOnce(entryId: string, file: File): Promise<void> {
   if (diskPersistCancelled.has(entryId)) return;
   const entry = queue.find(e => e.id === entryId);
   // Already durable (bytesReady true, or legacy entry with fileUri and no flag).
@@ -485,6 +504,7 @@ async function persistEntryToDisk(entryId: string, file: File): Promise<void> {
   if (!entry.fileUri) {
     entry.fileUri = fileUri;
     entry.bytesReady = false;
+    entry.expectedBytes = file.size;
     await persist();
   }
 
@@ -612,20 +632,24 @@ function isPermanentCorruptFailure(error: string | null | undefined): boolean {
   );
 }
 
+const KEPT_SAFE_MESSAGE =
+  'The server could not process this photo. It is safe on this device: tap Retry, or capture it again.';
+const DAMAGED_COPY_MESSAGE =
+  'The saved copy of this photo is damaged and the camera original is no longer on this device — please capture it again.';
+
+/**
+ * A failed stitch/upload must NEVER delete the photo or its capture. (Field incident 2026-10-30: failures caused by
+ * our own damaged copies made the app erase the capture record AND the only copy on the tablet, so photos vanished and
+ * every later pin renumbered.) The photo, the capture and the job id are all kept; the user chooses Retry or Capture
+ * Again, and files are only deleted after a successful upload or an explicit discard.
+ */
 async function markEntryCorruptFailed(
   entry: PendingFileUpload,
-  message: string = CORRUPT_CAPTURE_MESSAGE,
+  message: string = KEPT_SAFE_MESSAGE,
 ): Promise<void> {
-  const jobId = entry.stitchJobId;
-  if (jobId) {
-    useWorkflowStore.getState().discardStitchFailedCapture(entry.pinId, jobId);
-  }
-  releaseEntryBytes(entry);
-  void deleteLocalFile(entry);
   entry.status = 'failed';
-  entry.failKind = 'corrupt';
+  entry.failKind = 'upload';
   entry.errorMessage = message;
-  delete entry.stitchJobId;
   await persist();
   emitError(message, entry.pinId);
 }
@@ -703,6 +727,20 @@ async function uploadEntry(entry: PendingFileUpload): Promise<boolean> {
         err.status = 0;
         throw err;
       }
+      // Never send a stored copy whose size is wrong: repair it from the camera original, or refuse (and KEEP it).
+      const check = await healCopy(realFs, {
+        path: entry.fileUri,
+        dir: Directory.Data,
+        cacheName: entry.fileName,
+        cacheDir: Directory.Cache,
+        expectedBytes: entry.expectedBytes,
+      });
+      if (check.outcome === 'damaged') {
+        const err = new Error('Saved copy of the photo is damaged') as Error & { status: number };
+        err.status = DAMAGED_COPY_STATUS;
+        throw err;
+      }
+      if (check.expectedBytes !== undefined) entry.expectedBytes = check.expectedBytes;
       const { data } = await Filesystem.readFile({
         path: entry.fileUri,
         directory: Directory.Data,
@@ -736,6 +774,7 @@ async function uploadEntry(entry: PendingFileUpload): Promise<boolean> {
     entry.pinId,
     fileCount,
     resultFiles,
+    entry.createdAt, // when the photo was TAKEN, so pin numbers follow shooting order, not upload order
   );
   if (!captureId) {
     // Tombstoned pin → permanent discard. Missing pin/room (hydrate race) →
@@ -788,7 +827,7 @@ async function pollStitchEntry(
     // missing the same photo would be stored twice. We know the id locally, so
     // never rely solely on the server echoing it back.
     const asset = { ...job.asset, stitchJobId: job.asset.stitchJobId ?? jobId };
-    const captureId = useWorkflowStore.getState().attachCaptureToPin(entry.pinId, 1, [asset]);
+    const captureId = useWorkflowStore.getState().attachCaptureToPin(entry.pinId, 1, [asset], entry.createdAt);
     if (!captureId) return 'pending';
     releaseEntryBytes(entry);
     await deleteLocalFile(entry);
@@ -831,6 +870,69 @@ function nextRetryDelay(): number | null {
   return waits.length ? Math.min(...waits) : POLL_MS;
 }
 
+/**
+ * One-time, per app start: check every saved copy against its size/the camera original and REPAIR damaged ones from
+ * the intact camera download instead of discarding anything. Copies written before the single-writer fix can be
+ * larger than the original (duplicated chunks) and cannot be stitched.
+ *
+ * A repaired photo that was already uploaded may have reached the server in its damaged form, so that upload's
+ * capture/job is dropped and the repaired file is sent again; the capture keeps its original shooting time.
+ * Runs before the first upload of the session so nothing is read while it is being replaced.
+ */
+let repairPromise: Promise<void> | null = null;
+
+function repairQueuedCopies(): Promise<void> {
+  if (!repairPromise) {
+    repairPromise = repairQueuedCopiesOnce().catch(err => {
+      // Never block uploads because the repair pass itself failed.
+      console.warn('[fileUploadQueue] copy repair pass failed', err);
+    });
+  }
+  return repairPromise;
+}
+
+async function repairQueuedCopiesOnce(): Promise<void> {
+  let changed = false;
+  for (const entry of [...queue]) {
+    if (!entry.fileUri || entry.bytesReady === false || entry.status === 'uploading') continue;
+    const result = await healCopy(realFs, {
+      path: entry.fileUri,
+      dir: Directory.Data,
+      cacheName: entry.fileName,
+      cacheDir: Directory.Cache,
+      expectedBytes: entry.expectedBytes,
+    });
+    if (result.expectedBytes !== undefined && entry.expectedBytes === undefined) {
+      entry.expectedBytes = result.expectedBytes;
+      changed = true;
+    }
+    if (result.outcome === 'damaged') {
+      if (entry.status !== 'failed') {
+        entry.status = 'failed';
+        entry.failKind = 'corrupt';
+        entry.errorMessage = DAMAGED_COPY_MESSAGE;
+        changed = true;
+      }
+      continue;
+    }
+    if (result.outcome !== 'repaired') continue;
+
+    console.warn(`[fileUploadQueue] repaired damaged copy of ${entry.fileName} from the camera original`);
+    changed = true;
+    if (entry.stitchJobId) {
+      useWorkflowStore.getState().discardStitchFailedCapture(entry.pinId, entry.stitchJobId);
+      delete entry.stitchJobId;
+    }
+    delete entry.uploadedFiles;
+    delete entry.uploadedFileCount;
+    delete entry.failKind;
+    delete entry.errorMessage;
+    entry.attempts = 0;
+    entry.status = 'queued';
+  }
+  if (changed) await persist();
+}
+
 async function flush(): Promise<void> {
   // Coalesce overlapping flush() calls (reconnect + focus + poll) into one
   // follow-up pass instead of starting parallel pin chains.
@@ -851,6 +953,7 @@ async function flush(): Promise<void> {
 
 async function flushOnce(): Promise<void> {
   await load();
+  await repairQueuedCopies();
   if (healOrphanedUploading()) await persist();
   if (!queue.length) return;
   if (!useAuthStore.getState().isAuthenticated) {
@@ -1006,17 +1109,24 @@ async function flushOnce(): Promise<void> {
             await persist();
             break; // wait for the auth layer to refresh; don't burn an attempt
           }
+          if (status === DAMAGED_COPY_STATUS) {
+            // The saved copy is damaged and there is no intact camera original to repair it from.
+            // Keep everything (the file may still be useful) and ask for a recapture.
+            entry.status = 'failed';
+            entry.failKind = 'corrupt';
+            entry.errorMessage = DAMAGED_COPY_MESSAGE;
+            await persist();
+            emitError(entry.errorMessage, entry.pinId);
+            continue;
+          }
           if (isPermanent(status)) {
             // Keep the entry as 'failed' so the pin stays red and the user can
-            // capture again. Dropping it here used to clear the marker and leave
-            // no way to know which pin needed a fresh photo (esp. 422 corrupt).
-            releaseEntryBytes(entry);
-            void deleteLocalFile(entry);
+            // Retry or capture again. The photo and its on-device file are KEPT:
+            // a 4xx (even a 422) can come from a server-side problem, and deleting
+            // the only copy here is how captures were lost.
             entry.status = 'failed';
-            entry.failKind = status === 422 ? 'corrupt' : 'upload';
-            entry.errorMessage =
-              status === 422 ? CORRUPT_CAPTURE_MESSAGE : messageFor(status);
-            delete entry.stitchJobId;
+            entry.failKind = 'upload';
+            entry.errorMessage = status === 422 ? KEPT_SAFE_MESSAGE : messageFor(status);
             await persist();
             emitError(entry.errorMessage, entry.pinId);
             continue;
@@ -1176,6 +1286,7 @@ export async function enqueueFileUpload(
     fileUri: '',
     fileName: file.name,
     mimeType: file.type || 'image/jpeg',
+    expectedBytes: file.size,
     attempts: 0,
     createdAt: Date.now(),
     // With a stitchJobId the bytes are ALREADY on the server (a direct upload
@@ -1323,7 +1434,10 @@ export async function allQueuedPinStatuses(): Promise<Record<string, FileUploadS
  */
 export function retryFileUpload(pinId: string): void {
   const entry = queue.find(e => e.pinId === pinId && e.status === 'failed');
-  if (!entry || entry.failKind === 'corrupt') return;
+  if (!entry) return;
+  const hasBytes = memoryFiles.has(entry.id) || (!!entry.fileUri && entry.bytesReady !== false);
+  // Nothing left to send: the UI must offer Capture Again instead.
+  if (entry.failKind === 'corrupt' && !hasBytes) return;
 
   if (entry.failKind === 'stitch' && entry.stitchJobId) {
     const jobId = entry.stitchJobId;
@@ -1346,6 +1460,14 @@ export function retryFileUpload(pinId: string): void {
     return;
   }
 
+  // Re-send from the saved copy. If an earlier upload left a (failed) capture/job behind, remove that one first so the
+  // retry produces a single clean capture instead of a duplicate.
+  if (entry.stitchJobId) {
+    useWorkflowStore.getState().discardStitchFailedCapture(pinId, entry.stitchJobId);
+    delete entry.stitchJobId;
+  }
+  delete entry.uploadedFiles;
+  delete entry.uploadedFileCount;
   entry.attempts = 0;
   entry.status = 'queued';
   delete entry.failKind;

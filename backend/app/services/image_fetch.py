@@ -62,13 +62,45 @@ def _try_local_media_path(url: str, *, settings: Settings) -> Path | None:
     if not rel or ".." in rel.split("/"):
         raise ValueError("Image URL path is invalid")
 
+    from app.core.tenancy import media_path_allowed
+
+    # A tenant may only read its own stored files (fails closed without a tenant).
+    if not media_path_allowed(rel):
+        raise ValueError("Image URL path is invalid")
+
     root = upload_root()
     path = (root / Path(rel)).resolve()
     try:
-        path.relative_to(root)
+        rel_resolved = path.relative_to(root)
     except ValueError as exc:
         raise ValueError("Image URL path is invalid") from exc
+    if not media_path_allowed(rel_resolved.as_posix()):
+        raise ValueError("Image URL path is invalid")
+    if not path.is_file():
+        from app.services.local_media_service import resolve_stored_file
+
+        path = resolve_stored_file(rel_resolved.as_posix()) or path   # legacy path -> verified tenant copy
     return path
+
+
+def _cloudinary_public_id(path: str) -> str | None:
+    """public_id (without extension) from a Cloudinary delivery path, else None."""
+    import re
+    from urllib.parse import unquote
+
+    segs = [s for s in unquote(path).split("/") if s]
+    for i, s in enumerate(segs):
+        if s in {"upload", "authenticated", "private"} and i >= 2 and segs[i - 1] in {"image", "video", "raw"}:
+            rest = segs[i + 1:]
+            for j, t in enumerate(rest):
+                if re.fullmatch(r"v\d+", t):
+                    rest = rest[j + 1:]
+                    break
+            else:
+                while len(rest) > 1 and re.match(r"^[a-z]{1,3}_", rest[0]):
+                    rest = rest[1:]
+            return re.sub(r"\.[A-Za-z0-9]{2,5}$", "", "/".join(rest)) or None
+    return None
 
 
 def validate_image_url(url: str, *, settings: Settings | None = None) -> str:
@@ -105,6 +137,15 @@ def validate_image_url(url: str, *, settings: Settings | None = None) -> str:
     if not parsed.path or parsed.path == "/":
         raise ValueError("Image URL path is invalid")
 
+    # Multi-tenant: the shared Cloudinary account holds both tenants' files, so only
+    # URLs for this tenant's own assets may be fetched for analysis.
+    from app.core.tenancy import asset_owned, multi_tenant_enabled
+
+    if multi_tenant_enabled() and host.endswith("cloudinary.com"):
+        pid = _cloudinary_public_id(parsed.path)
+        if pid is None or not asset_owned(pid):
+            raise ValueError("Image URL is not available to this organization")
+
     return raw
 
 
@@ -112,9 +153,21 @@ async def download_image(url: str, *, timeout: float) -> tuple[bytes, str]:
     settings = get_settings()
     local_path = _try_local_media_path(url, settings=settings)
     if local_path is not None:
-        if not local_path.is_file():
-            raise ValueError(f"Local media file not found: {local_path.name}")
-        data = local_path.read_bytes()
+        if local_path.is_file():
+            data = local_path.read_bytes()
+        else:
+            # Object-store mode: the file lives in S3 under the same relative path.
+            from anyio import to_thread
+
+            from app.services import object_store
+            from app.services.local_media_service import upload_root
+
+            data = None
+            if object_store.s3_enabled():
+                rel = local_path.resolve().relative_to(upload_root().resolve()).as_posix()
+                data = await to_thread.run_sync(lambda: object_store.read_bytes(rel, max_bytes=MAX_DOWNLOAD_BYTES))
+            if data is None:
+                raise ValueError(f"Local media file not found: {local_path.name}")
         if len(data) > MAX_DOWNLOAD_BYTES:
             raise ValueError("Image download exceeds maximum allowed size")
         return data, _mime_for_path(local_path)

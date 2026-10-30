@@ -27,7 +27,10 @@ async def send_password_reset_email(
 
     In production, uses SMTP with STARTTLS.
     """
-    reset_url = f"{settings.FRONTEND_URL}/reset-password?token={raw_token}"
+    from app.core.tenancy import frontend_base_url
+
+    # Each tenant's users get a link to their own site, never another tenant's.
+    reset_url = f"{frontend_base_url()}/reset-password?token={raw_token}"
 
     if settings.DEBUG:
         logger.info(

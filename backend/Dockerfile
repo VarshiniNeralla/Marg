@@ -37,8 +37,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
 
-# No apt packages needed: opencv-python-headless, rawpy, pymupdf and numpy
-# wheels vendor their own native libraries (incl. OpenMP).
+# No extra apt packages needed: opencv-python-headless, rawpy, pymupdf and numpy
+# wheels vendor their own native libraries (incl. OpenMP). Only OS security patches
+# published after the base image was built are applied (util-linux, zlib, ...).
+# apt is pointed at HTTPS mirrors: some corporate proxies answer plain-HTTP apt requests with 403.
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources \
+ && apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/*
 
 # UPLOAD_ROOT: uploaded media lives on a mounted volume, never in the image.
 ENV PYTHONDONTWRITEBYTECODE=1 \

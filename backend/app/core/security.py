@@ -45,6 +45,38 @@ except (ImportError, AttributeError):
         return _pwd_context.verify(plain_password, hashed_password)
 
 
+# ── Tenant binding ────────────────────────────────────────────────────────────
+# With multi-tenancy on, tokens are signed with a per-tenant derived key AND carry
+# a `tid` claim that must equal the tenant resolved from the request host, so a
+# token minted for one tenant can never authenticate against another.
+
+def _tenant_signing_key(secret: str, purpose: str) -> str:
+    from app.core import tenancy
+
+    try:
+        return tenancy.derive_key(secret, purpose)
+    except tenancy.TenantResolutionError:
+        raise InvalidTokenException("No tenant context")
+
+
+def _tenant_claims() -> dict[str, Any]:
+    from app.core import tenancy
+
+    if not tenancy.multi_tenant_enabled():
+        return {}
+    return {"tid": tenancy.require_tenant().slug}
+
+
+def _assert_token_tenant(payload: dict[str, Any]) -> None:
+    from app.core import tenancy
+
+    if not tenancy.multi_tenant_enabled():
+        return
+    tenant = tenancy.current_tenant()
+    if tenant is None or payload.get("tid") != tenant.slug:
+        raise InvalidTokenException("Token does not belong to this tenant")
+
+
 # ── JWT token creation ────────────────────────────────────────────────────────
 
 def create_access_token(
@@ -75,10 +107,15 @@ def create_access_token(
         "exp": expire,
         "type": "access",
     }
+    payload.update(_tenant_claims())
     if extra_claims:
         payload.update(extra_claims)
 
-    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+    return jwt.encode(
+        payload,
+        _tenant_signing_key(settings.JWT_SECRET, "access"),
+        algorithm=settings.JWT_ALGORITHM,
+    )
 
 
 def create_refresh_token(subject: str, org_id: str) -> tuple[str, str]:
@@ -102,9 +139,12 @@ def create_refresh_token(subject: str, org_id: str) -> tuple[str, str]:
         "exp": expire,
         "type": "refresh",
     }
+    payload.update(_tenant_claims())
 
     token = jwt.encode(
-        payload, settings.JWT_REFRESH_SECRET, algorithm=settings.JWT_ALGORITHM
+        payload,
+        _tenant_signing_key(settings.JWT_REFRESH_SECRET, "refresh"),
+        algorithm=settings.JWT_ALGORITHM,
     )
     return token, jti
 
@@ -119,7 +159,7 @@ def decode_access_token(token: str) -> dict[str, Any]:
     try:
         payload = jwt.decode(
             token,
-            settings.JWT_SECRET,
+            _tenant_signing_key(settings.JWT_SECRET, "access"),
             algorithms=[settings.JWT_ALGORITHM],
         )
     except JWTError as exc:
@@ -128,6 +168,7 @@ def decode_access_token(token: str) -> dict[str, Any]:
 
     if payload.get("type") != "access":
         raise InvalidTokenException("Wrong token type")
+    _assert_token_tenant(payload)
 
     return payload
 
@@ -140,7 +181,7 @@ def decode_refresh_token(token: str) -> dict[str, Any]:
     try:
         payload = jwt.decode(
             token,
-            settings.JWT_REFRESH_SECRET,
+            _tenant_signing_key(settings.JWT_REFRESH_SECRET, "refresh"),
             algorithms=[settings.JWT_ALGORITHM],
         )
     except JWTError as exc:
@@ -149,6 +190,7 @@ def decode_refresh_token(token: str) -> dict[str, Any]:
 
     if payload.get("type") != "refresh":
         raise InvalidTokenException("Wrong token type")
+    _assert_token_tenant(payload)
 
     return payload
 

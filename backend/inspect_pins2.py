@@ -1,10 +1,12 @@
+import sys
+import os
 import asyncio
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from app.services.cloudinary_service import cloudinary_asset_exists
 
-URI = "mongodb+srv://nerallavarshini_db_user:szYt4X2Lnk2TbJLE@cluster0.yyx0t4j.mongodb.net/?appName=Cluster0"
+URI = os.environ.get("MONGO_URI") or sys.exit("Set MONGO_URI (a READ-ONLY Atlas user) in the environment; credentials must not be stored in source")
 
 
 async def main() -> None:

@@ -10,6 +10,9 @@ import { authService as backendAuth } from '@services/authService';
 import { useAuthStore, getRoleLandingPath } from '@store/authStore';
 import { clearClientSessionState, seedSettingsFromUser } from '@store/sessionIsolation';
 import { normaliseError } from '@services/apiClient';
+import { resolveTenantKey, loginTenantState, type ServerTenantState } from '@/config/tenant';
+import { fetchServerTenant } from '@/services/tenantService';
+import { KOHINOOR_DEMO_CREDENTIALS, KOHINOOR_DEMO_PASSWORD_HINT } from '../demoCredentials';
 import AuthCard from '../components/AuthCard';
 import Input from '@shared/components/Input/Input';
 import Button from '@shared/components/Button/Button';
@@ -97,6 +100,21 @@ export default function LoginPage() {
   const [serverError, setServerError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [demoOpen, setDemoOpen] = useState(false);
+  // The page's tenant is only a hint. The SERVER decides the real tenant (Host header) and tells us via GET /tenant;
+  // if the two disagree, or the server cannot be confirmed for Kohinoor, we neither list that organization's demo
+  // accounts nor allow credentials to be sent to a backend that would use another database.
+  const tenantKey = React.useMemo(() => resolveTenantKey(), []);
+  const [serverTenant, setServerTenant] = useState<ServerTenantState>(undefined);
+  React.useEffect(() => {
+    const ctrl = new AbortController();
+    fetchServerTenant(ctrl.signal)
+      .then(setServerTenant)
+      .catch(() => { if (!ctrl.signal.aborted) setServerTenant('error'); });
+    return () => ctrl.abort();
+  }, []);
+  const tenantState = React.useMemo(() => loginTenantState(tenantKey, serverTenant), [tenantKey, serverTenant]);
+  const demoCreds: ReadonlyArray<{ role: string; roleLabel: string; email: string; color: string; password?: string }> =
+    tenantState.demoTenant === 'kohinoor' ? KOHINOOR_DEMO_CREDENTIALS : tenantState.demoTenant === 'myhome' ? DEMO_CREDENTIALS : [];
 
   const from = (location.state as { from?: { pathname: string } })?.from?.pathname;
 
@@ -106,6 +124,7 @@ export default function LoginPage() {
     control,
     watch,
     setValue,
+    setFocus,
     formState: { errors },
   } = useForm<LoginFormValues>({
     resolver: zodResolver(loginSchema),
@@ -121,6 +140,10 @@ export default function LoginPage() {
 
   async function onSubmit(values: LoginFormValues) {
     setServerError('');
+    if (tenantState.blockSignIn) {
+      setServerError(tenantState.message ?? 'Sign-in is disabled for this address.');
+      return;
+    }
     setIsLoading(true);
     try {
       const data = await authService.login({ email: values.email, password: values.password });
@@ -168,7 +191,7 @@ export default function LoginPage() {
         role: authedRole,
         org_id: data.user.org_id,
         org_name: data.user.org_name,
-        org_slug: 'myhome',
+        org_slug: data.user.org_slug && data.user.org_slug !== 'default' ? data.user.org_slug : 'myhome',
         avatar_url: data.user.avatar_url,
         assignedProjectIds: data.user.assignedProjectIds,
       }, 'live');
@@ -212,6 +235,18 @@ export default function LoginPage() {
       subtitle="Access your SiteVision workspace"
     >
       <Box component="form" onSubmit={handleSubmit(onSubmit)} noValidate sx={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+        {tenantState.mismatch && tenantState.message && (
+          <Box role="alert" sx={{
+            display: 'flex', alignItems: 'flex-start', gap: 1.25,
+            px: 2, py: 1.5, mb: 3, borderRadius: '12px',
+            backgroundColor: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.35)',
+          }}>
+            <ErrorRounded sx={{ fontSize: 18, color: '#d97706', flexShrink: 0, mt: '2px' }} />
+            <Typography sx={{ fontSize: '0.875rem', color: '#92400e', lineHeight: 1.5 }}>
+              {tenantState.message}
+            </Typography>
+          </Box>
+        )}
         {serverError && (
           <m.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}>
             <Box sx={{
@@ -339,6 +374,7 @@ export default function LoginPage() {
           variant="primary"
           type="submit"
           loading={isLoading}
+          disabled={tenantState.blockSignIn}
           fullWidth
           sx={{
             height: { xs: '48px', md: '52px' }, borderRadius: '12px', fontSize: { xs: '0.9375rem', md: '1rem' },
@@ -356,7 +392,7 @@ export default function LoginPage() {
         </Button>
 
         {/* Demo credentials — development only */}
-        {!import.meta.env.PROD && (
+        {!import.meta.env.PROD && demoCreds.length > 0 && (
         <Box sx={{ mt: { xs: 2, md: 3 }, pt: { xs: 1.5, md: 2.5 }, borderTop: '1px solid rgba(0,0,0,0.06)' }}>
           <Box
             onClick={() => setDemoOpen(v => !v)}
@@ -390,13 +426,15 @@ export default function LoginPage() {
 
           <Collapse in={demoOpen} timeout={250}>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mt: 1.5 }}>
-              {DEMO_CREDENTIALS.map((cred) => (
+              {demoCreds.map((cred) => (
                 <Box
                   key={cred.role}
                   onClick={() => {
                     setValue('role', cred.role as LoginFormValues['role']);
                     setValue('email', cred.email);
-                    setValue('password', cred.password);
+                    // Kohinoor demo accounts carry no password in source: clear the field and let the user type it.
+                    setValue('password', cred.password ?? '');
+                    if (cred.password === undefined) setFocus('password');
                   }}
                   sx={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -427,6 +465,11 @@ export default function LoginPage() {
                   </Typography>
                 </Box>
               ))}
+              {tenantState.demoTenant === 'kohinoor' && (
+                <Typography sx={{ fontSize: '0.6875rem', color: '#71717a', textAlign: 'center', px: 1 }}>
+                  {KOHINOOR_DEMO_PASSWORD_HINT}
+                </Typography>
+              )}
             </Box>
           </Collapse>
         </Box>

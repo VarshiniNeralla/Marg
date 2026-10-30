@@ -1,0 +1,57 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SiteVision production security group, a dedicated group instead of the shared launch-wizard-1
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for the SiteVision server (the default VPC, where the other servers run)
+    Default: vpc-074211e2b8f54fff3
+  AdminSshCidr:
+    Type: String
+    Default: ''
+    Description: Optional. A single admin address in CIDR form (for example 203.0.113.7/32) allowed to use SSH. Leave empty to keep port 22 closed and use Session Manager.
+    AllowedPattern: '^$|^([0-9]{1,3}\.){3}[0-9]{1,3}/32$'
+
+Conditions:
+  AllowSsh: !Not [!Equals [!Ref AdminSshCidr, '']]
+
+Resources:
+  SiteVisionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: sitevision-prod-sg
+      GroupDescription: SiteVision production web server (HTTP for redirects and certificate renewal, HTTPS for users)
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: sitevision-public-http-redirect-and-acme
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: sitevision-public-https
+      Tags:
+        - Key: Name
+          Value: sitevision-prod-sg
+        - Key: Project
+          Value: SiteVision
+        - Key: Environment
+          Value: prod
+
+  AdminSshRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: AllowSsh
+    Properties:
+      GroupId: !Ref SiteVisionSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: !Ref AdminSshCidr
+      Description: sitevision-admin-ssh
+
+Outputs:
+  SecurityGroupId:
+    Value: !GetAtt SiteVisionSecurityGroup.GroupId

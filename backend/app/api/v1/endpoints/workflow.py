@@ -373,11 +373,15 @@ async def _assert_capture_ids_owned(
 
 
 def _serialise(doc: dict[str, Any]) -> dict[str, Any]:
+    from app.services.media_access import refresh_media_urls_in
+
     out = dict(doc)
     raw_id = out.pop("_id", None)
     out["id"] = str(out.get("id") or raw_id)
     out.pop("orgId", None)
-    return out
+    # HMAC on stored /media URLs expires; re-sign so the tour viewer can load
+    # panoramas that have been on disk longer than MEDIA_URL_TTL_SECONDS.
+    return refresh_media_urls_in(out)
 
 
 def _with_tenant(payload: dict[str, Any], ctx: CallerContext, entity_id: Optional[str] = None) -> dict[str, Any]:
@@ -519,9 +523,9 @@ def _pending_asset_payload(
 # rather than writing a second copy of a ~13MB payload. Spool lives under
 # UPLOAD_ROOT so multi-worker hosts sharing that volume can recover orphans.
 def _spool_raw_upload(dedup_key: str, raw_bytes: bytes, ext: str) -> Path:
-    from app.services.local_media_service import ensure_upload_root
+    from app.services.local_media_service import private_work_dir
 
-    spool_dir = ensure_upload_root() / "stitch-spool"
+    spool_dir = private_work_dir("stitch-spool")
     spool_dir.mkdir(parents=True, exist_ok=True)
     safe_name = dedup_key.rsplit(":", 1)[-1]
     path = spool_dir / f"{safe_name}{ext or '.bin'}"
@@ -926,7 +930,7 @@ async def _release_capture_assets(
     releasable = [a for a in assets if (a or {}).get("public_id") not in keep]
     if not releasable:
         return
-    await delete_media_assets(releasable)
+    await delete_media_assets(releasable, org_id=ctx.org_id)
     await _dedup_evict_for_assets(db, releasable)
 
 
@@ -1568,6 +1572,17 @@ async def delete_capture(capture_id: str, ctx: CallerContext, db: DB, _=Depends(
     if capture:
         assets = capture.get("mediaAssets") or capture.get("media_assets") or []
         await _release_capture_assets(db, ctx, assets)
+        # A photo still waiting in the stitch queue must not be stitched after its capture is gone.
+        stitch_job_id = capture.get("stitchJobId") or next(
+            (a.get("stitchJobId") for a in assets if isinstance(a, dict) and a.get("stitchJobId")), None
+        )
+        if stitch_job_id:
+            try:
+                from app.services.capture_stitch_service import CaptureStitchService
+
+                await CaptureStitchService(db).cancel_pending_job(str(stitch_job_id), ctx.org_id)
+            except Exception:
+                logger.exception("Failed to cancel the waiting stitch job for deleted capture {}", capture_id)
     # Drop progress analyses that compared this capture so saved-report history
     # cannot resurface deleted panorama images in the tour compare UI.
     try:
@@ -1889,7 +1904,7 @@ async def delete_floor_plan(floor_plan_id: str, ctx: CallerContext, db: DB, _=De
         return success_response(message="Floor plan already deleted")
     await _delete(db, "floor_plans", floor_plan_id, ctx)
     assets = plan.get("mediaAssets") or plan.get("media_assets") or []
-    await delete_media_assets(assets)
+    await delete_media_assets(assets, org_id=ctx.org_id)
     return success_response(message="Floor plan deleted")
 
 

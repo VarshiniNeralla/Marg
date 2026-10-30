@@ -9,6 +9,7 @@ from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.config import get_settings
+from app.core import tenancy
 from app.core.exceptions import (
     AccountInactiveException,
     ConflictException,
@@ -70,7 +71,19 @@ class AuthService:
         - An authenticated admin/super_admin may set a role (capped at their own
           privilege) and assign projects, but only within their OWN organisation.
         """
-        # 1. Check email uniqueness (global across all orgs per architecture)
+        # 0. Multi-tenant: the address must belong to this tenant's organization
+        #    domain, and anonymous self-registration (unverified mailbox) is off.
+        from app.core import tenancy
+
+        if tenancy.multi_tenant_enabled():
+            if not tenancy.email_allowed_for_current_tenant(payload.email):
+                raise ValidationException("This e-mail domain is not allowed for this organization")
+            if not (caller and caller.role in ("admin", "super_admin")) and not settings.TENANT_ALLOW_SELF_REGISTRATION:
+                raise ForbiddenException(
+                    "Self-registration is disabled. Ask your organization administrator to create your account."
+                )
+
+        # 1. Check email uniqueness (per tenant database)
         if await self._user_repo.email_exists(payload.email):
             raise ConflictException("An account with this email already exists")
 
@@ -154,7 +167,12 @@ class AuthService:
         Raises InvalidCredentialsException on any auth failure — never reveals
         which field (email or password) was wrong.
         """
-        user = await self._user_repo.find_by_email(payload.email)
+        from app.core import tenancy
+
+        # An address outside this tenant's domain can never authenticate here. Same
+        # generic error and the same bcrypt work as an unknown user (no enumeration).
+        domain_ok = tenancy.email_allowed_for_current_tenant(payload.email)
+        user = await self._user_repo.find_by_email(payload.email) if domain_ok else None
 
         # Constant-time path: always run verify_password even if user not found
         # (pass a dummy hash) to prevent timing-based user enumeration.
@@ -284,7 +302,7 @@ class AuthService:
         Always succeeds (200) regardless of whether the email exists —
         this prevents user enumeration attacks.
         """
-        user = await self._user_repo.find_by_email(email)
+        user = await self._user_repo.find_by_email(email) if tenancy.email_allowed_for_current_tenant(email) else None
 
         if not user or not user.is_active:
             # Silent return — do not reveal whether email is registered
@@ -296,10 +314,13 @@ class AuthService:
 
         await self._user_repo.set_reset_token(user.id, hashed_token, expires_at)
 
+        emailed_token = raw_token
+        if tenancy.email_routing():
+            emailed_token = f"{tenancy.require_tenant().slug}.{raw_token}"   # lets /reset-password pick the database
         await send_password_reset_email(
             to_email=user.email,
             to_name=user.name,
-            raw_token=raw_token,
+            raw_token=emailed_token,
         )
 
         await self._write_audit_log(

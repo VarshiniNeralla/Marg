@@ -1,5 +1,7 @@
 from typing import Any
 
+from starlette.middleware.cors import CORSMiddleware
+
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -8,12 +10,33 @@ settings = get_settings()
 _DEV_ORIGIN_REGEX = (
     r"https?://("
     r"localhost|"
+    r"(?:myhome|kohinoor)\.localhost|"      # explicit per-tenant local-development hosts
     r"127\.0\.0\.1|"
     r"192\.168\.\d{1,3}\.\d{1,3}|"
     r"10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
     r"172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}"
     r")(:\d+)?$"
 )
+
+
+class TenantAwareCORSMiddleware(CORSMiddleware):
+    """
+    CORSMiddleware that, in multi-tenant mode, additionally requires the request Origin
+    to be one of the CURRENT tenant's own hosts, so the Kohinoor SPA origin is never
+    accepted by the My Home API (and vice versa), whatever CORS_ORIGINS lists.
+    Unchanged in single-tenant mode.
+    """
+
+    def is_allowed_origin(self, origin: str) -> bool:
+        if not super().is_allowed_origin(origin):
+            return False
+        from app.core import tenancy
+
+        # Host routing: the origin must belong to the request's own tenant. E-mail routing has no tenant before
+        # login, so the configured CORS origin list applies (tokens are tenant-bound regardless).
+        if tenancy.multi_tenant_enabled() and not tenancy.email_routing():
+            return tenancy.origin_belongs_to_current_tenant(origin)
+        return True
 
 
 def get_cors_kwargs() -> dict[str, Any]:

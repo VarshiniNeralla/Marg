@@ -1,0 +1,201 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SiteVision production server (EC2 + Elastic IP + DNS record). Docker runs the backend, the frontend and Caddy (automatic HTTPS).
+
+Parameters:
+  ImageId:
+    Type: AWS::EC2::Image::Id
+    Default: ami-0ee5a319d86dca0ab
+    Description: Amazon Linux 2023 x86_64 (official Amazon AMI, verified before launch)
+  InstanceType:
+    Type: String
+    Default: m6a.large
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-0e3b469457114d896
+    Description: Public subnet in the default VPC (ap-south-1c)
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Default: sg-0fab8dcaba99048fd
+  InstanceProfileName:
+    Type: String
+    Default: SiteVisionEC2Role
+  RootVolumeSizeGb:
+    Type: Number
+    Default: 50
+  HostedZoneId:
+    Type: String
+    Default: Z01473153UIXP3TN0JOXZ
+    Description: Route 53 public hosted zone for sitesurelabs.com
+  DomainName:
+    Type: String
+    Default: sitevision.sitesurelabs.com
+  ImageTag:
+    Type: String
+    Default: v3
+    Description: Version tag of the sitevision-backend and sitevision-frontend images in ECR
+  SecretName:
+    Type: String
+    Default: sitevision/prod/app
+
+Resources:
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: sitevision-prod-eip
+        - Key: Project
+          Value: SiteVision
+        - Key: Environment
+          Value: production
+
+  Server:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref SecurityGroupId
+      IamInstanceProfile: !Ref InstanceProfileName
+      DisableApiTermination: true
+      Monitoring: false
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+        HttpPutResponseHopLimit: 2
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref RootVolumeSizeGb
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: false
+      Tags:
+        - Key: Name
+          Value: sitevision-prod
+        - Key: Environment
+          Value: production
+        - Key: WorkloadType
+          Value: web-server
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: Owner
+          Value: MyHome-Constructions
+        - Key: Project
+          Value: SiteVision
+        - Key: CreatedDate
+          Value: '2026-10-29'
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Prepares the server. It installs Docker, checks that the instance role can read the production secret,
+          # pre-pulls the images and writes the helper scripts. It does NOT start the application:
+          # run /opt/sitevision/start.sh once Atlas allows this server's IP address.
+          set -euo pipefail
+          exec > >(tee -a /var/log/sitevision-bootstrap.log) 2>&1
+          echo "bootstrap start $(date -u +%FT%TZ)"
+
+          dnf -y update --security
+          dnf -y install docker jq
+          mkdir -p /etc/docker
+          cat > /etc/docker/daemon.json <<'JSON'
+          { "log-driver": "json-file", "log-opts": { "max-size": "10m", "max-file": "3" } }
+          JSON
+          systemctl enable --now docker
+
+          mkdir -p /opt/sitevision
+          cat > /opt/sitevision/Caddyfile <<'CADDY'
+          ${DomainName} {
+              encode zstd gzip
+              request_body {
+                  max_size 600MB
+              }
+              reverse_proxy frontend:8080 {
+                  flush_interval -1
+                  transport http {
+                      response_header_timeout 10m
+                      read_timeout 10m
+                      write_timeout 10m
+                  }
+              }
+          }
+          CADDY
+
+          # Writes the production settings to a root-only file. Nothing is printed except how many settings were written.
+          cat > /opt/sitevision/fetch-env.sh <<'FETCH'
+          #!/bin/bash
+          set -euo pipefail
+          umask 077
+          secret=$(aws secretsmanager get-secret-value --secret-id ${SecretName} --region ${AWS::Region} --query SecretString --output text)
+          echo "$secret" | jq -r 'to_entries[] | "\(.key)=\(.value)"' > /opt/sitevision/backend.env.tmp
+          unset secret
+          mv /opt/sitevision/backend.env.tmp /opt/sitevision/backend.env
+          chmod 600 /opt/sitevision/backend.env
+          echo "backend.env written: $(wc -l < /opt/sitevision/backend.env) settings"
+          FETCH
+
+          cat > /opt/sitevision/start.sh <<'START'
+          #!/bin/bash
+          # Usage: start.sh [image-tag]   (default tag: ${ImageTag})
+          set -euo pipefail
+          TAG="$*"
+          [ -n "$TAG" ] || TAG="${ImageTag}"
+          ECR=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+          aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin $ECR
+          /opt/sitevision/fetch-env.sh
+          docker network inspect svnet >/dev/null 2>&1 || docker network create svnet
+          docker pull $ECR/sitevision-backend:$TAG
+          docker pull $ECR/sitevision-frontend:$TAG
+          docker pull caddy:2.10-alpine
+          for n in sv-backend sv-frontend sv-caddy; do docker rm -f $n >/dev/null 2>&1 || true; done
+          docker run -d --name sv-backend --network svnet --network-alias backend --restart unless-stopped --init \
+            --env-file /opt/sitevision/backend.env -e PORT=8002 $ECR/sitevision-backend:$TAG
+          docker run -d --name sv-frontend --network svnet --network-alias frontend --restart unless-stopped \
+            -e BACKEND_UPSTREAM=backend:8002 $ECR/sitevision-frontend:$TAG
+          docker run -d --name sv-caddy --network svnet --restart unless-stopped -p 80:80 -p 443:443 \
+            -v sv_caddy_data:/data -v sv_caddy_config:/config -v /opt/sitevision/Caddyfile:/etc/caddy/Caddyfile:ro caddy:2.10-alpine
+          echo "started image tag $TAG"
+          START
+
+          cat > /opt/sitevision/stop.sh <<'STOP'
+          #!/bin/bash
+          for n in sv-caddy sv-frontend sv-backend; do docker rm -f $n >/dev/null 2>&1 || true; done
+          echo "stopped"
+          STOP
+          chmod 750 /opt/sitevision/*.sh
+
+          # Pre-flight: proves the instance role can read and decrypt the secret and pull the images.
+          /opt/sitevision/fetch-env.sh
+          ECR=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+          aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin $ECR
+          docker pull $ECR/sitevision-backend:${ImageTag}
+          docker pull $ECR/sitevision-frontend:${ImageTag}
+          docker pull caddy:2.10-alpine
+          touch /opt/sitevision/BOOTSTRAP_OK
+          echo "bootstrap complete $(date -u +%FT%TZ)"
+
+  ElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt ElasticIp.AllocationId
+      InstanceId: !Ref Server
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub ${DomainName}.
+      Type: A
+      TTL: '300'
+      ResourceRecords:
+        - !Ref ElasticIp
+
+Outputs:
+  InstanceId:
+    Value: !Ref Server
+  ElasticIp:
+    Value: !Ref ElasticIp
+  Url:
+    Value: !Sub https://${DomainName}

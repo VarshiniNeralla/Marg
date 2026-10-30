@@ -199,7 +199,8 @@ async def client(seeded_db) -> AsyncGenerator[AsyncClient, None]:
     Provides an httpx.AsyncClient wired to the FastAPI app.
     The app's DB dependency is overridden to use the seeded mock_db.
     """
-    from app.db.mongodb import get_db
+    from app.core.dependencies import get_auth_db
+    from app.db.mongodb import get_db, get_db_or_none
     from app.main import create_app
 
     app: FastAPI = create_app()
@@ -216,6 +217,8 @@ async def client(seeded_db) -> AsyncGenerator[AsyncClient, None]:
         yield seeded_db
 
     app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_auth_db] = _override_db     # login/register/forgot/reset use this resolver
+    app.dependency_overrides[get_db_or_none] = _override_db  # optional-auth endpoints (register)
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

@@ -1,12 +1,13 @@
 from dataclasses import dataclass
 from typing import Annotated, Optional
 
-from fastapi import Cookie, Depends, Header, Path
+from fastapi import Cookie, Depends, Header, Path, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.exceptions import ForbiddenException, UnauthorizedException
 from app.core.security import decode_access_token
-from app.db.mongodb import get_db
+from app.core import tenancy
+from app.db.mongodb import get_database, get_db, get_db_or_none
 from app.models.user import UserDocument
 from app.models.user_project import PROJECT_ROLES
 from app.repositories.user import UserRepository
@@ -57,7 +58,7 @@ async def get_current_user(
 
 async def get_optional_current_user(
     authorization: Optional[str] = Header(default=None),
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: Optional[AsyncIOMotorDatabase] = Depends(get_db_or_none),
 ) -> Optional[UserDocument]:
     """
     Like get_current_user but never raises — returns None when no valid token
@@ -65,7 +66,7 @@ async def get_optional_current_user(
     anonymous callers (e.g. /auth/register: an admin may set a role, an
     anonymous self-registration may not).
     """
-    if not authorization:
+    if not authorization or db is None:
         return None
     try:
         token = _extract_bearer_token(authorization)
@@ -85,6 +86,34 @@ async def get_optional_current_user(
     if not user or not user.is_active:
         return None
     return user
+
+
+# ── Database for the unauthenticated auth endpoints ───────────────────────────
+
+async def get_auth_db(request: Request) -> Optional[AsyncIOMotorDatabase]:
+    """
+    Database for login / register / forgot-password / reset-password.
+
+    Single-tenant and host-routed servers: the normal database (same as get_db).
+    E-mail routed servers: the tenant is chosen HERE from the e-mail DOMAIN against the server-side
+    allowlist (never from a client-supplied tenant id); reset links carry "<tenant>.<token>" so the reset
+    can find its tenant. Returns None for an unknown domain / unknown tenant: the caller fails closed.
+    """
+    if not tenancy.email_routing():
+        return get_database()
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    tenant = None
+    if isinstance(body, dict):
+        if body.get("email"):
+            tenant = tenancy.bind_tenant_from_email(str(body["email"]))
+        elif isinstance(body.get("token"), str) and "." in body["token"]:
+            tenant = tenancy.tenant_by_slug(body["token"].split(".", 1)[0])
+            if tenant is not None:
+                tenancy.set_current_tenant(tenant)
+    return get_database() if tenant is not None else None
 
 
 # ── System-role guards ────────────────────────────────────────────────────────
@@ -230,4 +259,5 @@ ManagerOrAdminUser = Annotated[UserDocument, Depends(require_manager_or_admin)]
 SuperAdminUser = Annotated[UserDocument, Depends(require_super_admin)]
 RefreshTokenCookie = Annotated[str, Depends(get_refresh_token_from_cookie)]
 DB = Annotated[AsyncIOMotorDatabase, Depends(get_db)]
+AuthDB = Annotated[Optional[AsyncIOMotorDatabase], Depends(get_auth_db)]
 CallerContext = Annotated[OrgContext, Depends(get_org_context)]

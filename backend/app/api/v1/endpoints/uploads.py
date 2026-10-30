@@ -92,7 +92,12 @@ async def upload_image(
             detail="Invalid folder name.",
         )
 
-    storage_folder = f"SiteVision/{folder_name}"
+    from app.core.tenancy import storage_root_segments
+
+    # Legacy: SiteVision/{folder}.  Tenant layout: {tenant}/{sites|users}/{folder}/{org} (org segment keeps the
+    # path ownership check working); the tenant comes from the authenticated server-side context.
+    tenant_layout = storage_root_segments(folder_name)[0] != "SiteVision"
+    storage_folder = "/".join([*storage_root_segments(folder_name), folder_name, *([str(current_user.org_id)] if tenant_layout else [])])
     filename = file.filename or "image.jpg"
 
     try:

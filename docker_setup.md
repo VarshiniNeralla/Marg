@@ -253,7 +253,11 @@ Do **not** run this against the shared Atlas database unless you really want a n
 The setup is already AWS-friendly:
 
 - **Images are self-contained and secret-free.** All configuration comes from environment variables. On AWS, store secrets in **Secrets Manager / SSM Parameter Store** and inject them into ECS tasks.
-- **Push images to ECR**: tag `sitevision-backend:<version>` / `sitevision-frontend:<version>` (`IMAGE_TAG` in `.env`).
+- **Push images to ECR (done)**: the private repositories `sitevision-backend` and `sitevision-frontend` exist in `ap-south-1` (template: `backend/infra/ecr/sitevision-ecr.yaml`, same settings as the Anviksha repositories: scan on push, AES-256, tags immutable except `latest`). Publish with the script in the repo root:
+  - `.\publish_images.ps1 -Version v4` builds both images for `linux/amd64` (nothing is pushed).
+  - `.\publish_images.ps1 -Version v4 -Push` pushes `v4` and `latest` to ECR. Add `-DockerHubNamespace <name>` to also push to Docker Hub.
+  - A version tag can be used only once (immutable). Each run re-applies OS security patches to the images.
+  - Pull on the server: `aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 196338354246.dkr.ecr.ap-south-1.amazonaws.com`, then `docker pull 196338354246.dkr.ecr.ap-south-1.amazonaws.com/sitevision-backend:v3`.
 - **Frontend → backend address** is configurable with `BACKEND_UPSTREAM` (default `backend:8002`). On ECS, use `localhost:8002` in the same task, or an internal service name.
 - **Health checks** already exist: `/health` (liveness) and `/health/ready` (database) for an ALB or ECS.
 - **Run only one backend process per container.** Background stitch jobs live in-process. Scale by adding containers.

@@ -1,0 +1,22 @@
+{
+  "Rules": [
+    {
+      "ID": "abort-incomplete-multipart-7d",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "" },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+    },
+    {
+      "ID": "expire-noncurrent-versions-180d",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "" },
+      "NoncurrentVersionExpiration": { "NoncurrentDays": 180 }
+    },
+    {
+      "ID": "remove-expired-delete-markers",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "" },
+      "Expiration": { "ExpiredObjectDeleteMarker": true }
+    }
+  ]
+}

@@ -5,8 +5,9 @@ from fastapi import APIRouter, BackgroundTasks, Cookie, Request, Response, statu
 
 from app.core.config import get_settings
 from app.core.rate_limit import limiter
-from app.core.dependencies import CurrentUser, DB, OptionalCurrentUser, RefreshTokenCookie
-from app.core.exceptions import ConflictException, ValidationException
+from app.core import tenancy
+from app.core.dependencies import AuthDB, CurrentUser, DB, OptionalCurrentUser, RefreshTokenCookie
+from app.core.exceptions import ConflictException, InvalidCredentialsException, InvalidTokenException, ValidationException
 from app.core.security import hash_password, verify_password
 from app.repositories.user import UserRepository
 from app.schemas.auth import (
@@ -83,7 +84,7 @@ def _clear_refresh_cookie(response: Response) -> None:
     response_description="Created user profile",
 )
 @_rate_limit(settings.RATE_LIMIT_REGISTER)
-async def register(request: Request, payload: RegisterRequest, db: DB, caller: OptionalCurrentUser = None):
+async def register(request: Request, payload: RegisterRequest, db: AuthDB, caller: OptionalCurrentUser = None):
     """
     Registers a new user under an existing active organisation.
     - Email must be globally unique.
@@ -94,6 +95,8 @@ async def register(request: Request, payload: RegisterRequest, db: DB, caller: O
       assign an elevated role, and only within their own organisation. This closes
       the privilege-escalation hole where anyone could register as super_admin.
     """
+    if db is None:
+        raise ValidationException("This e-mail domain is not allowed")
     service = AuthService(db)
     user, org = await service.register(payload, caller=caller)
 
@@ -118,12 +121,14 @@ async def register(request: Request, payload: RegisterRequest, db: DB, caller: O
     summary="Authenticate and receive tokens",
 )
 @_rate_limit(settings.RATE_LIMIT_LOGIN)
-async def login(request: Request, payload: LoginRequest, response: Response, db: DB):
+async def login(request: Request, payload: LoginRequest, response: Response, db: AuthDB):
     """
     Authenticates a user/admin.
     - Returns access_token in response body (store in memory only).
     - Sets refresh_token as httpOnly cookie (not accessible to JS).
     """
+    if db is None:                       # e-mail domain not in the tenant allowlist: same generic answer as a bad password
+        raise InvalidCredentialsException()
     service = AuthService(db)
     user, org, access_token, refresh_token, assigned_project_ids = await service.login(payload)
 
@@ -212,15 +217,16 @@ async def forgot_password(
     request: Request,
     payload: ForgotPasswordRequest,
     background_tasks: BackgroundTasks,
-    db: DB,
+    db: AuthDB,
 ):
     """
     Initiates password reset. Always returns 200 regardless of whether
     the email is registered — prevents user enumeration attacks.
     Email is sent as a background task to keep response latency low.
     """
-    service = AuthService(db)
-    background_tasks.add_task(service.forgot_password, payload.email)
+    if db is not None:                   # unknown domain: still the same generic 200 (no enumeration)
+        service = AuthService(db)
+        background_tasks.add_task(service.forgot_password, payload.email)
 
     return success_response(
         data=None,
@@ -235,15 +241,20 @@ async def forgot_password(
     status_code=status.HTTP_200_OK,
     summary="Set new password using reset token",
 )
-async def reset_password(payload: ResetPasswordRequest, db: DB):
+async def reset_password(payload: ResetPasswordRequest, db: AuthDB):
     """
     Resets the user's password using the one-time token from the reset email.
     - Token is verified via bcrypt (raw vs stored hash).
     - Token is single-use and expires in 15 minutes.
     - All active refresh tokens for this user are revoked on success.
     """
+    if db is None:
+        raise InvalidTokenException("Reset token is invalid or has expired")
+    token = payload.token
+    if tenancy.email_routing() and "." in token:
+        token = token.split(".", 1)[1]    # strip the "<tenant>." prefix that selected the database
     service = AuthService(db)
-    await service.reset_password(payload.token, payload.new_password)
+    await service.reset_password(token, payload.new_password)
 
     return success_response(
         data=None,

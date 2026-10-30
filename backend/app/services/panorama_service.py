@@ -181,9 +181,9 @@ def save_stitch_failure_artifact(
     into the upload path.
     """
     try:
-        from app.services.local_media_service import ensure_upload_root
+        from app.services.local_media_service import private_work_dir
 
-        root = ensure_upload_root() / "stitch_failures"
+        root = private_work_dir("stitch_failures")
         root.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         stem = _SAFE_STEM.sub("_", Path(filename).stem)[:80] or "capture"

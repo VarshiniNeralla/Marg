@@ -30,6 +30,39 @@ class Settings(BaseSettings):
     MONGO_URI: str
     DB_NAME: str = "virtual_tour"
 
+    # ── Multi-tenancy (database per tenant) ───────────────────────────────────
+    # Off by default: the app keeps using MONGO_URI/DB_NAME exactly as before.
+    # When on, the tenant is derived ONLY from the request Host header against
+    # the explicit allowlist in app/core/tenancy.py (never from client-supplied
+    # tenant ids) and every database access fails closed without a tenant.
+    MULTI_TENANT_ENABLED: bool = False
+    # How the tenant is chosen when multi-tenant is on:
+    #   "host"  - from the request Host header (explicit hostname allowlist; one domain per tenant);
+    #   "email" - at login/register/forgot-password from the e-mail DOMAIN (explicit allowlist), afterwards from the
+    #             signed token's tenant claim; the Host header is not used, so one backend/URL serves every tenant.
+    TENANT_RESOLUTION: str = "host"
+    # Where NEW uploads go on a single-tenant (legacy) deployment:
+    #   "legacy" - SiteVision/<kind>/<org>/...  (unchanged default)
+    #   "tenant" - <tenant>/sites|users/<kind>/<org>/... for the legacy tenant (My Home), the same layout multi-tenant
+    #              mode always uses. Switch it on only after the existing files have been copied and verified.
+    STORAGE_LAYOUT: str = "legacy"
+    TENANT_MYHOME_MONGO_URI: str = ""
+    TENANT_KOHINOOR_MONGO_URI: str = ""
+    # Comma-separated EXACT extra hostnames (no wildcards), e.g. a staging or
+    # tunnel host. The apex/www/api/app hosts of each domain are built in.
+    TENANT_MYHOME_EXTRA_HOSTS: str = ""
+    TENANT_KOHINOOR_EXTRA_HOSTS: str = ""
+    # Honour X-Forwarded-Host only when a trusted reverse proxy sets it.
+    TENANT_TRUST_FORWARDED_HOST: bool = False
+    # Public frontend base URL per tenant (password-reset links). Blank = https://<tenant domain>.
+    # Anonymous self-registration cannot prove mailbox ownership, so it is OFF when
+    # multi-tenant: accounts are created by a tenant administrator instead.
+    TENANT_ALLOW_SELF_REGISTRATION: bool = False
+    TENANT_MYHOME_FRONTEND_URL: str = ""
+    TENANT_KOHINOOR_FRONTEND_URL: str = ""
+    # Non-production only: tenant slug for localhost/127.0.0.1 (myhome|kohinoor).
+    TENANT_DEV_DEFAULT: str = ""
+
     # ── JWT ───────────────────────────────────────────────────────────────────
     JWT_SECRET: str
     JWT_REFRESH_SECRET: str
@@ -53,8 +86,24 @@ class Settings(BaseSettings):
     # When True (default), /media requires a valid HMAC signature or JWT.
     # Set MEDIA_REQUIRE_AUTH=false only for local debugging of raw file URLs.
     MEDIA_REQUIRE_AUTH: bool = True
-    # TTL for HMAC-signed media URLs written into Mongo (seconds).
+    # TTL for HMAC-signed media URLs (seconds). Signatures stored in Mongo are
+    # re-issued on API read; this window is the lifetime of a URL given to the client.
     MEDIA_URL_TTL_SECONDS: int = 7 * 24 * 60 * 60
+
+    # ── Object store (Amazon S3) behind /media ────────────────────────────────
+    # Where the app-managed ("local") media bytes live:
+    #   "disk" - <UPLOAD_ROOT> on this machine (default, unchanged)
+    #   "s3"   - the S3_BUCKET bucket; keys are the SAME relative paths used on disk
+    #            (<tenant>/sites|users/<kind>/<org>/..., private <tenant>/_work/...)
+    # public_id / /media URLs stored in Mongo are identical in both modes, so no database rewrite is needed.
+    MEDIA_OBJECT_STORE: str = "disk"
+    S3_BUCKET: str = ""
+    S3_REGION: str = "ap-south-1"
+    # While migrating: when an object is missing in S3, serve it from <UPLOAD_ROOT> instead (reads only).
+    S3_READ_FALLBACK_TO_DISK: bool = True
+    # Floor plans: "cloudinary" (default, unchanged) or "object-store" (render PDF page 1 locally, store in the
+    # object store). Switch only after the existing floor plans have been migrated and verified.
+    FLOORPLAN_STORAGE: str = "cloudinary"
 
     # ── Cloudinary (floor plans + capture fallback) ───────────────────────────
     CLOUDINARY_CLOUD_NAME: str = ""
@@ -74,6 +123,10 @@ class Settings(BaseSettings):
     STITCH_OUTPUT_WIDTH: int = 7680
     STITCH_OUTPUT_HEIGHT: int = 3840
     STITCH_JPEG_QUALITY: int = 95
+    # How many raw 360 captures may be stitched AT THE SAME TIME. Each stitch is CPU- and memory-heavy (8K
+    # output); running several together on a 2 vCPU / 8 GiB server made the whole machine stop responding.
+    # Extra jobs wait their turn as "pending". Raise only on a larger server.
+    STITCH_MAX_CONCURRENCY: int = 1
     # Seconds before a Cloudinary upload call is abandoned (frees the worker).
     CLOUDINARY_UPLOAD_TIMEOUT: int = 120
 
@@ -209,6 +262,16 @@ class Settings(BaseSettings):
         if mode not in {"local", "cloudinary"}:
             raise ValueError("MEDIA_STORAGE must be one of: local, cloudinary")
         object.__setattr__(self, "MEDIA_STORAGE", mode)
+        store = (self.MEDIA_OBJECT_STORE or "disk").strip().lower()
+        if store not in {"disk", "s3"}:
+            raise ValueError("MEDIA_OBJECT_STORE must be one of: disk, s3")
+        if store == "s3" and not (self.S3_BUCKET or "").strip():
+            raise ValueError("S3_BUCKET is required when MEDIA_OBJECT_STORE=s3")
+        object.__setattr__(self, "MEDIA_OBJECT_STORE", store)
+        fp = (self.FLOORPLAN_STORAGE or "cloudinary").strip().lower()
+        if fp not in {"cloudinary", "object-store"}:
+            raise ValueError("FLOORPLAN_STORAGE must be one of: cloudinary, object-store")
+        object.__setattr__(self, "FLOORPLAN_STORAGE", fp)
         return self
 
     # ── Derived helpers ───────────────────────────────────────────────────────

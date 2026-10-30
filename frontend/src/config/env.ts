@@ -78,14 +78,44 @@ export const API_V1_URL = `${API_BASE_URL}/api/v1`;
  * Relative `/media/...` paths (local disk storage) are prefixed with the API host.
  * Absolute Cloudinary (or other) URLs pass through unchanged.
  *
- * Legacy unsigned `/media` URLs (pre-HMAC) get `access_token` appended so the
- * auth-gated media route can serve them to <img> / PSV without Authorization headers.
+ * Local `/media` URLs always get `access_token` appended when we have a session.
+ * HMAC exp/sig on stored URLs expire after ~7 days; Photo Sphere Viewer / <img>
+ * cannot send Authorization headers, so the query-token is the JWT fallback
+ * the media route already accepts when HMAC is missing or expired.
+ *
+ * In Vite desktop dev, `/media` is then rewritten to a same-origin path so the
+ * Vite proxy serves the file. Photo Sphere Viewer requires CORS for cross-origin
+ * textures; Cloudflare/ngrok interstitials also break <img> (they cannot send
+ * `ngrok-skip-browser-warning`). Native WebViews have no proxy and keep the
+ * absolute API host.
  */
 let _mediaAccessToken: string | null = null;
 
 /** Called from authStore whenever the access token changes. */
 export function setMediaAccessToken(token: string | null): void {
   _mediaAccessToken = token;
+}
+
+function shouldLoadMediaSameOrigin(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (Capacitor.isNativePlatform()) return false;
+  return Boolean(import.meta.env.DEV);
+}
+
+function toBrowserMediaUrl(absolute: string): string {
+  try {
+    const parsed = new URL(
+      absolute,
+      typeof window !== 'undefined' ? window.location.href : API_BASE_URL,
+    );
+    if (!parsed.pathname.startsWith('/media/')) return absolute;
+    if (shouldLoadMediaSameOrigin()) {
+      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+    return absolute;
+  } catch {
+    return absolute;
+  }
 }
 
 export function resolveMediaUrl(url: string | null | undefined): string | null {
@@ -102,12 +132,11 @@ export function resolveMediaUrl(url: string | null | undefined): string | null {
     || /\/media\//.test(absolute);
   if (
     isLocalMedia
-    && !/[?&]sig=/.test(absolute)
     && !/[?&]access_token=/.test(absolute)
     && _mediaAccessToken
   ) {
     const sep = absolute.includes('?') ? '&' : '?';
     absolute = `${absolute}${sep}access_token=${encodeURIComponent(_mediaAccessToken)}`;
   }
-  return absolute;
+  return isLocalMedia ? toBrowserMediaUrl(absolute) : absolute;
 }

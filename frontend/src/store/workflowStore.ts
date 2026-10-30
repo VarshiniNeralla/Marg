@@ -17,6 +17,7 @@ import { pendingUploadPins, removePendingUploadPin } from './pendingUploadRegist
 import { enqueueWrite, isCreatePending, cancelWritesForEntityIds, cancelPendingDeletesForEntityIds, SYNC_ERROR_EVENT as WRITE_QUEUE_SYNC_ERROR_EVENT, type WriteOpName } from './writeQueue';
 import { isLiveUploadedTour } from './tourFilters';
 import { formatPinLocationLabel } from '@/utils/pinLabels';
+import { resolveCapturedAt } from './safeFileCopy';
 
 /** Real signed-in name for capture / floor-plan attribution (never the placeholder "You"). */
 function currentUploaderName(): string {
@@ -419,7 +420,8 @@ interface WorkflowState {
     sourceFloorPlanId?: string;
   }) => Promise<number>;
   setFloorPlanPinsVisible: (floorPlanId: string, visible: boolean) => void;
-  attachCaptureToPin: (pinId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => string;
+  /** `capturedAtMs` = when the photo was TAKEN (queue time); it, not the upload time, orders the pin numbers. */
+  attachCaptureToPin: (pinId: string, fileCount: number, mediaAssets?: UploadedFileResponse[], capturedAtMs?: number) => string;
   /**
    * Drop a capture that was attached when upload was accepted (202) but whose
    * background stitch permanently failed (corrupt file). Unlinks from the pin
@@ -432,7 +434,7 @@ interface WorkflowState {
   publishFloorPlanTour: (floorPlanId: string, pinIds?: string[], opts?: { silent?: boolean }) => PublishFloorPlanTourResult;
 
   // ── Captures ──
-  uploadCapture: (roomId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => string;
+  uploadCapture: (roomId: string, fileCount: number, mediaAssets?: UploadedFileResponse[], capturedAtMs?: number) => string;
   /** Replace an existing capture's placeholder media with the finished stitched asset. */
   finalizeCaptureMedia: (captureId: string, fileCount: number, mediaAssets?: UploadedFileResponse[]) => void;
   deleteCapture: (id: string) => void;
@@ -1545,7 +1547,7 @@ export const useWorkflowStore = create<WorkflowState>()(
   },
 
   // ── Captures ────────────────────────────────────────────────────────────────
-  uploadCapture(roomId, fileCount, mediaAssets = []) {
+  uploadCapture(roomId, fileCount, mediaAssets = [], capturedAtMs) {
     const id = get().nextId('c');
     const room = get().rooms.find(r => r.id === roomId);
     // Missing room must NOT look like success — attachCaptureToPin treats any
@@ -1583,7 +1585,9 @@ export const useWorkflowStore = create<WorkflowState>()(
     const flat = get().flats.find(f => f.id === room.flatId);
     const firstAsset = mediaAssets[0];
     const now = new Date();
-    const capturedAt = now.toISOString();
+    // The moment the photo was TAKEN (not "now", which is when the upload finished): pin numbers are ranked by this,
+    // so using the upload time re-ordered every pin as uploads completed in a different order than the shots.
+    const capturedAt = resolveCapturedAt(capturedAtMs, now);
     const uploadedAtLabel = now.toLocaleString('en-IN', {
       day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
     });
@@ -2152,7 +2156,7 @@ export const useWorkflowStore = create<WorkflowState>()(
     // pending createFloorPlan for the same id — otherwise PATCH races and 422s.
     mirrorApi('setPinsVisibility', [floorPlanId, visible]);
   },
-  attachCaptureToPin(pinId, fileCount, mediaAssets = []) {
+  attachCaptureToPin(pinId, fileCount, mediaAssets = [], capturedAtMs) {
     const pin = get().capturePins.find(p => p.id === pinId);
     if (!pin) return '';
 
@@ -2230,7 +2234,7 @@ export const useWorkflowStore = create<WorkflowState>()(
 
     // Reuse the existing capture pipeline entirely — upload, review, publish all
     // operate on this capture exactly as before. We only record its id on the pin.
-    const captureId = get().uploadCapture(pin.roomId, fileCount, mediaAssets);
+    const captureId = get().uploadCapture(pin.roomId, fileCount, mediaAssets, capturedAtMs);
     if (!captureId) return '';
     set(s => ({
       capturePins: s.capturePins.map(p =>

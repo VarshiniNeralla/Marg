@@ -18,6 +18,7 @@ from typing import Optional
 from loguru import logger
 
 from app.core.config import get_settings
+from app.core.tenancy import namespace
 
 settings = get_settings()
 
@@ -29,17 +30,17 @@ class _RedisTokenStore:
         self._r = client
 
     def revoke(self, jti: str, ttl: int = _REFRESH_TTL_SECONDS) -> None:
-        self._r.setex(f"revoked_jti:{jti}", ttl, "1")
+        self._r.setex(f"{namespace()}revoked_jti:{jti}", ttl, "1")
 
     def is_revoked(self, jti: str) -> bool:
-        return self._r.exists(f"revoked_jti:{jti}") == 1
+        return self._r.exists(f"{namespace()}revoked_jti:{jti}") == 1
 
     def revoke_user(self, user_id: str) -> None:
         # Store the epoch (now). Tokens issued (iat) before this are invalid.
-        self._r.setex(f"user_token_epoch:{user_id}", _REFRESH_TTL_SECONDS, str(int(time.time())))
+        self._r.setex(f"{namespace()}user_token_epoch:{user_id}", _REFRESH_TTL_SECONDS, str(int(time.time())))
 
     def user_epoch(self, user_id: str) -> int:
-        val = self._r.get(f"user_token_epoch:{user_id}")
+        val = self._r.get(f"{namespace()}user_token_epoch:{user_id}")
         return int(val) if val else 0
 
 
@@ -56,9 +57,10 @@ class _MemoryTokenStore:
 
     def revoke(self, jti: str, ttl: int = _REFRESH_TTL_SECONDS) -> None:
         self._prune()
-        self._revoked[jti] = time.time() + ttl
+        self._revoked[namespace() + jti] = time.time() + ttl
 
     def is_revoked(self, jti: str) -> bool:
+        jti = namespace() + jti
         exp = self._revoked.get(jti)
         if exp is None:
             return False
@@ -68,10 +70,10 @@ class _MemoryTokenStore:
         return True
 
     def revoke_user(self, user_id: str) -> None:
-        self._user_epoch[user_id] = int(time.time())
+        self._user_epoch[namespace() + user_id] = int(time.time())
 
     def user_epoch(self, user_id: str) -> int:
-        return self._user_epoch.get(user_id, 0)
+        return self._user_epoch.get(namespace() + user_id, 0)
 
 
 def _build_store():

@@ -7,6 +7,7 @@ import android.net.NetworkRequest;
 import android.net.wifi.WifiNetworkSpecifier;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -53,8 +54,17 @@ public class Insta360CameraPlugin extends Plugin {
     private static final int HTTP_TIMEOUT_MS = 8000;
     private static final int STATUS_POLL_INTERVAL_MS = 1000;
     private static final int STATUS_POLL_MAX_ATTEMPTS = 20;
+    private static final String TAG = "Insta360Camera";
+    // The X3 can leave photo mode between shots (it answers camera.takePicture with HTTP 400
+    // "disabledCommand: Currently camera is not working in image mode"). Before every shot we check the
+    // capture mode and switch it back, and if the camera still refuses we switch and retry.
+    private static final int MAX_CAPTURE_ATTEMPTS = 3;
+    private static final long MODE_SETTLE_MS = 1500;
+    // Give the camera time to finish writing/processing the previous raw frame before the next trigger.
+    private static final long MIN_CAPTURE_GAP_MS = 2000;
 
     private ConnectivityManager connectivityManager;
+    private volatile long lastCaptureFinishedAtMs = 0;
     private ConnectivityManager.NetworkCallback networkCallback;
     private volatile Network cameraNetwork;
 
@@ -181,33 +191,32 @@ public class Insta360CameraPlugin extends Plugin {
 
         new Thread(() -> {
             try {
-                // Trigger the still capture — returns an in-progress command id.
-                // (camera.startSession is not implemented by the X3's OSC firmware —
-                // confirmed on-device via HTTP 400 "unknownCommand" — and isn't
-                // needed for camera.takePicture, so it's skipped entirely.)
-                String takePictureResponse = httpPost("/osc/commands/execute", "{\"name\":\"camera.takePicture\"}");
-                JSONObject takePictureJson = new JSONObject(takePictureResponse);
-                String commandId = takePictureJson.getString("id");
+                // Pace the shots, then make sure the camera is in photo mode BEFORE triggering.
+                long sinceLast = System.currentTimeMillis() - lastCaptureFinishedAtMs;
+                if (sinceLast < MIN_CAPTURE_GAP_MS) {
+                    Thread.sleep(MIN_CAPTURE_GAP_MS - sinceLast);
+                }
+                ensureImageMode();
 
-                // 2. Poll camera.commands.status until state is "done".
+                // Trigger the still capture and wait for the file. If the camera still answers
+                // "disabledCommand" (it is not in image mode), switch it back and try again.
                 String fileUrl = null;
-                for (int attempt = 0; attempt < STATUS_POLL_MAX_ATTEMPTS; attempt++) {
-                    String statusResponse = httpPost("/osc/commands/status",
-                            "{\"id\":\"" + commandId + "\"}");
-                    JSONObject statusJson = new JSONObject(statusResponse);
-                    String state = statusJson.getString("state");
-
-                    if ("done".equals(state)) {
-                        JSONObject results = statusJson.optJSONObject("results");
-                        fileUrl = results != null ? results.optString("fileUrl", null) : null;
-                        break;
+                IOException lastError = null;
+                for (int attempt = 1; attempt <= MAX_CAPTURE_ATTEMPTS && fileUrl == null; attempt++) {
+                    try {
+                        fileUrl = takePictureAndWait();
+                        if (fileUrl == null) {
+                            break; // timed out waiting for the camera; reported below
+                        }
+                    } catch (IOException e) {
+                        lastError = e;
+                        if (!isModeError(e) || attempt == MAX_CAPTURE_ATTEMPTS) {
+                            throw e;
+                        }
+                        Log.w(TAG, "takePicture refused because the camera is not in image mode (attempt "
+                                + attempt + "/" + MAX_CAPTURE_ATTEMPTS + "): " + e.getMessage());
+                        forceImageMode();
                     }
-                    if ("error".equals(state)) {
-                        JSONObject error = statusJson.optJSONObject("error");
-                        String message = error != null ? error.optString("message", "unknown error") : "unknown error";
-                        throw new IOException("Camera reported a capture error: " + message);
-                    }
-                    Thread.sleep(STATUS_POLL_INTERVAL_MS);
                 }
 
                 if (fileUrl == null) {
@@ -238,6 +247,7 @@ public class Insta360CameraPlugin extends Plugin {
 
                 File outFile = new File(getContext().getCacheDir(), fileName);
                 downloadToFile(absoluteUrl, outFile);
+                lastCaptureFinishedAtMs = System.currentTimeMillis();
 
                 JSObject result = new JSObject();
                 result.put("filePath", outFile.getAbsolutePath());
@@ -261,6 +271,113 @@ public class Insta360CameraPlugin extends Plugin {
         }
         cameraNetwork = null;
         call.resolve();
+    }
+
+    /** Reads the camera's current capture mode and options (for field troubleshooting over USB debugging). */
+    @PluginMethod
+    public void diagnose(PluginCall call) {
+        if (cameraNetwork == null) {
+            call.reject("Not connected to the camera. Call connect() first.");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                JSObject result = new JSObject();
+                result.put("captureMode", String.valueOf(readCaptureMode()));
+                try {
+                    result.put("state", httpPost("/osc/state", "{}"));
+                } catch (Exception e) {
+                    result.put("state", "unavailable: " + e.getMessage());
+                }
+                call.resolve(result);
+            } catch (Exception e) {
+                call.reject("Diagnose failed: " + e.getMessage(), e);
+            }
+        }).start();
+    }
+
+    // ── OSC helpers ──
+
+    /** True when the camera refused the command because it is not in image (photo) mode. */
+    private boolean isModeError(IOException e) {
+        String m = e.getMessage();
+        return m != null && (m.contains("disabledCommand") || m.contains("not working in image mode"));
+    }
+
+    /** Triggers camera.takePicture and polls until the file is ready. Returns the file URL, or null on timeout. */
+    private String takePictureAndWait() throws Exception {
+        // (camera.startSession is not implemented by the X3's OSC firmware — confirmed on-device via
+        // HTTP 400 "unknownCommand" — and isn't needed for camera.takePicture, so it's skipped.)
+        JSONObject started = new JSONObject(httpPost("/osc/commands/execute", "{\"name\":\"camera.takePicture\"}"));
+        String commandId = started.getString("id");
+
+        // Poll camera.commands.status until state is "done".
+        for (int attempt = 0; attempt < STATUS_POLL_MAX_ATTEMPTS; attempt++) {
+            JSONObject statusJson = new JSONObject(httpPost("/osc/commands/status", "{\"id\":\"" + commandId + "\"}"));
+            String state = statusJson.getString("state");
+            if ("done".equals(state)) {
+                JSONObject results = statusJson.optJSONObject("results");
+                return results != null ? results.optString("fileUrl", null) : null;
+            }
+            if ("error".equals(state)) {
+                JSONObject error = statusJson.optJSONObject("error");
+                String code = error != null ? error.optString("code", "") : "";
+                String message = error != null ? error.optString("message", "unknown error") : "unknown error";
+                throw new IOException("Camera reported a capture error: " + (code.isEmpty() ? "" : code + ": ") + message);
+            }
+            Thread.sleep(STATUS_POLL_INTERVAL_MS);
+        }
+        return null;
+    }
+
+    /** Runs an OSC command through /osc/commands/execute and returns the parsed response. */
+    private JSONObject oscCommand(String name, String parametersJson) throws Exception {
+        String body = "{\"name\":\"" + name + "\"" + (parametersJson != null ? ",\"parameters\":" + parametersJson : "") + "}";
+        return new JSONObject(httpPost("/osc/commands/execute", body));
+    }
+
+    /** The camera's current captureMode ("image", "video", ...), or null if it could not be read. */
+    private String readCaptureMode() {
+        try {
+            JSONObject response = oscCommand("camera.getOptions", "{\"optionNames\":[\"captureMode\"]}");
+            JSONObject results = response.optJSONObject("results");
+            JSONObject options = results != null ? results.optJSONObject("options") : null;
+            return options != null ? options.optString("captureMode", null) : null;
+        } catch (Exception e) {
+            Log.w(TAG, "could not read captureMode: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** Switches the camera to photo mode and gives it a moment to settle. */
+    private void forceImageMode() throws Exception {
+        JSONObject response = oscCommand("camera.setOptions", "{\"options\":{\"captureMode\":\"image\"}}");
+        Log.i(TAG, "setOptions captureMode=image -> " + response.optString("state"));
+        Thread.sleep(MODE_SETTLE_MS);
+    }
+
+    /** Makes sure the camera is in photo mode before a shot; switches it back if it has drifted. */
+    private void ensureImageMode() throws Exception {
+        String mode = readCaptureMode();
+        if ("image".equalsIgnoreCase(mode)) {
+            return;
+        }
+        Log.w(TAG, "camera captureMode is '" + mode + "', switching to image mode");
+        try {
+            forceImageMode();
+        } catch (IOException e) {
+            if (mode != null) {
+                throw e; // we know it is in the wrong mode and could not change it
+            }
+            // Mode unreadable AND setOptions refused: this firmware may not expose it; try the shot anyway.
+            Log.w(TAG, "setOptions captureMode unavailable, continuing: " + e.getMessage());
+            return;
+        }
+        String after = readCaptureMode();
+        if (after != null && !"image".equalsIgnoreCase(after)) {
+            throw new IOException("The camera is in '" + after + "' mode and did not switch back to photo mode. "
+                    + "Switch it to photo mode on the camera, then try again.");
+        }
     }
 
     // ── HTTP helpers, all bound to cameraNetwork so the backend connection is untouched ──

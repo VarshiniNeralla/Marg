@@ -1651,7 +1651,9 @@ _FALLBACK_LOCATION = ("Unknown", "Unknown")
 def _serialize_snapshot(doc: dict[str, Any] | None) -> dict[str, Any] | None:
     if not doc:
         return None
-    return {
+    from app.services.media_access import refresh_media_urls_in
+
+    payload = {
         "snapshotId": str(doc["_id"]),
         "projectId": doc.get("projectId", ""),
         "projectName": doc.get("projectName", ""),
@@ -1678,6 +1680,7 @@ def _serialize_snapshot(doc: dict[str, Any] | None) -> dict[str, Any] | None:
         "rigVersion": doc.get("rigVersion") if doc.get("rigVersion") is not None else doc.get("rig_version"),
         "createdAt": doc.get("createdAt"),
     }
+    return refresh_media_urls_in(payload)
 
 
 def _prompt_version() -> str:

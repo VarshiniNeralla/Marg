@@ -29,6 +29,9 @@ export interface Insta360Plugin {
 
   /** Releases the NetworkCallback, letting the ephemeral local-only network tear down. */
   disconnect(): Promise<void>;
+
+  /** Reads the camera's current capture mode and OSC state (for troubleshooting over USB debugging). */
+  diagnose(): Promise<{ captureMode: string; state: string }>;
 }
 
 export const Insta360Camera = registerPlugin<Insta360Plugin>('Insta360Camera');

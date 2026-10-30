@@ -36,6 +36,7 @@ from typing import Any, Optional
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.core.config import get_settings
 from app.services.cloudinary_service import upload_media
 
 COLLECTION_JOBS = "capture_stitch_jobs"
@@ -44,6 +45,7 @@ JOB_STATUS_PENDING = "pending"
 JOB_STATUS_PROCESSING = "processing"
 JOB_STATUS_COMPLETED = "completed"
 JOB_STATUS_FAILED = "failed"
+JOB_STATUS_CANCELLED = "cancelled"
 
 _ACTIVE_STATUSES = (JOB_STATUS_PENDING, JOB_STATUS_PROCESSING)
 
@@ -58,6 +60,23 @@ _FAILED_RAW_RETENTION = timedelta(days=7)
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# Limits how many stitches run at once (STITCH_MAX_CONCURRENCY). Bound to the running event loop and rebuilt if the
+# loop changes (tests create a fresh loop per test).
+_slots: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Semaphore]] = None
+# While a job waits for a slot it refreshes its heartbeat this often, so the stale-job sweep never fails a healthy
+# queued job.
+_QUEUE_HEARTBEAT_SECONDS = 30.0
+
+
+def _stitch_slots() -> asyncio.Semaphore:
+    global _slots
+    loop = asyncio.get_running_loop()
+    if _slots is None or _slots[0] is not loop:
+        limit = max(1, int(getattr(get_settings(), "STITCH_MAX_CONCURRENCY", 1) or 1))
+        _slots = (loop, asyncio.Semaphore(limit))
+    return _slots[1]
 
 
 class CaptureStitchService:
@@ -247,6 +266,30 @@ class CaptureStitchService:
         assert out is not None
         return out
 
+    async def cancel_pending_job(self, job_id: str, org_id: str) -> bool:
+        """
+        Cancel a stitch job that has NOT started yet (still waiting in the queue) and free its spooled raw file.
+
+        Called when the capture it belongs to is deleted, so the server does not spend minutes of CPU stitching a
+        photo nobody wants. A job that is already processing is left alone (it cannot be interrupted safely).
+        Returns True when a waiting job was cancelled.
+        """
+        jobs = self._db[COLLECTION_JOBS]
+        cancelled = await jobs.find_one_and_update(
+            {"_id": job_id, "orgId": org_id, "status": JOB_STATUS_PENDING},
+            {"$set": {"status": JOB_STATUS_CANCELLED, "error": "Capture was deleted before stitching started", "heartbeatAt": _utcnow()}},
+        )
+        if not cancelled:
+            return False
+        raw_path = cancelled.get("rawPath") or ""
+        if raw_path:
+            try:
+                Path(raw_path).unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning(f"[stitch-job] could not remove spool for cancelled job={job_id}: {exc!r}")
+        logger.info(f"[stitch-job] cancelled waiting job={job_id} (its capture was deleted)")
+        return True
+
     async def recover_orphaned_jobs(self) -> None:
         """
         Re-dispatch (or fail) jobs left mid-flight by a process restart.
@@ -293,7 +336,31 @@ class CaptureStitchService:
         # dropped task is recoverable via recover_orphaned_jobs().
         asyncio.create_task(self._run_job(job_id))
 
+    async def _queue_heartbeat(self, job_id: str) -> None:
+        """Keeps a still-waiting job alive (status stays 'pending') until it gets a stitch slot."""
+        jobs = self._db[COLLECTION_JOBS]
+        while True:
+            await asyncio.sleep(_QUEUE_HEARTBEAT_SECONDS)
+            try:
+                await jobs.update_one({"_id": job_id, "status": JOB_STATUS_PENDING}, {"$set": {"heartbeatAt": _utcnow()}})
+            except Exception as exc:
+                logger.warning(f"[stitch-job] queue heartbeat failed job={job_id}: {exc!r}")
+
     async def _run_job(self, job_id: str) -> None:
+        """Waits for a free stitch slot (at most STITCH_MAX_CONCURRENCY at a time), then runs the job."""
+        waiting = asyncio.create_task(self._queue_heartbeat(job_id))
+        try:
+            async with _stitch_slots():
+                waiting.cancel()
+                await self._run_job_in_slot(job_id)
+        finally:
+            waiting.cancel()
+            try:
+                await waiting
+            except asyncio.CancelledError:
+                pass
+
+    async def _run_job_in_slot(self, job_id: str) -> None:
         jobs = self._db[COLLECTION_JOBS]
         # Atomic claim: only one worker may transition pending → processing.
         # Orphans are reset to pending on startup before re-dispatch.

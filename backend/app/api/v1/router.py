@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints.auth import router as auth_router
+from app.api.v1.endpoints.tenant import router as tenant_router
 from app.api.v1.endpoints.organizations import router as org_router
 from app.api.v1.endpoints.uploads import router as uploads_router
 from app.api.v1.endpoints.user_projects import router as user_projects_router
@@ -17,6 +18,7 @@ api_router = APIRouter()
 
 # Phase 1 — Authentication
 api_router.include_router(auth_router)
+api_router.include_router(tenant_router)
 
 # Phase 2A — Multi-tenancy & RBAC foundation
 api_router.include_router(org_router)

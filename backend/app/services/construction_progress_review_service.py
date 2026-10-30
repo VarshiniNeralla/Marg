@@ -105,19 +105,31 @@ def _readable_review(doc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _manual_review_path() -> Path:
+    """Single-tenant: repo-root manual_review.json (unchanged). Multi-tenant: a private per-tenant file."""
+    from app.core.tenancy import multi_tenant_enabled
+
+    if multi_tenant_enabled():
+        from app.services.local_media_service import private_work_dir
+
+        return private_work_dir("manual_review") / "manual_review.json"
+    return _MANUAL_REVIEW_PATH
+
+
 def append_manual_review_json(doc: dict[str, Any]) -> Path:
     """Append one review to repo-root manual_review.json (create if missing)."""
+    review_path = _manual_review_path()
     entry = _readable_review(doc)
     existing: dict[str, Any] = {"reviews": []}
-    if _MANUAL_REVIEW_PATH.exists():
+    if review_path.exists():
         try:
-            loaded = json.loads(_MANUAL_REVIEW_PATH.read_text(encoding="utf-8"))
+            loaded = json.loads(review_path.read_text(encoding="utf-8"))
             if isinstance(loaded, dict) and isinstance(loaded.get("reviews"), list):
                 existing = loaded
             elif isinstance(loaded, list):
                 existing = {"reviews": loaded}
         except Exception as exc:
-            logger.warning("Could not read %s (%s); rewriting", _MANUAL_REVIEW_PATH, exc)
+            logger.warning("Could not read %s (%s); rewriting", review_path, exc)
 
     reviews: list[Any] = list(existing.get("reviews") or [])
     rid = entry.get("reviewId")
@@ -128,12 +140,12 @@ def append_manual_review_json(doc: dict[str, Any]) -> Path:
         "reviewCount": len(reviews),
         "reviews": reviews,
     }
-    _MANUAL_REVIEW_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _MANUAL_REVIEW_PATH.write_text(
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
-    return _MANUAL_REVIEW_PATH
+    return review_path
 
 
 def _serialize_review(doc: dict[str, Any]) -> dict[str, Any]:

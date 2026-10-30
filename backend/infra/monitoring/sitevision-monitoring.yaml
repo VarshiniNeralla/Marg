@@ -1,0 +1,322 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SiteVision production monitoring (CloudWatch log groups, metric filters, alarms, SNS topic, dashboard). Container logs are shipped by the Docker awslogs driver, host memory/disk and kernel OOM messages by the CloudWatch agent (see monitoring/apply-monitoring.sh).
+
+Parameters:
+  InstanceId:
+    Type: String
+    Default: i-0f40b0a826d92d900
+  InstanceRoleName:
+    Type: String
+    Default: SiteVisionEC2Role
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: Optional. Email address that receives alarm notifications (the recipient must confirm the subscription).
+  RetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [7, 14, 30, 60, 90, 180]
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+
+Resources:
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: sitevision-alerts
+      DisplayName: SiteVision production alerts
+
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # ---- log groups ----------------------------------------------------------
+  BackendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /sitevision/backend
+      RetentionInDays: !Ref RetentionDays
+  CaddyLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /sitevision/caddy
+      RetentionInDays: !Ref RetentionDays
+  FrontendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /sitevision/frontend
+      RetentionInDays: !Ref RetentionDays
+  SystemLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /sitevision/system
+      RetentionInDays: !Ref RetentionDays
+
+  # ---- permissions for the CloudWatch agent (logs permissions already exist on the role for /sitevision/*) ----
+  AgentMetricsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: SiteVisionCloudWatchAgentMetrics
+      Roles:
+        - !Ref InstanceRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PutAgentMetrics
+            Effect: Allow
+            Action: cloudwatch:PutMetricData
+            Resource: '*'
+            Condition:
+              StringEquals:
+                cloudwatch:namespace: CWAgent
+
+  # ---- metric filters: Caddy access log (JSON, one line per request) -----------
+  HttpRequestsFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref CaddyLogGroup
+      FilterPattern: '{ $.status = * }'
+      MetricTransformations:
+        - { MetricNamespace: SiteVision/Http, MetricName: Requests, MetricValue: '1', DefaultValue: 0, Unit: Count }
+  Http5xxFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref CaddyLogGroup
+      FilterPattern: '{ $.status >= 500 }'
+      MetricTransformations:
+        - { MetricNamespace: SiteVision/Http, MetricName: Http5xx, MetricValue: '1', DefaultValue: 0, Unit: Count }
+  Http4xxFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref CaddyLogGroup
+      FilterPattern: '{ $.status >= 400 && $.status < 500 }'
+      MetricTransformations:
+        - { MetricNamespace: SiteVision/Http, MetricName: Http4xx, MetricValue: '1', DefaultValue: 0, Unit: Count }
+  SlowRequestsFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref CaddyLogGroup
+      FilterPattern: '{ $.duration > 10 }'
+      MetricTransformations:
+        - { MetricNamespace: SiteVision/Http, MetricName: SlowRequests, MetricValue: '1', DefaultValue: 0, Unit: Count }
+  UploadCountFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref CaddyLogGroup
+      FilterPattern: '{ $.request.method = "POST" && $.bytes_read > 100000 }'
+      MetricTransformations:
+        - { MetricNamespace: SiteVision/Http, MetricName: LargeUploads, MetricValue: '1', DefaultValue: 0, Unit: Count }
+  UploadBytesFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref CaddyLogGroup
+      FilterPattern: '{ $.request.method = "POST" && $.bytes_read > 100000 }'
+      MetricTransformations:
+        - { MetricNamespace: SiteVision/Http, MetricName: UploadBytes, MetricValue: $.bytes_read, Unit: Bytes }
+
+  # ---- metric filters: backend and kernel ------------------------------------------
+  UnhandledErrorsFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroup
+      FilterPattern: '"UNHANDLED ERROR"'
+      MetricTransformations:
+        - { MetricNamespace: SiteVision/Backend, MetricName: UnhandledErrors, MetricValue: '1', DefaultValue: 0, Unit: Count }
+  TracebacksFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroup
+      FilterPattern: '"Traceback (most recent call last)"'
+      MetricTransformations:
+        - { MetricNamespace: SiteVision/Backend, MetricName: Tracebacks, MetricValue: '1', DefaultValue: 0, Unit: Count }
+  OomKillsFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref SystemLogGroup
+      FilterPattern: '"Out of memory: Killed process"'
+      MetricTransformations:
+        - { MetricNamespace: SiteVision/Host, MetricName: OomKills, MetricValue: '1', DefaultValue: 0, Unit: Count }
+
+  # ---- alarms ----------------------------------------------------------------------
+  StatusCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: sitevision-ec2-status-check-failed
+      AlarmDescription: The EC2 instance failed a system or instance status check.
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed
+      Dimensions: [{ Name: InstanceId, Value: !Ref InstanceId }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+  CpuHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: sitevision-cpu-high
+      AlarmDescription: CPU above 80 percent for 15 minutes (stitching or a runaway request).
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions: [{ Name: InstanceId, Value: !Ref InstanceId }]
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: missing
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+  MemoryHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: sitevision-memory-high
+      AlarmDescription: Memory above 85 percent (the backend was OOM-killed on 2026-10-30; the instance has no swap).
+      Namespace: CWAgent
+      MetricName: mem_used_percent
+      Dimensions: [{ Name: InstanceId, Value: !Ref InstanceId }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+  DiskHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: sitevision-disk-high
+      AlarmDescription: Root volume above 80 percent full.
+      Namespace: CWAgent
+      MetricName: disk_used_percent
+      Dimensions:
+        - { Name: InstanceId, Value: !Ref InstanceId }
+        - { Name: path, Value: / }
+        - { Name: fstype, Value: xfs }
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+  Http5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: sitevision-http-5xx
+      AlarmDescription: Five or more 5xx responses within 5 minutes, or the proxy cannot reach the backend (502/504).
+      Namespace: SiteVision/Http
+      MetricName: Http5xx
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+  UnhandledErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: sitevision-backend-unhandled-errors
+      AlarmDescription: Three or more unhandled backend exceptions within 5 minutes.
+      Namespace: SiteVision/Backend
+      MetricName: UnhandledErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+  OomKillAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: sitevision-oom-kill
+      AlarmDescription: The kernel killed a process because the instance ran out of memory.
+      Namespace: SiteVision/Host
+      MetricName: OomKills
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  # ---- dashboard -------------------------------------------------------------------
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: SiteVision-Production
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            { "type": "metric", "x": 0, "y": 0, "width": 8, "height": 6, "properties": {
+                "title": "HTTP requests, 4xx and 5xx (5 min)", "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 300,
+                "metrics": [ ["SiteVision/Http","Requests"], [".","Http4xx"], [".","Http5xx"] ] } },
+            { "type": "metric", "x": 8, "y": 0, "width": 8, "height": 6, "properties": {
+                "title": "Large uploads (POST over 100 KB) and slow requests (over 10 s)", "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 300,
+                "metrics": [ ["SiteVision/Http","LargeUploads"], [".","SlowRequests"] ] } },
+            { "type": "metric", "x": 16, "y": 0, "width": 8, "height": 6, "properties": {
+                "title": "Upload volume received (bytes, 5 min)", "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 300,
+                "metrics": [ ["SiteVision/Http","UploadBytes"] ] } },
+            { "type": "metric", "x": 0, "y": 6, "width": 8, "height": 6, "properties": {
+                "title": "CPU (%)", "region": "${AWS::Region}", "view": "timeSeries", "stat": "Average", "period": 60,
+                "metrics": [ ["AWS/EC2","CPUUtilization","InstanceId","${InstanceId}"] ] } },
+            { "type": "metric", "x": 8, "y": 6, "width": 8, "height": 6, "properties": {
+                "title": "Memory used (%)", "region": "${AWS::Region}", "view": "timeSeries", "stat": "Maximum", "period": 60,
+                "metrics": [ ["CWAgent","mem_used_percent","InstanceId","${InstanceId}"] ] } },
+            { "type": "metric", "x": 16, "y": 6, "width": 8, "height": 6, "properties": {
+                "title": "Disk used (%) and swap used (%)", "region": "${AWS::Region}", "view": "timeSeries", "stat": "Maximum", "period": 300,
+                "metrics": [ ["CWAgent","disk_used_percent","InstanceId","${InstanceId}","path","/","fstype","xfs"], ["CWAgent","swap_used_percent","InstanceId","${InstanceId}"] ] } },
+            { "type": "metric", "x": 0, "y": 12, "width": 8, "height": 6, "properties": {
+                "title": "Network in and out (bytes, 5 min)", "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 300,
+                "metrics": [ ["AWS/EC2","NetworkIn","InstanceId","${InstanceId}"], [".","NetworkOut",".","."] ] } },
+            { "type": "metric", "x": 8, "y": 12, "width": 8, "height": 6, "properties": {
+                "title": "Backend unhandled errors and OOM kills", "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 300,
+                "metrics": [ ["SiteVision/Backend","UnhandledErrors"], ["SiteVision/Host","OomKills"] ] } },
+            { "type": "alarm", "x": 16, "y": 12, "width": 8, "height": 6, "properties": {
+                "title": "Alarms",
+                "alarms": [
+                  "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:sitevision-ec2-status-check-failed",
+                  "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:sitevision-cpu-high",
+                  "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:sitevision-memory-high",
+                  "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:sitevision-disk-high",
+                  "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:sitevision-http-5xx",
+                  "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:sitevision-backend-unhandled-errors",
+                  "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:sitevision-oom-kill"
+                ] } },
+            { "type": "log", "x": 0, "y": 18, "width": 12, "height": 7, "properties": {
+                "title": "Image and upload requests (latest 50)", "region": "${AWS::Region}", "view": "table",
+                "query": "SOURCE '/sitevision/caddy' | fields @timestamp, request.method as method, request.uri as uri, status, duration, bytes_read, size | filter request.uri like /media|upload|capture|panorama|stitch/ | sort @timestamp desc | limit 50" } },
+            { "type": "log", "x": 12, "y": 18, "width": 12, "height": 7, "properties": {
+                "title": "Latest 5xx responses", "region": "${AWS::Region}", "view": "table",
+                "query": "SOURCE '/sitevision/caddy' | fields @timestamp, request.method as method, request.uri as uri, status, duration | filter status >= 500 | sort @timestamp desc | limit 50" } },
+            { "type": "log", "x": 0, "y": 25, "width": 12, "height": 7, "properties": {
+                "title": "Slowest endpoints (avg and max seconds)", "region": "${AWS::Region}", "view": "table",
+                "query": "SOURCE '/sitevision/caddy' | stats count(*) as hits, avg(duration) as avg_s, max(duration) as max_s by request.method, request.uri | sort max_s desc | limit 20" } },
+            { "type": "log", "x": 12, "y": 25, "width": 12, "height": 7, "properties": {
+                "title": "Backend errors and warnings (latest 50)", "region": "${AWS::Region}", "view": "table",
+                "query": "SOURCE '/sitevision/backend' | fields @timestamp, @message | filter @message like /ERROR|Traceback|UNHANDLED|stitch|Stitch/ | sort @timestamp desc | limit 50" } }
+          ]
+        }
+
+Outputs:
+  AlertTopicArn:
+    Value: !Ref AlertTopic
+  DashboardUrl:
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=SiteVision-Production

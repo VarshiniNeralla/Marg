@@ -79,7 +79,10 @@ _ROOT_FOLDER = "SiteVision"
 def cloudinary_folder(kind: str, org_id: str, entity_id: Optional[str] = None) -> str:
     if kind not in ALLOWED_FOLDERS:
         raise ValidationException(f"Unsupported media folder '{kind}'")
-    parts = [_ROOT_FOLDER, kind, org_id]
+    from app.core.tenancy import storage_root_segments
+
+    # Legacy: SiteVision/{kind}/{org}/...   Tenant layout: {tenant}/{sites|users}/{kind}/{org}/...
+    parts = [*storage_root_segments(kind), kind, org_id]
     if entity_id:
         parts.append(entity_id)
     return "/".join(parts)
@@ -186,7 +189,9 @@ def _resolve_media_storage(*, folder: str = "", force: Optional[str] = None) -> 
         return force
     kind = _media_kind_from_folder(folder)
     if kind == "floorplans":
-        return "cloudinary"
+        # Opt-in (FLOORPLAN_STORAGE=object-store): the PDF is stored by the media store (S3) and page 1 is
+        # rendered locally at 300 dpi. Default stays Cloudinary until existing floor plans are migrated.
+        return "local" if getattr(get_settings(), "FLOORPLAN_STORAGE", "cloudinary") == "object-store" else "cloudinary"
     mode = get_settings().MEDIA_STORAGE
     if kind == "captures":
         return "local" if mode == "local" else "cloudinary"
@@ -526,7 +531,7 @@ async def cloudinary_asset_exists(public_id: str, resource_type: str = "image") 
         return None
 
 
-async def delete_media_assets(media_assets: list[dict]) -> None:
+async def delete_media_assets(media_assets: list[dict], *, org_id: Optional[str] = None) -> None:
     """
     Best-effort cleanup for previously-uploaded assets (local disk and/or Cloudinary).
 
@@ -554,9 +559,16 @@ async def delete_media_assets(media_assets: list[dict]) -> None:
     except Exception as exc:
         logger.warning(f"[cloudinary] cleanup unavailable (not configured): {exc!r}")
 
+    from app.core.tenancy import asset_owned
+
     for asset in media_assets:
         public_id = (asset or {}).get("public_id")
         if not public_id:
+            continue
+        # The asset list comes from a client-influenced document and both tenants share
+        # one Cloudinary account/upload volume: never destroy what this tenant/org doesn't own.
+        if not asset_owned(public_id, org_id):
+            logger.warning(f"[cloudinary] refusing to delete an asset outside this tenant/organization: {public_id!r}")
             continue
         storage = (asset or {}).get("storage") or ""
         if storage == "local" or is_local_public_id(public_id):

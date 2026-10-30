@@ -1,0 +1,113 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SiteVision EC2 instance role and instance profile, modelled on AnvikshaEC2Role with SiteVision-only resources
+
+Parameters:
+  SecretsKeyArn:
+    Type: String
+    Default: arn:aws:kms:ap-south-1:196338354246:key/271e0fbe-749b-4188-8478-adc0c1c0910a
+    Description: The dedicated KMS key (alias/sitevision-secrets) that encrypts the SiteVision secrets
+
+Resources:
+  SiteVisionEC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SiteVisionEC2Role
+      Description: Allows the SiteVision EC2 instance to pull SiteVision Docker images from ECR, read and write SiteVision media in the sitevision-prod S3 bucket, and read SiteVision production secrets.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: SiteVisionEC2RuntimePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: GetECRAuthorizationToken
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: PullSiteVisionDockerImages
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:DescribeImages
+                Resource:
+                  - !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/sitevision-backend
+                  - !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/sitevision-frontend
+              # StringLikeIfExists: a GetObject/HeadObject on a missing key carries no s3:prefix, and S3 only answers
+              # "404 not found" (instead of "403 access denied") when the caller may list the bucket. Real list
+              # requests always carry a prefix, so they stay limited to the tenant folders.
+              - Sid: ListTenantPrefixes
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: arn:aws:s3:::sitevision-prod
+                Condition:
+                  StringLikeIfExists:
+                    s3:prefix:
+                      - myhome/*
+                      - kohinoor/*
+              - Sid: ReadWriteTenantObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:AbortMultipartUpload
+                Resource:
+                  - arn:aws:s3:::sitevision-prod/myhome/*
+                  - arn:aws:s3:::sitevision-prod/kohinoor/*
+              # Only the one app secret (the six characters after the name are Secrets Manager's random suffix), over HTTPS.
+              - Sid: ReadAppSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:sitevision/prod/app-??????
+                Condition:
+                  Bool:
+                    aws:SecureTransport: 'true'
+              - Sid: DecryptAppSecretsKey
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: !Ref SecretsKeyArn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub secretsmanager.${AWS::Region}.amazonaws.com
+                  Bool:
+                    aws:SecureTransport: 'true'
+              - Sid: OptionalCloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                  - logs:DescribeLogGroups
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/sitevision/*
+      Tags:
+        - Key: Project
+          Value: SiteVision
+        - Key: Environment
+          Value: prod
+
+  SiteVisionEC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: SiteVisionEC2Role
+      Roles:
+        - !Ref SiteVisionEC2Role
+
+Outputs:
+  RoleArn:
+    Value: !GetAtt SiteVisionEC2Role.Arn
+  InstanceProfileArn:
+    Value: !GetAtt SiteVisionEC2InstanceProfile.Arn
