@@ -134,11 +134,34 @@ Resources:
       FilterPattern: '"Traceback (most recent call last)"'
       MetricTransformations:
         - { MetricNamespace: SiteVision/Backend, MetricName: Tracebacks, MetricValue: '1', DefaultValue: 0, Unit: Count }
+  StitchQueuedFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroup
+      FilterPattern: '"[stitch-job] queued"'
+      MetricTransformations:
+        - { MetricNamespace: SiteVision/Stitch, MetricName: StitchQueued, MetricValue: '1', DefaultValue: 0, Unit: Count }
+  StitchCompletedFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroup
+      FilterPattern: '"STITCH COMPLETE"'
+      MetricTransformations:
+        - { MetricNamespace: SiteVision/Stitch, MetricName: StitchCompleted, MetricValue: '1', DefaultValue: 0, Unit: Count }
+  StitchFailedFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref BackendLogGroup
+      FilterPattern: '"STITCH FAILED"'
+      MetricTransformations:
+        - { MetricNamespace: SiteVision/Stitch, MetricName: StitchFailed, MetricValue: '1', DefaultValue: 0, Unit: Count }
   OomKillsFilter:
     Type: AWS::Logs::MetricFilter
     Properties:
       LogGroupName: !Ref SystemLogGroup
-      FilterPattern: '"Out of memory: Killed process"'
+      # Matches both a host-wide OOM ("Out of memory: Killed process") and a container-limit OOM
+      # ("Memory cgroup out of memory: Killed process").
+      FilterPattern: '"Killed process"'
       MetricTransformations:
         - { MetricNamespace: SiteVision/Host, MetricName: OomKills, MetricValue: '1', DefaultValue: 0, Unit: Count }
 
@@ -241,6 +264,21 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertTopic]
       OKActions: [!Ref AlertTopic]
+  StitchFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: sitevision-stitch-failed
+      AlarmDescription: At least one panorama stitch job failed.
+      Namespace: SiteVision/Stitch
+      MetricName: StitchFailed
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
   OomKillAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -298,6 +336,7 @@ Resources:
                   "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:sitevision-disk-high",
                   "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:sitevision-http-5xx",
                   "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:sitevision-backend-unhandled-errors",
+                  "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:sitevision-stitch-failed",
                   "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:sitevision-oom-kill"
                 ] } },
             { "type": "log", "x": 0, "y": 18, "width": 12, "height": 7, "properties": {
@@ -311,7 +350,13 @@ Resources:
                 "query": "SOURCE '/sitevision/caddy' | stats count(*) as hits, avg(duration) as avg_s, max(duration) as max_s by request.method, request.uri | sort max_s desc | limit 20" } },
             { "type": "log", "x": 12, "y": 25, "width": 12, "height": 7, "properties": {
                 "title": "Backend errors and warnings (latest 50)", "region": "${AWS::Region}", "view": "table",
-                "query": "SOURCE '/sitevision/backend' | fields @timestamp, @message | filter @message like /ERROR|Traceback|UNHANDLED|stitch|Stitch/ | sort @timestamp desc | limit 50" } }
+                "query": "SOURCE '/sitevision/backend' | fields @timestamp, @message | filter @message like /ERROR|Traceback|UNHANDLED|stitch|Stitch/ | sort @timestamp desc | limit 50" } },
+            { "type": "metric", "x": 0, "y": 32, "width": 12, "height": 7, "properties": {
+                "title": "Stitch jobs queued, completed and failed (5 min)", "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 300,
+                "metrics": [ ["SiteVision/Stitch","StitchQueued"], [".","StitchCompleted"], [".","StitchFailed"] ] } },
+            { "type": "log", "x": 12, "y": 32, "width": 12, "height": 7, "properties": {
+                "title": "Seconds per stitch job (queued to completed)", "region": "${AWS::Region}", "view": "table",
+                "query": "SOURCE '/sitevision/backend' | filter @message like /stitch-job\\] (queued|completed)/ | parse @message /job=(?<job>[0-9a-f-]+)/ | stats min(@timestamp) as queued_at, max(@timestamp) as done_at, count(*) as events by job | filter events >= 2 | fields queued_at, done_at, (done_at - queued_at)/1000 as seconds, job | sort queued_at desc | limit 30" } }
           ]
         }
 

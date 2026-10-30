@@ -1114,6 +1114,29 @@ def _measure_seam_global_dy(lf, lb, ov, xc, out_h, win: int = 96):
     return float(np.clip(np.median(vals), -30.0, 30.0)), len(vals)
 
 
+def _run_concurrently(tasks):
+    """Run independent zero-arg callables, returning their results in task order.
+
+    Uses one worker per task, but only when there are at least 2 CPUs per worker (OpenCV
+    already spreads each heavy call over two cores, so on a 2-CPU host extra threads only
+    add memory); otherwise it runs them one after another. An exception in any task is
+    re-raised, exactly as in a plain loop.
+    """
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    try:
+        cpus = len(os.sched_getaffinity(0))
+    except AttributeError:  # not available on Windows
+        cpus = os.cpu_count() or 1
+    workers = min(len(tasks), cpus // 2)
+    if workers <= 1:
+        return [t() for t in tasks]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(t) for t in tasks]
+        return [f.result() for f in futures]
+
+
 def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clean2=None,
                                 theta1_deg=None, theta2_deg=None):
     """Locally align the hemispheres across the seam corridors (parallax).
@@ -1157,7 +1180,7 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
     import numpy as np
 
     if out_w < 1024:  # degenerate sizes (unit tests): nothing meaningful to align
-        return front, back, None, None
+        return front, back, None, None, None
 
     # Measurement images: outside its clean region each hemisphere is BLACK
     # (invalid), and the corridor strips are ~3x wider than the true overlap.
@@ -1248,7 +1271,8 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
     )).astype(np.float32)
     stats = {}
 
-    for name, xc in strips:
+    def _pass1_strip(xc):
+        # Reads only lf/lb/ov_meas; every strip is independent of the other.
         x0, x1 = xc - half_strip, xc + half_strip
         fx, fy, conf, fb_err = _strip_flow_with_confidence(
             lf[:, x0:x1], lb[:, x0:x1], max_flow, fb_tau
@@ -1257,7 +1281,6 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
         if ov_meas is not None:
             g_dy, g_n = _measure_seam_global_dy(lf, lb, ov_meas, xc, out_h)
         goff = g_dy * s_prof
-        goff_full[0, x0:x1] = goff
         fy = fy - goff[None, :]
         apx, apy = _directional_measurability(lf[:, x0:x1])
         conf_m = conf if ov_meas is None else conf * ov_meas[:, x0:x1]
@@ -1268,12 +1291,8 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
             fx, fy, lf[:, x0:x1], x0, out_w, out_h,
             conf=conf_m * apy, conf_par=conf_m * apx
         )
-        fx_full[:, x0:x1] = fx * ramp[None, :]
-        fy_full[:, x0:x1] = fy * ramp[None, :]
-        unrel_full[:, x0:x1] = (1.0 - conf) * ramp[None, :]
-        par_full[:, x0:x1] = par * ramp[None, :]
         mag = np.hypot(fx, fy)
-        stats[name] = {
+        st = {
             "median_px": float(np.median(mag)),
             "p95_px": float(np.percentile(mag, 95)),
             "fb_err_median_px": float(np.median(fb_err)),
@@ -1282,6 +1301,20 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
             "global_dy_px": g_dy,
             "global_dy_windows": g_n,
         }
+        return goff, fx, fy, par, conf, st
+
+    # Results are merged in the original strip order, so the output is identical
+    # to the sequential loop; the strips just run concurrently when cores allow.
+    for (name, xc), (goff, fx, fy, par, conf, st) in zip(
+        strips, _run_concurrently([lambda xc=xc: _pass1_strip(xc) for _, xc in strips])
+    ):
+        x0, x1 = xc - half_strip, xc + half_strip
+        goff_full[0, x0:x1] = goff
+        fx_full[:, x0:x1] = fx * ramp[None, :]
+        fy_full[:, x0:x1] = fy * ramp[None, :]
+        unrel_full[:, x0:x1] = (1.0 - conf) * ramp[None, :]
+        par_full[:, x0:x1] = par * ramp[None, :]
+        stats[name] = st
 
     wf = w1.astype(np.float32)
 
@@ -1313,7 +1346,7 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
         lab = cv2.cvtColor(back_a, cv2.COLOR_BGR2GRAY)
     laf = _clahe.apply(laf)
     lab = _clahe.apply(lab)
-    for name, xc in strips:
+    def _pass2_strip(xc):
         x0, x1 = xc - half_strip, xc + half_strip
         rx, ry, conf2, _ = _strip_flow_with_confidence(
             laf[:, x0:x1], lab[:, x0:x1], max_residual_flow, fb_tau
@@ -1327,14 +1360,20 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
             rx, ry, laf[:, x0:x1], x0, out_w, out_h,
             conf=conf2_m * apy2, conf_par=conf2_m * apx2
         )
+        rmag = np.hypot(rx, ry)
+        return rx, ry, conf2, float(np.median(rmag)), float(np.percentile(rmag, 95))
+
+    for (name, xc), (rx, ry, conf2, r_med, r_p95) in zip(
+        strips, _run_concurrently([lambda xc=xc: _pass2_strip(xc) for _, xc in strips])
+    ):
+        x0, x1 = xc - half_strip, xc + half_strip
         fx_full[:, x0:x1] += rx * ramp[None, :]
         fy_full[:, x0:x1] += ry * ramp[None, :]
         unrel_full[:, x0:x1] = np.maximum(
             unrel_full[:, x0:x1], (1.0 - conf2) * ramp[None, :]
         )
-        rmag = np.hypot(rx, ry)
-        stats[name]["residual_median_px"] = float(np.median(rmag))
-        stats[name]["residual_p95_px"] = float(np.percentile(rmag, 95))
+        stats[name]["residual_median_px"] = r_med
+        stats[name]["residual_p95_px"] = r_p95
 
     front_a, back_a = _warp(fx_full, fy_full)
     return front_a, back_a, stats, unrel_full, par_full
@@ -1873,8 +1912,14 @@ def _stitch_arrays(
     fov_bias_deg: float = 0.0,
     force_circle_detect: bool = False,
     skip_autocal: bool = False,
+    build_debug_artifacts: bool = True,
 ) -> Optional[tuple[object, StitchArtifacts]]:
-    """Core stitch pipeline returning (blended_bgr, debug artifacts)."""
+    """Core stitch pipeline returning (blended_bgr, debug artifacts).
+
+    ``build_debug_artifacts=False`` (production path) skips the debug-only images and
+    releases large intermediates early: the blended panorama and ``metadata`` are
+    identical, only the unused ``StitchArtifacts`` image fields are left ``None``.
+    """
     import numpy as np
     import cv2
 
@@ -2034,7 +2079,8 @@ def _stitch_arrays(
         l1 = _scale_lens_to_region(calib.lens1, sx_full, sy_full)
         l2 = _scale_lens_to_region(calib.lens2, sx_full, sy_full)
         l2_draw = LensCalibration(l2.cx - W // 2, l2.cy, l2.radius, l2.rot)
-
+    if not build_debug_artifacts:
+        img = None  # only kept for StitchArtifacts.raw_decoded
     if skip_autocal:
         autocal = {
             "fov_delta_deg": 0.0,
@@ -2077,13 +2123,15 @@ def _stitch_arrays(
 
     front = cv2.remap(top, m1x, m1y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
     back = cv2.remap(bot, m2x, m2y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
-    top_rot = _fisheye_remap_footprint(top, m1x, m1y, v1)
-    bot_rot = _fisheye_remap_footprint(bot, m2x, m2y, v2)
+    top_rot = bot_rot = sphere1 = sphere2 = None
+    if build_debug_artifacts:
+        top_rot = _fisheye_remap_footprint(top, m1x, m1y, v1)
+        bot_rot = _fisheye_remap_footprint(bot, m2x, m2y, v2)
 
-    sphere1 = front.copy()
-    sphere2 = back.copy()
-    sphere1[~v1] = 0
-    sphere2[~v2] = 0
+        sphere1 = front.copy()
+        sphere2 = back.copy()
+        sphere1[~v1] = 0
+        sphere2[~v2] = 0
 
     overlap = v1 & v2
 
@@ -2110,10 +2158,11 @@ def _stitch_arrays(
     front, back = _correct_rim_illumination(
         front, back, overlap, theta1_deg, theta2_deg, fov
     )
-    sphere1 = front.copy()
-    sphere2 = back.copy()
-    sphere1[~v1] = 0
-    sphere2[~v2] = 0
+    if build_debug_artifacts:
+        sphere1 = front.copy()
+        sphere2 = back.copy()
+        sphere1[~v1] = 0
+        sphere2[~v2] = 0
     theta_clean = _estimate_clean_theta(front, back, overlap, theta1_deg, theta2_deg, fov)
     # Even corrected, the last degree of the image circle carries demosaic
     # fringing and noise amplified by the ~3x gain — keep a safety margin.
@@ -2148,8 +2197,9 @@ def _stitch_arrays(
         gain = np.array(gains, dtype=np.float32).reshape(1, 1, 3)
         meta["exposure_gain_bgr"] = [float(g) for g in gain.ravel()]
         back = np.clip(back.astype(np.float32) * gain, 0, 255).astype(np.uint8)
-        sphere2 = back.copy()
-        sphere2[~v2] = 0
+        if build_debug_artifacts:
+            sphere2 = back.copy()
+            sphere2[~v2] = 0
 
     d1 = cv2.distanceTransform(clean1.astype(np.uint8), cv2.DIST_L2, 5)
     d2 = cv2.distanceTransform(clean2.astype(np.uint8), cv2.DIST_L2, 5)
@@ -2162,6 +2212,7 @@ def _stitch_arrays(
         d1 = cv2.distanceTransform(v1.astype(np.uint8), cv2.DIST_L2, 5)
         d2 = cv2.distanceTransform(v2.astype(np.uint8), cv2.DIST_L2, 5)
     w1 = d1 / (d1 + d2 + 1e-6)
+    d1 = d2 = None
     # Keep pre-warp references for seam/flow diagnostics (remap returns new
     # arrays, so these stay untouched by the alignment below).
     front_pre_align, back_pre_align = front, back
@@ -2172,6 +2223,10 @@ def _stitch_arrays(
     if flow_stats is not None:
         meta["parallax_align"] = flow_stats
         logger.info(f"Parallax alignment: {flow_stats}")
+    # Large per-pixel angle/map fields are not needed past this point.
+    theta1_deg = theta2_deg = None
+    if not build_debug_artifacts:
+        m1x = m1y = m2x = m2y = None
 
     # Spatially-varying exposure/flare equalization (low-frequency only).
     # The global gain fixes overall exposure, but veiling flare near bright
@@ -2232,6 +2287,10 @@ def _stitch_arrays(
         front = np.clip(fF / half, 0, 255).astype(np.uint8)
         back = np.clip(bF * half, 0, 255).astype(np.uint8)
         meta["local_gain_range"] = [float(half.min() ** 2), float(half.max() ** 2)]
+        # Release the float32 working fields before the seam search / blend.
+        fF = bF = m = mf = den = den_s = ok = lum_f = lum_b = None
+        rl = rl_low = dev = var_low = rel_var = w = sup = half = None
+        r = r_low = r_eff = None
 
     seam_mask, seam_left, seam_right = _optimize_seam_mask(
         front, back, w1, out_w, out_h, flow_unreliability, flow_mag=flow_mag
@@ -2245,6 +2304,11 @@ def _stitch_arrays(
     }
     blended = _multiband_blend(front, back, seam_mask, clean1, clean2)
     meta["blend_method"] = "multiband+seam_dp"
+    if not build_debug_artifacts:
+        # Production path: nothing below reads the hemispheres or seam fields.
+        front = back = front_pre_align = back_pre_align = None
+        seam_mask = seam_left = seam_right = flow_unreliability = flow_mag = None
+        clean1 = clean2 = top = None
 
     from app.services.stitch_ownership import build_full_ownership_report
 
@@ -2267,6 +2331,15 @@ def _stitch_arrays(
     meta["world_frame_measurements"] = build_world_frame_measurements(
         orient, v1, v2, out_w, out_h,
     )
+
+    if not build_debug_artifacts:
+        return blended, StitchArtifacts(
+            raw_decoded=None, top_fisheye=None, bottom_fisheye=None,
+            top_fisheye_after_rotation=None, bottom_fisheye_after_rotation=None,
+            sphere_lens1=None, sphere_lens2=None, sphere_lens1_grid=None,
+            sphere_lens2_grid=None, blended=blended, blended_grid=None,
+            valid_lens1=None, valid_lens2=None, metadata=meta,
+        )
 
     artifacts = StitchArtifacts(
         raw_decoded=img,
@@ -2343,6 +2416,7 @@ def stitch_equirectangular(
         fov_bias_deg=fov_bias_deg,
         force_circle_detect=force_circle_detect,
         skip_autocal=skip_autocal,
+        build_debug_artifacts=debug_dir is not None,
     )
     if result is None:
         return None
