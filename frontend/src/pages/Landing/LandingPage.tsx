@@ -1,3 +1,4 @@
+import BrandLogo from '@/shared/components/BrandLogo';
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Box, Typography, Grid } from '@mui/material';
@@ -90,10 +91,9 @@ function Navbar() {
       transition: `all ${themeMotion.durationNormal}`,
     }}>
       <Box component={Link} to="/" sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mr: 'auto', textDecoration: 'none' }}>
-        <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 36, width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
+        <BrandLogo height={34} />
         <Box sx={{ display: 'flex', flexDirection: 'column' }}>
           <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.04em', lineHeight: 1 }}>SiteVision</Typography>
-          <Typography sx={{ fontSize: '0.55rem', fontWeight: 600, color: '#71717a', letterSpacing: '0.12em', mt: 0.3 }}>BY SITESURELABS</Typography>
         </Box>
       </Box>
 
@@ -778,10 +778,9 @@ function Footer() {
         <Box sx={{ display: { xs: 'block', md: 'none' } }}>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2.5 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 26, width: 'auto', objectFit: 'contain' }} />
+              <BrandLogo height={34} />
               <Box>
                 <Typography sx={{ fontSize: '1rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.03em', lineHeight: 1.1 }}>SiteVision</Typography>
-                <Typography sx={{ fontSize: '0.55rem', fontWeight: 700, color: '#a1a1aa', letterSpacing: '0.12em', mt: 0.25 }}>BY SITESURELABS</Typography>
               </Box>
             </Box>
             <Box
@@ -846,10 +845,9 @@ function Footer() {
           }}>
             <Box sx={{ maxWidth: 320 }}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 3 }}>
-                <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 32, width: 'auto', objectFit: 'contain' }} />
+                <BrandLogo height={34} />
                 <Box sx={{ display: 'flex', flexDirection: 'column' }}>
                   <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: '#18181b', letterSpacing: '-0.03em', lineHeight: 1 }}>SiteVision</Typography>
-                  <Typography sx={{ fontSize: '0.65rem', fontWeight: 700, color: '#52525b', letterSpacing: '0.15em', mt: 0.5 }}>BY SITESURELABS</Typography>
                 </Box>
               </Box>
               <Typography sx={{ fontSize: '0.9375rem', color: '#52525b', lineHeight: 1.7, mb: 4 }}>

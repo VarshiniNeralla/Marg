@@ -32,6 +32,10 @@ ORG = "org1"
         "_work./x.jpg",  # Windows trailing dot
         "_work /x.jpg",  # Windows trailing space
         "_work::$INDEX_ALLOCATION/x.jpg",  # NTFS stream syntax
+        "stitch-spool/abc.insp",  # legacy-layout raw uploads
+        "stitch_failures/job1/frame.png",  # legacy-layout failure artifacts
+        "SiteVision/Stitch-Spool/abc.insp",
+        "myhome/stitch%2Dspool/abc.insp",
     ],
 )
 def test_private_paths_are_detected(path):

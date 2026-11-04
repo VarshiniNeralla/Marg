@@ -326,6 +326,68 @@ class TestGetActivityContext:
 
         assert result["resolutionStatus"] == "configured_no_evidence"
 
+    @pytest.mark.asyncio
+    async def test_configured_no_evidence_when_location_exists_but_activity_unscored(self, monkeypatch):
+        """A real production mis-answer: searching painting inside Store
+        (activities=[]) returned not_configured and the LLM said
+        "painting is not configured for Floor 8". The room exists — the
+        honest status is configured_no_evidence."""
+        snapshot = {
+            "flatProgress": [
+                {
+                    "flatName": "Flat 01",
+                    "rooms": [
+                        {"roomName": "Store", "capturesCount": 1, "activities": []},
+                    ],
+                },
+            ],
+            "activities": [
+                {"activityId": "flat.putty_1st_coat_25", "name": "Putty 1st Coat", "status": "in_progress", "completionPct": 10.0},
+            ],
+        }
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=snapshot))
+
+        result = await service.get_activity_context(
+            "org1", "f1", ["flat.putty_1st_coat_25"], flat_name="Flat 01", room_name="Store",
+        )
+
+        assert result["hits"] == []
+        assert result["resolutionStatus"] == "configured_no_evidence"
+
+    @pytest.mark.asyncio
+    async def test_floor_rollup_used_when_no_room_hits_on_whole_floor_search(self, monkeypatch):
+        """Whole-floor activity search with empty per-room activities[] must
+        still surface the floor-level checklist rollup rather than
+        not_configured."""
+        snapshot = {
+            "flatProgress": [
+                {
+                    "flatName": "Flat 01",
+                    "rooms": [
+                        {"roomName": "Store", "capturesCount": 0, "activities": []},
+                    ],
+                },
+            ],
+            "activities": [
+                {
+                    "activityId": "flat.putty_1st_coat_25", "name": "Putty 1st Coat",
+                    "status": "in_progress", "completionPct": 12.0, "confidencePct": 80.0,
+                },
+            ],
+        }
+        db = _make_db([], [], [])
+        service = DrishtiContextService(db)
+        monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=snapshot))
+
+        result = await service.get_activity_context("org1", "f1", ["flat.putty_1st_coat_25"])
+
+        assert result["resolutionStatus"] == "found"
+        assert len(result["hits"]) == 1
+        assert result["hits"][0]["scope"] == "floor_rollup"
+        assert result["hits"][0]["activity"]["completionPct"] == 12.0
+
 
 _PROJECT_CONTEXT_TWO_FLOORS = {
     "towers": [
@@ -615,3 +677,20 @@ class TestGetCommonAreaCategoryStatusAcrossProject:
         )
 
         assert result["resolutionStatus"] == "not_configured"
+
+
+@pytest.mark.asyncio
+async def test_project_list_excludes_archived_projects():
+    """Drishti offers exactly the projects the Projects page shows: archived ones are filtered in the query."""
+    seen: dict = {}
+
+    class _Coll:
+        def find(self, query, *a, **k):
+            seen["query"] = query
+            return _FakeCursor([])
+
+    db = MagicMock()
+    db.__getitem__ = lambda self, name: _Coll()
+    assert await DrishtiContextService(db).list_accessible_projects("org1", None) == []
+    assert seen["query"]["orgId"] == "org1"
+    assert seen["query"]["archived"] == {"$ne": True}          # un-archived and legacy (no field) projects stay

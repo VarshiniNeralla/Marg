@@ -1,3 +1,4 @@
+import { resolveMediaUrl } from '@/config/env';
 import React, { useState, useRef } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { Box, Typography, Grid, TextField, MenuItem, Alert, InputAdornment, Tooltip, CircularProgress } from '@mui/material';
@@ -261,7 +262,7 @@ export default function EditProjectPage() {
                   <Box sx={{ position: 'relative', borderRadius: '10px', overflow: 'hidden', height: 160 }}>
                     <Box
                       component="img"
-                      src={thumbPreview}
+                      src={thumbPreview.startsWith('blob:') ? thumbPreview : (resolveMediaUrl(thumbPreview) ?? thumbPreview)}
                       alt="Cover preview"
                       sx={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                     />

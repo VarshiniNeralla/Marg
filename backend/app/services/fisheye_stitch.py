@@ -66,6 +66,16 @@ _PROFILES: dict[str, CameraProfile] = {
 }
 _DEFAULT_PROFILE = CameraProfile("generic", 205.5)
 
+# X3 files that carry the trailer calibration: FOV measured from 26 real
+# captures (two sessions, one unit) by matching distant content across the
+# seams — per-capture fits 205.3–206.0°. At the old 204° guess every seam
+# carried a ~+17 px (3840 w) radial offset at ALL latitudes, i.e. a wrong FOV,
+# not a wrong lens shape (the trailer's own Mei/omnidirectional record was
+# tested too and aligns WORSE: its principal point is 60-100 px off the image
+# circle). _autocal_fov is not run on this path: around 204° it moved the
+# wrong way (202.5–202.9°) on 7 of 26 captures.
+_X3_TRAILER_FOV_DEG = 205.8
+
 
 def profile_for(model: Optional[str]) -> CameraProfile:
     if not model:
@@ -523,6 +533,7 @@ def _hemisphere_map(
     lens_label: str = "",
     body_flip: bool = False,
     upright_base: bool = False,
+    world_roll_deg: float = 0.0,
 ):
     import numpy as np
 
@@ -551,6 +562,11 @@ def _hemisphere_map(
         X = -X
         Y = -Y
     R = _lens_rot_matrix(rot, body_flip=body_flip)
+    if world_roll_deg:
+        # Extra roll of this lens about the forward (Z) axis: on the seam
+        # meridians (lon ±90°) it moves content purely vertically, in opposite
+        # directions at the two seams (see _measure_lens2_roll).
+        R = R @ _rot_matrix(0.0, 0.0, world_roll_deg)
     vec = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=0)
     vr = R @ vec
     Xr, Yr, Zr = (vr[i].reshape(X.shape) for i in range(3))
@@ -631,7 +647,8 @@ def _estimate_clean_theta(front, back, overlap, theta1_deg, theta2_deg, fov_deg)
     return float(max(92.0, min(theta_clean, half)))
 
 
-def _correct_rim_illumination(front, back, overlap, theta1_deg, theta2_deg, fov_deg):
+def _correct_rim_illumination(front, back, overlap, theta1_deg, theta2_deg, fov_deg,
+                              *, ramp_from_ring: bool = False):
     """Measure and correct each lens's rim vignetting from the overlap.
 
     The outer degrees of the fisheye collapse to ~35% illumination; cutting
@@ -647,6 +664,14 @@ def _correct_rim_illumination(front, back, overlap, theta1_deg, theta2_deg, fov_
     multiply it back — after this the clean-theta estimator naturally
     extends the usable zone and the seam corridor widens to the true mutual
     field of view.
+
+    ``ramp_from_ring``: the gain is 1.0 by construction on the 90° ring, but
+    the curve starts at the first bin centre (91.25°) — without the ramp the
+    gain JUMPS from 1.0 to g[0] there (measured 1.03-1.13x on X3 captures),
+    drawing a hard luminance edge along the 91.25° contour of each lens
+    (vertical near the equator, U-shaped toward the poles) wherever the seam
+    gives that zone to the lens. With the ramp the gain rises continuously
+    from 1.0 at 90°.
 
     Returns (front, back) — corrected copies, or the originals when the
     signal is unmeasurable.
@@ -696,6 +721,9 @@ def _correct_rim_illumination(front, back, overlap, theta1_deg, theta2_deg, fov_
         if curve is None:
             return img
         centers, g = curve
+        if ramp_from_ring:
+            centers = np.concatenate([[90.0], centers]).astype(np.float32)
+            g = np.concatenate([[1.0], g]).astype(np.float32)
         gain = np.interp(theta_deg.ravel(), centers, g,
                          left=1.0, right=float(g[-1])).reshape(theta_deg.shape)
         out = img.astype(np.float32) * gain[..., None]
@@ -1114,6 +1142,126 @@ def _measure_seam_global_dy(lf, lb, ov, xc, out_h, win: int = 96):
     return float(np.clip(np.median(vals), -30.0, 30.0)), len(vals)
 
 
+def _seam_meridian_dy(gf, gb, ov, out_w, out_h, win: int = 64):
+    """Vertical displacements (back relative to front, px) of matched windows on
+    the two seam meridians (lon -90° / +90°). Returns {"L": [...], "R": [...]}."""
+    import cv2
+    import numpy as np
+
+    han = cv2.createHanningWindow((win, win), cv2.CV_32F)
+    out = {}
+    for name, xc in (("L", int(round((out_w - 1) / 4.0))), ("R", int(round(3 * (out_w - 1) / 4.0)))):
+        vals = []
+        for yc in range(int(0.11 * out_h), int(0.89 * out_h), win // 3):
+            for xoff in (-win // 4, -win // 8, 0, win // 8, win // 4):
+                y0, y1 = yc - win // 2, yc + win // 2
+                x0, x1 = xc + xoff - win // 2, xc + xoff + win // 2
+                if ov[y0:y1, x0:x1].mean() < 0.99:
+                    continue
+                a = gf[y0:y1, x0:x1]
+                b = gb[y0:y1, x0:x1]
+                # High-pass: exposure/vignetting differences must not pull the peak.
+                a = a - cv2.GaussianBlur(a, (0, 0), 6.0)
+                b = b - cv2.GaussianBlur(b, (0, 0), 6.0)
+                if a.std() < 1.5 or b.std() < 1.5:
+                    continue
+                a = (a - a.mean()) / a.std()
+                b = (b - b.mean()) / b.std()
+                (dx, dy), resp = cv2.phaseCorrelate(a * han, b * han)
+                if resp > 0.2 and abs(dy) < 24.0 and abs(dx) < 32.0:
+                    vals.append(float(dy))
+        out[name] = vals
+    return out
+
+
+def _measure_lens2_roll(top, bot, l1, l2, fov, upright, *, cal_w: int = 3840, cal_h: int = 1920):
+    """Per-capture roll of lens 2 relative to lens 1, from the seam meridians.
+
+    Measured on X3 captures: before any flow, distant content at the left seam
+    sits ~18 px (5760 w) LOWER in the back lens and ~21 px HIGHER at the right
+    seam — equal and opposite at every latitude, the signature of a relative
+    roll about the optical axis (0.3–1.2° per capture; the trailer's own roll
+    values differ by only ~0.1°, so it varies capture to capture — hand motion /
+    sensor timing). Depth parallax cannot cause it: the lens baseline lies
+    along the optical axis, so at the seams parallax is purely horizontal.
+    The per-seam vertical offset left for the flow stage tore and kinked
+    straight structures. The common-mode part (same sign at both seams) is
+    NOT a rotation and stays with _measure_seam_global_dy.
+
+    The correction is verified by re-measuring with it applied and kept only
+    if the opposite-sign offset shrinks; otherwise 0 (= previous behaviour).
+    Returns (roll_deg, stats).
+    """
+    import cv2
+    import numpy as np
+
+    half = fov / 2.0
+    px_per_deg = (cal_h - 1) / 180.0
+    # remap does not area-average: pre-shrink the fisheyes to roughly the
+    # render's angular resolution so the measurement windows are not aliased.
+    s = 0.5
+    top = cv2.resize(top, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+    bot = cv2.resize(bot, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+    l1 = LensCalibration(l1.cx * s, l1.cy * s, l1.radius * s, l1.rot)
+    l2 = LensCalibration(l2.cx * s, l2.cy * s, l2.radius * s, l2.rot)
+
+    def render(img, lens, roll, body_flip):
+        mx, my, v = _hemisphere_map(
+            cal_w, cal_h, lens.cx, lens.cy, lens.radius, fov, 0.0, lens.rot,
+            body_flip=body_flip, upright_base=upright, world_roll_deg=roll,
+        )
+        v &= (mx >= 0) & (mx < img.shape[1] - 1) & (my >= 0) & (my < img.shape[0] - 1)
+        # The outer rim band (theta > ~96°) is dark and soft: keep it out.
+        v &= np.hypot(mx - lens.cx, my - lens.cy) / max(lens.radius, 1e-6) * half <= 96.0
+        g = cv2.cvtColor(
+            cv2.remap(img, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT),
+            cv2.COLOR_BGR2GRAY,
+        ).astype(np.float32)
+        return g, v
+
+    def measure(gb, v2):
+        d = _seam_meridian_dy(gf, gb, v1 & v2, cal_w, cal_h)
+        # Per seam: median offset, or None with too few textured windows.
+        return [float(np.median(d[s])) if len(d[s]) >= 8 else None for s in "LR"], \
+            [len(d["L"]), len(d["R"])]
+
+    def antisym(m):
+        return None if None in m else (m[0] - m[1]) / 2.0
+
+    def finish(roll, m, stats):
+        # The remaining per-seam offset (common-mode, or the whole offset when
+        # no roll was applied), in output px of this render; None = unmeasured.
+        stats["seam_dy_px"] = [None if v is None else round(v, 2) for v in m]
+        return roll, stats
+
+    gf, v1 = render(top, l1, 0.0, False)
+    gb, v2 = render(bot, l2, 0.0, True)
+    m0, n0 = measure(gb, v2)
+    a0 = antisym(m0)
+    stats = {"windows": n0, "seam_dy_px_before": [None if v is None else round(v, 2) for v in m0],
+             "cal_w": cal_w}
+    if a0 is None:
+        stats["rejected"] = "too_few_windows"
+        return finish(0.0, m0, stats)
+    # A positive world_roll_deg moves lens-2 content DOWN at the left seam and
+    # UP at the right one, so it cancels the opposite antisymmetric offset.
+    roll = float(-a0 / px_per_deg)
+    if abs(roll) < 0.1 or abs(roll) > 2.0:
+        stats["rejected"] = "below_threshold" if abs(roll) < 0.1 else "implausible"
+        stats["roll_measured_deg"] = round(roll, 3)
+        return finish(0.0, m0, stats)
+    gb1, v21 = render(bot, l2, roll, True)
+    m1, n1 = measure(gb1, v21)
+    a1 = antisym(m1)
+    stats["seam_dy_px_after"] = [None if v is None else round(v, 2) for v in m1]
+    if a1 is None or abs(a1) > 0.5 * abs(a0):
+        stats["rejected"] = "not_verified"
+        stats["roll_measured_deg"] = round(roll, 3)
+        return finish(0.0, m0, stats)
+    stats["roll_deg"] = round(roll, 3)
+    return finish(roll, m1, stats)
+
+
 def _run_concurrently(tasks):
     """Run independent zero-arg callables, returning their results in task order.
 
@@ -1138,7 +1286,7 @@ def _run_concurrently(tasks):
 
 
 def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clean2=None,
-                                theta1_deg=None, theta2_deg=None):
+                                theta1_deg=None, theta2_deg=None, seam_dy=None):
     """Locally align the hemispheres across the seam corridors (parallax).
 
     The ~2-3 cm lens baseline displaces near content by 30-80 px between the
@@ -1175,6 +1323,10 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
     Returns (front', back', stats, flow_unreliability) — the last is a float32
     (out_h, out_w) field, 0 where flow is reliable/absent, →1 where measured
     correspondence is untrustworthy.
+
+    ``seam_dy`` optionally supplies the global vertical seam offset per strip
+    ({"left": px, "right": px}, output px) measured upstream; a strip without
+    a value falls back to _measure_seam_global_dy.
     """
     import cv2
     import numpy as np
@@ -1271,14 +1423,16 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
     )).astype(np.float32)
     stats = {}
 
-    def _pass1_strip(xc):
+    def _pass1_strip(name, xc):
         # Reads only lf/lb/ov_meas; every strip is independent of the other.
         x0, x1 = xc - half_strip, xc + half_strip
         fx, fy, conf, fb_err = _strip_flow_with_confidence(
             lf[:, x0:x1], lb[:, x0:x1], max_flow, fb_tau
         )
         g_dy, g_n = (0.0, 0)
-        if ov_meas is not None:
+        if seam_dy and seam_dy.get(name) is not None:
+            g_dy, g_n = float(np.clip(seam_dy[name], -30.0, 30.0)), -1  # -1 = supplied upstream
+        elif ov_meas is not None:
             g_dy, g_n = _measure_seam_global_dy(lf, lb, ov_meas, xc, out_h)
         goff = g_dy * s_prof
         fy = fy - goff[None, :]
@@ -1306,7 +1460,7 @@ def _parallax_align_hemispheres(front, back, w1, out_w, out_h, clean1=None, clea
     # Results are merged in the original strip order, so the output is identical
     # to the sequential loop; the strips just run concurrently when cores allow.
     for (name, xc), (goff, fx, fy, par, conf, st) in zip(
-        strips, _run_concurrently([lambda xc=xc: _pass1_strip(xc) for _, xc in strips])
+        strips, _run_concurrently([lambda n=n, xc=xc: _pass1_strip(n, xc) for n, xc in strips])
     ):
         x0, x1 = xc - half_strip, xc + half_strip
         goff_full[0, x0:x1] = goff
@@ -2081,7 +2235,20 @@ def _stitch_arrays(
         l2_draw = LensCalibration(l2.cx - W // 2, l2.cy, l2.radius, l2.rot)
     if not build_debug_artifacts:
         img = None  # only kept for StitchArtifacts.raw_decoded
-    if skip_autocal:
+    model_str = str(meta.get("camera_model", ""))
+    is_upright = (calib.layout == "side-by-side") or ("X3" in model_str)
+    # X3 with its trailer calibration: measured FOV, no autocal scan, and a
+    # per-capture lens-2 roll correction. Every other camera/calibration path
+    # is unchanged.
+    x3_trailer = "X3" in model_str and calib.source == "embedded_trailer"
+    if x3_trailer:
+        fov = _X3_TRAILER_FOV_DEG + float(fov_bias_deg or 0.0)
+        autocal = {
+            "fov_delta_deg": 0.0,
+            "skipped": "x3_measured_fov",
+            "fov_bias_deg": float(fov_bias_deg or 0.0),
+        }
+    elif skip_autocal:
         autocal = {
             "fov_delta_deg": 0.0,
             "skipped": True,
@@ -2092,8 +2259,22 @@ def _stitch_arrays(
     meta["fisheye_fov_deg_effective"] = fov
     meta["fov_autocal"] = autocal
 
-    model_str = str(meta.get("camera_model", ""))
-    is_upright = (calib.layout == "side-by-side") or ("X3" in model_str)
+    lens2_roll = 0.0
+    seam_dy = None
+    if x3_trailer and out_w >= 1024:
+        lens2_roll, roll_stats = _measure_lens2_roll(top, bot, l1, l2_draw, fov, is_upright)
+        meta["lens2_roll_correction"] = roll_stats
+        logger.info(f"[stitch] lens2 roll correction: {roll_stats}")
+        # The remaining per-seam vertical offset, from the same high-pass
+        # measurement, drives the existing wide raised-cosine correction (its
+        # own gates engaged on only 5 of 28 X3 seams; the rest fell to the
+        # flow, which kinked straight edges).
+        k = out_w / float(roll_stats["cal_w"])
+        seam_dy = {
+            name: (None if v is None else v * k)
+            for name, v in zip(("left", "right"), roll_stats["seam_dy_px"])
+        }
+
     m1x, m1y, v1 = _hemisphere_map(
         out_w, out_h, l1.cx, l1.cy, l1.radius, fov, 0.0, l1.rot,
         src_h=top.shape[0], src_w=top.shape[1], lens_label="lens1",
@@ -2104,6 +2285,7 @@ def _stitch_arrays(
         src_h=bot.shape[0], src_w=bot.shape[1], lens_label="lens2",
         body_flip=True,
         upright_base=is_upright,
+        world_roll_deg=lens2_roll,
     )
     # Validity must include SAMPLING bounds, not just the FOV cone: the
     # fisheye circle can be clipped by the sensor edge (measured: lens1
@@ -2156,7 +2338,7 @@ def _stitch_arrays(
     # be owned entirely by the lens that sees it open (Studio parity) instead
     # of being sliced at the 90° meridian.
     front, back = _correct_rim_illumination(
-        front, back, overlap, theta1_deg, theta2_deg, fov
+        front, back, overlap, theta1_deg, theta2_deg, fov, ramp_from_ring=x3_trailer
     )
     if build_debug_artifacts:
         sphere1 = front.copy()
@@ -2218,7 +2400,7 @@ def _stitch_arrays(
     front_pre_align, back_pre_align = front, back
     front, back, flow_stats, flow_unreliability, flow_mag = _parallax_align_hemispheres(
         front, back, w1, out_w, out_h, clean1, clean2,
-        theta1_deg=theta1_deg, theta2_deg=theta2_deg,
+        theta1_deg=theta1_deg, theta2_deg=theta2_deg, seam_dy=seam_dy,
     )
     if flow_stats is not None:
         meta["parallax_align"] = flow_stats

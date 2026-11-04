@@ -182,6 +182,8 @@ class ProgressAnalysisAuditEntry(BaseModel):
     requested_by_name: Optional[str] = Field(default=None, alias="requestedByName")
     created_at: Optional[datetime] = Field(default=None, alias="createdAt")
     latency_ms: Optional[float] = Field(default=None, alias="latencyMs")
+    status: str = "ok"
+    calls: int = 1
 
     model_config = {"populate_by_name": True}
 

@@ -127,6 +127,10 @@ class Settings(BaseSettings):
     # output); running several together on a 2 vCPU / 8 GiB server made the whole machine stop responding.
     # Extra jobs wait their turn as "pending". Raise only on a larger server.
     STITCH_MAX_CONCURRENCY: int = 1
+    # Keep a copy of every raw 360 capture in the object store (<tenant>/sites/captures/rawfiles/) so a stitch can be
+    # reproduced and inspected later. The local spool is still deleted after a successful stitch. Only used when
+    # MEDIA_OBJECT_STORE=s3; a failed copy never stops a stitch.
+    RETAIN_RAW_CAPTURES: bool = True
     # Seconds before a Cloudinary upload call is abandoned (frees the worker).
     CLOUDINARY_UPLOAD_TIMEOUT: int = 120
 
@@ -145,6 +149,13 @@ class Settings(BaseSettings):
     VLLM_MAX_TOKENS: int = 20000
     VLLM_HTTP_TIMEOUT_S: int = 300
     VLLM_MAX_RETRIES: int = 2
+    # "" (default) keeps the OpenAI-compatible HTTP clients above (Groq / vLLM) exactly as they are.
+    # "bedrock" sends the same chat calls to Amazon Bedrock (Converse API) using the instance IAM role - no key.
+    LLM_BACKEND: str = ""
+    BEDROCK_REGION: str = "ap-south-1"
+    BEDROCK_MODEL_ID: str = "apac.amazon.nova-pro-v1:0"
+    # Nova Pro rejects requests above 10,000 output tokens; the AI clients ask for up to 20,000.
+    BEDROCK_MAX_OUTPUT_TOKENS: int = 10000
 
     # Construction-progress floor analysis (Flat Finishing). Default stays local
     # vLLM; set to "hybrid" or "anthropic" once ANTHROPIC_API_KEY is configured.
@@ -254,6 +265,11 @@ class Settings(BaseSettings):
         provider = self.VISION_PROVIDER.strip().lower()
         if provider and provider not in {"groq", "vllm"}:
             raise ValueError("VISION_PROVIDER must be one of: groq, vllm")
+        backend = self.LLM_BACKEND.strip().lower()
+        if backend not in {"", "bedrock"}:
+            raise ValueError("LLM_BACKEND must be blank or: bedrock")
+        if backend == "bedrock" and not self.BEDROCK_MODEL_ID.strip():
+            raise ValueError("BEDROCK_MODEL_ID is required when LLM_BACKEND=bedrock")
         return self
 
     @model_validator(mode="after")
@@ -288,6 +304,8 @@ class Settings(BaseSettings):
         explicit = self.VISION_PROVIDER.strip().lower()
         if explicit:
             return explicit
+        if self.LLM_BACKEND.strip().lower() == "bedrock":
+            return "vllm"  # the OpenAI-shaped client; it routes to Bedrock when LLM_BACKEND=bedrock
         return "groq" if self.is_production else "vllm"
 
     @property

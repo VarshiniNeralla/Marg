@@ -196,6 +196,37 @@ class TestListFloorLevelActivitiesByStatus:
         assert result[0]["floorName"] is None
         assert result[0]["floorId"] == "f1"
 
+    def test_in_progress_includes_completion_pct_sorted_highest_first(self):
+        """Regression: floor rollup must carry completionPct and lead with
+        non-zero progress — otherwise Drishti answers "all zeroes" while the
+        Flat Finishing Works UI shows Wall Punning 11% / Putty 6%."""
+        floor_activities = {
+            "f8": [
+                {"activityId": "flat.electrical_wiring_23", "name": "Electrical Wiring", "status": "in_progress", "completionPct": 0.0, "section": "flat"},
+                {"activityId": "flat.wall_punning_4", "name": "Wall Punning", "status": "in_progress", "completionPct": 11.0, "section": "flat"},
+                {"activityId": "flat.putty_1st_coat_25", "name": "Putty 1st Coat", "status": "in_progress", "completionPct": 6.0, "section": "flat"},
+                {"activityId": "common.corridor_flooring_3", "name": "Corridor Flooring", "status": "completed", "completionPct": 100.0, "section": "common"},
+            ],
+        }
+        result = list_floor_level_activities_by_status(
+            floor_activities, ["in_progress"], {"f8": "Floor 8"},
+        )
+        assert [r["activityName"] for r in result] == ["Wall Punning", "Putty 1st Coat", "Electrical Wiring"]
+        assert result[0]["completionPct"] == 11.0
+        assert result[0]["grain"] == "floor_rollup"
+
+    def test_section_filter_flats_only(self):
+        floor_activities = {
+            "f8": [
+                {"activityId": "flat.wall_punning_4", "name": "Wall Punning", "status": "in_progress", "completionPct": 11.0, "section": "flat"},
+                {"activityId": "common.wall_punning_works_1", "name": "Wall Punning Works", "status": "in_progress", "completionPct": 33.0, "section": "common"},
+            ],
+        }
+        result = list_floor_level_activities_by_status(
+            floor_activities, ["in_progress"], {"f8": "Floor 8"}, section="flat",
+        )
+        assert [r["activityName"] for r in result] == ["Wall Punning"]
+
 
 class TestRankFlats:
     def test_excludes_common_area_entry(self):

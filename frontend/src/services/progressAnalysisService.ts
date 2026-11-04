@@ -163,6 +163,10 @@ export interface ProgressAnalysisAuditEntry {
   requestedByName?: string | null;
   createdAt?: string | null;
   latencyMs?: number | null;
+  /** 'ok' | 'failed' - a failed run still consumed (and records) the tokens it billed. */
+  status?: string;
+  /** Number of LLM calls this row covers (a floor analysis makes many). */
+  calls?: number;
 }
 
 export interface ProgressAnalysisAuditSummary {

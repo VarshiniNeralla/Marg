@@ -1,3 +1,4 @@
+import BrandLogo from '@/shared/components/BrandLogo';
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { Box, Typography } from '@mui/material';
@@ -55,8 +56,8 @@ function BrandMark({ centered = false }: { centered?: boolean }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: centered ? 'center' : 'flex-start' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: centered ? 0 : 2 }}>
-        <Box component="img" src="/assets/new_logo.png" alt="My Home Group"
-          sx={{ height: { xs: 26, md: 32 }, width: 'auto', objectFit: 'contain' }} />
+        <BrandLogo height={52} sx={{ display: { xs: 'none', md: 'block' } }} />
+        <BrandLogo height={40} sx={{ display: { xs: 'block', md: 'none' } }} />
         <Box>
           <Typography sx={{
             fontSize: { xs: '1.125rem', md: '1.375rem' },
@@ -66,15 +67,6 @@ function BrandMark({ centered = false }: { centered?: boolean }) {
             lineHeight: 1.1,
           }}>
             SiteVision
-          </Typography>
-          <Typography sx={{
-            fontSize: '0.55rem',
-            fontWeight: 700,
-            color: '#a1a1aa',
-            letterSpacing: '0.14em',
-            mt: 0.25,
-          }}>
-            BY SITESURELABS
           </Typography>
         </Box>
       </Box>

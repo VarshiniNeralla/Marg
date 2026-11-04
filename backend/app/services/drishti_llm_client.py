@@ -26,6 +26,8 @@ import httpx
 from loguru import logger
 
 from app.core.config import Settings, get_settings
+from app.services import bedrock_converse
+from app.services.llm_usage_context import note_llm_call
 
 
 class DrishtiLLMError(RuntimeError):
@@ -72,6 +74,34 @@ async def chat_completion_json(
     last_error: Optional[Exception] = None
     started = time.perf_counter()
 
+    if bedrock_converse.is_enabled(settings):
+        # Same text-only call through Amazon Bedrock (LLM_BACKEND=bedrock).
+        model = bedrock_converse.model_id(settings)
+        for attempt in range(max_retries + 1):
+            try:
+                body = await bedrock_converse.chat_completion(payload, settings)
+                latency_ms = (time.perf_counter() - started) * 1000
+                _u = body.get("usage") or {}
+                note_llm_call(model, _u.get("prompt_tokens"), _u.get("completion_tokens"), _u.get("total_tokens"), latency_ms)
+                raw_content = (body["choices"][0].get("message") or {}).get("content") or ""
+                parsed = _parse_json_content(raw_content)
+                logger.info("Drishti LLM call completed model={} backend=bedrock latency_ms={:.0f}", model, latency_ms)
+                if usage_out is not None:
+                    usage_out["model"] = model
+                    usage_out["usage"] = body.get("usage") or {}
+                    usage_out["latency_ms"] = latency_ms
+                return parsed
+            except bedrock_converse.BedrockChatError as exc:
+                last_error = exc
+                if not exc.retryable:
+                    raise DrishtiLLMError(f"Drishti LLM rejected by Bedrock: {exc}") from exc
+                await asyncio.sleep(min(2.0 * (attempt + 1), 30.0))
+            except DrishtiLLMError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - convert any transport-level failure
+                last_error = exc
+        raise DrishtiLLMError(f"Drishti LLM call failed after retries: {last_error}") from last_error
+
     for attempt in range(max_retries + 1):
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -88,6 +118,8 @@ async def chat_completion_json(
             response.raise_for_status()
             body = response.json()
             latency_ms = (time.perf_counter() - started) * 1000
+            _u = body.get("usage") or {}
+            note_llm_call(model, _u.get("prompt_tokens"), _u.get("completion_tokens"), _u.get("total_tokens"), latency_ms)
             choices = body.get("choices") or []
             if not choices:
                 raise DrishtiLLMError("Drishti LLM API returned no choices")

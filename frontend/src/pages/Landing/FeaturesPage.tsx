@@ -1,3 +1,4 @@
+import BrandLogo from '@/shared/components/BrandLogo';
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { Box, Typography, Grid } from '@mui/material';
@@ -5,6 +6,7 @@ import {
   ViewInArRounded, MapRounded, CameraAltRounded, CheckCircleRounded,
   PlaceRounded, BarChartRounded, ArrowForwardRounded, GroupRounded,
   NotificationsRounded, SecurityRounded, CloudUploadRounded, SpeedRounded,
+  InsightsRounded, ChatBubbleOutlineRounded,
 } from '@mui/icons-material';
 import { colors, shadows, motion } from '@theme/tokens';
 
@@ -35,10 +37,9 @@ function Navbar() {
       borderBottom: `1px solid rgba(15,23,42,0.06)`,
     }}>
       <Box component={Link} to="/" sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mr: 'auto', textDecoration: 'none' }}>
-        <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 32, width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
+        <BrandLogo height={34} />
         <Box>
           <Typography sx={{ fontSize: '1.0625rem', fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>SiteVision</Typography>
-          <Typography sx={{ fontSize: '0.625rem', fontWeight: 500, color: colors.textSubdued, letterSpacing: '0.06em', textTransform: 'uppercase', lineHeight: 1 }}>by SiteSureLabs</Typography>
         </Box>
       </Box>
       <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 0.5, mr: 4 }}>
@@ -111,8 +112,29 @@ const FEATURES_DETAIL = [
       'Place numbered capture pins on PDF/PNG floor plans',
       'Attach 360 captures to each pin location',
       'Publish sequential walkthrough tours across pins',
-      'Compare historical captures on the progress timeline',
       'Re-capture pins over time without losing prior visits',
+    ],
+  },
+  {
+    icon: <InsightsRounded sx={{ fontSize: 32 }} />, color: '#0891b2', bg: 'rgba(8,145,178,0.08)',
+    title: 'Construction Progress', badge: 'Core',
+    tagline: 'See how far each floor has come.',
+    bullets: [
+      'Progress analysis from your latest 360° captures',
+      'Room-by-room progress heatmap on the floor plan',
+      'Flat-level finishing works overview',
+      'Re-run the analysis any time with fresh captures',
+    ],
+  },
+  {
+    icon: <ChatBubbleOutlineRounded sx={{ fontSize: 32 }} />, color: '#7c3aed', bg: 'rgba(124,58,237,0.08)',
+    title: 'Drishti Assistant', badge: 'Core',
+    tagline: 'Ask questions about your project.',
+    bullets: [
+      'Ask about your project in plain language',
+      'Answers drawn from your own project data',
+      'Keep and rename your conversations',
+      'Export a chat as a PDF report',
     ],
   },
   {

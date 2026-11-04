@@ -1,21 +1,13 @@
 import React from 'react';
 import { ThemeProvider, CssBaseline, GlobalStyles } from '@mui/material';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { queryClient } from '@/services/queryClient';
 import theme from '@theme/index';
 import AppRouter from '@router/index';
 import { ErrorBoundary } from '@shared/components/ErrorBoundary/ErrorBoundary';
 import StoreHydrationGate from '@store/StoreHydrationGate';
 import WorkflowApiBootstrap from '@store/WorkflowApiBootstrap';
 import SyncErrorToast from '@shared/components/SyncErrorToast/SyncErrorToast';
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 1000 * 60 * 5, // 5 min
-      retry: 1,
-    },
-  },
-});
 
 export default function App() {
   return (

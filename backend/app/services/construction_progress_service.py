@@ -975,16 +975,36 @@ class ConstructionProgressService:
             "floor_label": str(context.get("floorLabel") or ""),
             "captured_at": as_of.isoformat() if as_of else "",
         }
-        result = await self._provider.assess_floor_progress(
-            floor_id=floor_id,
-            activities=ALL_ACTIVITIES,
-            captures=captures,
-            as_of=as_of,
-            flat_units=flat_units or None,
-            common_area_units=common_area_units or None,
-            flat_room_rosters=flat_room_rosters or None,
-            context=provider_context,
+        usage_meta: dict[str, Any] = dict(
+            org_id=org_id,
+            source="construction_progress",
+            project_id=str(context.get("projectId") or ""),
+            project_name=str(context.get("projectName") or ""),
+            tower=str(context.get("towerName") or ""),
+            floor=str(context.get("floorLabel") or ""),
+            requested_by=analyzed_by,
+            entity_id=floor_id,
         )
+        # Every token billed for this analysis is recorded - including a run that fails half-way.
+        from app.services.llm_usage_context import capture_usage
+        from app.services.llm_usage_service import LLMUsageService
+
+        with capture_usage() as usage_cap:
+            try:
+                result = await self._provider.assess_floor_progress(
+                    floor_id=floor_id,
+                    activities=ALL_ACTIVITIES,
+                    captures=captures,
+                    as_of=as_of,
+                    flat_units=flat_units or None,
+                    common_area_units=common_area_units or None,
+                    flat_room_rosters=flat_room_rosters or None,
+                    context=provider_context,
+                )
+            except BaseException:
+                await LLMUsageService(self._db).record_capture(usage_cap, ok=False, **usage_meta)
+                raise
+        await LLMUsageService(self._db).record_capture(usage_cap, ok=True, **usage_meta)
 
         # Built from each capture's OWN raw per-activity results, not from
         # which capture "won" an activity's flat-level best-evidence
@@ -1339,24 +1359,6 @@ class ConstructionProgressService:
             "Construction progress snapshot created floor_id={} org_id={} overall={}%",
             floor_id, org_id, overall_finishing_pct,
         )
-        if result.total_tokens or result.prompt_tokens or result.completion_tokens:
-            from app.services.llm_usage_service import LLMUsageService
-
-            await LLMUsageService(self._db).record_usage(
-                org_id=org_id,
-                source="construction_progress",
-                model=result.model,
-                prompt_tokens=result.prompt_tokens,
-                completion_tokens=result.completion_tokens,
-                total_tokens=result.total_tokens,
-                latency_ms=result.latency_ms,
-                project_id=str(context.get("projectId") or ""),
-                project_name=str(context.get("projectName") or ""),
-                tower=str(context.get("towerName") or ""),
-                floor=str(context.get("floorLabel") or ""),
-                requested_by=analyzed_by,
-                entity_id=str(doc["_id"]),
-            )
         # Re-apply human pin + activity corrections onto the new snapshot so a
         # fresh analyze does not wipe Floor-1 (and later) review fixes.
         try:
@@ -1585,6 +1587,9 @@ class ConstructionProgressService:
             if accessible_set is not None and floor_project_id not in accessible_set:
                 continue
             project = project_by_id.get(str(tower.get("projectId"))) if tower else None
+            # Archived (removed) projects are not part of the Projects page, so their floors are not listed either.
+            if project is not None and project.get("archived") is True:
+                continue
             latest = latest_by_floor.get(floor_id)
             summaries.append({
                 "floorId": floor_id,

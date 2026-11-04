@@ -1,3 +1,4 @@
+import BrandLogo from '@/shared/components/BrandLogo';
 import React, { useState } from 'react';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import {
@@ -45,7 +46,6 @@ const ADMIN_NAV: NavSection[] = [
       { label: 'Captures',   path: '/captures',    icon: <CameraAltRounded /> },
       { label: 'Tours',       path: '/tours',       icon: <ViewInArRounded /> },
       { label: 'Reviews',     path: '/reviews',     icon: <RateReviewRounded /> },
-      { label: 'Progress Reports', path: '/progress-reports', icon: <AutoAwesomeRounded /> },
       { label: 'Construction Progress', path: '/construction-progress', icon: <InsightsRounded /> },
       { label: 'Drishti',     path: '/drishti',     icon: <ChatBubbleOutlineRounded /> },
       { label: 'Analytics',   path: '/analytics',   icon: <BarChartRounded /> },
@@ -75,7 +75,6 @@ const MANAGER_NAV: NavSection[] = [
       { label: 'Reviews',     path: '/reviews',   icon: <RateReviewRounded /> },
       { label: 'Captures',   path: '/captures',  icon: <CameraAltRounded /> },
       { label: 'Virtual Tours', path: '/tours',  icon: <ViewInArRounded /> },
-      { label: 'Progress Reports', path: '/progress-reports', icon: <AutoAwesomeRounded /> },
       { label: 'Construction Progress', path: '/construction-progress', icon: <InsightsRounded /> },
       { label: 'Drishti',     path: '/drishti',     icon: <ChatBubbleOutlineRounded /> },
     ],
@@ -242,12 +241,8 @@ export default function DashboardLayout() {
           {/* Top zone: logo + toggle stacked */}
           <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, mb: 2 }}>
             {/* Logo */}
-            <Box
-              component="img"
-              src="/assets/new_logo.png"
-              alt="logo"
-              sx={{ width: 40, height: 40, objectFit: 'contain', mt: 0.5 }}
-            />
+            {/* Collapsed rail is too narrow for the wordmark: S mark only */}
+            <BrandLogo markOnly height={40} sx={{ mt: 0.5 }} />
             {/* Collapse toggle */}
             {!isMobile && (
               <Tooltip title="Expand sidebar" placement="right">
@@ -318,10 +313,9 @@ export default function DashboardLayout() {
         {/* Logo row + collapse toggle */}
         <Box sx={{ pt: 0.5, pb: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 0.5, gap: 1 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0, flex: 1 }}>
-            <Box component="img" src="/assets/new_logo.png" alt="My Home Constructions" sx={{ width: 44, height: 44, objectFit: 'contain', flexShrink: 0 }} />
+            <BrandLogo height={34} />
             <Box sx={{ minWidth: 0, display: 'flex', flexDirection: 'column' }}>
               <Typography sx={{ fontFamily: '"Google Sans Flex","Google Sans",Inter,sans-serif', fontWeight: 800, fontSize: '1.05rem', color: colors.textStrong, letterSpacing: '-0.03em', lineHeight: 1 }}>SiteVision</Typography>
-              <Typography sx={{ fontSize: '0.55rem', color: colors.textMuted, letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600, mt: 0.3 }}>BY SITESURELABS</Typography>
             </Box>
           </Box>
           {/* Collapse toggle — only on desktop */}

@@ -105,12 +105,15 @@ def list_floor_level_activities_by_status(
     floor_activities_by_floor: dict[str, list[dict[str, Any]]],
     statuses: list[str],
     floor_names: Optional[dict[str, str]] = None,
+    *,
+    section: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Lists activities from the per-FLOOR activity rollup (a snapshot
     document's top-level "activities" array — one entry per activity NAME
     for the whole floor, e.g. {"name": "Main Door Frame", "status":
-    "not_assessed", ...}) — a fundamentally different data source from
-    `list_activities_by_status`'s per-ROOM `rooms[].activities[]`.
+    "not_assessed", "completionPct": 11.0, ...}) — a fundamentally different
+    data source from `list_activities_by_status`'s per-ROOM
+    `rooms[].activities[]`.
 
     This split is REQUIRED, not a convenience: a room's own `activities[]`
     is only ever populated once that room has actually been captured and
@@ -124,9 +127,23 @@ def list_floor_level_activities_by_status(
     start" returned an empty list because it queried the room-level source,
     which can never contain a not_assessed entry no matter how many exist.
 
-    Returns activity NAMES grouped by floor (no room/flat — that granularity
-    genuinely doesn't exist for these statuses), sorted by floor then name."""
+    A SECOND production bug: "what activities are in progress on Floor 8?"
+    answered exclusively from room-level hits (many rooms at 0% with
+    negative evidence), while the Flat Finishing Works UI shows this same
+    floor rollup with non-zero % (Wall Punning 11%, Putty 6%, Corridor
+    Flooring 100%). For in_progress/completed, this rollup — including
+    completionPct — is the manager-facing source of truth.
+
+    `section` optionally narrows to "flat" or "common" (matches
+    activity.section on the rollup) for "in the flats?" / "in common areas?"
+    follow-ups.
+
+    Sorted by completionPct descending within each floor when any requested
+    status carries a progress signal (in_progress/completed), otherwise by
+    floor then name — so a progress listing never leads with a wall of
+    zeroes while higher-% activities sit further down."""
     status_set = set(statuses)
+    progress_sort = bool(status_set & {"in_progress", "completed"})
     items: list[dict[str, Any]] = []
     for floor_id, activities in floor_activities_by_floor.items():
         floor_name = (floor_names or {}).get(floor_id)
@@ -134,14 +151,36 @@ def list_floor_level_activities_by_status(
             status = activity.get("status")
             if status not in status_set:
                 continue
+            act_section = activity.get("section")
+            if section and act_section and act_section != section:
+                continue
+            if section and not act_section:
+                # Older snapshots may lack section — infer from activityId prefix.
+                aid = str(activity.get("activityId") or "")
+                inferred = "common" if aid.startswith("common.") else "flat" if aid.startswith("flat.") else None
+                if inferred and inferred != section:
+                    continue
             items.append({
-                "activityName": activity.get("name"),
+                "activityName": activity.get("name") or activity.get("activityName"),
                 "activityId": activity.get("activityId"),
                 "floorId": floor_id,
                 "floorName": floor_name,
                 "status": status,
+                "completionPct": float(activity.get("completionPct") or 0.0),
+                "confidencePct": activity.get("confidencePct"),
+                "section": act_section,
+                "grain": "floor_rollup",
             })
-    items.sort(key=lambda x: (x["floorName"] or "", x["activityName"] or ""))
+    if progress_sort:
+        items.sort(
+            key=lambda x: (
+                x["floorName"] or "",
+                -float(x.get("completionPct") or 0.0),
+                x["activityName"] or "",
+            ),
+        )
+    else:
+        items.sort(key=lambda x: (x["floorName"] or "", x["activityName"] or ""))
     return items
 
 

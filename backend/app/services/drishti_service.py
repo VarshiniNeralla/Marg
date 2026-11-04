@@ -26,6 +26,7 @@ from app.core.exceptions import NotFoundException, ValidationException
 from app.schemas.drishti import DrishtiAnswer, DrishtiMessage
 from app.services import drishti_analytics
 from app.services import drishti_llm_client
+from app.services.llm_usage_context import UsageCapture, begin_capture, end_capture
 from app.services.llm_usage_service import LLMUsageService
 from app.services.drishti_context_service import DrishtiContextService, _COMMON_AREA_FLAT, _find_flat
 from app.services.drishti_forecast_service import DrishtiForecastService
@@ -105,54 +106,49 @@ class DrishtiService:
             org_id, user_id, project_id, question, conversation_id
         )
 
-        project_context = await self._context_service.get_project_context(org_id, project_id)
-        known_entities = project_context
-        previous_scope = conversation.get("scope") or {}
+        # Every token the model billed for this question is recorded: the planning call, the answer call and
+        # any retries, also when the reply was unusable (a fallback answer is shown) or the request fails.
+        usage_cap, usage_token = begin_capture()
+        try:
+            project_context = await self._context_service.get_project_context(org_id, project_id)
+            known_entities = project_context
+            previous_scope = conversation.get("scope") or {}
 
-        # Phase 1: classify intent, resolve tower/floor (cheap — no snapshot).
-        plan = await self._planner.plan(
-            question=question,
-            conversation_history=[
-                {"role": m["role"], "content": m["content"]} for m in conversation["messages"][-6:]
-            ],
-            known_entities=known_entities,
-            previous_scope=previous_scope,
-        )
-
-        # Fetch the floor snapshot ONCE — reused for phase-2 entity
-        # resolution (flat/room/common-area rosters) AND for retrieval, so
-        # a narrowly-scoped question never triggers two separate queries.
-        floor_snapshot = None
-        if plan.needs_floor_snapshot:
-            floor_snapshot = await self._context_service.get_floor_context(org_id, plan.floor_id)
-
-        # Phase 2: resolve flat/room/common-area/activity against the real
-        # snapshot roster (or the project-invariant activity list).
-        plan = self._planner.resolve_entities(plan, floor_snapshot, previous_scope)
-
-        facts_payload = await self._assemble_facts_payload(
-            org_id, user_id, role, project_id, project_context, plan, floor_snapshot,
-        )
-
-        usage_out: dict[str, Any] = {}
-        answer = await self._generate_answer(
-            question, facts_payload, conversation["messages"][-6:], usage_out,
-        )
-        if usage_out:
-            usage = usage_out.get("usage") or {}
-            await LLMUsageService(self._db).record_usage(
-                org_id=org_id,
-                source="drishti_chat",
-                model=usage_out.get("model"),
-                prompt_tokens=usage.get("prompt_tokens"),
-                completion_tokens=usage.get("completion_tokens"),
-                total_tokens=usage.get("total_tokens"),
-                latency_ms=usage_out.get("latency_ms"),
-                project_id=project_id,
-                project_name=str(conversation.get("projectName") or ""),
-                requested_by=user_id or None,
-                entity_id=str(conversation["_id"]),
+            # Phase 1: classify intent, resolve tower/floor (cheap — no snapshot).
+            plan = await self._planner.plan(
+                question=question,
+                conversation_history=[
+                    {"role": m["role"], "content": m["content"]} for m in conversation["messages"][-6:]
+                ],
+                known_entities=known_entities,
+                previous_scope=previous_scope,
             )
+
+            # Fetch the floor snapshot ONCE — reused for phase-2 entity
+            # resolution (flat/room/common-area rosters) AND for retrieval, so
+            # a narrowly-scoped question never triggers two separate queries.
+            floor_snapshot = None
+            if plan.needs_floor_snapshot:
+                floor_snapshot = await self._context_service.get_floor_context(org_id, plan.floor_id)
+
+            # Phase 2: resolve flat/room/common-area/activity against the real
+            # snapshot roster (or the project-invariant activity list).
+            plan = self._planner.resolve_entities(plan, floor_snapshot, previous_scope)
+
+            facts_payload = await self._assemble_facts_payload(
+                org_id, user_id, role, project_id, project_context, plan, floor_snapshot,
+            )
+
+            usage_out: dict[str, Any] = {}
+            answer = await self._generate_answer(
+                question, facts_payload, conversation["messages"][-6:], usage_out,
+            )
+        except BaseException:
+            end_capture(usage_token)
+            await self._record_chat_usage(usage_cap, False, org_id, user_id, project_id, conversation)
+            raise
+        end_capture(usage_token)
+        await self._record_chat_usage(usage_cap, bool(usage_out), org_id, user_id, project_id, conversation)
 
         now = _utcnow()
         user_message: dict[str, Any] = {
@@ -331,6 +327,22 @@ class DrishtiService:
         if plan.intent == "activity_list" and plan.activity_list_statuses:
             flats_only = plan.activity_list_scope == "flats"
             common_areas_only = plan.activity_list_scope == "common_areas"
+            narrow_location = bool(plan.flat_name or plan.common_area_name)
+            statuses = plan.activity_list_statuses
+            progress_statuses = [s for s in statuses if s in ("in_progress", "completed")]
+            inactive_statuses = [
+                s for s in statuses if s in ("not_assessed", "not_observable", "no_evidence")
+            ]
+            # Floor/project grain for in_progress/completed must use the
+            # per-FLOOR activity rollup (same cards as Flat Finishing Works /
+            # Common Area Finishing) — NOT the per-room instances. A real
+            # production bug: "activities in progress on Floor 8" listed
+            # room-level 0% hits (Store Electrical Wiring, Master Bedroom
+            # Deep Cleaning, …) while the dashboard showed Wall Punning 11%,
+            # Putty 6%, Corridor Flooring 100%. Room instances are attached
+            # separately as location detail, never as the primary %.
+            use_floor_rollup_for_progress = bool(progress_statuses) and not narrow_location
+
             if plan.floor_id and floor_snapshot:
                 if flats_only:
                     rooms = _rooms_in_scope(floor_snapshot, None, None, flats_only=True)
@@ -342,24 +354,14 @@ class DrishtiService:
                 rooms = await self._rooms_across_project(
                     org_id, project_context, flats_only=flats_only, common_areas_only=common_areas_only,
                 )
-            items = drishti_analytics.list_activities_by_status(rooms, plan.activity_list_statuses)
 
-            # A room's own activities[] is only ever populated once that
-            # room has actually been captured/assessed — an uncaptured
-            # room's activities is a bare [] in the raw snapshot (confirmed
-            # against production data), so not_assessed/not_observable/
-            # no_evidence activities structurally CANNOT appear via the
-            # room-level path above no matter how many exist. A real
-            # production bug: "what are those 101 activities that did not
-            # start" (statuses not_assessed/no_evidence) always returned an
-            # empty list for this reason. Those statuses only exist in each
-            # snapshot's separate per-floor "activities" rollup (one entry
-            # per activity NAME for the whole floor, no room location) —
-            # fetched here ONLY when actually requested, merged in by name.
-            floor_level_statuses = [
-                s for s in plan.activity_list_statuses
-                if s in ("not_assessed", "not_observable", "no_evidence")
-            ]
+            room_items = drishti_analytics.list_activities_by_status(rooms, statuses)
+
+            floor_level_statuses = list(inactive_statuses)
+            if use_floor_rollup_for_progress:
+                floor_level_statuses = list(dict.fromkeys([*progress_statuses, *inactive_statuses]))
+
+            floor_items: list[dict[str, Any]] = []
             if floor_level_statuses:
                 if plan.floor_id and floor_snapshot:
                     floor_activities = {plan.floor_id: floor_snapshot.get("activities", [])}
@@ -372,15 +374,43 @@ class DrishtiService:
                         f["floorId"]: f["floorName"]
                         for t in project_context["towers"] for f in t["floors"]
                     }
-                items = items + drishti_analytics.list_floor_level_activities_by_status(
-                    floor_activities, floor_level_statuses, floor_names,
+                section = "flat" if flats_only else ("common" if common_areas_only else None)
+                floor_items = drishti_analytics.list_floor_level_activities_by_status(
+                    floor_activities, floor_level_statuses, floor_names, section=section,
                 )
 
-            payload["activityList"] = {
-                "statuses": plan.activity_list_statuses,
+            if use_floor_rollup_for_progress and floor_items:
+                items = floor_items
+                grain = "floor_rollup"
+                room_instances = [
+                    r for r in room_items if r.get("status") in ("in_progress", "completed")
+                ]
+            elif use_floor_rollup_for_progress and not floor_items:
+                # Snapshot missing the rollup array — fall back to room hits.
+                items = room_items
+                grain = "room"
+                room_instances = []
+            else:
+                # Location-narrowed progress, or inactive-only listing.
+                items = room_items + floor_items
+                grain = "room" if narrow_location else ("mixed" if room_items and floor_items else ("floor_rollup" if floor_items else "room"))
+                room_instances = []
+
+            activity_list_payload: dict[str, Any] = {
+                "statuses": statuses,
                 "scope": plan.activity_list_scope or "all",
+                "grain": grain,
                 "items": items,
             }
+            if room_instances:
+                activity_list_payload["roomInstances"] = room_instances
+                activity_list_payload["roomInstancesNote"] = (
+                    "Per-room evidence locations for the floor-rollup activities above. "
+                    "Do NOT use these completionPct values as the floor activity status — "
+                    "quote items[].completionPct (floor rollup) for progress %. A room can "
+                    "be 0% while the floor activity rollup is non-zero."
+                )
+            payload["activityList"] = activity_list_payload
 
         # Whole-floor-grain intents keep today's coarser payload. Guarded
         # individually (rather than with a shared `if not plan.floor_id:
@@ -399,12 +429,33 @@ class DrishtiService:
         # coarse-snapshot block actually needed a floor_id guard at all.
         if plan.floor_id and plan.intent in ("floor_status", "comparison", "quality_query"):
             coverage = await self._context_service.compute_capture_coverage(org_id, plan.floor_id)
+            # Promote overallProgressPct / summaryCards to the top of "floor"
+            # so a progress question cannot be answered from captureCoverage
+            # by accident. A real production bug: "What is the overall
+            # progress percentage of Floor 8?" was answered with
+            # coveragePct (12%) while the dashboard showed overallProgressPct
+            # (16%), because both numbers sat in the same payload and the
+            # model conflated them — and project.summaryCards (project-wide
+            # room totals) was also present, so Floor 8 answers cited
+            # project-wide "329 rooms not started" figures.
+            snap = floor_snapshot or {}
             payload["floor"] = {
                 "floorId": plan.floor_id,
                 "floorName": plan.floor_name,
+                "overallProgressPct": snap.get("overallProgressPct"),
+                "overallStatus": snap.get("overallStatus"),
+                "summaryCards": snap.get("summaryCards"),
                 "snapshot": _trim_floor_snapshot(floor_snapshot),
-                "captureCoverage": coverage,
+                "captureCoverage": {
+                    **coverage,
+                    "metricMeaning": "photo_capture_coverage_not_construction_progress",
+                },
             }
+            # Floor-scoped progress questions must not see project-wide
+            # rollups that compete with floor.overallProgressPct /
+            # floor.summaryCards — keep only the project id for identity.
+            if plan.intent == "floor_status":
+                payload["project"] = {"projectId": project_context["projectId"]}
 
         if plan.intent == "flat_status" and plan.flat_name:
             flat = _find_flat(floor_snapshot, plan.flat_name) if floor_snapshot else None
@@ -581,6 +632,26 @@ class DrishtiService:
         return gaps, captured
 
     # ── LLM call + validation guardrail ───────────────────────────────────
+
+    async def _record_chat_usage(
+        self,
+        usage_cap: UsageCapture,
+        ok: bool,
+        org_id: str,
+        user_id: str | None,
+        project_id: str,
+        conversation: dict[str, Any],
+    ) -> None:
+        await LLMUsageService(self._db).record_capture(
+            usage_cap,
+            ok=ok,
+            org_id=org_id,
+            source="drishti_chat",
+            project_id=project_id,
+            project_name=str(conversation.get("projectName") or ""),
+            requested_by=user_id or None,
+            entity_id=str(conversation["_id"]),
+        )
 
     async def _generate_answer(
         self,

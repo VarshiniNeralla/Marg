@@ -12,7 +12,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
+
+from app.services.llm_usage_context import UsageCapture
 
 _COLLECTION = "llm_usage"
 
@@ -42,6 +45,8 @@ class LLMUsageService:
         pin_name: str = "",
         requested_by: str | None = None,
         entity_id: str | None = None,
+        status: str = "ok",
+        calls: int = 1,
     ) -> None:
         prompt = int(prompt_tokens or 0)
         completion = int(completion_tokens or 0)
@@ -62,9 +67,33 @@ class LLMUsageService:
             "pin_name": pin_name,
             "requested_by": requested_by,
             "entity_id": entity_id,
+            "status": status,
+            "calls": int(calls or 1),
             "created_at": _utcnow(),
         }
         await self._db[_COLLECTION].insert_one(doc)
+
+    async def record_capture(self, cap: UsageCapture, *, ok: bool = True, **meta: Any) -> None:
+        """Record everything a :func:`capture_usage` block collected as ONE ledger row.
+
+        Nothing is written when no billed call happened. Never raises: a ledger problem must not break (or
+        hide the real error of) the feature whose tokens are being recorded.
+        """
+        if cap.calls <= 0:
+            return
+        try:
+            await self.record_usage(
+                model=cap.model,
+                prompt_tokens=cap.prompt_tokens,
+                completion_tokens=cap.completion_tokens,
+                total_tokens=cap.total_tokens,
+                latency_ms=cap.latency_ms,
+                status="ok" if ok else "failed",
+                calls=cap.calls,
+                **meta,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Could not record LLM usage ({} tokens, source={})", cap.total_tokens, meta.get("source"))
 
     async def list_audit(
         self,
@@ -97,7 +126,7 @@ class LLMUsageService:
             {
                 "$group": {
                     "_id": None,
-                    "analysisCount": {"$sum": 1},
+                    "analysisCount": {"$sum": {"$ifNull": ["$calls", 1]}},
                     "promptTokens": {"$sum": {"$ifNull": ["$prompt_tokens", 0]}},
                     "completionTokens": {"$sum": {"$ifNull": ["$completion_tokens", 0]}},
                     "totalTokens": {"$sum": {"$ifNull": ["$total_tokens", 0]}},
@@ -137,7 +166,16 @@ _SOURCE_LABELS = {
     "progress_analysis": "Progress Report",
     "construction_progress": "Construction Progress",
     "drishti_chat": "Drishti Chat",
+    "room_map": "Floor Plan Room Map",
 }
+
+
+def _as_utc(value: Any) -> Any:
+    """Mongo returns datetimes without a time zone (they are UTC). Left naive they serialize without a `Z`, and the
+    browser then reads them as LOCAL time, showing the wrong clock time."""
+    if isinstance(value, datetime) and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def _serialize_audit_entry(doc: dict[str, Any], user_names: dict[str, str]) -> dict[str, Any]:
@@ -158,6 +196,8 @@ def _serialize_audit_entry(doc: dict[str, Any], user_names: dict[str, str]) -> d
         "totalTokens": int(doc.get("total_tokens") or 0),
         "requestedBy": requested_by,
         "requestedByName": user_names.get(requested_by or "", None) if requested_by else None,
-        "createdAt": doc.get("created_at"),
+        "createdAt": _as_utc(doc.get("created_at")),
         "latencyMs": doc.get("latency_ms"),
+        "status": doc.get("status") or "ok",
+        "calls": int(doc.get("calls") or 1),
     }

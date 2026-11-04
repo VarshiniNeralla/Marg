@@ -12,6 +12,7 @@ import { getTowersByProject, getFloorsByTower, getFloorPlanByFloor, enrichFloorS
 import EmptyState from '@shared/components/EmptyState/EmptyState';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { locationFilterToolbarSx } from '@/utils/locationFilters';
+import { resolveMediaUrl } from '@/config/env';
 
 const PLANS_PAGE_SIZE_MOBILE = 9;  // 3 × 3
 const PLANS_PAGE_SIZE_DESKTOP = 8; // 4 × 2
@@ -426,8 +427,10 @@ export default function FloorPlansPage() {
             const isComplete = hasPlan && stats.mapped === stats.roomCount && stats.roomCount > 0;
 
             const planRecord = stats.plan as (typeof stats.plan & Record<string, unknown>) | undefined;
+            // Same resolution as the viewer: stored /media/... paths are relative and need the API host
+            // (the Capacitor WebView origin is not the backend) plus the media access token.
             const imageUrl: string | null = planRecord
-              ? ((planRecord as any).fileUrl ?? (planRecord as any).file_url
+              ? resolveMediaUrl((planRecord as any).fileUrl ?? (planRecord as any).file_url
                 ?? ((planRecord as any).mediaAssets as any)?.[0]?.original_url ?? null)
               : null;
 

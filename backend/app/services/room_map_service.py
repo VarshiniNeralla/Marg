@@ -12,6 +12,8 @@ from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from PIL import Image, ImageDraw, ImageFont
 
+from app.services.llm_usage_context import capture_usage
+from app.services.llm_usage_service import LLMUsageService
 from app.services.image_fetch import download_image, validate_image_url
 from app.services.vision_providers.base import VisionProvider
 from app.services.vision_providers.groq_provider import _COMMON_AREA_TERMS
@@ -1706,6 +1708,26 @@ class RoomMapService:
         self._sanitized_flats_by_plan.pop(floor_plan_id, None)
         await self._db[_COLLECTION].delete_one({"_id": floor_plan_id, "org_id": org_id})
 
+    async def _usage_meta(self, floor_plan_id: str, org_id: str) -> dict[str, Any]:
+        """Labels for the Audit page row (best effort: a lookup problem must never stop an extraction)."""
+        meta: dict[str, Any] = {"org_id": org_id, "source": "room_map", "entity_id": floor_plan_id}
+        try:
+            plan = await self._db["floor_plans"].find_one({"_id": floor_plan_id, "orgId": org_id})
+            if plan:
+                meta["floor"] = str(plan.get("floorLabel") or "")
+                project_id = str(plan.get("projectId") or "")
+                meta["project_id"] = project_id
+                if project_id:
+                    project = await self._db["projects"].find_one({"_id": project_id, "orgId": org_id}, {"name": 1})
+                    meta["project_name"] = str((project or {}).get("name") or "")
+                tower_id = str(plan.get("towerId") or "")
+                if tower_id:
+                    tower = await self._db["towers"].find_one({"_id": tower_id, "orgId": org_id}, {"name": 1})
+                    meta["tower"] = str((tower or {}).get("name") or "")
+        except Exception:  # noqa: BLE001
+            pass
+        return meta
+
     async def ensure_room_map(
         self,
         *,
@@ -1733,7 +1755,16 @@ class RoomMapService:
             full = Image.open(io.BytesIO(image_bytes))
 
             provider = _get_room_map_provider()
-            flats, model = await self._extract_flats(full, provider)
+            usage_meta = await self._usage_meta(floor_plan_id, org_id)
+            # Reading a plan takes dozens of vision calls; every token billed is recorded, also for a run that
+            # fails half-way.
+            with capture_usage() as usage_cap:
+                try:
+                    flats, model = await self._extract_flats(full, provider)
+                except BaseException:
+                    await LLMUsageService(self._db).record_capture(usage_cap, ok=False, **usage_meta)
+                    raise
+            await LLMUsageService(self._db).record_capture(usage_cap, ok=True, **usage_meta)
 
             doc = {
                 "_id": floor_plan_id,

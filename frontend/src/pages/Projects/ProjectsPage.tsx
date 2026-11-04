@@ -9,6 +9,7 @@ import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useAuthStore, isAdmin , getRoleLandingPath } from '@store/authStore';
 import { useSettingsStore } from '@store/settingsStore';
+import { resolveMediaUrl } from '@/config/env';
 import { getCapturesByProjectScope } from '@store/workflowSelectors';
 
 const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
@@ -139,7 +140,9 @@ export default function ProjectsPage() {
                 <Box
                   sx={{
                     height: 130,
-                    background: project.thumbnail ? `url(${project.thumbnail}) center/cover no-repeat` : project.gradient,
+                    // resolveMediaUrl: an uploaded cover is a /media/... path that must be pointed at the API host (the app and
+                    // local dev run on a different origin) and carry the media access token; a raw url() fails there.
+                    background: project.thumbnail ? `url("${resolveMediaUrl(project.thumbnail) ?? project.thumbnail}") center/cover no-repeat` : project.gradient,
                     position: 'relative',
                     display: 'flex',
                     flexDirection: 'column',

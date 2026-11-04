@@ -47,7 +47,8 @@ class DrishtiContextService:
         admin (RBACService's sentinel for "all projects") — no filter applied
         in that case; otherwise the list is the hard boundary of what this
         user may see."""
-        query: dict[str, Any] = {"orgId": org_id}
+        # Same set the Projects page shows: an archived (removed) project is not offered to Drishti.
+        query: dict[str, Any] = {"orgId": org_id, "archived": {"$ne": True}}
         if accessible_project_ids is not None:
             # `projects._id` is stored as an ObjectId (see
             # user_project_service.py's own lookup), but the accessible-id
@@ -280,12 +281,15 @@ class DrishtiContextService:
             flats = [f for f in flats if str(f.get("flatName") or "") == _COMMON_AREA_FLAT]
 
         hits: list[dict[str, Any]] = []
+        location_resolved = False
         for flat in flats:
             rooms = flat.get("rooms", [])
             if room_name:
                 rooms = [r for r in rooms if str(r.get("roomName") or "").strip().lower() == room_name.strip().lower()]
             elif common_area_name:
                 rooms = [r for r in rooms if str(r.get("roomName") or "").strip().lower() == common_area_name.strip().lower()]
+            if rooms:
+                location_resolved = True
             for room in rooms:
                 for activity in room.get("activities", []):
                     if activity.get("activityId") in id_set:
@@ -295,8 +299,38 @@ class DrishtiContextService:
                             "activity": activity,
                         })
 
+        # Whole-floor (no flat/room/common-area filter) with zero room hits
+        # still may have a floor-level activity rollup — that rollup is the
+        # configured checklist for the floor. Surfacing it prevents a false
+        # "not_configured" when the activity exists but no captured room has
+        # a per-room score yet (uncaptured rooms carry activities=[]).
+        if not hits and not (flat_name or room_name or common_area_name or common_area_only):
+            for activity in snapshot.get("activities") or []:
+                if activity.get("activityId") in id_set:
+                    hits.append({
+                        "flatName": None,
+                        "roomName": None,
+                        "scope": "floor_rollup",
+                        "activity": {
+                            "activityId": activity.get("activityId"),
+                            "activityName": activity.get("name") or activity.get("activityName"),
+                            "completionPct": activity.get("completionPct"),
+                            "status": activity.get("status"),
+                            "confidencePct": activity.get("confidencePct"),
+                            "evidence": activity.get("evidence") or "",
+                        },
+                    })
+
         if not hits:
-            resolution_status = "not_configured"
+            # A named location that exists on the roster but has no scored
+            # record for this (valid) activity is configured_no_evidence —
+            # never "not configured for the floor", which was a real
+            # production mis-answer when a stale Flat/Store scope emptied
+            # the room-level search.
+            if (flat_name or room_name or common_area_name) and location_resolved:
+                resolution_status = "configured_no_evidence"
+            else:
+                resolution_status = "not_configured"
         elif all(h["activity"].get("status") == "not_assessed" for h in hits):
             resolution_status = "configured_no_evidence"
         else:

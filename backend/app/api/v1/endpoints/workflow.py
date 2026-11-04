@@ -1172,6 +1172,10 @@ async def _patch(
     allowed_fields: set[str] | None = None,
 ) -> dict[str, Any]:
     update = dict(payload)
+    # Ownership and identity are never client-writable: a PUT body carrying another organization's id must not
+    # be able to move this record out of the caller's organization.
+    for key in ("_id", "orgId", "org_id"):
+        update.pop(key, None)
     if allowed_fields is not None:
         update = {k: v for k, v in update.items() if k in allowed_fields}
     # Review/publish used to $set the entire client capture object — including

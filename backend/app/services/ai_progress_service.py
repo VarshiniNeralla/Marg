@@ -12,6 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.config import Settings, get_settings
 from app.services.image_fetch import download_image, resize_if_needed, validate_image_url
+from app.services.llm_usage_context import capture_usage
 from app.services.llm_usage_service import LLMUsageService
 from app.services.vision_providers.base import VisionProvider
 from app.services.vision_providers.compare_progress_prompt import COMPARE_ANALYSIS_PROMPT_VERSION
@@ -620,23 +621,6 @@ class AIProgressService:
         }
         await self._db["audit_logs"].insert_one(doc)
 
-        await LLMUsageService(self._db).record_usage(
-            org_id=job["org_id"],
-            source="progress_analysis",
-            model=result.model,
-            prompt_tokens=result.prompt_tokens,
-            completion_tokens=result.completion_tokens,
-            total_tokens=result.total_tokens,
-            latency_ms=result.latency_ms,
-            project_id=str(job.get("project_id") or ""),
-            project_name=project_name,
-            tower=str(job.get("tower") or ""),
-            floor=str(job.get("floor") or ""),
-            pin_name=pin,
-            requested_by=user_id or None,
-            entity_id=report_id or str(job.get("_id") or ""),
-        )
-
     async def get_job_enriched(self, org_id: str, job_id: str) -> dict[str, Any] | None:
         job = await self.get_job(org_id, job_id)
         if not job:
@@ -695,13 +679,31 @@ class AIProgressService:
                 "after_date": job.get("after_date", ""),
             }
 
-            result = await self._provider.analyze_construction_progress(
-                before_image_b64=before_b64,
-                after_image_b64=after_b64,
-                before_mime=before_mime,
-                after_mime=after_mime,
-                context=context,
+            usage_meta: dict[str, Any] = dict(
+                org_id=job["org_id"],
+                source="progress_analysis",
+                project_id=str(job.get("project_id") or ""),
+                project_name=str(job.get("project_name") or ""),
+                tower=str(job.get("tower") or ""),
+                floor=str(job.get("floor") or ""),
+                pin_name=str(job.get("pin_name") or ""),
+                requested_by=str(job.get("requested_by") or "") or None,
+                entity_id=str(job.get("_id") or ""),
             )
+            # Every token billed for this analysis is recorded - including a failed or unparsable reply.
+            with capture_usage() as usage_cap:
+                try:
+                    result = await self._provider.analyze_construction_progress(
+                        before_image_b64=before_b64,
+                        after_image_b64=after_b64,
+                        before_mime=before_mime,
+                        after_mime=after_mime,
+                        context=context,
+                    )
+                except BaseException:
+                    await LLMUsageService(self._db).record_capture(usage_cap, ok=False, **usage_meta)
+                    raise
+            await LLMUsageService(self._db).record_capture(usage_cap, ok=True, **usage_meta)
 
             analysis = _normalize_analysis(result.content if isinstance(result.content, dict) else {})
             completed_at = _utcnow()

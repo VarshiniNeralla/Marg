@@ -70,7 +70,6 @@ const AuditPage          = lazy(() => import('@/pages/Admin/AuditPage'));
 
 // ── Manager-only ──────────────────────────────────────────────────────────────
 const ReviewsPage = lazy(() => import('@/pages/Reviews/ReviewsPage'));
-const ProgressReportsPage = lazy(() => import('@/pages/ProgressReports/ProgressReportsPage'));
 const ConstructionProgressOverviewPage = lazy(() => import('@/pages/ConstructionProgress/ConstructionProgressOverviewPage'));
 const ConstructionProgressDashboardPage = lazy(() => import('@/pages/ConstructionProgress/ConstructionProgressDashboardPage'));
 const FlatFinishingWorksPage = lazy(() => import('@/pages/ConstructionProgress/FlatFinishingWorksPage'));
@@ -166,7 +165,8 @@ const router = createBrowserRouter([
           { path: '/analytics', element: <PageSuspense><AnalyticsPage /></PageSuspense> },
           { path: '/defects',   element: <PageSuspense><DefectsPage /></PageSuspense> },
           { path: '/captures',                element: <PageSuspense><CapturesPage /></PageSuspense> },
-          { path: '/progress-reports',        element: <PageSuspense><ProgressReportsPage /></PageSuspense> },
+          // Progress Reports is switched off for now; old bookmarks land on Projects.
+          { path: '/progress-reports',        element: <Navigate to="/projects" replace /> },
           { path: '/construction-progress',           element: <PageSuspense><ConstructionProgressOverviewPage /></PageSuspense> },
           { path: '/construction-progress/:floorId',  element: <PageSuspense><ConstructionProgressDashboardPage /></PageSuspense> },
           { path: '/construction-progress/:floorId/flats', element: <PageSuspense><FlatFinishingWorksPage /></PageSuspense> },

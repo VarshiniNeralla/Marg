@@ -57,9 +57,19 @@ _VALID_INTENTS = {
     "forecast", "comparison", "quality_query", "general",
 }
 
-# Intents that need a floor's actual flat/room/common-area roster resolved
-# against real data before retrieval — anything narrower than "whole floor".
+# Intents that need the floor's latest snapshot fetched before retrieval.
+# Originally this set was only "narrower than whole floor" intents (flat/
+# room/activity/ranking) — floor_status was left out because the coarse
+# floor payload looked self-contained. A real production bug: single-floor
+# "What is the overall progress of Floor 8?" never called get_floor_context
+# at all, so floor.snapshot was null and the ONLY percentage in the facts
+# payload was captureCoverage.coveragePct. Drishti then answered 12%
+# (coverage) while the dashboard showed 16% (overallProgressPct). Multi-
+# floor floor_status happened to work because its byFloor path fetches each
+# snapshot itself; the single-floor path did not. floor_status /
+# management_summary / quality_query must be in this set.
 _INTENTS_NEEDING_FLOOR_SNAPSHOT = {
+    "floor_status", "management_summary", "quality_query",
     "flat_status", "room_status", "common_area_status", "location_activities",
     "activity_status", "common_area_activity_status", "activity_list",
     "activity_ranking", "flat_ranking", "common_area_ranking",
@@ -343,6 +353,23 @@ _PROJECT_WIDE_BY_DEFAULT_INTENTS = {
     "activity_ranking", "unfinished_work",
 }
 
+# Intents that must NOT inherit a prior turn's flat/room/common-area unit
+# unless THIS question itself names one. A real production bug: after the
+# user had scoped into "Flat 01 / Store" earlier, a bare follow-up like
+# "How about painting works?" (intent=activity_status, no location named)
+# silently re-used Store as the search scope, returned zero room hits, and
+# answered "painting is not configured for Floor 8" — even though putty/
+# primer/paint activities were genuinely in progress elsewhere on that
+# floor. Same class of sticky-scope bug as the floor/tower exclusion above,
+# just one level deeper in the location hierarchy.
+_NO_STICKY_FLAT_ROOM_INTENTS = {
+    "project_overview", "general", "activity_list",
+    "activity_status", "common_area_activity_status", "activity_ranking",
+    "unfinished_work", "floor_status", "tower_status", "management_summary",
+    "capture_gap", "forecast", "comparison", "quality_query", "flat_ranking",
+    "common_area_ranking",
+}
+
 
 @dataclass
 class QueryPlan:
@@ -544,12 +571,12 @@ class DrishtiQueryPlanner:
         common_flat = next((f for f in flat_progress if str(f.get("flatName") or "") == _COMMON_AREA_FLAT), None)
 
         # ── Flat ──
-        # "activity_list" defaults to project-wide — a prior turn's specific
-        # flat must not silently narrow a fresh "which activities are X"
-        # question down to just that flat.
+        # Do not sticky-carry a prior flat onto intents in
+        # `_NO_STICKY_FLAT_ROOM_INTENTS` — only the current question's own
+        # flatName hint (classifier or deterministic scan) may narrow scope.
         flat_hint = plan.flat_name or (
             previous_scope.get("flatName")
-            if plan.intent not in ("project_overview", "general", "activity_list")
+            if plan.intent not in _NO_STICKY_FLAT_ROOM_INTENTS
             else None
         )
         resolved_flat_name = None
@@ -566,7 +593,11 @@ class DrishtiQueryPlanner:
         plan.flat_name = resolved_flat_name
 
         # ── Room (within the resolved flat) ──
-        room_hint = plan.room_name or (previous_scope.get("roomName") if plan.intent not in ("project_overview", "general") else None)
+        room_hint = plan.room_name or (
+            previous_scope.get("roomName")
+            if plan.intent not in _NO_STICKY_FLAT_ROOM_INTENTS
+            else None
+        )
         if room_hint and resolved_flat_name:
             room_hint = _strip_trailing_location_qualifier(room_hint)
             flat_doc = next((f for f in real_flats if f.get("flatName") == resolved_flat_name), None)
@@ -582,15 +613,13 @@ class DrishtiQueryPlanner:
         # "common_area_activity_status" means "aggregate across ALL common
         # areas" by design — never carry forward one previously-named unit
         # onto it, or the whole point of asking for every unit is defeated.
-        # "activity_list" defaults to project-wide (every flat AND common
-        # area) unless THIS turn explicitly narrows it — a stale
+        # Same sticky exclusion set as flat/room above — a stale
         # commonAreaName from an unrelated earlier turn must never silently
-        # narrow "which activities are X" down to common areas only, which
-        # previously made a bare follow-up like "in the flats?" appear to
-        # have no flat data at all even though it plainly does.
+        # narrow "which activities are X" / "how about painting" down to one
+        # unit.
         common_area_hint = plan.common_area_name or (
             previous_scope.get("commonAreaName")
-            if plan.intent not in ("project_overview", "general", "common_area_activity_status", "activity_list")
+            if plan.intent not in _NO_STICKY_FLAT_ROOM_INTENTS
             else None
         )
         if common_area_hint:

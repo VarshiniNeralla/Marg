@@ -24,6 +24,9 @@ from app.core.tenancy import TenantResolutionError, derive_key, media_path_allow
 
 
 PRIVATE_MEDIA_SEGMENT = "_work"
+# Legacy-layout private folders (before everything moved under <tenant>/_work): raw uploads and failure
+# artifacts. Never served through /media, whatever the caller's tenant or role.
+_LEGACY_PRIVATE_SEGMENTS = frozenset({"stitch-spool", "stitch_failures"})
 _MAX_DECODE_ROUNDS = 5
 
 
@@ -45,7 +48,8 @@ def is_private_media_path(file_path: str) -> bool:
     for segment in decoded.replace("\\", "/").split("/"):
         # Windows ignores trailing dots/spaces and treats ':' as a stream marker.
         name = segment.split(":", 1)[0].rstrip(". ").strip()
-        if name.casefold() == PRIVATE_MEDIA_SEGMENT:
+        folded = name.casefold()
+        if folded == PRIVATE_MEDIA_SEGMENT or folded in _LEGACY_PRIVATE_SEGMENTS:
             return True
     return False
 

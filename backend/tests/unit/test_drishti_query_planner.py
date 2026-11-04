@@ -293,6 +293,56 @@ class TestCommonAreaActivityStatusNeverInheritsOneUnit:
         assert "common.primer_1st_coat_paint_6" in resolved.activity_ids
 
 
+class TestFloorStatusNeedsSnapshot:
+    """Single-floor floor_status must fetch the snapshot — otherwise the
+    facts payload has no overallProgressPct and only coveragePct, which is
+    exactly how Floor 8 progress was mis-answered as 12% instead of 16%."""
+
+    def test_floor_status_needs_floor_snapshot(self):
+        plan = QueryPlan(intent="floor_status", floor_id="f8", floor_name="Floor 8")
+        assert plan.needs_floor_snapshot is True
+
+    def test_management_summary_needs_floor_snapshot(self):
+        plan = QueryPlan(intent="management_summary", floor_id="f8", floor_name="Floor 8")
+        assert plan.needs_floor_snapshot is True
+
+
+class TestActivityStatusNeverInheritsStaleFlatRoom:
+    """Regression for a real production bug on Floor 8: after the user had
+    scoped into Flat 01 / Store earlier in the chat, a bare follow-up
+    "How about painting works?" (activity_status, no location named)
+    silently re-used Store as the search scope, got zero room hits, and
+    answered "painting is not configured" — even though putty/paint
+    activities were in progress in other rooms on that floor."""
+
+    def test_does_not_carry_over_previous_flat_and_room(self):
+        plan = QueryPlan(intent="activity_status", floor_id="f2", activity_name="painting")
+        previous_scope = {"flatName": "Flat 02", "roomName": "Bedroom-3"}
+        resolved = DrishtiQueryPlanner().resolve_entities(plan, _FLOOR_SNAPSHOT, previous_scope)
+        assert resolved.flat_name is None
+        assert resolved.room_name is None
+        assert resolved.activity_ids  # painting still resolves
+
+    def test_explicit_flat_in_question_still_resolves(self):
+        plan = QueryPlan(
+            intent="activity_status", floor_id="f2",
+            activity_name="painting", flat_name="Flat 02",
+        )
+        previous_scope = {"flatName": "Flat 02", "roomName": "Bedroom-3"}
+        resolved = DrishtiQueryPlanner().resolve_entities(plan, _FLOOR_SNAPSHOT, previous_scope)
+        assert resolved.flat_name == "Flat 02"
+        # Room is NOT in this turn's hints — must not sticky-carry either.
+        assert resolved.room_name is None
+
+    def test_flat_status_followup_still_inherits_previous_flat(self):
+        # Sanity: location-anchored intents keep sticky flat/room so a
+        # "what about that flat?" follow-up still works.
+        plan = QueryPlan(intent="flat_status", floor_id="f2")
+        previous_scope = {"flatName": "Flat 02"}
+        resolved = DrishtiQueryPlanner().resolve_entities(plan, _FLOOR_SNAPSHOT, previous_scope)
+        assert resolved.flat_name == "Flat 02"
+
+
 class TestLocationActivitiesResolution:
     """"What OTHER activities are pending in the Lift Lobby" — the location
     must resolve like common_area_status does, independent of any

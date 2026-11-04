@@ -22,6 +22,16 @@ def test_answer_prompt_distinguishes_coverage_from_progress():
     assert "different metric" in DRISHTI_ANSWER_PROMPT.lower()
 
 
+def test_answer_prompt_requires_overall_progress_pct_not_coverage_pct():
+    """Regression: Floor 8 overall progress was answered with coveragePct
+    (12%) while the dashboard showed overallProgressPct (16%)."""
+    lowered = DRISHTI_ANSWER_PROMPT.lower()
+    assert "floor.overallprogresspct" in lowered
+    assert "capturecoverage.coveragepct" in lowered
+    assert "photo_capture_coverage_not_construction_progress" in lowered
+    assert "project.summarycards" in lowered
+
+
 def test_answer_prompt_states_painting_implies_putty_not_reverse():
     assert "putty" in DRISHTI_ANSWER_PROMPT.lower()
     assert "does not imply paint" in DRISHTI_ANSWER_PROMPT.lower()
@@ -156,6 +166,16 @@ def test_classifier_prompt_infers_status_from_conversation_history_on_followup()
     lower = DRISHTI_CLASSIFIER_PROMPT.lower()
     assert "what are those n activities" in lower or "what are those" in lower
     assert "reread the assistant" in lower or "prior status" in lower
+
+
+def test_answer_prompt_requires_floor_rollup_pct_for_in_progress_lists():
+    """Regression: Floor 8 in-progress answers quoted room-level 0% instead
+    of Flat Finishing Works floor-rollup percentages."""
+    lowered = DRISHTI_ANSWER_PROMPT.lower()
+    assert "floor_rollup" in lowered
+    assert "roominstances" in lowered
+    assert "flat finishing works" in lowered
+    assert "all zeroes" in lowered
 
 
 def test_answer_prompt_forbids_saying_activity_list_not_specified():

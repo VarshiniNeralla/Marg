@@ -34,6 +34,20 @@ export type RestoreOutcome = 'restored' | 'no-session' | 'offline';
  *  not flip on refresh, so WorkflowApiBootstrap alone will not re-flush). */
 export const AUTH_SESSION_RESTORED_EVENT = 'workflow:auth-session-restored';
 
+/** The `sub` (user id) claim of a JWT, read without verifying it: the server issued this token a moment ago, we
+ *  only compare it with who this session is. null when it cannot be read. */
+export function jwtSubject(token: string): string | null {
+  try {
+    const part = token.split('.')[1];
+    if (!part) return null;
+    const json = atob(part.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(part.length / 4) * 4, '='));
+    const sub = (JSON.parse(json) as { sub?: unknown }).sub;
+    return typeof sub === 'string' && sub ? sub : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Attempt to exchange the refresh cookie for a new access token.
  */
@@ -58,6 +72,12 @@ export function restoreSessionFromCookie(): Promise<RestoreOutcome> {
           headers: { 'ngrok-skip-browser-warning': 'true' },
         },
       );
+      // The refresh cookie is shared by every SiteVision tab/profile on this browser, so signing in as someone
+      // else (possibly at the other company) elsewhere swaps it. This session must only ever continue as the
+      // same person: if the token belongs to a different user, refuse it and sign this session out instead of
+      // letting its queued writes, uploads and data refreshes run as (and into) another account.
+      const tokenUser = jwtSubject(data.data.access_token);
+      if (tokenUser && tokenUser !== user.id) return 'no-session';
       setAccessToken(data.data.access_token);
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent(AUTH_SESSION_RESTORED_EVENT));

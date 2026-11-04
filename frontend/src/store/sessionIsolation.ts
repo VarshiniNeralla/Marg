@@ -1,3 +1,4 @@
+import { queryClient } from '@/services/queryClient';
 import type { AuthUser } from './authStore';
 import { useWorkflowStore } from './workflowStore';
 import { useSettingsStore } from './settingsStore';
@@ -58,6 +59,8 @@ export function seedSettingsFromUser(user: Pick<AuthUser, 'name' | 'email' | 'or
 }
 
 export function clearClientSessionState(): void {
+  // Cached server answers belong to the user who is leaving; the next user must start from nothing.
+  queryClient.clear();
   useWorkflowStore.getState().resetToSeed();
   // Force WorkflowApiBootstrap to fetch a fresh snapshot on the next login
   // (retry nonce + loading), even when the same user re-authenticates.

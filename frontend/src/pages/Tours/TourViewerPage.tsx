@@ -1745,24 +1745,8 @@ export default function TourViewerPage() {
                         </Typography>
                       </Box>
                     </Box>
-                    {pinTimeline.length > 1 && (
-                      <Box
-                        onClick={() => setCompareIds(isComparing ? [null, null] : [latestSnap.id, null])}
-                        sx={{
-                          display: 'inline-flex', alignItems: 'center', gap: 0.5,
-                          px: 1.25, py: 0.375, borderRadius: '8px', cursor: 'pointer',
-                          fontSize: '0.6875rem', fontWeight: 600, flexShrink: 0,
-                          backgroundColor: isComparing ? 'rgba(124,58,237,0.1)' : colors.bg,
-                          color: isComparing ? '#7c3aed' : colors.textMuted,
-                          border: `1px solid ${isComparing ? '#7c3aed' : colors.borderLight}`,
-                          transition: `all ${motion.durationFast}`,
-                          '&:hover': { borderColor: '#7c3aed', color: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.08)' },
-                        }}
-                      >
-                        {isComparing ? <CloseRounded sx={{ fontSize: 12 }} /> : <CompareRounded sx={{ fontSize: 12 }} />}
-                        {isComparing ? 'Cancel' : 'Compare'}
-                      </Box>
-                    )}
+                    {/* Compare is switched off for now: with no button, compare mode can
+                        never start, so the compare/analyse UI below never renders. */}
                   </Box>
 
                   <Box sx={{ p: 1.5 }}>

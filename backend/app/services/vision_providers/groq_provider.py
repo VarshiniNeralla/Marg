@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from app.services.llm_usage_context import note_llm_call
 from app.core.config import Settings, get_settings
 from app.services.vision_providers.base import VisionAnalysisResult, VisionProvider
 from app.services.vision_providers.compare_progress_prompt import (
@@ -394,6 +395,7 @@ class GroqVisionProvider(VisionProvider):
                 prompt_tokens = int(usage.get("prompt_tokens") or 0)
                 completion_tokens = int(usage.get("completion_tokens") or 0)
                 total_tokens = int(usage.get("total_tokens") or prompt_tokens + completion_tokens)
+                note_llm_call(self._model, prompt_tokens, completion_tokens, total_tokens, latency_ms)
 
                 choices = body.get("choices") or []
                 if not choices:

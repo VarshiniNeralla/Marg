@@ -1,3 +1,4 @@
+import BrandLogo from '@/shared/components/BrandLogo';
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Box, Typography, Grid } from '@mui/material';
@@ -21,10 +22,9 @@ function Navbar() {
   return (
     <Box component="nav" sx={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1000, height: NAV_H, display: 'flex', alignItems: 'center', px: { xs: 2, md: 6 }, backdropFilter: 'blur(20px) saturate(180%)', backgroundColor: 'rgba(255,255,255,0.88)', borderBottom: `1px solid rgba(15,23,42,0.06)` }}>
       <Box component={Link} to="/" sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mr: 'auto', textDecoration: 'none' }}>
-        <Box component="img" src="/assets/new_logo.png" alt="My Home Group" sx={{ height: 32, width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
+        <BrandLogo height={34} />
         <Box>
           <Typography sx={{ fontSize: '1.0625rem', fontWeight: 800, color: colors.textStrong, letterSpacing: '-0.04em', lineHeight: 1.1 }}>SiteVision</Typography>
-          <Typography sx={{ fontSize: '0.625rem', fontWeight: 500, color: colors.textSubdued, letterSpacing: '0.06em', textTransform: 'uppercase', lineHeight: 1 }}>by SiteSureLabs</Typography>
         </Box>
       </Box>
       <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 0.5, mr: 4 }}>

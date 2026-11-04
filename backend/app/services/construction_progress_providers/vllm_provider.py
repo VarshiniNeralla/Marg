@@ -39,7 +39,9 @@ from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from PIL import Image, ImageStat
 
+from app.services.llm_usage_context import note_llm_call
 from app.core.config import Settings, get_settings
+from app.services import bedrock_converse
 from app.services.derived_views_service import get_or_render_views
 from app.services.image_fetch import download_image, resize_if_needed
 from app.services.panorama_service import is_equirectangular, measure_image
@@ -652,6 +654,9 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         base = (self._settings.VLLM_BASE_URL or "http://127.0.0.1:8000").strip().rstrip("/")
         self._chat_url = f"{base}/v1/chat/completions"
         self._model = (self._settings.VLLM_MODEL or "gemma4-31b").strip()
+        self._use_bedrock = bedrock_converse.is_enabled(self._settings)
+        if self._use_bedrock:
+            self._model = bedrock_converse.model_id(self._settings)
         self._api_key = (self._settings.VLLM_API_KEY or "").strip()
         self._timeout = float(self._settings.VLLM_HTTP_TIMEOUT_S)
         self._max_retries = int(self._settings.VLLM_MAX_RETRIES)
@@ -1225,6 +1230,9 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         log_label: str,
         usage_out: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if self._use_bedrock:
+            return await self._bedrock_chat_completion(payload, log_label=log_label, usage_out=usage_out)
+
         last_error: Exception | None = None
         started = time.perf_counter()
 
@@ -1244,6 +1252,9 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                 response.raise_for_status()
                 body = response.json()
                 latency_ms = (time.perf_counter() - started) * 1000
+                _u = body.get("usage") or {}
+                # Billed now, whether or not the reply parses below (see llm_usage_context).
+                note_llm_call(self._model, _u.get("prompt_tokens"), _u.get("completion_tokens"), _u.get("total_tokens"), latency_ms)
                 choices = body.get("choices") or []
                 if not choices:
                     raise RuntimeError("vLLM API returned no choices")
@@ -1263,6 +1274,43 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                 last_error = exc
                 if exc.response.status_code < 500:
                     raise RuntimeError(f"vLLM API rejected request: {exc.response.status_code}") from exc
+            except Exception as exc:
+                last_error = exc
+
+        raise RuntimeError(f"{log_label} failed after retries: {last_error}") from last_error
+
+    async def _bedrock_chat_completion(
+        self,
+        payload: dict[str, Any],
+        *,
+        log_label: str,
+        usage_out: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Same call through Amazon Bedrock (LLM_BACKEND=bedrock); same return contract."""
+        last_error: Exception | None = None
+        started = time.perf_counter()
+
+        for attempt in range(self._max_retries + 1):
+            try:
+                body = await bedrock_converse.chat_completion(payload, self._settings)
+                latency_ms = (time.perf_counter() - started) * 1000
+                _u = body.get("usage") or {}
+                note_llm_call(self._model, _u.get("prompt_tokens"), _u.get("completion_tokens"), _u.get("total_tokens"), latency_ms)
+                raw_content = (body["choices"][0].get("message") or {}).get("content") or ""
+                parsed = _parse_json_content(raw_content)
+                logger.info("{} completed model={} backend=bedrock latency_ms={:.0f}", log_label, self._model, latency_ms)
+                if usage_out is not None:
+                    usage = body.get("usage") or {}
+                    usage_out["prompt_tokens"] = int(usage.get("prompt_tokens") or 0)
+                    usage_out["completion_tokens"] = int(usage.get("completion_tokens") or 0)
+                    usage_out["total_tokens"] = int(usage.get("total_tokens") or 0)
+                    usage_out["latency_ms"] = latency_ms
+                return parsed
+            except bedrock_converse.BedrockChatError as exc:
+                last_error = exc
+                if not exc.retryable:
+                    raise RuntimeError(f"{log_label} rejected by Bedrock: {exc}") from exc
+                await asyncio.sleep(min(2.0 * (attempt + 1), 30.0))
             except Exception as exc:
                 last_error = exc
 

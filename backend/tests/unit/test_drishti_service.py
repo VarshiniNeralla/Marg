@@ -478,6 +478,75 @@ class TestTargetedPayloadAssembly:
         assert '"executiveSummary"' not in prompt  # only present in the coarse floor-wide payload
 
 
+class TestFloorStatusProgressNotCoveragePayload:
+    """Regression: "What is the overall progress percentage of Floor 8?"
+    was answered with captureCoverage.coveragePct while the UI showed
+    overallProgressPct, and Floor 8 answers also cited project-wide
+    summaryCards room totals (e.g. 329 rooms not started)."""
+
+    @pytest.mark.asyncio
+    async def test_floor_payload_promotes_overall_progress_and_strips_project_rollups(self, monkeypatch):
+        plan = QueryPlan(
+            intent="floor_status", floor_id="f8", floor_name="Floor 8",
+            resolved_scope_for_persistence={},
+        )
+        floor_snapshot = {
+            "overallProgressPct": 16.0,
+            "overallStatus": "in_progress",
+            "summaryCards": {"roomsCompleted": 2, "roomsInProgress": 40, "roomsNotStarted": 50, "coveragePct": 12.0},
+            "flatProgress": [],
+            "executiveSummary": "Floor finishing underway.",
+        }
+        project_context = {
+            "projectId": "p1", "overallProgressPct": 40.0,
+            "floorsAnalyzed": 3, "floorsNotYetAnalyzed": 1,
+            "summaryCards": {"roomsNotStarted": 329, "roomsInProgress": 40, "roomsCompleted": 2},
+            "towers": [],
+        }
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "get_project_context",
+            AsyncMock(return_value=project_context),
+        )
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "plan", AsyncMock(return_value=plan))
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "resolve_entities", lambda self, p, snap, prev: plan)
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "get_floor_context",
+            AsyncMock(return_value=floor_snapshot),
+        )
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "compute_capture_coverage",
+            AsyncMock(return_value={"coveragePct": 12.0, "roomsConfigured": 92, "roomsCaptured": 11}),
+        )
+
+        captured = {}
+
+        async def fake_chat(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"answer": "Floor 8 overall progress is 16%."}
+
+        monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        await service.ask("org1", "user1", "manager", "p1", "What is the overall progress percentage of Floor 8?")
+
+        prompt = captured["user_prompt"]
+        # Parse the facts JSON out of the prompt rather than substring-matching
+        # a specific dumps() spacing — the important contract is the values.
+        facts_json = prompt.split("Facts payload (JSON):\n", 1)[1].split("\n\nRecent conversation:", 1)[0]
+        facts = __import__("json").loads(facts_json)
+        assert facts["project"] == {"projectId": "p1"}
+        assert facts["floor"]["overallProgressPct"] == 16.0
+        assert facts["floor"]["captureCoverage"]["coveragePct"] == 12.0
+        assert facts["floor"]["captureCoverage"]["metricMeaning"] == (
+            "photo_capture_coverage_not_construction_progress"
+        )
+        # Project-wide rollups must not compete with floor numbers.
+        assert "summaryCards" not in facts["project"]
+        assert "floorsAnalyzed" not in facts["project"]
+        assert facts["floor"]["summaryCards"]["roomsNotStarted"] == 50
+
+
 class TestMultiFloorStatusPayload:
     """Regression coverage for a real production bug, in two parts. Part 1:
     "What is the progress percentage for Floor 1 and Floor 2?" resolved to
@@ -765,8 +834,14 @@ class TestActivityListFollowUp:
             intent="activity_list", floor_id=None,
             activity_list_statuses=["in_progress"], resolved_scope_for_persistence={},
         )
+        project_context = {
+            **_PROJECT_CONTEXT,
+            "towers": [{"towerId": "t1", "towerName": "Tower A", "floors": [
+                {"floorId": "f1", "floorName": "Floor 1", "analyzed": True},
+            ]}],
+        }
         monkeypatch.setattr(
-            service_module.DrishtiContextService, "get_project_context", AsyncMock(return_value=_PROJECT_CONTEXT),
+            service_module.DrishtiContextService, "get_project_context", AsyncMock(return_value=project_context),
         )
         monkeypatch.setattr(service_module.DrishtiQueryPlanner, "plan", AsyncMock(return_value=plan))
         monkeypatch.setattr(service_module.DrishtiQueryPlanner, "resolve_entities", lambda self, p, snap, prev: plan)
@@ -780,6 +855,9 @@ class TestActivityListFollowUp:
                     ]},
                 ]},
             ],
+            "activities": [
+                {"activityId": "flat.vitrified_flooring_16", "name": "Vitrified Flooring", "status": "in_progress", "completionPct": 60.0, "section": "flat"},
+            ],
         }
         monkeypatch.setattr(
             service_module.DrishtiContextService, "get_latest_snapshots_for_floors",
@@ -790,7 +868,7 @@ class TestActivityListFollowUp:
 
         async def fake_chat(system_prompt, user_prompt, **kwargs):
             captured["user_prompt"] = user_prompt
-            return {"answer": "Vitrified Flooring is in progress at 60% in Flat 01's Kitchen."}
+            return {"answer": "Vitrified Flooring is in progress at 60%."}
 
         monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
         db = _make_db(_FakeConversationCollection())
@@ -800,7 +878,78 @@ class TestActivityListFollowUp:
 
         assert '"activityList"' in captured["user_prompt"]
         assert "Vitrified Flooring" in captured["user_prompt"]
+        assert '"grain": "floor_rollup"' in captured["user_prompt"]
         assert "Vitrified Flooring" in result["message"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_in_progress_on_floor_uses_floor_rollup_pct_not_room_zeroes(self, monkeypatch):
+        """The exact live Floor 8 bug: room-level Deep Cleaning / Electrical
+        Wiring at 0% dominated the answer, while Flat Finishing Works showed
+        Wall Punning 11% / Putty 6% from the floor activities rollup."""
+        plan = QueryPlan(
+            intent="activity_list", floor_id="f8", floor_name="Floor 8",
+            activity_list_statuses=["in_progress"], resolved_scope_for_persistence={},
+        )
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "get_project_context", AsyncMock(return_value=_PROJECT_CONTEXT),
+        )
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "plan", AsyncMock(return_value=plan))
+        monkeypatch.setattr(service_module.DrishtiQueryPlanner, "resolve_entities", lambda self, p, snap, prev: plan)
+
+        snapshot = {
+            "floorId": "f8",
+            "overallProgressPct": 16.0,
+            "flatProgress": [
+                {"flatName": "Flat 01", "rooms": [
+                    {"roomName": "Store", "capturesCount": 1, "activities": [
+                        {"activityId": "flat.electrical_wiring_23", "activityName": "Electrical Wiring", "completionPct": 0.0, "status": "in_progress", "evidence": "No visible wiring"},
+                    ]},
+                ]},
+                {"flatName": "Flat 04", "rooms": [
+                    {"roomName": "Master Bedroom", "capturesCount": 1, "activities": [
+                        {"activityId": "flat.deep_cleaning_38", "activityName": "Deep Cleaning", "completionPct": 0.0, "status": "in_progress", "evidence": "Debris visible"},
+                        {"activityId": "flat.wall_punning_4", "activityName": "Wall Punning", "completionPct": 40.0, "status": "in_progress"},
+                    ]},
+                ]},
+            ],
+            "activities": [
+                {"activityId": "flat.wall_punning_4", "name": "Wall Punning", "status": "in_progress", "completionPct": 11.0, "section": "flat"},
+                {"activityId": "flat.putty_1st_coat_25", "name": "Putty 1st Coat", "status": "in_progress", "completionPct": 6.0, "section": "flat"},
+                {"activityId": "flat.electrical_wiring_23", "name": "Electrical Wiring", "status": "in_progress", "completionPct": 0.0, "section": "flat"},
+                {"activityId": "flat.deep_cleaning_38", "name": "Deep Cleaning", "status": "in_progress", "completionPct": 1.0, "section": "flat"},
+            ],
+        }
+        monkeypatch.setattr(
+            service_module.DrishtiContextService, "get_floor_context", AsyncMock(return_value=snapshot),
+        )
+
+        captured = {}
+
+        async def fake_chat(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"answer": "Wall Punning is 11% in progress; Putty 1st Coat is 6%."}
+
+        monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
+        db = _make_db(_FakeConversationCollection())
+        service = DrishtiService(db)
+
+        await service.ask(
+            "org1", "user1", "manager", "p1",
+            "What is the current status of the activities in progress on Floor 8?",
+        )
+
+        import json
+        facts_json = captured["user_prompt"].split("Facts payload (JSON):\n", 1)[1].split("\n\nRecent conversation:", 1)[0]
+        facts = json.loads(facts_json)
+        activity_list = facts["activityList"]
+        assert activity_list["grain"] == "floor_rollup"
+        names = [i["activityName"] for i in activity_list["items"]]
+        assert names[0] == "Wall Punning"
+        assert activity_list["items"][0]["completionPct"] == 11.0
+        assert "Putty 1st Coat" in names
+        # Room-level 0% noise must not be the primary items list.
+        assert not any(i.get("roomName") == "Store" for i in activity_list["items"])
+        assert "roomInstances" in activity_list
 
     @pytest.mark.asyncio
     async def test_activity_list_scoped_to_floor_uses_floor_snapshot(self, monkeypatch):

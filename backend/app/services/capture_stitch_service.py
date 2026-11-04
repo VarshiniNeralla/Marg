@@ -57,6 +57,55 @@ _STALE_AFTER = timedelta(minutes=10)
 # Failed-job spool retention — long enough for a site visit + Studio export.
 _FAILED_RAW_RETENTION = timedelta(days=7)
 
+# Upper bound for copying one raw capture (~13 MB) to the object store before its stitch starts.
+_RAW_ARCHIVE_TIMEOUT_SECONDS = 120.0
+
+
+def _raw_archive_key(filename: str, dedup_key: str) -> Optional[str]:
+    """Object-store key for the long-term copy of a raw capture, or None when archiving is off.
+
+    ``<tenant>/sites/captures/rawfiles/<first 8 of the file hash>_<original name>``, for example
+    ``myhome/sites/captures/rawfiles/ab12cd34_IMG_20261031_111320_00_112.insp``. The original name is kept so a raw
+    file pairs with its panorama (``<random>_IMG_..._112.jpg``). Called while the upload request is still running, so
+    the tenant is known; the key is stored on the job and reused later (also after a server restart).
+    """
+    from app.core.tenancy import storage_root_segments
+    from app.services import object_store
+    from app.services.local_media_service import _safe_filename
+
+    if not getattr(get_settings(), "RETAIN_RAW_CAPTURES", True) or not object_store.s3_enabled():
+        return None
+    # dedup_key is "<org id>:<sha256 of the file>": use the hash part, so two different files that happen to share a
+    # camera filename never overwrite (or get skipped as "already stored" by) each other.
+    file_hash = (dedup_key or "").rsplit(":", 1)[-1]
+    name = f"{file_hash[:8] or 'raw'}_{_safe_filename(filename)}"
+    return "/".join([*storage_root_segments("captures"), "captures", "rawfiles", name])
+
+
+async def _archive_raw_copy(key: Optional[str], raw_path: Path, job_id: str) -> None:
+    """Best-effort copy of the spooled raw capture into the object store. Never raises: a storage problem must not
+    stop (or slow down beyond the timeout) a stitch."""
+    if not key:
+        return
+    from app.services import object_store
+
+    def _copy() -> str:
+        if object_store.object_exists(key):
+            return "already stored"
+        object_store.put_object(
+            key,
+            raw_path.read_bytes(),
+            content_type="application/octet-stream",
+            metadata={"stitch-job": job_id},
+        )
+        return "stored"
+
+    try:
+        state = await asyncio.wait_for(asyncio.to_thread(_copy), timeout=_RAW_ARCHIVE_TIMEOUT_SECONDS)
+        logger.info(f"[stitch-job] raw {state} key={key} job={job_id}")
+    except Exception as exc:  # includes the timeout
+        logger.warning(f"[stitch-job] raw archive failed key={key} job={job_id}: {exc!r}")
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -168,6 +217,7 @@ class CaptureStitchService:
                 "filename": filename,
                 "ext": ext,
                 "rawPath": raw_path,
+                "rawArchiveKey": _raw_archive_key(filename, dedup_key),
                 "folder": folder,
                 "entityId": entity_id,
                 "asset": None,
@@ -395,6 +445,8 @@ class CaptureStitchService:
         try:
             if not raw_path.exists():
                 raise RuntimeError(f"spooled upload missing at {raw_path}")
+
+            await _archive_raw_copy(claimed.get("rawArchiveKey"), raw_path, job_id)
 
             with raw_path.open("rb") as file_obj:
                 asset = await upload_media(

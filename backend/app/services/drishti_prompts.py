@@ -164,6 +164,17 @@ reverse (putty completion does not imply paint completion).
 - Capture coverage (configured/captured/assessed room or capture-point counts) is a DIFFERENT \
 metric from construction progress. Never say a floor/flat "is X% complete" because X% of its \
 capture points have been photographed — coverage and progress must not be conflated.
+- Floor OVERALL PROGRESS questions ("what is the overall progress of Floor 8", "what is the \
+progress percentage", "how far along is this floor"): answer ONLY from \
+"floor.overallProgressPct" (or "byFloor[].floor.overallProgressPct" / \
+"floor.snapshot.overallProgressPct"). NEVER use "captureCoverage.coveragePct" for these — that \
+field is photo coverage only, labeled \
+"photo_capture_coverage_not_construction_progress". NEVER use "project.overallProgressPct" or \
+"project.summaryCards" for a single-floor progress question — those are project-wide rollups. \
+Room/activity counts for a floor come from "floor.summaryCards", never from project-level cards. \
+When both overallProgressPct and coveragePct appear in the payload, they are intentionally \
+different numbers; quote the progress one for progress questions and the coverage one only \
+when the user asked about capture/photo coverage.
 - Common Area Finishing Works are a separate scope from Flat Finishing Works. Never merge or \
 average one into the other unless the supplied data has already done so explicitly. A \
 common-area unit (corridor, lobby, staircase, etc.) is NEVER a flat — never call it "a flat" \
@@ -222,24 +233,26 @@ named), you may mention how many floors were checked as context, but the per-hit
 still what answers the question.
 
 Activity LIST questions ("which activities are in progress", "what are those 27 activities", \
-"which activities have not started"): answer from the ALREADY-RETRIEVED "activityList.items" \
-array — this is the REAL, NAMED list behind an aggregate count, not a re-explanation of the \
-count itself. Each item carries EITHER a room-level location ("roomName"/"flatName" present — \
-for "in_progress"/"completed" activities, which are tracked per room) OR only a \
-"floorName" with no room ("roomName"/"flatName" absent — for "not_assessed"/"not_observable"/ \
-"no_evidence" activities, which this data model only tracks as a per-floor rollup by activity \
-name, never per room, because a room's own activity record does not exist until that room is \
-actually captured/assessed). List every item's activityName; for room-level items include \
-flatName/roomName and completionPct, grouping by activityName when the same activity repeats \
-across many rooms/flats (e.g. "Wall Punning — in progress in 9 rooms across Flats 01, 03, \
-05..."); for floor-only items, group by floorName instead (e.g. "On Floor 1: Main Door Frame, \
-Wall Punning, ... (33 activities not yet assessed)") and do NOT invent a room/flat for them — \
-say plainly that these are tracked at the floor level, not per room, if the user's phrasing \
-implies room-level detail should exist. Do not just restate the number that was already given. \
+"which activities have not started", "what is the current status of the activities in progress"): \
+answer from the ALREADY-RETRIEVED "activityList.items" array — this is the REAL, NAMED list \
+behind an aggregate count, not a re-explanation of the count itself. CRITICAL — grain: when \
+"activityList.grain" is "floor_rollup", each item is a FLOOR-LEVEL activity card (same numbers \
+as Flat Finishing Works / Common Area Finishing on the dashboard) with its own \
+"completionPct". Quote THAT completionPct — these are the manager-facing progress figures \
+(e.g. Wall Punning 11%, Putty 1st Coat 6%, Corridor Flooring 100%). NEVER substitute a \
+"roomInstances" entry's 0% for the floor rollup % — a room can show 0% (negative evidence in \
+one photo) while the floor activity is genuinely non-zero across captured rooms. If \
+"roomInstances" is present, you MAY mention WHERE work was photographed as secondary detail, \
+but progress status answers must lead with items[] (activity name + floor completionPct + \
+status), sorted as given (highest progress first). When grain is "room" (a single flat/room \
+was named), items DO carry flatName/roomName — include those. For inactive statuses \
+(not_assessed/not_observable/no_evidence), items are floor-only (no room/flat) — group by \
+floorName and do NOT invent a room. Do not just restate the number that was already given. \
 NEVER say the specific names/details "are not listed in the current payload" or "are not \
 specified" when "activityList.items" is present and non-empty — that array IS the list; use it \
 directly. If "activityList.items" is empty, say plainly that no activities currently match the \
-requested status in this scope, rather than saying the question can't be answered.
+requested status in this scope, rather than saying the question can't be answered. NEVER \
+describe an in-progress floor-rollup list as "all zeroes" when any item has completionPct > 0.
 
 Location-activities questions ("what OTHER activities are pending in the Lift Lobby", "what's \
 configured in Bedroom-3"): answer from the ALREADY-RETRIEVED "locationActivities.activities" \
