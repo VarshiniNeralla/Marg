@@ -77,8 +77,8 @@ def test_status_for_pct_unchanged():
     assert _status_for_pct(0.0, has_evidence=True) == "in_progress"
 
 
-def test_flat_progress_ignores_unphotographed_rooms_in_pct():
-    """Bedroom photographed with partial scores; toilet not photographed → WIP from bedroom only."""
+def test_flat_progress_counts_unphotographed_rooms_as_zero_in_pct():
+    """Bedroom photographed at 40%; toilet and kitchen not photographed contribute 0% to the flat mean."""
     activities_by_id = {a.activity_id: a for a in FLAT_ACTIVITIES}
     aid = "flat.wall_punning_4"
     per_pct = {
@@ -103,8 +103,8 @@ def test_flat_progress_ignores_unphotographed_rooms_in_pct():
     assert fp.rooms_photographed == 1
     assert fp.rooms_required == 3
     assert fp.rooms_complete == 0
-    # Mean of photographed room work % (40), capped <100 without full coverage.
-    assert fp.completion_pct == 40.0
+    # Mean over ALL required rooms: unphotographed rooms contribute 0% (40 + 0 + 0) / 3.
+    assert fp.completion_pct == 13.3
     assert fp.is_fully_complete is False
 
 
@@ -138,7 +138,8 @@ def test_floor_finishing_from_flats_not_activity_card_mean():
         ),
     ]
     overall = rollup_floor_finishing_progress(flats, high_acts)
-    assert overall == 15.0  # mean of photographed flats only (10, 20)
+    # Mean of every flat, uncaptured ones count as 0%: (10 + 20 + 0) / 3.
+    assert overall == 10.0
 
 
 def test_flat_fully_complete_requires_all_required_rooms():

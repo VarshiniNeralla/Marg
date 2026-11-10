@@ -69,8 +69,23 @@ def test_yaw_0_matches_yaw_360_seam_wrap():
 def test_positive_pitch_shows_ceiling_blue():
     eq = _synthetic_equirect()
     ceiling = equirect_to_perspective(eq, yaw_deg=0.0, pitch_deg=75.0, hfov_deg=100.0)
-    # Looking up → more blue (north-pole stripe) than yellow.
-    assert ceiling[:, :, 0].mean() > ceiling[:, :, 1].mean()
+    floor = equirect_to_perspective(eq, yaw_deg=0.0, pitch_deg=-75.0, hfov_deg=100.0)
+
+    # The zenith sits 15 deg above the view centre (pitch 75 of a 90 deg pole), so the
+    # pixel there must be the pure-blue north-pole stripe (BGR 255,0,0). Whole-image
+    # channel means are NOT used: the blue cap is only ~2% of the view and the bright
+    # green band plus grey base outweigh it, which made the old assertion fragile.
+    focal = (VIEW_SIZE / 2.0) / np.tan(np.radians(50.0))
+    zenith_row = int(VIEW_SIZE / 2.0 - focal * np.tan(np.radians(15.0)))
+    b, g, r = (int(c) for c in ceiling[zenith_row, VIEW_SIZE // 2])
+    assert b > 200 and g < 60 and r < 60, f"zenith pixel not blue: BGR={(b, g, r)}"
+
+    def blue_share(img: np.ndarray) -> float:
+        return float(((img[:, :, 0] > 200) & (img[:, :, 1] < 60) & (img[:, :, 2] < 60)).mean())
+
+    # Looking up shows the blue stripe; looking down must not.
+    assert blue_share(ceiling) > 0.01
+    assert blue_share(floor) == 0.0
 
 
 def test_negative_pitch_shows_floor_yellow():
