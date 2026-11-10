@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import io
@@ -1647,6 +1648,36 @@ def locate_pin(
     return None
 
 
+# Extractions currently running, keyed (org, floor plan) - see RoomMapService.ensure_room_map.
+_ROOM_MAP_INFLIGHT: dict[tuple[str, str], "asyncio.Future[Any]"] = {}
+# Strong references to background scans: the event loop only keeps weak ones, and a collected task would stop.
+_BACKGROUND_SCANS: set["asyncio.Task[Any]"] = set()
+
+
+def schedule_room_map_extraction(
+    db: AsyncIOMotorDatabase, *, floor_plan_id: str, org_id: str, image_url: str,
+) -> "asyncio.Task[Any]":
+    """Start reading a floor plan's rooms in the background and return immediately.
+
+    Reading a plan takes 1.5-3.5 minutes of vision calls. Doing it inside the upload's save request kept that request
+    open for minutes, which blocked the app's one-at-a-time save queue (later floor plans, pins and imports waited
+    behind it). The plan record is saved first; anything that needs the rooms (floor analysis, reports) calls
+    ensure_room_map, which joins this run or reads its cached result.
+    """
+    task = asyncio.ensure_future(
+        RoomMapService(db).ensure_room_map(floor_plan_id=floor_plan_id, org_id=org_id, image_url=image_url)
+    )
+    _BACKGROUND_SCANS.add(task)
+
+    def _done(t: "asyncio.Task[Any]") -> None:
+        _BACKGROUND_SCANS.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.warning("Background room scan failed floor_plan_id={}: {}", floor_plan_id, t.exception())
+
+    task.add_done_callback(_done)
+    return task
+
+
 class RoomMapService:
     """Extracts and caches the semantic room map for a floor plan image."""
 
@@ -1729,6 +1760,31 @@ class RoomMapService:
         return meta
 
     async def ensure_room_map(
+        self,
+        *,
+        floor_plan_id: str,
+        org_id: str,
+        image_url: str,
+        force: bool = False,
+    ) -> dict[str, Any] | None:
+        """One extraction per floor plan at a time: a caller that arrives while the same plan is already being
+        read (the background scan started by an upload, a floor analysis, a re-analyze click) waits for that
+        run and shares its result instead of starting a second, equally expensive one. The run is shielded, so a
+        caller that goes away (client disconnect) never cancels it."""
+        key = (org_id, floor_plan_id)
+        running = _ROOM_MAP_INFLIGHT.get(key)
+        if running is not None and not running.done():
+            return await asyncio.shield(running)
+        task = asyncio.ensure_future(
+            self._ensure_room_map_impl(
+                floor_plan_id=floor_plan_id, org_id=org_id, image_url=image_url, force=force,
+            )
+        )
+        _ROOM_MAP_INFLIGHT[key] = task
+        task.add_done_callback(lambda t, k=key: _ROOM_MAP_INFLIGHT.pop(k, None) if _ROOM_MAP_INFLIGHT.get(k) is t else None)
+        return await asyncio.shield(task)
+
+    async def _ensure_room_map_impl(
         self,
         *,
         floor_plan_id: str,

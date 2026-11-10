@@ -19,6 +19,8 @@ from typing import Any
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.services.pin_integrity import floor_id_prefix_regex
+
 _PIN_NAME_RE = re.compile(r"^Pin\s+(\d+)$", re.IGNORECASE)
 _ROOM_SUFFIX_RE = re.compile(r"r(\d+)$", re.IGNORECASE)
 
@@ -200,13 +202,16 @@ async def restore_orphan_pins_for_floor(
             if cid:
                 linked_ids.add(str(cid))
 
-    # Captures whose roomId is on this floor (prefix) — survives room deletion.
+    # Captures whose roomId is on this floor (prefix) — survives room deletion. The prefix must end at a '-' (or the
+    # end of the id): a bare '^floorId' also matched a different floor whose id starts with the same characters and
+    # gave that floor's photos a pin on this one.
+    floor_rx = floor_id_prefix_regex(floor_id)
     orphans = await db["captures"].find(
         {
             "orgId": org_id,
             "$or": [
-                {"roomId": {"$regex": f"^{re.escape(floor_id)}"}},
-                {"room_id": {"$regex": f"^{re.escape(floor_id)}"}},
+                {"roomId": {"$regex": floor_rx}},
+                {"room_id": {"$regex": floor_rx}},
             ],
         }
     ).to_list(length=5000)
@@ -260,6 +265,24 @@ async def restore_orphan_pins_for_floor(
                 linked_ids.add(cap_id)
                 restored += 1
             continue
+
+        # `pins` above was fetched by floorId only. A point that owns this room but has a different or missing floorId
+        # is invisible to pin_by_room, so it used to get a SECOND pin (and a second room). If any pin already owns
+        # the room, link the photo to it instead of creating anything.
+        owner = await db["capture_pins"].find_one(
+            {"orgId": org_id, "$or": [{"roomId": room_id}, {"room_id": room_id}]}
+        )
+        if owner:
+            owner_key = owner.get("_id") or owner.get("id")
+            if owner_key:
+                await db["capture_pins"].update_one(
+                    {"_id": owner_key, "orgId": org_id},
+                    {"$addToSet": {"captureIds": cap_id}, "$set": {"updatedAt": now}},
+                )
+                pin_by_room[room_id] = owner
+                linked_ids.add(cap_id)
+                restored += 1
+                continue
 
         room_name = str(cap.get("roomName") or cap.get("room_name") or "Pin")
         seq = _parse_pin_sequence(room_name)
@@ -351,9 +374,12 @@ async def restore_orphan_pins_for_floor(
             "updated_at": now,
             "captureIds": [cap_id],
         }
+        # $setOnInsert + $addToSet, never $set: if a pin with this id already exists (even one the lookups above could
+        # not see) the old code RESET its capture list to just this photo and overwrote its position and labels.
+        insert_fields = {k: v for k, v in pin_doc.items() if k not in ("_id", "captureIds")}
         await db["capture_pins"].update_one(
             {"_id": pin_id, "orgId": org_id},
-            {"$set": pin_doc},
+            {"$setOnInsert": insert_fields, "$addToSet": {"captureIds": cap_id}},
             upsert=True,
         )
         await db["captures"].update_one(

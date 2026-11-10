@@ -7,6 +7,19 @@ export const PREDEF_FLAT_OPTIONS = [
   'Common Area',
 ] as const;
 
+/** Projects whose floors have more flats than the standard four (matched by project name). */
+const FLATS_PER_FLOOR_BY_PROJECT: { match: RegExp; flats: number }[] = [
+  { match: /vipina/i, flats: 10 }, // My Home Vipina: 10 flats per floor
+];
+
+/** Flat choices for the "Label capture point" dialog of a project: Flat 01..N, then Common Area. */
+export function flatOptionsForProject(projectName?: string | null): string[] {
+  const rule = FLATS_PER_FLOOR_BY_PROJECT.find(r => r.match.test(projectName ?? ''));
+  if (!rule) return [...PREDEF_FLAT_OPTIONS];
+  const flats = Array.from({ length: rule.flats }, (_, i) => `Flat ${String(i + 1).padStart(2, '0')}`);
+  return [...flats, 'Common Area'];
+}
+
 export const PREDEF_ROOM_OTHER = 'Others';
 
 export const PREDEF_ROOM_OPTIONS_FLAT = [

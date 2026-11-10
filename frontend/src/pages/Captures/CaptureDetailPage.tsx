@@ -120,7 +120,7 @@ export default function CaptureDetailPage() {
   const isOnlyVisit = timeline.length <= 1;
   const deleteDescription = deleteTarget
     ? (timeline.filter(c => c.id !== deleteTarget.id).length === 0
-      ? 'This is the only visit on this pin. Deleting it will also remove the pin from the floor plan. This cannot be undone.'
+      ? 'This is the only visit on this point. Deleting it removes the photo; the capture point stays on the floor plan so it can be captured again. This cannot be undone.'
       : 'This visit will be removed. Other visits on this pin will stay. This cannot be undone.')
     : '';
 

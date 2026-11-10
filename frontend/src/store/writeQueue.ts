@@ -26,6 +26,8 @@ import { Network } from '@capacitor/network';
 import { workflowApiService } from '@/services/workflowApiService';
 import { useAuthStore, isFieldEngineer } from './authStore';
 import { isTombstoned } from './tombstones';
+import { removeEntry, moveEntryToBack } from './writeQueueOps';
+import { isHeldWriteOp, isUploadHeld } from './uploadHold';
 
 const QUEUE_KEY = 'sitesurelabs-write-queue-v1';
 const MAX_QUEUE = 1000;
@@ -223,7 +225,15 @@ async function flush(): Promise<void> {
     // (a create is never overtaken by a later update of the same entity).
     let skippedFailed = 0;
     while (queue.length) {
-      const entry = queue[0];
+      let entry = queue[0];
+      // "Upload when I tap": pin, room and capture details wait with the photos, so managers never see half-finished
+      // pins. Every trigger (online, focus, poll, login) funnels through here, so this one check holds them all.
+      // Other changes (tours, publishing, ...) are not held: they go out as usual, past any held entries.
+      if (isUploadHeld()) {
+        const next = queue.find(e => e.status !== 'failed' && !isHeldWriteOp(e.op));
+        if (!next) break;
+        entry = next;
+      }
 
       // Failed entries sit at the back until retried — never block fresh work.
       if (entry.status === 'failed') {
@@ -246,7 +256,9 @@ async function flush(): Promise<void> {
 
       try {
         await dispatch(entry);
-        queue.shift();
+        // Remove THIS entry, not "whatever is first now". While the request was in flight a newer change may have
+        // replaced it (see enqueueWrite), and shift() then threw away the next, unrelated change unsent.
+        removeEntry(queue, entry);
         save();
       } catch (error) {
         const status = statusOf(error);
@@ -259,7 +271,7 @@ async function flush(): Promise<void> {
 
         if (isPermanent(status)) {
           // Won't ever succeed — drop it so the queue can make progress.
-          queue.shift();
+          removeEntry(queue, entry);
           save();
           if (!isNoopDelete(entry.op, status)) {
             // Tell the user their change wasn't saved — unless this was a
@@ -284,7 +296,7 @@ async function flush(): Promise<void> {
         if (entry.attempts >= MAX_ATTEMPTS) {
           entry.status = 'failed';
           entry.lastError = messageForStatus(status);
-          queue.push(queue.shift() as PendingWrite);
+          moveEntryToBack(queue, entry);
           save();
           emitError(entry.lastError, status, entry.context);
           continue;
@@ -439,6 +451,10 @@ export function pendingWriteCount(): number {
 }
 
 /** Writes that exhausted retries but are kept for manual replay. */
+/** Changes being held for "Upload when I tap" (pins, rooms, captures), not counting ordinary changes in flight. */
+export function heldWriteCount(): number {
+  return queue.filter(e => e.status !== 'failed' && isHeldWriteOp(e.op)).length;
+}
 export function failedWriteCount(): number {
   return queue.filter(e => e.status === 'failed').length;
 }
@@ -547,6 +563,27 @@ export function cancelPendingDeletesForEntityIds(...ids: string[]): void {
     return !id || !idSet.has(id);
   });
   if (queue.length !== before) save();
+}
+
+/** The saved queue exactly as stored, for parking a previous person's unsent changes. */
+export function exportWriteQueueRaw(): string | null {
+  try {
+    return localStorage.getItem(QUEUE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Put back a queue that was parked earlier (the person it belongs to signed in again). */
+export function replaceWriteQueueFromRaw(raw: string | null): void {
+  try {
+    if (raw) localStorage.setItem(QUEUE_KEY, raw);
+    else localStorage.removeItem(QUEUE_KEY);
+  } catch {
+    /* best effort */
+  }
+  queue = load();
+  void flush();
 }
 
 export function clearWriteQueue(): void {

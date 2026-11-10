@@ -335,6 +335,11 @@ export default function UserManagementPage() {
       setCreateErr('Name, email and password are required.');
       return;
     }
+    // Same rule the server enforces (app/schemas/auth.py): say what is wrong before a round trip.
+    if (!/^(?=.*[A-Z])(?=.*[0-9])(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/.test(createForm.password)) {
+      setCreateErr('Password must be at least 8 characters with an uppercase letter, a digit and a special character (@$!%*?&), and no other symbols or spaces. Example: Myhome@26');
+      return;
+    }
     setCreating(true);
     try {
       const orgSlug = currentUser?.org_slug;
@@ -356,9 +361,13 @@ export default function UserManagementPage() {
       setCreateForm(EMPTY_CREATE());
       await load();
     } catch (e: any) {
-      const detail = e?.detail;
-      const fieldMsg = Array.isArray(detail) ? detail.map((d: any) => d.message ?? d.msg).join('; ') : null;
-      setCreateErr(fieldMsg ?? e?.message ?? 'Failed to create user.');
+      // The raw axios error only says "status code 422": read the server's own explanation.
+      const apiErr = normaliseError(e);
+      const detail = apiErr.detail;
+      const fieldMsg = Array.isArray(detail)
+        ? detail.map((d: any) => d.message ?? d.msg).filter(Boolean).join('; ')
+        : null;
+      setCreateErr((fieldMsg || apiErr.message || 'Failed to create user.').replace(/Value error,\s*/g, ''));
     } finally {
       setCreating(false);
     }

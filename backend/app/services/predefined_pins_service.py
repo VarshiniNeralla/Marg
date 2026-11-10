@@ -14,6 +14,8 @@ from bson import ObjectId
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.services.pin_integrity import is_covered_by_captured_pin
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -622,6 +624,10 @@ class PredefinedPinsService:
             )
             # Do not duplicate a target pin that already has captures for this room.
             if coord_key in preserved_coord_keys or (flat and room and f"{flat}|{room}" in preserved_fr_keys):
+                continue
+            # A kept point with photos but NO flat/room label cannot be matched by name, so the import used to add a
+            # second, empty point on top of it. Skip an import point that a captured point already covers.
+            if is_covered_by_captured_pin(src.get("x", 0), src.get("y", 0), preserved):
                 continue
             try:
                 doc = await self.create_predefined_pin(

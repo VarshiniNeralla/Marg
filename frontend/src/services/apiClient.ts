@@ -3,7 +3,7 @@ import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore } from '@store/authStore';
 import { API_V1_URL } from '@/config/env';
 import { restoreSessionFromCookie } from '@/services/sessionRefresh';
-import { clearClientSessionState } from '@store/sessionIsolation';
+import { endClientSession } from '@store/sessionIsolation';
 
 // ── Main client ───────────────────────────────────────────────────────────────
 
@@ -94,7 +94,8 @@ apiClient.interceptors.response.use(
       // The server was actually reached and confirmed there is no valid
       // session (expired/revoked cookie, or no persisted session at all) —
       // this is the one case that legitimately means "log out".
-      clearClientSessionState();
+      // Waiting photos and unsent changes are kept; they upload after the person signs in again.
+      await endClientSession('expired');
       useAuthStore.getState().clearAuth();
       if (!window.location.pathname.startsWith('/login')) {
         window.location.replace('/login');
@@ -121,9 +122,13 @@ export interface ApiError {
 }
 
 function isApiError(error: unknown): error is ApiError {
+  // A raw AxiosError also has `status` and `message` (axios >= 1 sets error.status), so it must be excluded here:
+  // otherwise it was returned as-is and every error read "Request failed with status code NNN" instead of the
+  // server's own explanation.
   return (
     typeof error === 'object' &&
     error !== null &&
+    !axios.isAxiosError(error) &&
     'status' in error &&
     'message' in error
   );

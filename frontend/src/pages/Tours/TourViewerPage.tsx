@@ -21,7 +21,7 @@ import ProgressAnalysisDrawer from '@/pages/Tours/ProgressAnalysisDrawer';
 import PreviousReportsPanel from '@/pages/Tours/PreviousReportsPanel';
 import { progressAnalysisService, type ProgressAnalysisReport, type ProgressReportSummary, type ProgressReportVisualMeta } from '@/services/progressAnalysisService';
 import { formatReportDate, formatReportDateRange, formatCapturePreviewDate, orderCapturesChronologically, parseCaptureTimestamp } from '@/utils/reportFormat';
-import { formatPinLocationLabel, formatCaptureDateTime } from '@/utils/pinLabels';
+import { formatPinLocationLabel, formatCaptureDateTime, resolveStopLabel } from '@/utils/pinLabels';
 import { toast } from 'react-toastify';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getFloorPlanByFloor, getCapturePinsByFloorPlan } from '@store/workflowSelectors';
@@ -613,6 +613,11 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, pan
     let cancelled = false;
     setProjection(null);
     setError(false);
+    // Start fetching the sphere-viewer code NOW, in parallel with the image probe. It used to start only after
+    // the whole panorama had downloaded, so the two waits added up. A failed prefetch is harmless: initViewer
+    // imports the same modules again and surfaces any real error itself.
+    void import('@photo-sphere-viewer/core').catch(() => undefined);
+    void import('@photo-sphere-viewer/autorotate-plugin').catch(() => undefined);
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
@@ -951,7 +956,11 @@ export default function TourViewerPage() {
         pinId: pin.id,
         captureId: latestCaptureId,
         sequenceNumber: pin.sequenceNumber,
-        label: formatPinLocationLabel(pin, `Stop ${pin.sequenceNumber}`),
+        label: resolveStopLabel({
+          pin,
+          captureRoomName: cap?.roomName,
+          sequenceNumber: pin.sequenceNumber,
+        }),
         panoramaUrl,
         thumbnailUrl: (mediaAssets[0]?.thumbnail_url ?? (cap?.thumbnailUrl as string | undefined)) ?? null,
       }];
@@ -967,7 +976,10 @@ export default function TourViewerPage() {
     // Remap stored "Pin N" labels to live Flat · Room; refresh panorama URLs
     // from live captures so stitch completion shows without republishing.
     return raw.map(s => {
-      const pin = capturePins.find(p => p.id === s.pinId);
+      // A published step can carry a stale pinId (pins re-created after a delete or re-hydrate), so
+      // also find the pin by the capture it holds before giving up on the room name.
+      const pin = capturePins.find(p => p.id === s.pinId)
+        ?? (s.captureId ? capturePins.find(p => p.captureIds.includes(s.captureId)) : undefined);
       const cap = captures.find(c => c.id === s.captureId) as
         | (MockCapture & Record<string, unknown>)
         | undefined;
@@ -975,9 +987,12 @@ export default function TourViewerPage() {
       const livePano = cap ? resolveCapturePanoramaUrl(mediaAssets, cap) : null;
       return {
         ...s,
-        label: pin
-          ? formatPinLocationLabel(pin, s.label || `Stop ${s.sequenceNumber}`)
-          : (s.label || `Stop ${s.sequenceNumber}`),
+        label: resolveStopLabel({
+          pin,
+          captureRoomName: cap?.roomName,
+          storedLabel: s.label,
+          sequenceNumber: s.sequenceNumber,
+        }),
         panoramaUrl: livePano || s.panoramaUrl,
         thumbnailUrl:
           (mediaAssets[0]?.thumbnail_url
@@ -996,8 +1011,10 @@ export default function TourViewerPage() {
     ? (capturePins.find(p => p.id === currentStep.pinId)
       ?? (currentStep.captureId ? capturePins.find(p => p.captureIds.includes(currentStep.captureId)) : undefined))
     : undefined;
+  // currentStep.label is already the best available name (live pin, then capture room, then stored label).
+  // Re-deriving it from the pin here would let a placeholder pin label ("Pin 4") override a real room name.
   const currentPinLabel = currentStep
-    ? formatPinLocationLabel(currentStepPin, currentStep.label || tour?.roomName)
+    ? (currentStep.label || formatPinLocationLabel(currentStepPin, tour?.roomName))
     : (tour?.roomName ?? '');
 
   // Real URLs only. This chain previously ended in DEMO_PANORAMAS/PANORAMA_MAP/
@@ -1017,6 +1034,18 @@ export default function TourViewerPage() {
   // Use the history-selected panorama override when the user has picked a past snapshot.
   const panoramaUrl = panoramaOverride ?? latestPanoramaUrl;
   const hotspots = TOUR_HOTSPOTS[tourId ?? ''] ?? [];
+
+  // Warm the browser cache with the NEXT stop's panorama while the current one is being viewed, so pressing
+  // Next shows it straight away instead of waiting for a full download. Same crossOrigin mode as the viewer's
+  // own probe, so the cached response is actually reused. One stop ahead only (these are multi-MB images).
+  const nextStopPanoramaUrl = isWalkthrough ? steps[clampedStep + 1]?.panoramaUrl ?? null : null;
+  useEffect(() => {
+    if (!nextStopPanoramaUrl) return;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = nextStopPanoramaUrl;
+    return () => { img.src = ''; };
+  }, [nextStopPanoramaUrl]);
 
   // ── Progress timeline for the current step ───────────────────────────────────
   // Built from the pin's real captureIds[] — no mock data, no duplicates.
@@ -1217,10 +1246,12 @@ export default function TourViewerPage() {
       : (activePin ? floorPlans.find(fp => fp.id === activePin.floorPlanId) : undefined);
     const fpRec = fpRecord as (typeof fpRecord & Record<string, unknown>) | undefined;
     const fpMedia = (fpRec?.mediaAssets as { original_url?: string }[] | undefined) ?? [];
-    const floorPlanUrl = (fpRec?.fileUrl as string | undefined)
+    const floorPlanUrl = resolveMediaUrl(
+      (fpRec?.fileUrl as string | undefined)
       ?? (fpRec?.file_url as string | undefined)
       ?? fpMedia[0]?.original_url
-      ?? undefined;
+      ?? null,
+    ) ?? undefined;
     const floorPlanId = fpRec?.id as string | undefined;
 
     const beforeDateValue = beforeSnap.date || beforeSnap.dateLabel;
@@ -1353,10 +1384,14 @@ export default function TourViewerPage() {
     if (!floorPlan) return null;
     const rec = floorPlan as typeof floorPlan & Record<string, unknown>;
     const mediaAssets = (rec.mediaAssets as { original_url?: string }[] | undefined) ?? [];
-    return (rec.fileUrl as string | undefined)
+    // Must go through resolveMediaUrl: a bare "/media/..." path resolves against the app's own address inside the
+    // Android app (404), which left the floor plan panel blank. It also picks up a plan saved for offline use.
+    return resolveMediaUrl(
+      (rec.fileUrl as string | undefined)
       ?? (rec.file_url as string | undefined)
       ?? mediaAssets[0]?.original_url
-      ?? null;
+      ?? null,
+    );
   }, [floorPlan]);
 
   // Navigation map: prefer walkthrough stop pins (captured only) so clicks jump to 360s.
@@ -1580,12 +1615,36 @@ export default function TourViewerPage() {
         </Box>
       )}
 
-      {/* Step dots */}
-      {isWalkthrough && (
-        <Box sx={{ position: 'absolute', bottom: 48, left: '50%', transform: 'translateX(-50%)', zIndex: 10, display: 'flex', gap: 0.75 }}>
+      {/* Step indicator. A handful of stops: one dot each. Many stops (a 75-dot strip ran off the screen and
+          looked like noise): one slim progress bar you can tap to jump, with the "n of N" in the pill below. */}
+      {isWalkthrough && steps.length <= 12 && (
+        <Box sx={{ position: 'absolute', bottom: 48, left: '50%', transform: 'translateX(-50%)', zIndex: 10, display: 'flex', gap: 0.75, maxWidth: '90%' }}>
           {steps.map((s, i) => (
             <Box key={s.pinId} onClick={() => setStepIdx(i)} sx={{ width: i === clampedStep ? 22 : 8, height: 8, borderRadius: '999px', backgroundColor: i === clampedStep ? '#fff' : 'rgba(255,255,255,0.45)', cursor: 'pointer', transition: 'all 160ms', '&:hover': { backgroundColor: 'rgba(255,255,255,0.8)' } }} />
           ))}
+        </Box>
+      )}
+      {isWalkthrough && steps.length > 12 && (
+        <Box
+          role="slider"
+          aria-label="Walkthrough progress"
+          aria-valuemin={1}
+          aria-valuemax={steps.length}
+          aria-valuenow={clampedStep + 1}
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            if (rect.width <= 0) return;
+            const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+            setStepIdx(Math.min(steps.length - 1, Math.floor(frac * steps.length)));
+          }}
+          sx={{
+            position: 'absolute', bottom: 48, left: '50%', transform: 'translateX(-50%)', zIndex: 10,
+            width: 'min(220px, 60%)', height: 14, display: 'flex', alignItems: 'center', cursor: 'pointer',
+          }}
+        >
+          <Box sx={{ position: 'relative', width: '100%', height: 4, borderRadius: '999px', backgroundColor: 'rgba(255,255,255,0.35)', overflow: 'hidden' }}>
+            <Box sx={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${((clampedStep + 1) / steps.length) * 100}%`, borderRadius: '999px', backgroundColor: '#fff', transition: 'width 160ms' }} />
+          </Box>
         </Box>
       )}
 

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Box, Typography, Snackbar, Alert } from '@mui/material';
+import { Box, Typography, Snackbar, Alert, Dialog } from '@mui/material';
 import {
+  DeleteOutlineRounded, ImageRounded,
   FolderRounded, DomainRounded, LayersRounded, PhotoCameraRounded,
   CheckCircleRounded, ArrowForwardRounded, ArrowBackRounded,
   CloudUploadRounded, AddLocationAltRounded, ZoomInRounded, ZoomOutRounded,
@@ -21,12 +22,37 @@ import {
   FILE_QUEUE_CHANGED_EVENT, FILE_UPLOAD_SUCCEEDED_EVENT,
 } from '@store/fileUploadQueue';
 import { pendingUploadPins } from '@store/pendingUploadRegistry';
+import { isUploadHeld } from '@store/uploadHold';
 import { useDeviceType, usesCameraCapture } from '@/hooks/useDeviceType';
 import { useDoubleTap } from '@/hooks/useDoubleTap';
 import CameraCaptureDialog from '@/features/capturePins/CameraCaptureDialog';
 import { Insta360Camera } from '@/plugins/insta360Camera';
 import { ownCaptureIdSet, pinHasOwnCapture } from '@/utils/captureOwnership';
 import { resolveMediaUrl } from '@/config/env';
+import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
+import { captureAwaitingPanorama } from '@/utils/captureMedia';
+import { formatPinLocationLabel, formatCaptureDateTime } from '@/utils/pinLabels';
+
+/** Best full-size image for one capture (panorama first, then original, then thumbnail). */
+function captureViewUrl(c: unknown): string | null {
+  const r = (c ?? {}) as Record<string, unknown> & {
+    mediaAssets?: Array<Record<string, string | undefined>>;
+  };
+  const a = r.mediaAssets?.[0];
+  return resolveMediaUrl(
+    (r.processedPanoramaUrl as string | undefined)
+    ?? (r.processed_panorama_url as string | undefined)
+    ?? a?.processed_panorama_url
+    ?? a?.processedPanoramaUrl
+    ?? (r.original_url as string | undefined)
+    ?? (r.originalFileUrl as string | undefined)
+    ?? a?.original_url
+    ?? (r.thumbnailUrl as string | undefined)
+    ?? (r.thumbnail_url as string | undefined)
+    ?? a?.thumbnail_url
+    ?? null,
+  );
+}
 
 /* ── palette ────────────────────────────────────────────────────────────── */
 const P = {
@@ -399,11 +425,10 @@ function NumberedMapPinSvg({
 /** Classic green map pin — shown on the active/selected capture point so
  *  engineers can see clearly "we are capturing here". Tip sits on (x,y). */
 function GreenTargetPin({
-  x, y, scale, label,
+  x, y, label,
 }: {
   x: number;
   y: number;
-  scale: number;
   label?: string;
 }) {
   return (
@@ -419,7 +444,9 @@ function GreenTargetPin({
     >
       <Box
         sx={{
-          transform: `scale(${1 / scale})`,
+          // --inv-scale is set once on the zoomed wrapper (1 / zoom), so zooming never
+          // generates a new CSS class per scale value.
+          transform: 'scale(var(--inv-scale, 1))',
           transformOrigin: 'bottom center',
           display: 'flex',
           flexDirection: 'column',
@@ -476,16 +503,14 @@ function GreenTargetPin({
  *  - Queued / uploading offline: orange teardrop with upload sequence #
  *  - Uploaded: green teardrop with upload sequence #
  *  - Tap = select · long-press / double-tap = open capture */
-function WorkflowFloorPinMarker({
+function WorkflowFloorPinMarkerImpl({
   pin,
-  scale,
   selected,
   highlighted,
   onPinClick,
   onPinActivate,
 }: {
   pin: RenderPin;
-  scale: number;
   selected: boolean;
   /** True when the green target pin is sitting on this point — hide the
    *  marker so it doesn't fight the selection teardrop. */
@@ -575,7 +600,7 @@ function WorkflowFloorPinMarker({
           e.stopPropagation();
         }}
         sx={{
-          transform: `scale(${1 / scale})`,
+          transform: 'scale(var(--inv-scale, 1))',
           transformOrigin: showNumberedPin && !highlighted ? 'bottom center' : 'center center',
           cursor: 'pointer',
           pointerEvents: 'auto',
@@ -642,10 +667,14 @@ function WorkflowFloorPinMarker({
   );
 }
 
+/** Memoised so panning/zooming the plan (which only changes the wrapper transform) does not
+ *  re-render every marker on every frame. */
+const WorkflowFloorPinMarker = React.memo(WorkflowFloorPinMarkerImpl);
+
 /* ── Floor plan viewer with pin, fullscreen, pinch-to-zoom ──────────────── */
 function FloorPlanWithPin({
   floorPlan, pin, pins, onPinPlace, onPinClick, onPinActivate, isCaptureModeUI, onLongPressCapture,
-  pinsVisible = true, onTogglePinsVisible, selectedPinId = null, activeCapturePinId = null,
+  pinsVisible = true, onTogglePinsVisible, selectedPinId = null, activeCapturePinId = null, pointsOnly = false,
 }: {
   floorPlan: Record<string, unknown> | null;
   pin: { x: number; y: number } | null;
@@ -665,18 +694,27 @@ function FloorPlanWithPin({
   selectedPinId?: string | null;
   /** Pin currently in the upload/camera flow — keep the green target visible. */
   activeCapturePinId?: string | null;
+  /** The floor has a predefined layout: only the marked points can be captured, empty space is inert. */
+  pointsOnly?: boolean;
 }) {
   const [scale, setScale]       = useState(1);
   const [offset, setOffset]     = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  // Animate ONLY discrete jumps (zoom buttons, double-tap, fit-to-screen). While a finger/mouse/wheel is
+  // driving the view the transform must follow it 1:1; a transition there is what made panning feel jagged.
+  const [smooth, setSmooth] = useState(false);
+  // Source of truth for the current view, read by every gesture handler so none of them works from a stale
+  // render's closure.
+  const viewRef = useRef({ scale: 1, x: 0, y: 0 });
   const dragStart  = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
+  const mouseMovedRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const imgWrapRef   = useRef<HTMLDivElement>(null);
 
   // Touch / pinch state
   const touchesRef      = useRef<React.Touch[]>([]);
-  const pinchStartRef   = useRef<{ dist: number; scale: number; midX: number; midY: number } | null>(null);
+  const pinchStartRef   = useRef<{ dist: number; scale: number; ox: number; oy: number; midX: number; midY: number } | null>(null);
   const touchDragStart  = useRef({ ox: 0, oy: 0, mx: 0, my: 0 });
   const touchMovedRef   = useRef(false);
 
@@ -740,14 +778,13 @@ function FloorPlanWithPin({
     const el = containerRef.current;
     const wrap = imgWrapRef.current;
     if (!el || !wrap) return { x: ox, y: oy };
-    const { width: cw, height: ch } = el.getBoundingClientRect();
-    // wrap.getBoundingClientRect() already reflects the live container scale, so
-    // normalise back to the image's natural size, then apply the TARGET scale s.
-    const { width: iw, height: ih } = wrap.getBoundingClientRect();
-    const naturalW = iw / scale;
-    const naturalH = ih / scale;
-    const scaledW = naturalW * s;
-    const scaledH = naturalH * s;
+    const cw = el.clientWidth;
+    const ch = el.clientHeight;
+    // offsetWidth/offsetHeight are LAYOUT sizes, unaffected by the CSS transform, so they are the image's natural
+    // size at any moment (the old getBoundingClientRect()/scale maths read a half-animated size mid-transition,
+    // which made the clamp wobble). Then apply the TARGET scale s.
+    const scaledW = wrap.offsetWidth * s;
+    const scaledH = wrap.offsetHeight * s;
     // Keep at least 80px of the plan on screen on each axis.
     const margin = 80;
     const maxX = Math.max(0, (scaledW - cw) / 2 + (cw / 2 - margin));
@@ -756,17 +793,24 @@ function FloorPlanWithPin({
       x: Math.max(-maxX, Math.min(maxX, ox)),
       y: Math.max(-maxY, Math.min(maxY, oy)),
     };
-  }, [scale]);
+  }, []);
+
+  /** Single place that changes the view: keeps viewRef (read by handlers) and the render state in step. */
+  const applyView = useCallback((s: number, x: number, y: number, animate = false) => {
+    viewRef.current = { scale: s, x, y };
+    setSmooth(animate);
+    setScale(s);
+    setOffset({ x, y });
+  }, []);
 
   const zoom = useCallback((dir: 1 | -1) => {
-    setScale(s => {
-      const next = Math.min(6, Math.max(0.5, +(s + dir * 0.3).toFixed(2)));
-      setOffset(o => clampOffset(o.x, o.y, next));
-      return next;
-    });
-  }, [clampOffset]);
+    const v = viewRef.current;
+    const next = Math.min(6, Math.max(0.5, +(v.scale + dir * 0.3).toFixed(2)));
+    const o = clampOffset(v.x, v.y, next);
+    applyView(next, o.x, o.y, true);
+  }, [clampOffset, applyView]);
 
-  const resetView = useCallback(() => { setScale(1); setOffset({ x: 0, y: 0 }); }, []);
+  const resetView = useCallback(() => { applyView(1, 0, 0, true); }, [applyView]);
 
   // ── Ctrl/⌘ + scroll wheel zoom (desktop), zooming toward the cursor ───────
   useEffect(() => {
@@ -780,18 +824,21 @@ function FloorPlanWithPin({
       // Cursor position relative to the container centre (the transform origin).
       const cx = e.clientX - (rect.left + rect.width / 2);
       const cy = e.clientY - (rect.top + rect.height / 2);
-      setScale(prev => {
-        const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-        const next = Math.min(6, Math.max(0.5, +(prev * factor).toFixed(3)));
-        const ratio = next / prev;
-        // Keep the point under the cursor stationary while zooming.
-        setOffset(o => clampOffset(cx - ratio * (cx - o.x), cy - ratio * (cy - o.y), next));
-        return next;
-      });
+      // Proportional to how far the wheel/pinch actually moved. A fixed 12% per event made trackpad pinch (many
+      // tiny events) race away and a mouse notch lurch; this keeps one mouse notch at about the old 12%.
+      const dy = (e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY);
+      const factor = Math.exp(-Math.max(-60, Math.min(60, dy)) * 0.002);
+      const v = viewRef.current;
+      const next = Math.min(6, Math.max(0.5, +(v.scale * factor).toFixed(3)));
+      if (next === v.scale) return;
+      const ratio = next / v.scale;
+      // Keep the point under the cursor stationary while zooming.
+      const o = clampOffset(cx - ratio * (cx - v.x), cy - ratio * (cy - v.y), next);
+      applyView(next, o.x, o.y, false);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [clampOffset]);
+  }, [clampOffset, applyView]);
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -805,19 +852,28 @@ function FloorPlanWithPin({
     if (e.button !== 0) return;
     if ((e.target as Element).closest?.('[data-pin-id]')) return;
     setIsDragging(true);
-    dragStart.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
+    mouseMovedRef.current = false;
+    setSmooth(false);
+    dragStart.current = { x: e.clientX, y: e.clientY, ox: viewRef.current.x, oy: viewRef.current.y };
     armLongPress(e.clientX, e.clientY);
   }
   function onMouseMove(e: React.MouseEvent) {
     maybeCancelLongPressOnMove(e.clientX, e.clientY);
     if (!isDragging) return;
-    setOffset(clampOffset(dragStart.current.ox + e.clientX - dragStart.current.x, dragStart.current.oy + e.clientY - dragStart.current.y, scale));
+    const dx = e.clientX - dragStart.current.x;
+    const dy = e.clientY - dragStart.current.y;
+    if (Math.hypot(dx, dy) > 4) mouseMovedRef.current = true;
+    const v = viewRef.current;
+    const o = clampOffset(dragStart.current.ox + dx, dragStart.current.oy + dy, v.scale);
+    applyView(v.scale, o.x, o.y, false);
   }
   function onMouseUp() { setIsDragging(false); cancelLongPress(); }
 
   // ── Desktop click → place pin ───────────────────────────────────────────
   function onCanvasClick(e: React.MouseEvent) {
     if (isDragging) return;
+    // A drag that ends over the plan still fires a click; it was a pan, not a tap, so ignore it.
+    if (mouseMovedRef.current) { mouseMovedRef.current = false; return; }
     if ((e.target as Element).closest?.('[data-pin-id]')) return;
     // Long-press already placed + captured this exact press — don't also
     // fire the ordinary tap-to-place-pending-pin behavior for the same click.
@@ -845,14 +901,18 @@ function FloorPlanWithPin({
     if ((e.target as Element).closest?.('[data-pin-id]')) return;
     touchMovedRef.current = false;
     touchesRef.current = Array.from(e.touches) as unknown as React.Touch[];
+    setSmooth(false);
+    const v = viewRef.current;
 
     if (e.touches.length === 2) {
       cancelLongPress(); // a second finger means pinch-zoom, never a long-press
       const [t1, t2] = [e.touches[0], e.touches[1]] as unknown as [React.Touch, React.Touch];
-      pinchStartRef.current = { dist: getTouchDist(t1, t2), scale, midX: getTouchMid(t1, t2).x, midY: getTouchMid(t1, t2).y };
+      const mid = getTouchMid(t1, t2);
+      // Snapshot the view at the start of the pinch; every move is computed from this, never accumulated.
+      pinchStartRef.current = { dist: getTouchDist(t1, t2), scale: v.scale, ox: v.x, oy: v.y, midX: mid.x, midY: mid.y };
     } else if (e.touches.length === 1) {
       const t = e.touches[0];
-      touchDragStart.current = { ox: offset.x, oy: offset.y, mx: t.clientX, my: t.clientY };
+      touchDragStart.current = { ox: v.x, oy: v.y, mx: t.clientX, my: t.clientY };
       armLongPress(t.clientX, t.clientY);
     }
   }
@@ -861,24 +921,35 @@ function FloorPlanWithPin({
     if ((e.target as Element).closest?.('[data-pin-id]')) return;
     touchMovedRef.current = true;
 
-    if (e.touches.length === 2 && pinchStartRef.current) {
+    const container = containerRef.current;
+    if (e.touches.length === 2 && pinchStartRef.current && container) {
       cancelLongPress();
+      const ps = pinchStartRef.current;
       const [t1, t2] = [e.touches[0], e.touches[1]] as unknown as [React.Touch, React.Touch];
-      const newDist = getTouchDist(t1, t2);
-      const rawScale = (newDist / pinchStartRef.current.dist) * pinchStartRef.current.scale;
-      const newScale = Math.min(6, Math.max(0.5, +rawScale.toFixed(3)));
-      // Pan so the pinch midpoint tracks the fingers, then clamp so the plan
-      // can't slip off-screen.
-      const { midX, midY } = pinchStartRef.current;
+      if (ps.dist <= 0) return;
+      const newScale = Math.min(6, Math.max(0.5, +((getTouchDist(t1, t2) / ps.dist) * ps.scale).toFixed(3)));
+      const ratio = newScale / ps.scale;
+      // Coordinates relative to the container centre (the transform origin). The plan point that was under the
+      // fingers' starting midpoint stays under their CURRENT midpoint, which gives zoom-about-the-fingers and
+      // two-finger pan in one formula, computed from the pinch-start snapshot (nothing accumulates between events).
+      const rect = container.getBoundingClientRect();
+      const ccx = rect.left + rect.width / 2;
+      const ccy = rect.top + rect.height / 2;
       const mid = getTouchMid(t1, t2);
-      setScale(newScale);
-      setOffset(prev => clampOffset(prev.x + (mid.x - midX) * 0.4, prev.y + (mid.y - midY) * 0.4, newScale));
+      const o = clampOffset(
+        (mid.x - ccx) - ratio * ((ps.midX - ccx) - ps.ox),
+        (mid.y - ccy) - ratio * ((ps.midY - ccy) - ps.oy),
+        newScale,
+      );
+      applyView(newScale, o.x, o.y, false);
     } else if (e.touches.length === 1 && !pinchStartRef.current) {
       const t = e.touches[0];
       maybeCancelLongPressOnMove(t.clientX, t.clientY);
       const dx = t.clientX - touchDragStart.current.mx;
       const dy = t.clientY - touchDragStart.current.my;
-      setOffset(clampOffset(touchDragStart.current.ox + dx, touchDragStart.current.oy + dy, scale));
+      const v = viewRef.current;
+      const o = clampOffset(touchDragStart.current.ox + dx, touchDragStart.current.oy + dy, v.scale);
+      applyView(v.scale, o.x, o.y, false);
     }
   }
 
@@ -887,6 +958,14 @@ function FloorPlanWithPin({
 
     cancelLongPress();
     if (e.touches.length < 2) pinchStartRef.current = null;
+    // One finger left after a pinch: re-anchor the pan on it, otherwise its next move is measured from where the
+    // FIRST finger started and the plan jumps.
+    if (e.touches.length === 1) {
+      const rest = e.touches[0];
+      const v = viewRef.current;
+      touchDragStart.current = { ox: v.x, oy: v.y, mx: rest.clientX, my: rest.clientY };
+      touchMovedRef.current = true; // the remaining finger is mid-gesture, never a tap
+    }
 
     // Double-tap to zoom in/out on empty floor plan space
     if (e.changedTouches.length === 1 && !touchMovedRef.current) {
@@ -898,16 +977,18 @@ function FloorPlanWithPin({
 
       if (elapsed < 300 && dist < 40) {
         // Double tap — zoom in if near 1×, zoom out if zoomed in
-        if (scale < 1.4) {
+        if (viewRef.current.scale < 1.4) {
           const target = 2.5;
-          setScale(target);
           // Center on the tap point
           const wrap = imgWrapRef.current;
           if (wrap) {
             const rect = wrap.getBoundingClientRect();
             const cx = rect.left + rect.width / 2;
             const cy = rect.top + rect.height / 2;
-            setOffset(clampOffset(-(t.clientX - cx) * 0.8, -(t.clientY - cy) * 0.8, target));
+            const o = clampOffset(-(t.clientX - cx) * 0.8, -(t.clientY - cy) * 0.8, target);
+            applyView(target, o.x, o.y, true);
+          } else {
+            applyView(target, viewRef.current.x, viewRef.current.y, true);
           }
         } else {
           resetView();
@@ -1029,7 +1110,8 @@ function FloorPlanWithPin({
                 return activeCapturePinId ? 'Capturing here' : selectedPinId ? 'Selected · ready to capture' : 'Point placed';
               }
               const n = pins.filter(p => p.hasCapture || p.status === 'queued' || p.status === 'uploading' || p.status === 'processing').length;
-              if (n > 0) return `${n} capture${n !== 1 ? 's' : ''} · tap to add more`;
+              if (n > 0) return `${n} capture${n !== 1 ? 's' : ''} · tap a point to add more`;
+              if (pointsOnly) return 'Tap a capture point';
               if (onLongPressCapture) return 'Hold to capture';
               return 'Tap to capture';
             })()}
@@ -1058,12 +1140,22 @@ function FloorPlanWithPin({
           touchAction: 'none',
         }}
       >
-        <Box sx={{
-          transform: `translate(${offset.x}px,${offset.y}px) scale(${scale})`,
-          transition: isDragging ? 'none' : 'transform 0.1s',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          maxWidth: '100%', maxHeight: '100%',
-        }}>
+        {/* The moving transform goes in an inline style, not sx: sx would mint a new CSS class for every
+            distinct offset/scale value during a drag or pinch, which is slow and was part of the jank. */}
+        <Box
+          style={{
+            // (no will-change / translate3d on purpose: they make browsers keep the plan rasterised at its
+            // starting size, so a zoomed-in plan would look blurry.)
+            transform: `translate(${offset.x}px,${offset.y}px) scale(${scale})`,
+            transition: smooth ? 'transform 0.16s ease-out' : 'none',
+            // Markers read this to stay a constant on-screen size whatever the zoom.
+            ['--inv-scale' as string]: String(1 / scale),
+          }}
+          sx={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            maxWidth: '100%', maxHeight: '100%',
+          }}
+        >
           {imageUrl ? (
             <Box ref={imgWrapRef} sx={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}>
               <Box component="img" src={imageUrl} alt="Floor plan" draggable={false}
@@ -1096,7 +1188,6 @@ function FloorPlanWithPin({
                 <WorkflowFloorPinMarker
                   key={p.id}
                   pin={p}
-                  scale={scale}
                   selected={selectedPinId === p.id}
                   highlighted={highlightId === p.id || (pin != null && Math.hypot(p.x - pin.x, p.y - pin.y) < 0.01)}
                   onPinClick={onPinClick}
@@ -1109,7 +1200,6 @@ function FloorPlanWithPin({
                 <GreenTargetPin
                   x={targetPos.x}
                   y={targetPos.y}
-                  scale={scale}
                   label={targetLabel}
                 />
               )}
@@ -1130,7 +1220,9 @@ function FloorPlanWithPin({
         <Box sx={{ position: 'absolute', bottom: 20, left: '50%', transform: 'translateX(-50%)', px: 2, py: 1, backgroundColor: 'rgba(15, 23, 42, 0.85)', backdropFilter: 'blur(8px)', borderRadius: '24px', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, width: 'max-content', maxWidth: '90%' }}>
           <AddLocationAltRounded sx={{ fontSize: 18, color: '#f59e0b' }} />
           <Typography sx={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.95)', fontWeight: 500, textAlign: 'center' }}>
-            {onLongPressCapture ? 'Hold anywhere to place a pin and capture' : 'Tap anywhere to drop pin'}
+            {pointsOnly
+              ? (pinsVisible ? 'Tap a capture point to select it' : 'Capture points are hidden. Tap the eye icon to show them')
+              : onLongPressCapture ? 'Hold anywhere to place a pin and capture' : 'Tap anywhere to drop pin'}
           </Typography>
         </Box>
       )}
@@ -1183,6 +1275,10 @@ export default function CaptureWorkflowPage() {
   const createRoom         = useWorkflowStore(s => s.createRoom);
   const uploadCapture      = useWorkflowStore(s => s.uploadCapture);
   const createCapturePin   = useWorkflowStore(s => s.createCapturePin);
+  // Removes ONE capture (visit). The capture point itself always stays on the plan (see store.deleteCapture).
+  const deleteCapture      = useWorkflowStore(s => s.deleteCapture);
+  const [viewCaptureId, setViewCaptureId]     = useState<string | null>(null);
+  const [deleteCaptureId, setDeleteCaptureId] = useState<string | null>(null);
   // attachCaptureToPin is called from fileUploadQueue.ts now (via getState()),
   // not from this component — the queue may finish an upload long after this
   // page unmounts (offline capture, app restart, later reconnect).
@@ -1433,14 +1529,10 @@ export default function CaptureWorkflowPage() {
    */
   function handlePlanTap(x: number, y: number) {
     if (!floorPlan || !selectedFloor) return;
-    if (hasLabeledLayout) {
-      const nearest = findNearestFloorPin(x, y);
-      if (!nearest) return;
-      setSelectedPinId(nearest.id);
-      setPendingPin(null);
-      setActiveCapturePinId(null);
-      return;
-    }
+    // Predefined layout: ONLY the marked points are capturable. A tap on empty plan space does nothing (it used to
+    // snap to the nearest point and open its capture panel, so a stray tap or a pan could start a capture for a
+    // room the engineer never meant). Points are selected through their own marker, see handlePinClick.
+    if (hasLabeledLayout) return;
     const nearest = findNearestFloorPin(x, y, 2.5);
     if (nearest) {
       setSelectedPinId(nearest.id);
@@ -1679,7 +1771,11 @@ export default function CaptureWorkflowPage() {
     const targetPinId = activeCapturePinId || selectedPinId;
     if (targetPinId) {
       const pinId = targetPinId;
-      if (uploadingPinsRef.current.has(pinId)) return;   // one in-flight upload per pin
+      if (uploadingPinsRef.current.has(pinId)) {
+        // One in-flight save per pin (blocks a double-fire). Say so, instead of silently discarding the photo.
+        setErrorToast('The previous photo for this point is still being saved. Please wait a moment, then capture again.');
+        return;
+      }
       setActiveCapturePinId(null);
       setPendingPin(null);
       void runPinUpload(pinId, files);
@@ -1961,43 +2057,9 @@ export default function CaptureWorkflowPage() {
                     onPinClick={handlePinClick}
                     onPinActivate={handlePinActivate}
                     isCaptureModeUI={true}
-                    onLongPressCapture={
-                      isMobile
-                        ? (x, y) => {
-                            if (!floorPlan || !selectedFloor) return;
-                            // Free hold anywhere → map to nearest labeled point (or free-place if none).
-                            if (hasLabeledLayout) {
-                              const nearest = findNearestFloorPin(x, y);
-                              if (!nearest) return;
-                              setPendingPin(null);
-                              setSelectedPinId(null);
-                              setActiveCapturePinId(nearest.id);
-                              openMobileCapture();
-                              return;
-                            }
-                            const nearest = findNearestFloorPin(x, y, 2.5);
-                            if (nearest) {
-                              setPendingPin(null);
-                              setSelectedPinId(null);
-                              setActiveCapturePinId(nearest.id);
-                              openMobileCapture();
-                              return;
-                            }
-                            const pinId = createCapturePin({
-                              floorPlanId: floorPlan.id,
-                              floorId: selectedFloor,
-                              towerId: selectedTower,
-                              projectId: selectedProject,
-                              x,
-                              y,
-                            });
-                            setPendingPin(null);
-                            setSelectedPinId(null);
-                            setActiveCapturePinId(pinId);
-                            openMobileCapture();
-                          }
-                        : undefined
-                    }
+                    pointsOnly={hasLabeledLayout}
+                    // No hold-on-empty-space capture any more: the camera opens only from a marked point
+                    // (tap the point, or hold / double-tap the point itself).
                   />
                 </Box>
                 {/* Overlaid Controls Container */}
@@ -2016,11 +2078,69 @@ export default function CaptureWorkflowPage() {
                       ? 'This capture is corrupted or unsupported — please capture again.'
                       : 'Upload failed — retry or capture again'))
                 : undefined;
+            // The point's most recent capture (if any) drives View Capture / View History / Delete below.
+            const latestCaptureId = selectedPinMineIds[selectedPinMineIds.length - 1];
+            const captureExists = !!latestCaptureId && allCaptures.some(c => c.id === latestCaptureId);
+            const latestCap = captureExists ? allCaptures.find(c => c.id === latestCaptureId) : undefined;
+            // Deletable only when finished: a capture still uploading/stitching belongs to the upload queue.
+            const canDeleteLatest = !!latestCap && !selStatus
+              && !captureAwaitingPanorama(latestCap as Parameters<typeof captureAwaitingPanorama>[0]);
+
+            // One shared look for every button in this panel, so they line up and read as a set.
+            const btnBase = {
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 0.75,
+              minHeight: 42, px: 1.5, borderRadius: '12px', minWidth: 0, textAlign: 'center',
+              fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', userSelect: 'none', transition: T,
+            } as const;
+            const btnPrimary = {
+              ...btnBase,
+              background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff',
+              boxShadow: '0 3px 10px rgba(37,99,235,0.28)',
+              '&:hover': { filter: 'brightness(1.06)' }, '&:active': { transform: 'scale(0.98)' },
+            } as const;
+            const btnOutline = {
+              ...btnBase,
+              border: `1.5px solid ${P.border}`, color: P.muted, backgroundColor: P.white,
+              '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft },
+            } as const;
+            const btnAccent = {
+              ...btnBase,
+              border: `1.5px solid ${P.blue}`, color: P.blue, backgroundColor: P.blueSoft,
+              '&:hover': { backgroundColor: 'rgba(37,99,235,0.14)' },
+            } as const;
+            // Quiet text buttons for the secondary row.
+            const btnGhost = {
+              display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1, py: 0.75, borderRadius: '8px',
+              fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', color: P.muted, userSelect: 'none', transition: T,
+              '&:hover': { color: P.blue, backgroundColor: P.blueSoft },
+            } as const;
+            const btnGhostDanger = {
+              ...btnGhost, color: '#dc2626',
+              '&:hover': { color: '#b91c1c', backgroundColor: '#fef2f2' },
+            } as const;
+            const FULL_ROW = { gridColumn: '1 / -1' } as const;
+            // Layout rule: two buttons share a row; a button with no partner takes the whole row (never a lone half).
+            const hasRecoveryButton = selStatus === 'failed' && (failKind === 'upload' || failKind === 'stitch');
+            const primaryHasPartner = captureExists || hasRecoveryButton;
+
+            // Take a (new) photo at this point: phone camera on mobile, upload zone on desktop.
+            const startCapture = () => {
+              if (isMobile) {
+                handleTakePicture(selectedPinObj);
+              } else {
+                setActiveCapturePinId(selectedPinObj.id);
+                setPendingPin(null);
+                setSelectedPinId(null);
+              }
+            };
+            const captureIcon = isMobile ? <CameraAltRounded sx={{ fontSize: 17 }} /> : <AddAPhotoRounded sx={{ fontSize: 17 }} />;
+
             return (
-            <Box sx={{ mb: 2.5, p: 2, borderRadius: '14px', border: `1.5px solid ${selStatus === 'failed' ? '#fca5a5' : P.border}`, backgroundColor: P.white, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0 }}>
+            <Box sx={{ mb: 2.5, p: 2, borderRadius: '16px', border: `1.5px solid ${selStatus === 'failed' ? '#fca5a5' : P.border}`, backgroundColor: P.white, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+              {/* Header: status dot, title + status line, close */}
+              <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, minWidth: 0 }}>
                 <Box sx={{
-                  width: 14, height: 14, borderRadius: '50%', flexShrink: 0,
+                  width: 14, height: 14, borderRadius: '50%', flexShrink: 0, mt: '3px',
                   backgroundColor: selStatus === 'failed' ? '#dc2626' : selectedPinHasCapture ? '#16a34a' : '#2563eb',
                   border: '2px solid #fff',
                   boxShadow: selectedPinHasCapture
@@ -2028,12 +2148,12 @@ export default function CaptureWorkflowPage() {
                     : '0 0 0 2px rgba(37,99,235,0.35)',
                 }} />
                 <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong }}>
+                  <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong, lineHeight: 1.3 }}>
                     {selectedPinObj.flatName && selectedPinObj.roomName
                       ? `${selectedPinObj.flatName} · ${selectedPinObj.roomName}`
                       : selectedPinObj.roomName || selectedPinObj.label || `Point ${selectedPinObj.sequenceNumber}`}
                   </Typography>
-                  <Typography sx={{ fontSize: '0.75rem', color: selStatus === 'failed' ? '#dc2626' : P.muted, fontWeight: selStatus ? 600 : 400 }} noWrap>
+                  <Typography sx={{ fontSize: '0.75rem', color: selStatus === 'failed' ? '#dc2626' : P.muted, fontWeight: selStatus ? 600 : 400, mt: 0.25 }}>
                     {selStatus === 'uploading'
                       ? 'Uploading capture…'
                       : selStatus === 'processing'
@@ -2041,9 +2161,11 @@ export default function CaptureWorkflowPage() {
                         : selStatus === 'queued'
                           ? (fileUploadAwaitingAttach(selectedPinObj.id)
                             ? 'Uploaded — linking to this point…'
-                            : (typeof navigator !== 'undefined' && navigator.onLine
-                              ? 'Saved — uploading…'
-                              : 'Saved on device — will upload once online'))
+                            : isUploadHeld()
+                              ? 'Saved on this phone — sends when you tap Upload now'
+                              : (typeof navigator !== 'undefined' && navigator.onLine
+                                ? 'Saved — uploading…'
+                                : 'Saved on device — will upload once online'))
                           : selStatus === 'failed'
                             ? failMessage
                             : selectedPinHasCapture
@@ -2051,128 +2173,112 @@ export default function CaptureWorkflowPage() {
                               : 'No capture yet — tap Upload Capture'}
                   </Typography>
                 </Box>
+                <Box
+                  component="button"
+                  type="button"
+                  onClick={() => setSelectedPinId(null)}
+                  aria-label="Close"
+                  title="Close"
+                  sx={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                    width: 32, height: 32, p: 0, border: 'none', borderRadius: '50%', cursor: 'pointer',
+                    backgroundColor: 'transparent', color: P.muted, transition: T,
+                    '&:hover': { backgroundColor: P.bg, color: P.strong },
+                  }}
+                >
+                  <CloseRounded sx={{ fontSize: 18 }} />
+                </Box>
               </Box>
-              {/* Actions — always their own row, so they never compete for
-                  horizontal space with the badge/label and wrap unpredictably. */}
-              <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
-                {selStatus === 'failed' && (
-                  <>
-                    {/* Primary: always offer a fresh capture on the same pin. */}
-                    {isMobile ? (
-                      <Box
-                        onClick={() => handleTakePicture(selectedPinObj)}
-                        sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
-                      >
-                        <CameraAltRounded sx={{ fontSize: 15 }} /> Capture Again
-                      </Box>
-                    ) : (
-                      <Box
-                        onClick={() => { setActiveCapturePinId(selectedPinObj.id); setPendingPin(null); setSelectedPinId(null); }}
-                        sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
-                      >
-                        <AddAPhotoRounded sx={{ fontSize: 15 }} /> Capture Again
-                      </Box>
-                    )}
-                    {/* Stitch quality failure: re-run server stitch on retained raw. */}
-                    {failKind === 'stitch' && (
-                      <Box
-                        onClick={() => { retryPinUpload(selectedPinObj.id); }}
-                        sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue } }}
-                      >
-                        <CloudUploadRounded sx={{ fontSize: 15 }} /> Retry Stitch
-                      </Box>
-                    )}
-                    {/* Studio equirect JPEG replaces the failed raw stitch. */}
-                    {failKind === 'stitch' && (
-                      <Box
-                        component="label"
-                        sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue } }}
-                      >
-                        <AddAPhotoRounded sx={{ fontSize: 15 }} /> Upload Studio JPEG
-                        <Box
-                          component="input"
-                          type="file"
-                          accept=".jpg,.jpeg,.png"
-                          sx={{ display: 'none' }}
-                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                            const file = e.target.files?.[0];
-                            (e.target as HTMLInputElement).value = '';
-                            if (!file) return;
-                            void (async () => {
-                              const jobId = fileUploadStitchJobIdForPin(selectedPinObj.id);
-                              await discardFileUpload(selectedPinObj.id);
-                              if (jobId) {
-                                useWorkflowStore.getState().discardStitchFailedCapture(selectedPinObj.id, jobId);
-                              }
-                              await enqueueFileUpload(selectedPinObj.id, file);
-                            })();
-                          }}
-                        />
-                      </Box>
-                    )}
-                    {/* Retry only when re-sending the same bytes could help. */}
-                    {failKind === 'upload' && (
-                      <Box
-                        onClick={() => { retryPinUpload(selectedPinObj.id); }}
-                        sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue } }}
-                      >
-                        <CloudUploadRounded sx={{ fontSize: 15 }} /> Retry Upload
-                      </Box>
-                    )}
-                  </>
-                )}
+
+              {/* Main actions: equal-width buttons in a two-column grid */}
+              <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1 }}>
+                {/* Progress / queue state spans the full row so it reads as a status, not a button. */}
                 {(selStatus === 'uploading' || selStatus === 'processing') && (
-                  <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600 }}>
-                    <Box sx={{ width: 12, height: 12, borderRadius: '50%', border: `2px solid ${P.blue}`, borderTopColor: 'transparent', animation: 'pinspin 0.8s linear infinite', '@keyframes pinspin': { to: { transform: 'rotate(360deg)' } } }} />
+                  <Box sx={{ ...btnOutline, ...FULL_ROW, cursor: 'default', '&:hover': {} }}>
+                    <Box sx={{ width: 14, height: 14, borderRadius: '50%', border: `2px solid ${P.blue}`, borderTopColor: 'transparent', animation: 'pinspin 0.8s linear infinite', '@keyframes pinspin': { to: { transform: 'rotate(360deg)' } } }} />
                     {selStatus === 'processing' ? 'Stitching…' : 'Uploading…'}
                   </Box>
                 )}
                 {selStatus === 'queued' && (
-                  <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600 }}>
-                    <CloudUploadRounded sx={{ fontSize: 15 }} />
+                  <Box sx={{ ...btnOutline, ...FULL_ROW, cursor: 'default', '&:hover': {} }}>
+                    <CloudUploadRounded sx={{ fontSize: 17 }} />
                     {fileUploadAwaitingAttach(selectedPinObj.id) ? 'Linking…' : 'Queued'}
                   </Box>
                 )}
-                {/* Capture Again / Take Picture — available whenever the pin isn't
-                    in a failed state that already shows Capture Again above. Allow
-                    while uploading/processing so a new visit can be queued on the
-                    same point (fileUploadQueue processes per-pin sequentially). */}
-                {selStatus !== 'failed' && (isMobile ? (
-                  <Box
-                    onClick={() => handleTakePicture(selectedPinObj)}
-                    sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
-                  >
-                    <CameraAltRounded sx={{ fontSize: 15 }} />
-                    {selectedPinHasCapture ? 'Capture Again' : 'Take Picture'}
-                  </Box>
-                ) : (
-                  <Box
-                    onClick={() => { setActiveCapturePinId(selectedPinObj.id); setPendingPin(null); setSelectedPinId(null); }}
-                    sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', background: 'linear-gradient(135deg,#2563eb,#1a56db)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 3px 10px rgba(37,99,235,0.28)' }}
-                  >
-                    <AddAPhotoRounded sx={{ fontSize: 15 }} />
-                    {selectedPinHasCapture ? 'Capture Again' : 'Upload Capture'}
-                  </Box>
-                ))}
-                {(() => {
-                  const latestCaptureId = selectedPinMineIds[selectedPinMineIds.length - 1];
-                  const captureExists = latestCaptureId && allCaptures.some(c => c.id === latestCaptureId);
-                  return captureExists ? (
-                    <Box
-                      onClick={() => navigate(`/captures/${latestCaptureId}`)}
-                      sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { borderColor: P.blue, color: P.blue, backgroundColor: P.blueSoft } }}
-                    >
-                      <HistoryRounded sx={{ fontSize: 15 }} /> View History
-                    </Box>
-                  ) : null;
-                })()}
+
+                {/* Capture / Capture Again. Always offered (also while a photo is uploading, so a new visit can be
+                    queued on the same point; the file queue handles one pin sequentially). */}
                 <Box
-                  onClick={() => setSelectedPinId(null)}
-                  sx={{ display: 'inline-flex', alignItems: 'center', px: 0.75, py: 0.75, borderRadius: '8px', border: `1.5px solid ${P.border}`, color: P.muted, cursor: 'pointer', '&:hover': { color: P.strong } }}
+                  onClick={startCapture}
+                  sx={{ ...btnPrimary, ...(primaryHasPartner ? {} : FULL_ROW) }}
                 >
-                  <CloseRounded sx={{ fontSize: 15 }} />
+                  {captureIcon}
+                  {selStatus === 'failed' || selectedPinHasCapture ? 'Capture Again' : (isMobile ? 'Take Picture' : 'Upload Capture')}
                 </Box>
+
+                {/* Failed uploads / stitches: recovery actions beside Capture Again. */}
+                {selStatus === 'failed' && failKind === 'upload' && (
+                  <Box onClick={() => { retryPinUpload(selectedPinObj.id); }} sx={btnOutline}>
+                    <CloudUploadRounded sx={{ fontSize: 17 }} /> Retry Upload
+                  </Box>
+                )}
+                {selStatus === 'failed' && failKind === 'stitch' && (
+                  <Box onClick={() => { retryPinUpload(selectedPinObj.id); }} sx={btnOutline}>
+                    <CloudUploadRounded sx={{ fontSize: 17 }} /> Retry Stitch
+                  </Box>
+                )}
+                {/* Studio equirect JPEG replaces the failed raw stitch. */}
+                {selStatus === 'failed' && failKind === 'stitch' && (
+                  <Box component="label" sx={{ ...btnOutline, ...FULL_ROW }}>
+                    <AddAPhotoRounded sx={{ fontSize: 17 }} /> Upload Studio JPEG
+                    <Box
+                      component="input"
+                      type="file"
+                      accept=".jpg,.jpeg,.png"
+                      sx={{ display: 'none' }}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                        const file = e.target.files?.[0];
+                        (e.target as HTMLInputElement).value = '';
+                        if (!file) return;
+                        void (async () => {
+                          const jobId = fileUploadStitchJobIdForPin(selectedPinObj.id);
+                          await discardFileUpload(selectedPinObj.id);
+                          if (jobId) {
+                            useWorkflowStore.getState().discardStitchFailedCapture(selectedPinObj.id, jobId);
+                          }
+                          await enqueueFileUpload(selectedPinObj.id, file);
+                        })();
+                      }}
+                    />
+                  </Box>
+                )}
+
+                {/* View the point's latest capture right here, in a dialog. */}
+                {captureExists && (
+                  <Box onClick={() => setViewCaptureId(latestCaptureId)} sx={{ ...btnAccent, ...(hasRecoveryButton ? FULL_ROW : {}) }}>
+                    <ImageRounded sx={{ fontSize: 17 }} /> View Capture
+                  </Box>
+                )}
               </Box>
+
+              {/* Secondary row: history on the left, delete on the right, quieter than the main actions */}
+              {captureExists && (
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: canDeleteLatest ? 'space-between' : 'flex-start', pt: 1, borderTop: `1px solid ${P.border}` }}>
+                  <Box onClick={() => navigate(`/captures/${latestCaptureId}`)} sx={btnGhost}>
+                    <HistoryRounded sx={{ fontSize: 16 }} /> View History
+                  </Box>
+                  {canDeleteLatest && (
+                    <Box
+                      onClick={() => setDeleteCaptureId(latestCaptureId)}
+                      title="Delete this capture"
+                      aria-label="Delete this capture"
+                      sx={btnGhostDanger}
+                    >
+                      <DeleteOutlineRounded sx={{ fontSize: 16 }} /> Delete
+                    </Box>
+                  )}
+                </Box>
+              )}
             </Box>
             );
           })()}
@@ -2274,9 +2380,11 @@ export default function CaptureWorkflowPage() {
                       {floorPins.length > 0 ? 'Select a capture point' : 'Place a capture point first'}
                     </Typography>
                     <Typography sx={{ fontSize: '0.875rem', color: P.muted }}>
-                      {floorPins.length > 0
-                        ? 'Tap a green pin to recapture, or tap empty floor to place a new point'
-                        : 'Tap anywhere on the floor plan above to mark your location'}
+                      {hasLabeledLayout
+                        ? 'Tap a capture point on the floor plan to capture or recapture it'
+                        : floorPins.length > 0
+                          ? 'Tap a green pin to recapture, or tap empty floor to place a new point'
+                          : 'Tap anywhere on the floor plan above to mark your location'}
                     </Typography>
                   </>
                 )}
@@ -2289,6 +2397,96 @@ export default function CaptureWorkflowPage() {
           )}
         </Box>
       )}
+
+      {/* View one capture in place (so the engineer can judge it without leaving the plan) */}
+      {(() => {
+        const cap = viewCaptureId ? allCaptures.find(c => c.id === viewCaptureId) : undefined;
+        const capPin = viewCaptureId ? allPins.find(p => p.captureIds.includes(viewCaptureId)) : undefined;
+        const src = cap ? captureViewUrl(cap) : null;
+        const when = cap
+          ? formatCaptureDateTime((cap as { capturedAt?: string }).capturedAt, cap.uploadedAt)
+          : '';
+        const queueStatus = capPin ? pinStatus[capPin.id] : undefined;
+        // Only a finished capture can be deleted. One that is still stitching/uploading is owned by the upload
+        // queue, and removing it here would let the queue re-attach it a moment later.
+        const canDelete = !!cap && !queueStatus && !captureAwaitingPanorama(cap as Parameters<typeof captureAwaitingPanorama>[0]);
+        return (
+          <Dialog
+            open={!!cap}
+            onClose={() => setViewCaptureId(null)}
+            maxWidth="md"
+            fullWidth
+            // Above the full-screen capture screen (layer 1400) and the camera (1500). At the default modal layer
+            // (1300) this dialog opened BEHIND the capture screen, so "View Capture" looked like it did nothing.
+            // The delete confirmation is layered above this one (1700).
+            sx={{ zIndex: 1600 }}
+            slotProps={{ paper: { sx: { borderRadius: '16px', overflow: 'hidden', backgroundColor: '#0f172a' } } }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1.25, color: '#fff' }}>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700 }} noWrap>
+                  {formatPinLocationLabel(capPin, cap?.roomName || 'Capture')}
+                </Typography>
+                {when && <Typography sx={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.65)' }}>{when}</Typography>}
+              </Box>
+              <Box
+                component="button"
+                type="button"
+                onClick={() => setViewCaptureId(null)}
+                aria-label="Close"
+                title="Close"
+                sx={{
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, p: 0,
+                  border: 'none', borderRadius: '10px', cursor: 'pointer', color: '#fff',
+                  backgroundColor: 'rgba(255,255,255,0.12)', '&:hover': { backgroundColor: 'rgba(255,255,255,0.22)' },
+                }}
+              >
+                <CloseRounded sx={{ fontSize: 20 }} />
+              </Box>
+            </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 220, backgroundColor: '#020617' }}>
+              {src ? (
+                <Box component="img" src={src} alt="Capture" sx={{ display: 'block', width: '100%', maxHeight: '68vh', objectFit: 'contain' }} />
+              ) : (
+                <Typography sx={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.875rem', p: 4, textAlign: 'center' }}>
+                  This capture has no image yet. It may still be processing.
+                </Typography>
+              )}
+            </Box>
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', justifyContent: 'flex-end', px: 2, py: 1.5 }}>
+              {/* Stays on this screen: closing returns to the floor plan exactly as it was (no navigation). */}
+              {canDelete && (
+                <Box
+                  onClick={() => setDeleteCaptureId(viewCaptureId)}
+                  sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.625, px: 1.375, py: 0.75, borderRadius: '8px', backgroundColor: '#dc2626', color: '#fff', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', '&:hover': { opacity: 0.9 } }}
+                >
+                  <DeleteOutlineRounded sx={{ fontSize: 15 }} /> Delete capture
+                </Box>
+              )}
+            </Box>
+          </Dialog>
+        );
+      })()}
+
+      <ConfirmDialog
+        open={!!deleteCaptureId}
+        destructive
+        title="Delete this capture?"
+        description={(() => {
+          const pin = deleteCaptureId ? allPins.find(p => p.captureIds.includes(deleteCaptureId)) : undefined;
+          return `This photo will be removed from ${formatPinLocationLabel(pin, 'this point')}. The capture point stays on the floor plan, so you can capture it again. This cannot be undone.`;
+        })()}
+        confirmLabel="Delete capture"
+        onCancel={() => setDeleteCaptureId(null)}
+        onConfirm={() => {
+          const id = deleteCaptureId;
+          setDeleteCaptureId(null);
+          setViewCaptureId(null);
+          if (!id) return;
+          deleteCapture(id);
+          setToast('Capture deleted. You can capture this point again.');
+        }}
+      />
 
       {/* Mobile camera dialog (full-screen getUserMedia) */}
       <CameraCaptureDialog

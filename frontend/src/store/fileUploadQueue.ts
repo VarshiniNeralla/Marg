@@ -30,11 +30,18 @@ import { Preferences } from '@capacitor/preferences';
 import { Network } from '@capacitor/network';
 import { useAuthStore } from './authStore';
 import { useWorkflowStore } from './workflowStore';
-import { uploadCaptureFiles, getCaptureStitchJob, retryCaptureStitchJob, type UploadedFileResponse } from '@/services/uploadService';
+import { uploadCaptureFiles, getCaptureStitchJob, retryCaptureStitchJob, reconcileFingerprints, type UploadedFileResponse } from '@/services/uploadService';
 import { captureAwaitingPanorama, captureStitchJobId } from '@/utils/captureMedia';
 import { setPendingUploadPins, removePendingUploadPin, addPendingUploadPin } from './pendingUploadRegistry';
 import { isTombstoned } from './tombstones';
 import { SingleFlight, healCopy, writeVerifiedCopy, type FsLike } from './safeFileCopy';
+import { capturedAtMatchesEntry, isSameQueuedFile } from './queueMatching';
+import { entryBelongsTo, readLastUserId } from './uploadOwnership';
+import { getUploadMode, isPhotoHeld, markSessionStarted } from './uploadHold';
+import type { QueuedPhotoInfo } from './uploadPlan';
+import { sha256OfBlob } from './fingerprint';
+import { addRetainedPhoto, listRetainedPhotos, removeRetainedPhotos } from './retainedPhotos';
+import { fingerprintsAgree, fingerprintsToCheck, planReleases } from './reconcilePlan';
 
 /** The real filesystem, shaped for safeFileCopy (which is tested against a fake one). */
 const realFs: FsLike = {
@@ -68,6 +75,8 @@ const DAMAGED_COPY_STATUS = -2;
 /** Attach/upload aborted because the pin was intentionally deleted. Not a
  *  network failure — must discard the queue entry, never retry/repost. */
 const PIN_DELETED_STATUS = 410;
+/** The server's fingerprint of the received bytes differs from the phone's. Treated as a transient failure: resend. */
+const FINGERPRINT_MISMATCH_STATUS = 502;
 
 /** Emitted whenever a queued upload's status changes, so the UI can reflect
  *  'queued' | 'uploading' | 'failed' without polling the queue directly. */
@@ -121,6 +130,10 @@ export interface PendingFileUpload {
    */
   uploadedFiles?: UploadedFileResponse[];
   uploadedFileCount?: number;
+  /** Who took the photo. Only that person's login may upload it; nobody else's login can delete it. */
+  ownerId?: string;
+  /** SHA-256 of the photo, computed on the phone at capture time (disk-first captures only). */
+  sha256?: string;
   /** Set when status === 'failed'. */
   failKind?: FileUploadFailKind;
   /** User-facing reason shown on the pin panel. */
@@ -298,6 +311,7 @@ function entryAlreadyAttachedToPin(entry: PendingFileUpload): boolean {
             original_url?: string | null;
             stitchJobId?: string;
           }[];
+          capturedAt?: string;
           public_id?: string;
           stitchJobId?: string;
           processedPanoramaUrl?: string | null;
@@ -316,7 +330,13 @@ function entryAlreadyAttachedToPin(entry: PendingFileUpload): boolean {
 
     // Filename match only after a real panorama exists — cameras often reuse
     // names across visits; matching placeholders used to discard the queue mid-stitch.
-    if (fileName) {
+    //
+    // A name alone is NOT proof: a second visit to the same point is often a different photo with the same
+    // camera file name, and it must never be dropped as "already attached". A capture that was attached from THIS
+    // queue entry carries the entry's own taken-time (attachCaptureToPin is passed entry.createdAt), so require
+    // that too. If the time is missing or does not line up we keep the entry and upload it (the server dedups
+    // identical bytes), which can at worst cost a re-upload, never a lost photo.
+    if (fileName && capturedAtMatchesEntry(cap.capturedAt, entry.createdAt)) {
       for (const asset of cap.mediaAssets ?? []) {
         const assetName = (asset.original_filename || asset.originalFilename || '')
           .trim()
@@ -330,11 +350,13 @@ function entryAlreadyAttachedToPin(entry: PendingFileUpload): boolean {
 
 /** Drop other unfinished queue rows for the same pin + filename (duplicate retries). */
 async function discardSiblingDuplicates(entry: PendingFileUpload): Promise<void> {
+  // Same pin AND same photo (name + size): a queued LATER visit that merely reuses the camera's file name is a
+  // different photo and must survive this cleanup.
   const siblings = queue.filter(
     e =>
       e.id !== entry.id
       && e.pinId === entry.pinId
-      && e.fileName === entry.fileName
+      && isSameQueuedFile(e, entry.fileName, entry.expectedBytes)
       && e.status !== 'processing',
   );
   if (!siblings.length) return;
@@ -694,11 +716,58 @@ function pendingJobIdOf(result: { files: { stitchJobId?: string; processing_stat
   return pendingFile?.stitchJobId;
 }
 
+/**
+ * The server lost this photo's stitch job (restart, wiped job record). Get the entry ready to send the photo again.
+ *
+ * Dropping only the job id was not enough: the entry still carried its old upload result, so the next flush skipped
+ * the upload ("attach-only retry"), re-attached the same dead placeholder, got the same dead job id back, and polled
+ * it forever, leaving the point on "Stitching…" with the photo never re-sent. Clearing the old result makes the next
+ * flush upload the saved on-device bytes for real, and the empty placeholder it replaces is removed first so the point
+ * does not end up with a ghost visit beside the real one.
+ */
+function prepareForResend(entry: PendingFileUpload): void {
+  const deadJob = entry.stitchJobId;
+  if (deadJob) {
+    useWorkflowStore.getState().discardStitchFailedCapture(entry.pinId, deadJob);
+  }
+  delete entry.stitchJobId;
+  delete entry.uploadedFiles;
+  delete entry.uploadedFileCount;
+}
+
 async function deleteLocalFile(entry: PendingFileUpload): Promise<void> {
   if (!entry.fileUri) return;
   await Filesystem.deleteFile({ path: entry.fileUri, directory: Directory.Data }).catch(() => {
     /* stray file on disk is harmless; never fail the upload over cleanup */
   });
+}
+
+/**
+ * The photo has gone up. A fingerprinted photo (taken in "Upload when I tap") is NOT deleted yet: its file moves to the
+ * retained list and only leaves the phone once the server confirms it holds an exact copy (releaseVerifiedPhotos).
+ * A photo without a fingerprint (auto mode) is cleaned up straight away, exactly as before.
+ */
+async function finishWithBytes(entry: PendingFileUpload): Promise<void> {
+  if (entry.sha256 && entry.fileUri) {
+    try {
+      await addRetainedPhoto({
+        id: entry.id,
+        ownerId: entry.ownerId,
+        pinId: entry.pinId,
+        fileUri: entry.fileUri,
+        fileName: entry.fileName,
+        mimeType: entry.mimeType,
+        bytes: entry.expectedBytes,
+        sha256: entry.sha256,
+        createdAt: entry.createdAt,
+        uploadedAt: Date.now(),
+      });
+    } catch {
+      // Could not record it: keep the file anyway (a stray file is harmless, a lost photo is not).
+    }
+    return;
+  }
+  await deleteLocalFile(entry);
 }
 
 function releaseEntryBytes(entry: PendingFileUpload): void {
@@ -760,6 +829,13 @@ async function uploadEntry(entry: PendingFileUpload): Promise<boolean> {
     }
     resultFiles = result.files ?? [];
     fileCount = result.count || resultFiles.length || 1;
+    // Per-photo proof: the server fingerprinted the bytes it received. If that is not the fingerprint the phone took
+    // at capture time, those bytes arrived damaged. Do not trust them: send the photo again and keep the phone copy.
+    if (entry.sha256 && fingerprintsAgree(entry.sha256, resultFiles[0]?.sha256) === 'mismatch') {
+      const err = new Error('The server received a different copy of the photo. Sending it again.') as Error & { status: number };
+      err.status = FINGERPRINT_MISMATCH_STATUS;
+      throw err;
+    }
     // Persist immediately so a crash mid-attach still skips the next POST.
     entry.uploadedFiles = resultFiles;
     entry.uploadedFileCount = fileCount;
@@ -804,7 +880,7 @@ async function uploadEntry(entry: PendingFileUpload): Promise<boolean> {
   }
 
   releaseEntryBytes(entry);
-  await deleteLocalFile(entry);
+  await finishWithBytes(entry);
   return true;
 }
 
@@ -830,7 +906,7 @@ async function pollStitchEntry(
     const captureId = useWorkflowStore.getState().attachCaptureToPin(entry.pinId, 1, [asset], entry.createdAt);
     if (!captureId) return 'pending';
     releaseEntryBytes(entry);
-    await deleteLocalFile(entry);
+    await finishWithBytes(entry);
     return 'done';
   }
   if (job.status === 'failed') {
@@ -968,6 +1044,11 @@ async function flushOnce(): Promise<void> {
 
   const byPin = new Map<string, PendingFileUpload[]>();
   for (const entry of queue) {
+    // Another person's photo: it stays on the phone, untouched, until THEY sign in.
+    if (!isMine(entry)) continue;
+    // "Upload when I tap": photos not yet sent wait. Anything already on the server (stitching, or uploaded and only
+    // waiting to link to its pin) may carry on, because that is finishing work, not starting a new upload.
+    if (isPhotoHeld(entry.pinId) && !entry.stitchJobId && !entry.uploadedFiles?.length) continue;
     // 'uploading' — already being driven by another flush() call.
     // 'failed' — genuinely exhausted MAX_ATTEMPTS; kept in the queue only so
     // Retry Upload / pin-delete can still find and act on it, but it must
@@ -1004,7 +1085,7 @@ async function flushOnce(): Promise<void> {
           await discardSiblingDuplicates(entry);
           queue = queue.filter(e => e.id !== entry.id);
           releaseEntryBytes(entry);
-          void deleteLocalFile(entry);
+          await finishWithBytes(entry);
           await persist();
           emitUploadSucceeded(entry.pinId);
           continue;
@@ -1041,9 +1122,9 @@ async function flushOnce(): Promise<void> {
             }
             if (outcome === 'retry') {
               // Server could not finish the stitch (e.g. restart lost the
-              // spooled bytes). Drop the jobId and let normal upload retry
-              // re-send from the on-device copy we deliberately kept.
-              delete entry.stitchJobId;
+              // spooled bytes). Forget the dead job AND the stale upload result so the
+              // next flush really re-sends the on-device copy we deliberately kept.
+              prepareForResend(entry);
               entry.status = 'queued';
               await persist();
               break;
@@ -1056,7 +1137,7 @@ async function flushOnce(): Promise<void> {
             const pollStatus = statusOf(error);
             if (pollStatus === 404) {
               // Job record is gone (e.g. wiped DB) — fall back to re-uploading.
-              delete entry.stitchJobId;
+              prepareForResend(entry);
               entry.status = 'queued';
             } else {
               entry.status = 'processing';
@@ -1098,6 +1179,10 @@ async function flushOnce(): Promise<void> {
           if (status === PIN_DELETED_STATUS) {
             await discardEntry(entry);
             continue;
+          }
+          if (status === FINGERPRINT_MISMATCH_STATUS) {
+            // Forget the damaged upload so the next pass really re-sends the intact copy kept on disk.
+            prepareForResend(entry);
           }
           if (status === 401) {
             hadBacklog = true;
@@ -1264,10 +1349,12 @@ export async function enqueueFileUpload(
 
   // Do not stack another row for the exact same file still waiting/uploading —
   // that is how Flat 02 stayed "Queued" after View History already worked.
+  // "Exact same file" = same name AND size. A second visit that reuses the camera's file name is a different
+  // photo and gets its own row (it used to be swallowed here and its bytes thrown away).
   const duplicateQueued = queue.find(
     e =>
       e.pinId === pinId
-      && e.fileName === file.name
+      && isSameQueuedFile(e, file.name, file.size)
       && (e.status === 'queued' || e.status === 'uploading'),
   );
   if (duplicateQueued && !opts?.stitchJobId) {
@@ -1279,10 +1366,15 @@ export async function enqueueFileUpload(
     return;
   }
 
+  const diskFirst = !opts?.stitchJobId && getUploadMode() === 'manual';
+  // Fingerprint BEFORE the row exists, so an upload can never start on a photo that has no fingerprint yet.
+  const fingerprint = diskFirst ? await sha256OfBlob(file) : undefined;
   const id = `fq${Date.now()}_${seq++}`;
   queue.push({
     id,
     pinId,
+    ownerId: useAuthStore.getState().user?.id,
+    ...(fingerprint ? { sha256: fingerprint } : {}),
     fileUri: '',
     fileName: file.name,
     mimeType: file.type || 'image/jpeg',
@@ -1295,6 +1387,27 @@ export async function enqueueFileUpload(
     status: opts?.stitchJobId ? 'processing' : 'queued',
     ...(opts?.stitchJobId ? { stitchJobId: opts.stitchJobId } : {}),
   });
+  if (diskFirst) {
+    // DISK FIRST. In "Upload when I tap" a photo may wait for hours, so the copy on disk is THE copy: it is written,
+    // size-checked and fingerprinted before this function returns. Only then does the capture count as captured.
+    // A failure here throws, so the caller shows "could not save" instead of pretending the photo is safe.
+    markSessionStarted();
+    await persist();
+    await persistEntryToDisk(id, file);
+    const saved = queue.find(e => e.id === id);
+    if (!saved || !saved.fileUri || saved.bytesReady !== true) {
+      queue = queue.filter(e => e.id !== id);
+      diskPersistCancelled.add(id);
+      if (!queue.some(e => e.pinId === pinId)) removePendingUploadPin(pinId);
+      await persist();
+      throw new Error('This phone could not save the photo (storage may be full). It was NOT captured: free up space, then take it again.');
+    }
+    // RAM is only a short-lived helper now; the verified copy on disk is the one that counts.
+    memoryFiles.delete(id);
+    await persist();
+    void flush();
+    return;
+  }
   if (!opts?.stitchJobId) {
     memoryFiles.set(id, file);
     scheduleDiskPersist(id, file);
@@ -1522,6 +1635,48 @@ export function pendingFileUploadCount(): number {
   return queue.length;
 }
 
+/** True when this photo may be uploaded by whoever is signed in now. */
+function isMine(entry: PendingFileUpload): boolean {
+  const me = useAuthStore.getState().user?.id;
+  return entryBelongsTo(entry.ownerId, me, readLastUserId(localStorage));
+}
+
+/** How many photos are waiting on this phone, counting everyone's. Waits for the saved queue to load first. */
+export async function waitingPhotoCount(): Promise<number> {
+  await load();
+  return queue.length;
+}
+
+/** Photos waiting that belong to someone OTHER than the given person (they stay locked to their owner). */
+export async function photosLockedToOthers(userId: string): Promise<number> {
+  await load();
+  const last = readLastUserId(localStorage);
+  return queue.filter(e => !entryBelongsTo(e.ownerId, userId, last)).length;
+}
+
+/** This person's waiting photos, as plain facts for the review screen and the progress bar. */
+export async function waitingPhotoInfos(): Promise<QueuedPhotoInfo[]> {
+  await load();
+  return queue.filter(isMine).map(e => ({
+    pinId: e.pinId,
+    bytes: e.expectedBytes ?? 0,
+    status: e.status,
+    ...(e.failKind ? { failKind: e.failKind } : {}),
+    ...(e.errorMessage ? { errorMessage: e.errorMessage } : {}),
+    ...(e.stitchJobId ? { stitchJobId: e.stitchJobId } : {}),
+  }));
+}
+
+/** Older photos carry no owner. Before a different person signs in, pin them to the person who took them. */
+export async function claimUnownedPhotos(ownerId: string): Promise<void> {
+  await load();
+  let changed = false;
+  for (const e of queue) {
+    if (!e.ownerId) { e.ownerId = ownerId; changed = true; }
+  }
+  if (changed) await persist();
+}
+
 export async function clearFileUploadQueue(): Promise<void> {
   await load();
   const entries = [...queue];
@@ -1544,6 +1699,88 @@ export async function clearFileUploadQueue(): Promise<void> {
         : Promise.resolve(),
     ),
   );
+}
+
+// ── Verified deletion ────────────────────────────────────────────────────────
+
+export interface ReleaseResult {
+  /** Files deleted because the server confirmed an exact copy. */
+  confirmed: number;
+  /** Photos the server did NOT confirm. Their files are kept. */
+  missing: number;
+  /** The check itself could not run (offline, signed out). Nothing was deleted. */
+  skipped: boolean;
+}
+
+async function myRetainedPhotos() {
+  const me = useAuthStore.getState().user?.id;
+  const last = readLastUserId(localStorage);
+  return (await listRetainedPhotos()).filter(r => entryBelongsTo(r.ownerId, me, last));
+}
+
+/**
+ * Final reconciliation. Sends the server the fingerprint of every retained photo (this person's) and deletes the phone
+ * copy of exactly those the server says it holds. Anything not confirmed is kept and counted as missing.
+ */
+export async function releaseVerifiedPhotos(): Promise<ReleaseResult> {
+  const mine = await myRetainedPhotos();
+  if (!mine.length) return { confirmed: 0, missing: 0, skipped: false };
+  if (!useAuthStore.getState().isAuthenticated) return { confirmed: 0, missing: mine.length, skipped: true };
+
+  const present: string[] = [];
+  try {
+    // 500 per request keeps each call small however big the trip was.
+    const hashes = fingerprintsToCheck(mine);
+    for (let i = 0; i < hashes.length; i += 500) {
+      const r = await reconcileFingerprints(hashes.slice(i, i + 500));
+      present.push(...r.present);
+    }
+  } catch {
+    return { confirmed: 0, missing: mine.length, skipped: true };
+  }
+
+  const { deleteIds, missingIds } = planReleases(mine, present);
+  const drop = new Set(deleteIds);
+  for (const r of mine) {
+    if (!drop.has(r.id)) continue;
+    await Filesystem.deleteFile({ path: r.fileUri, directory: Directory.Data }).catch(() => {});
+  }
+  await removeRetainedPhotos(deleteIds);
+  return { confirmed: deleteIds.length, missing: missingIds.length, skipped: false };
+}
+
+/** Photos sent but not yet confirmed by the server (their files are still on the phone). */
+export async function unconfirmedPhotoCount(): Promise<number> {
+  return (await myRetainedPhotos()).length;
+}
+
+/** Put unconfirmed photos back in the upload queue so they are sent again from the intact copy on disk. */
+export async function resendUnconfirmedPhotos(): Promise<number> {
+  await load();
+  const mine = await myRetainedPhotos();
+  for (const r of mine) {
+    queue.push({
+      id: `fq${Date.now()}_${seq++}`,
+      pinId: r.pinId,
+      fileUri: r.fileUri,
+      bytesReady: true,
+      fileName: r.fileName,
+      mimeType: r.mimeType,
+      expectedBytes: r.bytes,
+      sha256: r.sha256,
+      ownerId: r.ownerId,
+      attempts: 0,
+      createdAt: r.createdAt,
+      status: 'queued',
+    });
+    addPendingUploadPin(r.pinId);
+  }
+  if (mine.length) {
+    await removeRetainedPhotos(mine.map(r => r.id));
+    await persist();
+    void flush();
+  }
+  return mine.length;
 }
 
 // ── Triggers ─────────────────────────────────────────────────────────────────

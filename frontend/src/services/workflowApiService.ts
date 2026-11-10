@@ -127,7 +127,9 @@ export const workflowApiService = {
 
   // ── Capture Pins ──
   async createCapturePin(pin: WfCapturePin): Promise<WfCapturePin> {
-    return getData<WfCapturePin>(apiClient.post(`/floor-plans/${pin.floorPlanId}/pins`, pin));
+    // serverSeen is a client-only bookkeeping flag (see pinSync.ts): never store it on the server.
+    const { serverSeen: _clientOnly, ...body } = pin;
+    return getData<WfCapturePin>(apiClient.post(`/floor-plans/${pin.floorPlanId}/pins`, body));
   },
 
   async updateCapturePin(id: string, patch: Partial<WfCapturePin>): Promise<WfCapturePin> {

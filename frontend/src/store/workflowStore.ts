@@ -1,5 +1,6 @@
+import { retryUntilPlanSaved } from '@/utils/retryUntilPlanSaved';
 import { create } from 'zustand';
-import { persist, createJSONStorage } from 'zustand/middleware';
+import { persist } from 'zustand/middleware';
 import {
   mockProjects, mockTowers, mockCaptures, mockTours, getFloors, getRooms,
   mockFloorPlans, mockDefects, mockNotifications, mockAuditLogs, mockUsers,
@@ -9,7 +10,8 @@ import {
 } from '@/data/mockData';
 import type { UploadedFileResponse } from '@/services/uploadService';
 import { STORE_VERSION, WORKFLOW_STORE_KEY } from './persistence';
-import { createSafeStorage } from './safeStorage';
+import { createDebouncedJsonStorage } from './safeStorage';
+import { isUnconfirmedCapturedPin, markServerSeen } from './pinSync';
 import { addTombstones, tombstoneMap, tombstoneSet, clearTombstones } from './tombstones';
 import { useAuthStore, isFieldEngineer, isManagerOrAdmin } from './authStore';
 import { findOwnFloorPlanTour } from '@/utils/captureOwnership';
@@ -194,6 +196,12 @@ export interface WfCapturePin {
    * createCapturePin write / lags the next snapshot (pins vanishing mid-session).
    */
   clientCreatedAt?: number;
+  /**
+   * Client-only. false from the moment this device creates the point; true once a server snapshot has contained it.
+   * Lets a post-login refresh tell "deleted by someone else" from "my create never reached the server" (see
+   * pinSync.ts). Absent on points saved before this existed, which keep the old behaviour.
+   */
+  serverSeen?: boolean;
 }
 
 export type WorkflowDataState = Pick<WorkflowState,
@@ -854,7 +862,8 @@ export const useWorkflowStore = create<WorkflowState>()(
 
         // Use a single consistent source for pins throughout this function:
         // API pins if the API returned them, otherwise keep local state.
-        const apiPins = migrated.capturePins;
+        // Every pin in the server's snapshot is, by definition, confirmed by the server.
+        const apiPins = markServerSeen(migrated.capturePins);
         const localPins = get().capturePins;
         // Pins whose photo bytes are still in this device's durable upload queue
         // (offline, retrying, or awaiting a background stitch). Read from a leaf
@@ -881,6 +890,9 @@ export const useWorkflowStore = create<WorkflowState>()(
                 if (isCreatePending('createCapturePin', p.id) || pinsWithPendingUploads.has(p.id)) {
                   return true;
                 }
+                // A point with photos that the server has NEVER confirmed: its create was lost, not deleted by
+                // someone else. Dropping it here threw away the point and its photos for good.
+                if (isUnconfirmedCapturedPin(p)) return true;
                 const labeled = Boolean(p.flatName && p.roomName) || p.isPredefined;
                 const age = typeof p.clientCreatedAt === 'number'
                   ? now - p.clientCreatedAt
@@ -924,9 +936,23 @@ export const useWorkflowStore = create<WorkflowState>()(
         // from captureIds — that race (createCapture without updateCapturePin)
         // is what made "Pin 1" vanish from the plan while still showing in the
         // gallery, and left Images Analyzed one short.
+        // In replace mode the server's captures are the whole truth EXCEPT photos on a point the server has never
+        // confirmed: those exist only here, and treating them as dangling stripped the point's capture list and then
+        // dropped the point.
+        const unconfirmedCaptureIds = new Set(
+          replace
+            ? localPins
+                .filter(p => isUnconfirmedCapturedPin(p) && !tombstones.has(p.id) && !(apiPins ?? []).some(a => a.id === p.id))
+                .flatMap(p => p.captureIds)
+            : [],
+        );
+        const apiCaptureIdSet = new Set((migrated.captures ?? []).map(c => c.id));
         const capturesForHeal = (
           replace
-            ? (migrated.captures ?? [])
+            ? [
+                ...(migrated.captures ?? []),
+                ...get().captures.filter(c => unconfirmedCaptureIds.has(c.id) && !apiCaptureIdSet.has(c.id)),
+              ]
             : [...(migrated.captures ?? []), ...get().captures]
         ).filter(c => !tombstones.has(c.id));
         const mergedCaptureIds = new Set(capturesForHeal.map(c => c.id));
@@ -1023,11 +1049,15 @@ export const useWorkflowStore = create<WorkflowState>()(
           //
           // Scoped strictly to pins with a live queue entry, so a genuine remote
           // delete of a finished capture still converges normally.
-          if (pinsWithPendingUploads.size) {
+          // Also the photos of any point the server has never confirmed (see keepLocalPins): the point is kept, so its
+          // photos must be too, otherwise the point survives with links to nothing.
+          const unconfirmedCapturePins = s.capturePins.filter(p => isUnconfirmedCapturedPin(p) && !tombstones.has(p.id));
+          if (pinsWithPendingUploads.size || unconfirmedCapturePins.length) {
             const pendingCaptureIds = new Set(
-              s.capturePins
-                .filter(p => pinsWithPendingUploads.has(p.id))
-                .flatMap(p => p.captureIds),
+              [
+                ...s.capturePins.filter(p => pinsWithPendingUploads.has(p.id)),
+                ...unconfirmedCapturePins,
+              ].flatMap(p => p.captureIds),
             );
             for (const local of s.captures) {
               if (tombstones.has(local.id)) continue;
@@ -1180,7 +1210,9 @@ export const useWorkflowStore = create<WorkflowState>()(
             if (tombstones.has(pin.id)) continue;
             if (apiPinIds.has(pin.id)) continue;
             if (isCreatePending('createCapturePin', pin.id)) continue;
-            if (!(pin.isPredefined || (pin.flatName && pin.roomName))) continue;
+            // Labeled annotation points (grace window) and points with photos the server never confirmed are
+            // both re-sent; an unlabeled, empty free-place point is not worth keeping alive.
+            if (!(pin.isPredefined || (pin.flatName && pin.roomName) || isUnconfirmedCapturedPin(pin))) continue;
             const room = get().rooms.find(r => r.id === pin.roomId);
             if (room && !isCreatePending('createRoom', room.id)) {
               const apiRoomIds = new Set((migrated.rooms ?? []).map(r => r.id));
@@ -1194,6 +1226,17 @@ export const useWorkflowStore = create<WorkflowState>()(
               }
             }
             mirrorApi('createCapturePin', [pin], 'snapshot-race-pin');
+            // Its photos exist only on this device too: send them after the point (the queue is in order).
+            // create is an idempotent upsert keyed on id, so a photo that did reach the server is not duplicated.
+            if (isUnconfirmedCapturedPin(pin)) {
+              const apiCaptureIdsForPin = new Set((migrated.captures ?? []).map(c => c.id));
+              for (const cap of get().captures) {
+                if (!pin.captureIds.includes(cap.id)) continue;
+                if (apiCaptureIdsForPin.has(cap.id) || tombstones.has(cap.id)) continue;
+                if (isCreatePending('createCapture', cap.id)) continue;
+                mirrorApi('createCapture', [cap as MockCapture], 'snapshot-race-capture');
+              }
+            }
           }
         }
 
@@ -2014,6 +2057,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       createdBy: createdBy ?? 'You',
       createdAt: 'Just now',
       clientCreatedAt: Date.now(),
+      serverSeen: false,   // not confirmed by the server until a snapshot contains it (see pinSync.ts)
       captureIds: [],
       flatName: resolvedFlat || undefined,
       roomName: resolvedRoom || undefined,
@@ -2058,10 +2102,12 @@ export const useWorkflowStore = create<WorkflowState>()(
       .map(p => p.id);
     if (pendingIds.length) cancelPendingDeletesForEntityIds(...pendingIds);
 
-    const result = await workflowApiService.copyPinsFromFloor(targetFloorId, sourceFloorId, {
+    // The target floor's plan may still be waiting in the write queue (right after an upload): retry that one
+    // temporary refusal instead of failing the import.
+    const result = await retryUntilPlanSaved(() => workflowApiService.copyPinsFromFloor(targetFloorId, sourceFloorId, {
       targetFloorPlanId,
       sourceFloorPlanId,
-    });
+    }));
     const pins = (result?.pins ?? []) as WfCapturePin[];
     const copied = result?.copiedCount ?? pins.length;
     if (!copied || !pins.length) {
@@ -2575,7 +2621,8 @@ export const useWorkflowStore = create<WorkflowState>()(
     {
       name: WORKFLOW_STORE_KEY,
       version: STORE_VERSION.workflow,
-      storage: createJSONStorage(() => createSafeStorage()),
+      // Write-coalescing storage: the whole dataset used to be re-serialised and written on EVERY state change.
+      storage: createDebouncedJsonStorage<WorkflowDataState>(),
       partialize: (s): WorkflowDataState => ({
         projects: s.projects,
         towers: s.towers,

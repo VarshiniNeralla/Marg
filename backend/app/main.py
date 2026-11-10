@@ -25,6 +25,12 @@ settings = get_settings()
 # Objects up to this size are served as a single response (see serve_local_media); larger ones are streamed.
 _MEDIA_SINGLE_RESPONSE_MAX_BYTES = 32 * 1024 * 1024
 
+# Stored media is written under a unique random name (see local_media_service), so the bytes behind a given URL
+# never change. Without a Cache-Control the browser re-downloaded the same multi-MB floor plan / panorama on every
+# view. `private` because the files are auth-gated (shared caches must not keep them). Only successful responses
+# carry it; a 404 (e.g. a deleted file) is never cached by this header.
+_MEDIA_CACHE_CONTROL = "private, max-age=86400"
+
 
 async def _for_each_database(fn, label: str) -> None:
     """
@@ -191,7 +197,10 @@ def create_app() -> FastAPI:
             if obj is not None:
                 body = obj["Body"]
                 media_type = obj.get("ContentType") or object_store.content_type_for(rel.as_posix())
-                headers = {"Cross-Origin-Resource-Policy": "cross-origin"}
+                headers = {
+                    "Cross-Origin-Resource-Policy": "cross-origin",
+                    "Cache-Control": _MEDIA_CACHE_CONTROL,
+                }
                 if obj.get("ETag"):
                     headers["ETag"] = obj["ETag"]
                 if int(obj["ContentLength"]) <= _MEDIA_SINGLE_RESPONSE_MAX_BYTES:
@@ -227,7 +236,10 @@ def create_app() -> FastAPI:
         # texture when the SPA is not on the same host as /media.
         return FileResponse(
             full,
-            headers={"Cross-Origin-Resource-Policy": "cross-origin"},
+            headers={
+                "Cross-Origin-Resource-Policy": "cross-origin",
+                "Cache-Control": _MEDIA_CACHE_CONTROL,
+            },
         )
 
     logger.info(

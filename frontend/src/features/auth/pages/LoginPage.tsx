@@ -8,7 +8,7 @@ import { loginSchema, type LoginFormValues } from '../schemas/authSchemas';
 import { authService } from '../services/authService';
 import { authService as backendAuth } from '@services/authService';
 import { useAuthStore, getRoleLandingPath } from '@store/authStore';
-import { clearClientSessionState, seedSettingsFromUser } from '@store/sessionIsolation';
+import { previewLoginTransition, seedSettingsFromUser, startClientSession } from '@store/sessionIsolation';
 import { normaliseError } from '@services/apiClient';
 import { resolveTenantKey, loginTenantState, type ServerTenantState } from '@/config/tenant';
 import { fetchServerTenant } from '@/services/tenantService';
@@ -163,7 +163,27 @@ export default function LoginPage() {
         return;
       }
 
-      clearClientSessionState();
+      // Photos waiting on this phone are NEVER deleted by a login. If they belong to someone else they stay locked to
+      // that person and come back when they sign in; say so before going on.
+      const preview = await previewLoginTransition(data.user.id);
+      if (preview.differentPerson && preview.lockedPhotos > 0) {
+        const NL = '\n\n';
+        const goOn = window.confirm(
+          `${preview.lockedPhotos} photo(s) taken by another account are still waiting on this phone.${NL}`
+          + `They will NOT be deleted. They stay saved on this phone, locked to that account, and upload when that person signs in again.${NL}`
+          + 'Continue signing in?',
+        );
+        if (!goOn) {
+          try { await authService.logout(); } catch { /* ignore */ }
+          return;
+        }
+      }
+      const started = await startClientSession(data.user.id);
+      if (!started) {
+        setServerError('Could not safely set aside the photos waiting on this phone, so sign-in was stopped to protect them. Free some storage space and try again.');
+        try { await authService.logout(); } catch { /* ignore */ }
+        return;
+      }
       seedSettingsFromUser({
         name: data.user.name,
         email: data.user.email,
@@ -219,7 +239,12 @@ export default function LoginPage() {
       } else if (e.status === 429) {
         setServerError('Too many login attempts. Wait a few minutes and try again.');
       } else if (e.status === 0) {
-        setServerError('Cannot reach the server. Make sure the backend is running on port 8002.');
+        // Never reached the server. Say what the person can actually do about it (this used to mention a dev port).
+        setServerError(
+          typeof navigator !== 'undefined' && navigator.onLine === false
+            ? 'No internet connection. Connect to Wi-Fi or mobile data, then try again. Your saved photos are safe on this device.'
+            : 'Could not reach the server right now. Check your connection and try again in a moment.',
+        );
       } else {
         setServerError(e.message);
       }

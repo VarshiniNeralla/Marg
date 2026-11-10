@@ -1,5 +1,5 @@
 import BrandLogo from '@/shared/components/BrandLogo';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import {
   Box, IconButton, Avatar, Menu, MenuItem, Divider, Typography, Drawer, useMediaQuery, Tooltip,
@@ -16,7 +16,11 @@ import { useTheme } from '@mui/material/styles';
 import { colors, motion, zIndex } from '@theme/tokens';
 import { useAuthStore, isAdmin, isManager, isFieldEngineer, getRoleLabel } from '@store/authStore';
 import { authService } from '@features/auth/services/authService';
-import { clearClientSessionState } from '@store/sessionIsolation';
+import { endClientSession } from '@store/sessionIsolation';
+import { initUploadNow } from '@store/uploadNow';
+// Registers the "use the floor plan saved on this phone first" lookup before any page shows a plan.
+import '@store/offlinePlanStore';
+import UploadNowPanel from '@shared/components/UploadNow/UploadNowPanel';
 import { pendingFileUploadCount } from '@store/fileUploadQueue';
 import { pendingWriteCount, failedWriteCount } from '@store/writeQueue';
 import NotificationCenter from '@/shared/components/NotificationCenter/NotificationCenter';
@@ -142,6 +146,36 @@ export default function DashboardLayout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [avatarAnchor, setAvatarAnchor] = useState<null | HTMLElement>(null);
 
+  // If an Upload now was running when the app was closed or killed, carry on where it stopped.
+  useEffect(() => { initUploadNow(); }, []);
+
+  // Every page is a separate lazily-loaded chunk, so each first visit paid a download before anything could
+  // render. Once the app is idle after sign-in, fetch the busiest pages' code in the background so opening them is
+  // instant. These are small, content-hashed files cached for a year, so this is a one-time cost. Skipped when the
+  // device asks to save data. A failed prefetch is harmless: the router just loads the page normally later.
+  useEffect(() => {
+    const conn = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+    if (conn?.saveData) return;
+    const warm = () => {
+      void import('@/pages/FloorPlans/FloorPlansPage').catch(() => undefined);
+      void import('@/pages/Captures/CapturesPage').catch(() => undefined);
+      void import('@/pages/Tours/ToursPage').catch(() => undefined);
+      void import('@/pages/Tours/TourViewerPage').catch(() => undefined);
+      void import('@/pages/FloorPlans/FloorPlanViewerPage').catch(() => undefined);
+      void import('@/pages/CaptureWorkflow/CaptureWorkflowPage').catch(() => undefined);
+    };
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (w.requestIdleCallback) {
+      const id = w.requestIdleCallback(warm, { timeout: 4000 });
+      return () => w.cancelIdleCallback?.(id);
+    }
+    const t = window.setTimeout(warm, 2000);
+    return () => window.clearTimeout(t);
+  }, []);
+
   const sidebarW = sidebarCollapsed ? SIDEBAR_W_COLLAPSED : SIDEBAR_W;
 
   // Pick nav sections based on role
@@ -158,17 +192,24 @@ export default function DashboardLayout() {
     const pendingWrites = pendingWriteCount();
     const failedWrites = failedWriteCount();
     if (pendingUploads > 0 || pendingWrites > 0 || failedWrites > 0) {
+      // Nothing is discarded any more: waiting photos and changes stay saved on this phone for your next sign-in.
       const ok = window.confirm(
         pendingUploads > 0
-          ? `${pendingUploads} photo(s) are still waiting to upload. Log out anyway? They will be discarded.`
-          : failedWrites > 0
-            ? `${failedWrites} change(s) failed to sync and are saved for retry. Log out anyway?`
-            : `${pendingWrites} change(s) have not synced yet. Log out anyway?`,
+          ? `${pendingUploads} photo(s) have not been uploaded yet.
+
+They will stay safely saved on this phone and upload after you sign in again. Do not clear the app data or uninstall the app until then.
+
+Log out?`
+          : `${pendingWrites + failedWrites} change(s) have not synced yet.
+
+They stay saved on this phone and sync after you sign in again.
+
+Log out?`,
       );
       if (!ok) return;
     }
     try { await authService.logout(); } catch { /* ignore */ }
-    clearClientSessionState();
+    await endClientSession('logout');
     clearAuth();
     navigate('/login');
   }
@@ -459,6 +500,8 @@ export default function DashboardLayout() {
           <Outlet />
         </Box>
       </Box>
+
+      <UploadNowPanel />
 
       {/* Account menu */}
       <Menu

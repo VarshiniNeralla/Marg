@@ -89,17 +89,28 @@ export const authService = {
       }
 
       // Dev-only: if backend is unreachable, allow mock login for local UI work.
+      // apiClient already normalises Axios failures to `{ status, message }` —
+      // a real 401 from /auth/login has status 401 and MUST NOT be treated as
+      // offline (that previously showed "Cannot reach the server on port 8002"
+      // for a wrong/unknown email like vipinademo@… while the backend was up).
+      const status =
+        typeof err === 'object' && err !== null && 'status' in err
+          ? Number((err as { status?: unknown }).status)
+          : undefined;
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code?: unknown }).code || '')
+          : '';
       const isNetworkError =
-        typeof err === 'object' && err !== null &&
-        ('code' in err
-          ? (err as { code?: string }).code === 'ERR_NETWORK' ||
-            (err as { code?: string }).code === 'ECONNREFUSED'
-          : !('response' in err && (err as { response?: unknown }).response));
+        status === 0
+        || code === 'ERR_NETWORK'
+        || code === 'ECONNREFUSED'
+        || code === 'ECONNABORTED';
 
       if (isNetworkError) {
         const mock = mockLogin(payload.email, payload.password);
         if (mock) return mock;
-        throw new Error('Invalid email or password.');
+        throw err;
       }
       throw err;
     }

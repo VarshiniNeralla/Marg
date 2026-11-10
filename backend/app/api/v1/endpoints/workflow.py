@@ -28,10 +28,12 @@ from app.services.cloudinary_service import (
     upload_media,
     delete_media_assets,
 )
-from app.services.room_map_service import RoomMapService
+from app.services.room_map_service import RoomMapService, schedule_room_map_extraction
 from app.services.ai_progress_service import AIProgressService
 from app.services.construction_progress_service import ConstructionProgressService
 from app.services.predefined_pins_service import PredefinedPinsService
+from app.services.pin_integrity import merge_pin_on_create
+from app.services.upload_reconcile import MAX_FINGERPRINTS, dedup_key as _reconcile_dedup_key, hash_of_key, normalise_fingerprints, reconcile as _reconcile_fingerprints
 from app.utils.pagination import success_response
 
 router = APIRouter(tags=["Workflow"])
@@ -992,7 +994,7 @@ async def _upload_files(
                     f"key={dedup_key[-12:]} storage={cached.get('storage')} "
                     f"— skipping stitch + re-upload"
                 )
-                uploaded.append(_asset_payload(cached, kind=kind, entity_id=entity_id, ext=ext))
+                uploaded.append({**_asset_payload(cached, kind=kind, entity_id=entity_id, ext=ext), "sha256": hash_of_key(dedup_key)})
                 continue
 
         # Raw 360 files are the only ones that pay the ~23s stitch, so they are
@@ -1015,7 +1017,7 @@ async def _upload_files(
                 entity_id=entity_id,
             )
             if job.get("status") == "completed" and job.get("asset"):
-                uploaded.append(_asset_payload(job["asset"], kind=kind, entity_id=entity_id, ext=ext))
+                uploaded.append({**_asset_payload(job["asset"], kind=kind, entity_id=entity_id, ext=ext), "sha256": hash_of_key(dedup_key)})
             else:
                 pending.append(
                     _pending_asset_payload(
@@ -1025,7 +1027,7 @@ async def _upload_files(
                         ext=ext,
                         filename=file.filename or f"upload{ext}",
                         size=len(raw_bytes),
-                    )
+                    ) | {"sha256": hash_of_key(dedup_key)}
                 )
             continue
 
@@ -1044,6 +1046,10 @@ async def _upload_files(
         if dedup_key is not None:
             await _dedup_store(db, dedup_key, asset)
         payload = _asset_payload(asset, kind=kind, entity_id=entity_id, ext=ext)
+        if dedup_key is not None:
+            # The server's own fingerprint of the bytes it received. The phone compares it with the one it computed
+            # before sending and only deletes its copy when they match.
+            payload["sha256"] = hash_of_key(dedup_key)
         logger.info(
             f"[capture-upload] completed file={file.filename} "
             f"processing_status={payload.get('processing_status')} "
@@ -1632,6 +1638,32 @@ async def upload_capture_files(response: Response, ctx: CallerContext, db: DB, f
     )
 
 
+@router.post("/uploads/captures/reconcile", summary="Which of these photo fingerprints does the server hold?")
+async def reconcile_capture_fingerprints(payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "upload"))):
+    """Final check of an upload session. The phone sends the SHA-256 of every photo it believes it uploaded and gets
+    back which ones the server really holds; anything in `missing` must be sent again before the phone may delete it.
+    Read-only: it changes nothing on the server."""
+    fingerprints = normalise_fingerprints(payload.get("sha256") or [])
+    if len(fingerprints) > MAX_FINGERPRINTS:
+        raise ValidationException(f"Send at most {MAX_FINGERPRINTS} fingerprints per request")
+    if not fingerprints:
+        return success_response(data={"present": [], "missing": [], "checked": 0})
+
+    keys = [_reconcile_dedup_key(ctx.org_id, h) for h in fingerprints]
+    dedup_present: set[str] = set()
+    async for doc in db[_UPLOAD_DEDUP_COLLECTION].find({"_id": {"$in": keys}}, {"_id": 1}):
+        dedup_present.add(hash_of_key(str(doc["_id"])))
+    jobs_by_hash: dict[str, list[dict[str, Any]]] = {}
+    async for job in db["capture_stitch_jobs"].find(
+        {"orgId": ctx.org_id, "dedupKey": {"$in": keys}},
+        {"dedupKey": 1, "status": 1, "rawRetained": 1},
+    ):
+        jobs_by_hash.setdefault(hash_of_key(job.get("dedupKey")), []).append(job)
+
+    result = _reconcile_fingerprints(fingerprints, dedup_present, jobs_by_hash)
+    return success_response(data={**result, "checked": len(fingerprints)})
+
+
 @router.get("/uploads/captures/jobs/{job_id}", summary="Poll a background stitch job")
 async def get_capture_stitch_job(job_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("captures", "upload"))):
     job = await CaptureStitchService(db).get_job(org_id=ctx.org_id, job_id=job_id)
@@ -1827,15 +1859,14 @@ async def create_floor_plan(payload: dict[str, Any], ctx: CallerContext, db: DB,
 
     result = await _upsert(db, "floor_plans", payload, ctx)
 
-    # Room map extraction runs once per upload/replace, synchronously, so the
-    # floor plan is guaranteed to have a room map by the time any report is
-    # requested — never re-run during report generation (see RoomMapService).
+    # Room map extraction runs once per upload/replace, but in the BACKGROUND: it takes minutes, and keeping
+    # this request open that long blocked the app's one-at-a-time save queue (later floors' plans, pins and
+    # annotation imports waited behind it). A floor analysis or report calls ensure_room_map, which joins the
+    # running scan or reads its cached result, so nothing that needs the rooms goes without them.
     image_url = result.get("file_url") or result.get("fileUrl")
     if image_url:
-        await RoomMapService(db).ensure_room_map(
-            floor_plan_id=result["id"],
-            org_id=ctx.org_id,
-            image_url=image_url,
+        schedule_room_map_extraction(
+            db, floor_plan_id=result["id"], org_id=ctx.org_id, image_url=image_url,
         )
 
     # If this floor already had pins (client will re-point them), strip labels
@@ -2131,6 +2162,14 @@ async def create_capture_pin(floor_plan_id: str, payload: dict[str, Any], ctx: C
     elif is_predefined and has_labels:
         payload["source"] = payload.get("source") or "predefined"
         payload["isPredefined"] = True
+    # Create is replayed by the client's offline queue and its snapshot back-fill, so the id may already exist. A
+    # full replace here used to wipe the photo links of a point that had gained captures since the create was first
+    # built, and revert later edits. Merge instead: the stored point wins, its capture list can only grow.
+    pin_id = payload.get("id")
+    if isinstance(pin_id, (str, int)) and str(pin_id):
+        existing_pin = await db["capture_pins"].find_one({"_id": _id_filter(str(pin_id)), "orgId": ctx.org_id})
+        if existing_pin:
+            payload = merge_pin_on_create(existing_pin, payload)
     stored = await _upsert(db, "capture_pins", payload, ctx)
     return success_response(data=stored, message="Capture pin created")
 

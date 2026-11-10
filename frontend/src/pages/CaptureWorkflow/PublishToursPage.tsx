@@ -132,6 +132,13 @@ export default function PublishToursPage() {
       return !captureAwaitingPanorama(cap);
     }),
   );
+  // Uploaded but not yet viewable: the capture exists, its 360° panorama is still being stitched (or failed).
+  const stitchingCount = pins.filter(p => {
+    const caps = p.captureIds
+      .map(id => captures.find(c => c.id === id) as (MockCapture & Record<string, unknown>) | undefined)
+      .filter((c): c is MockCapture & Record<string, unknown> => !!c);
+    return caps.length > 0 && caps.every(c => captureAwaitingPanorama(c));
+  }).length;
   const readyIds = useMemo(() => pinsWithCapture.map(p => p.id), [pinsWithCapture]);
   const readyKey = readyIds.join('|');
   const floorPlanId = floorPlan?.id ?? '';
@@ -299,13 +306,36 @@ export default function PublishToursPage() {
       ) : pinsWithCapture.length === 0 ? (
         <Box sx={{ py: { xs: 5, sm: 8 }, textAlign: 'center', border: `1.5px dashed ${P.border}`, borderRadius: '18px', backgroundColor: P.white }}>
           <ViewInArRounded sx={{ fontSize: { xs: 34, sm: 44 }, color: P.subtle, mb: 1 }} />
-          <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong }}>No uploaded captures on this floor yet</Typography>
-          <Typography sx={{ fontSize: '0.875rem', color: P.muted, mt: 0.5 }}>
-            {pins.length} annotated pin{pins.length !== 1 ? 's' : ''} found — upload photos from Capture Workflow to publish a tour.
-          </Typography>
+          {stitchingCount > 0 ? (
+            <>
+              <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong }}>
+                {stitchingCount} capture{stitchingCount !== 1 ? 's' : ''} uploaded - still being stitched
+              </Typography>
+              <Typography sx={{ fontSize: '0.875rem', color: P.muted, mt: 0.5, px: 2 }}>
+                Each photo becomes a 360° panorama on the server, a little over a minute per photo. They appear here as they finish; refresh the page to see the latest.
+              </Typography>
+            </>
+          ) : (
+            <>
+              <Typography sx={{ fontSize: '0.9375rem', fontWeight: 700, color: P.strong }}>No uploaded captures on this floor yet</Typography>
+              <Typography sx={{ fontSize: '0.875rem', color: P.muted, mt: 0.5 }}>
+                {pins.length} annotated pin{pins.length !== 1 ? 's' : ''} found — upload photos from Capture Workflow to publish a tour.
+              </Typography>
+            </>
+          )}
         </Box>
       ) : (
         <Box>
+          {stitchingCount > 0 && (
+            <Box sx={{ mb: 1.5, px: 2, py: 1.25, borderRadius: '12px', border: `1px solid ${P.border}`, backgroundColor: P.white }}>
+              <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, color: P.strong }}>
+                {readyIds.length} ready · {stitchingCount} still being stitched
+              </Typography>
+              <Typography sx={{ fontSize: '0.75rem', color: P.muted, mt: 0.25 }}>
+                Photos that are uploaded but not yet stitched into a 360° panorama can't be in the tour yet. Refresh later to include them.
+              </Typography>
+            </Box>
+          )}
           {/* Walkthrough order */}
           <Box sx={{ borderRadius: '14px', border: `1.5px solid ${P.border}`, backgroundColor: P.white, overflow: 'hidden', mb: 2 }}>
             {/* Header row with Select all */}

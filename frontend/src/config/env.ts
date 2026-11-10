@@ -118,10 +118,37 @@ function toBrowserMediaUrl(absolute: string): string {
   }
 }
 
+/**
+ * Optional "use the copy saved on this phone" lookup (offline site pack). Returns a local URL, or null when there is
+ * no saved copy. Registered once at startup by offlinePlanStore; nothing here depends on it.
+ */
+let offlineMediaResolver: ((url: string) => string | null) | null = null;
+
+export function setOfflineMediaResolver(fn: ((url: string) => string | null) | null): void {
+  offlineMediaResolver = fn;
+}
+
+/** The network address of a media file (with access token), ignoring any copy saved on the phone. */
+export function resolveMediaUrlRemote(url: string | null | undefined): string | null {
+  return resolveMediaUrlInner(url, false);
+}
+
 export function resolveMediaUrl(url: string | null | undefined): string | null {
+  return resolveMediaUrlInner(url, true);
+}
+
+function resolveMediaUrlInner(url: string | null | undefined, preferLocal: boolean): string | null {
   if (!url) return null;
   const trimmed = url.trim();
   if (!trimmed) return null;
+  if (preferLocal && offlineMediaResolver) {
+    try {
+      const local = offlineMediaResolver(trimmed);
+      if (local) return local;
+    } catch {
+      /* fall back to the network address */
+    }
+  }
   let absolute = trimmed.startsWith('/media/')
     ? `${API_BASE_URL}${trimmed}`
     : trimmed;

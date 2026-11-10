@@ -1,3 +1,4 @@
+import { computeProjectCoverage } from '@/utils/projectCoverage';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Box, Typography, Grid, MenuItem, Select, type SelectChangeEvent } from '@mui/material';
@@ -431,30 +432,30 @@ export default function AnalyticsPage() {
     }));
   }, [scoped.tours, scoped.captures]);
 
+  // Project coverage = the average of the coverage of EVERY floor in the project.
+  // A floor's coverage is the share of its capture points that have at least one capture; a floor with no floor
+  // plan or no capture points yet counts as 0%, so un-mapped floors pull the project figure down instead of being
+  // ignored. (Pooling all pins together let floors with many points outweigh the rest.)
   const projectCoverage = useMemo(() => {
     const rows = scoped.projects.map(p => {
       const pCaptures = scoped.captures.filter(c => c.projectId === p.id).length;
       const pTours = scoped.tours.filter(t => t.projectId === p.id && t.status === 'published').length;
+      const towerIds = new Set(towers.filter(t => t.projectId === p.id).map(t => t.id));
+      const pFloors = floors.filter(f => towerIds.has(f.towerId));
       const pPins = scoped.pins.filter(pin => pin.projectId === p.id);
-      const capturedPins = pPins.filter(pin => (pin.captureIds?.length ?? 0) > 0).length;
-      const pFloors = floors.filter(f => towers.some(t => t.id === f.towerId && t.projectId === p.id));
-      const mapped = new Set(
-        floorPlans.filter(fp => fp.projectId === p.id).map(fp => fp.floorId),
-      ).size;
-      const pinPct = pPins.length ? Math.round((capturedPins / pPins.length) * 100) : 0;
-      const mapPct = pFloors.length ? Math.round((mapped / pFloors.length) * 100) : 0;
-      const score = Math.round((pinPct * 0.55) + (mapPct * 0.45));
+      const mapped = new Set(floorPlans.filter(fp => fp.projectId === p.id).map(fp => fp.floorId)).size;
+
+      const { score, startedFloors } = computeProjectCoverage(pFloors.map(f => f.id), pPins);
       return {
         id: p.id,
         name: p.name,
         captures: pCaptures,
         tours: pTours,
         pins: pPins.length,
-        capturedPins,
-        pinPct,
+        capturedPins: pPins.filter(pin => (pin.captureIds?.length ?? 0) > 0).length,
         mapped,
         floors: pFloors.length,
-        mapPct,
+        startedFloors,
         score,
       };
     }).sort((a, b) => b.score - a.score || b.captures - a.captures);
@@ -650,7 +651,7 @@ export default function AnalyticsPage() {
       <Box sx={{ mb: 2.5 }}>
         <Card
           title="Project Coverage"
-          subtitle="How thoroughly each project is mapped and captured"
+          subtitle="Average coverage across every floor of the project — a floor counts as the share of its capture points that have a capture (0% if not mapped yet)"
           right={
             <Box component={Link} to="/projects" sx={{
               fontSize: '0.75rem', fontWeight: 700, color: colors.primary, textDecoration: 'none',
@@ -670,7 +671,7 @@ export default function AnalyticsPage() {
                 <HorizontalBar
                   key={row.id}
                   label={row.name}
-                  valueLabel={`${row.score}% · ${row.captures} captures · ${row.tours} tours`}
+                  valueLabel={`${row.score}% · ${row.startedFloors}/${row.floors} floors started · ${row.captures} captures · ${row.tours} tours`}
                   pct={row.score}
                   color="#2563eb"
                   to={`/projects/${row.id}`}

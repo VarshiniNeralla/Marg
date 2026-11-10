@@ -15,6 +15,36 @@ export function formatPinLocationLabel(
   return fallback;
 }
 
+/** "Pin 3", "Stop 1", "Point 7", "Capture" ... are placeholders, not real room names. */
+const GENERIC_STOP_LABEL = /^(pin|stop|point|capture point|capture)(\s*#?\s*\d+)?$/i;
+
+export function isGenericStopLabel(raw?: string | null): boolean {
+  const t = (raw || '').trim();
+  return !t || GENERIC_STOP_LABEL.test(t);
+}
+
+/**
+ * Label for one walkthrough stop, best source first:
+ *  1. the live pin's Flat · Room
+ *  2. a real (non-placeholder) room name stored on the capture
+ *  3. the label stored on the published tour step
+ * "Stop N" is only the last resort, when nothing real is known about the point.
+ */
+export function resolveStopLabel(args: {
+  pin?: Pick<WfCapturePin, 'flatName' | 'roomName' | 'label'> | null;
+  captureRoomName?: string | null;
+  storedLabel?: string | null;
+  sequenceNumber: number;
+}): string {
+  const fromPin = formatPinLocationLabel(args.pin, '');
+  if (fromPin && !isGenericStopLabel(fromPin)) return fromPin;
+  const fromCapture = (args.captureRoomName || '').trim();
+  if (fromCapture && !isGenericStopLabel(fromCapture)) return fromCapture;
+  const stored = (args.storedLabel || '').trim();
+  if (stored && !isGenericStopLabel(stored)) return stored;
+  return fromPin || stored || `Stop ${args.sequenceNumber}`;
+}
+
 /**
  * Display tower names as "Tower 1" when stored as bare "1".
  * Leaves names that already include "Tower" (or other words) unchanged.

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useParams, Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { Box, Typography, Chip, IconButton, Tooltip, useMediaQuery, useTheme, Drawer, Snackbar, Alert, Dialog, DialogTitle, DialogContent, DialogActions, Button, MenuItem, Select, FormControl, InputLabel, TextField } from '@mui/material';
 import {
@@ -7,7 +7,7 @@ import {
   LayersRounded, RoomRounded, CameraAltRounded, ViewInArRounded, ArrowForwardRounded,
   CloudOffRounded, KeyboardArrowDownRounded, AddLocationAltRounded, CheckRounded,
   PublishRounded, VisibilityRounded, VisibilityOffRounded, ContentCopyRounded, EditLocationAltRounded,
-  DeleteOutlineRounded, MapRounded,
+  DeleteOutlineRounded, MapRounded, CheckCircleRounded, RadioButtonUncheckedRounded,
 } from '@mui/icons-material';
 import { useWorkflowStore, formatPublishFloorPlanTourMessage } from '@store/workflowStore';
 import { useAuthStore, isFieldEngineer, isManagerOrAdmin } from '@store/authStore';
@@ -21,7 +21,7 @@ import CapturePinMarker from '@features/capturePins/CapturePinMarker';
 import PinActionPanel from '@features/capturePins/PinActionPanel';
 import CameraCaptureDialog from '@features/capturePins/CameraCaptureDialog';
 import PinUploadDialog from '@features/capturePins/PinUploadDialog';
-import { PREDEF_FLAT_OPTIONS, PREDEF_ROOM_OTHER, roomOptionsForFlat, isCustomRoomName } from '@features/capturePins/predefRoomOptions';
+import { PREDEF_FLAT_OPTIONS, flatOptionsForProject, PREDEF_ROOM_OTHER, roomOptionsForFlat, isCustomRoomName } from '@features/capturePins/predefRoomOptions';
 import CaptureTimeline from '@shared/components/CaptureTimeline/CaptureTimeline';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import type { CaptureSnapshot } from '@/data/mockData';
@@ -51,8 +51,10 @@ async function getPdfJs(): Promise<PdfJsLib> {
   if (!_pdfjs) {
     const mod = await import('pdfjs-dist');
     _pdfjs = mod as unknown as PdfJsLib;
+    // Bundled with the app (same origin, cached for a year, works offline in the Android app) instead of being
+    // downloaded from a public CDN every time a PDF plan is opened.
     _pdfjs.GlobalWorkerOptions.workerSrc =
-      `https://cdn.jsdelivr.net/npm/pdfjs-dist@${_pdfjs.version}/build/pdf.worker.min.mjs`;
+      new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href;
   }
   return _pdfjs;
 }
@@ -79,7 +81,7 @@ const STATUS_COLOR: Record<string, { fill: string; stroke: string; label: string
 };
 
 /* ── CtrlBtn ─────────────────────────────────────────────────────────────── */
-function CtrlBtn({ title, onClick, children, small }: { title: string; onClick: () => void; children: React.ReactNode; small?: boolean }) {
+function CtrlBtn({ title, onClick, children, small, active }: { title: string; onClick: () => void; children: React.ReactNode; small?: boolean; active?: boolean }) {
   const size = small ? 28 : 34;
   return (
     <Tooltip title={title} placement="right" disableTouchListener>
@@ -92,10 +94,10 @@ function CtrlBtn({ title, onClick, children, small }: { title: string; onClick: 
         size="small"
         sx={{
           width: size, height: size, borderRadius: '9px',
-          backgroundColor: 'rgba(255,255,255,0.92)',
+          backgroundColor: active ? P.blueSoft : 'rgba(255,255,255,0.92)',
           backdropFilter: 'blur(8px)',
-          boxShadow: '0 1px 6px rgba(15,23,42,0.12)',
-          color: P.strong,
+          boxShadow: active ? `0 0 0 1.5px ${P.blue}, 0 1px 6px rgba(15,23,42,0.12)` : '0 1px 6px rgba(15,23,42,0.12)',
+          color: active ? P.blue : P.strong,
           touchAction: 'manipulation',
           transition: T,
           '&:hover': { backgroundColor: P.white, boxShadow: '0 3px 12px rgba(15,23,42,0.16)', color: P.blue },
@@ -188,6 +190,8 @@ export default function FloorPlanViewerPage() {
   const backDest   = returnTo ?? (pinsOnly ? (isEngineer ? '/my-captures' : '/captures') : `/floor-plans?project=${projectId}&tower=${towerId}`);
 
   const project    = useWorkflowStore(s => s.projects.find(p => p.id === projectId));
+  // Flat choices for the Label dialog: 4 flats for most projects, 10 for My Home Vipina.
+  const flatOptions = useMemo(() => flatOptionsForProject(project?.name), [project?.name]);
   const tower      = useWorkflowStore(s => s.towers.find(t => t.id === towerId));
   const towers     = useWorkflowStore(s => s.towers);
   const floors     = useWorkflowStore(s => s.floors);
@@ -294,17 +298,28 @@ export default function FloorPlanViewerPage() {
   const [publishToast, setPublishToast]   = useState('');
   const [errorToast, setErrorToast]       = useState('');
   const [deletePlanOpen, setDeletePlanOpen] = useState(false);
+  // Review filter: highlight the points that have a capture, or the ones that do not. 'all' = the normal view.
+  const [pinFocus, setPinFocus] = useState<'all' | 'captured' | 'uncaptured'>('all');
+  // A point waiting for the user to confirm its deletion (deleting a point also deletes its photos).
+  const [pinToDelete, setPinToDelete] = useState<WfCapturePin | null>(null);
+  // The filter belongs to one floor plan: switching floors starts from the normal view again.
+  useEffect(() => { setPinFocus('all'); }, [floorPlan?.id]);
 
   // pinsOnly (gallery): only uploaded green pins.
   // Hide: annotation mode hides every point (they have no captures yet);
   // review mode hides empty points and keeps captured ones.
+  // While a captured / not-captured filter is on, every point is shown (the filter itself dims the others), so
+  // "not captured" still works when empty points are hidden.
+  const focusActive = pinFocus !== 'all' && !pinsOnly && !annotateMode;
   const pins = pinsOnly
     ? (isEngineer ? pinsAll : pinsAll.filter(p => (p.captureIds?.length ?? 0) > 0))
-    : pinsVisible
+    : (pinsVisible || focusActive)
       ? pinsAll
       : annotateMode
         ? []
         : pinsAll.filter(p => (p.captureIds?.length ?? 0) > 0);
+  const capturedPinCount = pinsAll.filter(p => (p.captureIds?.length ?? 0) > 0).length;
+  const uncapturedPinCount = pinsAll.length - capturedPinCount;
 
   // Engineer capture order 1..N (by capture time) — never admin annotation stop #.
   const uploadSeqById = pinsOnly
@@ -434,6 +449,13 @@ export default function FloorPlanViewerPage() {
   const pdfDocRef       = useRef<PdfDoc | null>(null);
   const renderingRef    = useRef(false);
   const lastRenderScale = useRef(0);
+  // PDF plans are shown from their raster preview straight away; the PDF itself is only fetched and rendered later,
+  // when the user zooms in past what the preview can show sharply.
+  const previewModeRef     = useRef(false);   // true while the raster preview is the base image
+  const sharpScaleRef      = useRef(1);       // viewer zoom the current bitmap is sharp enough for
+  const pdfSrcRef          = useRef<string | null>(null);
+  const pdfDocPromiseRef   = useRef<Promise<PdfDoc | null> | null>(null);
+  const blobUrlRef         = useRef<string | null>(null);
   const attachingRef    = useRef(false);
   const pageSizeRef     = useRef(pageSize);
   const pinsHitRef      = useRef(pins);
@@ -523,13 +545,26 @@ export default function FloorPlanViewerPage() {
   }, [containerSize, pageSize.w, centerImage]);
 
   /* ── PDF.js rendering ───────────────────────────────────────────────── */
-  const renderPdf = useCallback(async (renderScale: number) => {
-    if (!pdfDocRef.current || renderingRef.current) return;
+  // Largest bitmap we will ever build for a plan. A big drawing zoomed in used to ask for a 70+ megapixel canvas,
+  // which takes seconds to draw and encode and can exhaust memory on a tablet.
+  const MAX_RENDER_PIXELS = 30_000_000;
+  const MAX_RENDER_EDGE   = 8192;
+
+  /** Draw the PDF at `renderScale` (PDF points to CSS px, before devicePixelRatio). Returns true when the new image
+   *  is on screen. */
+  const renderPdf = useCallback(async (renderScale: number): Promise<boolean> => {
+    if (!pdfDocRef.current || renderingRef.current) return false;
     renderingRef.current = true;
     try {
       const page = await pdfDocRef.current.getPage(1);
       const dpr  = window.devicePixelRatio || 1;
-      const vp   = page.getViewport({ scale: renderScale * dpr });
+      let vp = page.getViewport({ scale: renderScale * dpr });
+      const shrink = Math.min(
+        1,
+        Math.sqrt(MAX_RENDER_PIXELS / Math.max(1, vp.width * vp.height)),
+        MAX_RENDER_EDGE / Math.max(1, vp.width, vp.height),
+      );
+      if (shrink < 1) vp = page.getViewport({ scale: renderScale * dpr * shrink });
       const canvas = document.createElement('canvas');
       canvas.width  = Math.round(vp.width);
       canvas.height = Math.round(vp.height);
@@ -537,11 +572,46 @@ export default function FloorPlanViewerPage() {
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       await page.render({ canvasContext: ctx, viewport: vp }).promise;
-      setRenderedImageUrl(canvas.toDataURL('image/png', 1.0));
+      // toBlob encodes without building a giant base64 string on the main thread (toDataURL froze the page for
+      // seconds on large plans).
+      const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+      if (!blob) return false;
+      const url = URL.createObjectURL(blob);
+      // Decode before swapping so the plan does not blink blank between the old and new image.
+      try {
+        const probe = new Image();
+        probe.src = url;
+        await probe.decode();
+      } catch { /* swap anyway */ }
+      const previous = blobUrlRef.current;
+      blobUrlRef.current = url;
+      setRenderedImageUrl(url);
+      if (previous) setTimeout(() => URL.revokeObjectURL(previous), 3000);
       lastRenderScale.current = renderScale;
+      return true;
     } finally {
       renderingRef.current = false;
     }
+  }, []);
+
+  /** Load pdf.js and open this plan's PDF once, on demand. null when it cannot be opened (the preview stays). */
+  const ensurePdfDoc = useCallback((): Promise<PdfDoc | null> => {
+    if (pdfDocRef.current) return Promise.resolve(pdfDocRef.current);
+    if (!pdfDocPromiseRef.current) {
+      const src = pdfSrcRef.current;
+      if (!src) return Promise.resolve(null);
+      pdfDocPromiseRef.current = getPdfJs()
+        .then(lib => lib.getDocument({ url: src }).promise)
+        .then(doc => { pdfDocRef.current = doc; return doc; })
+        .catch(() => { pdfDocPromiseRef.current = null; return null; });
+    }
+    return pdfDocPromiseRef.current;
+  }, []);
+
+  // Free the last rendered bitmap when the viewer goes away.
+  useEffect(() => () => {
+    if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+    blobUrlRef.current = null;
   }, []);
 
   /* ── Load image or PDF when imageUrl / rawPdfUrl changes ───────────── */
@@ -567,28 +637,58 @@ export default function FloorPlanViewerPage() {
         return;
       }
       let cancelled = false;
-      getPdfJs().then(async lib => {
-        if (cancelled) return;
-        const doc = await lib.getDocument({ url: pdfSrc }).promise;
-        if (cancelled) return;
-        pdfDocRef.current = doc;
-        const page = await doc.getPage(1);
-        if (cancelled) return;
-        const vp = page.getViewport({ scale: 1 });
-        setPageSize({ w: vp.width, h: vp.height });
-        // Initial render at a reasonable resolution; will re-render after centerImage
-        await renderPdf(1.5);
-      }).catch(() => {
-        // PDF.js failed — fall back to the PNG preview
-        if (cancelled) return;
-        const img = new Image();
-        img.onload = () => {
+      // New plan: forget the previous plan's PDF and bitmap.
+      pdfDocRef.current = null;
+      pdfDocPromiseRef.current = null;
+      pdfSrcRef.current = pdfSrc;
+      previewModeRef.current = false;
+      sharpScaleRef.current = 1 / (window.devicePixelRatio || 1);
+      lastRenderScale.current = 0;
+      if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
+
+      // The original way: open the PDF first and draw it. Slow on big drawings (library + PDF download + parse +
+      // render), so it is now only the fallback for plans that have no raster preview.
+      const loadPdfFirst = () => {
+        getPdfJs().then(async lib => {
           if (cancelled) return;
-          setPageSize({ w: img.naturalWidth, h: img.naturalHeight });
+          const doc = await lib.getDocument({ url: pdfSrc }).promise;
+          if (cancelled) return;
+          pdfDocRef.current = doc;
+          const page = await doc.getPage(1);
+          if (cancelled) return;
+          const vp = page.getViewport({ scale: 1 });
+          setPageSize({ w: vp.width, h: vp.height });
+          // Initial render at a reasonable resolution; will re-render after centerImage
+          await renderPdf(1.5);
+        }).catch(() => {
+          // PDF.js failed — fall back to the PNG preview
+          if (cancelled) return;
+          const img = new Image();
+          img.onload = () => {
+            if (cancelled) return;
+            setPageSize({ w: img.naturalWidth, h: img.naturalHeight });
+            setRenderedImageUrl(imageUrl);
+          };
+          img.src = imageUrl;
+        });
+      };
+
+      const hasRasterPreview = !imageUrl.toLowerCase().includes('.pdf');
+      if (hasRasterPreview) {
+        // Fast path: show the raster preview the moment it arrives. The PDF is fetched and drawn later, only if the
+        // user zooms in past what the preview can show sharply (see the zoom effect below).
+        const pre = new Image();
+        pre.onload = () => {
+          if (cancelled) return;
+          previewModeRef.current = true;
+          setPageSize({ w: pre.naturalWidth, h: pre.naturalHeight });
           setRenderedImageUrl(imageUrl);
         };
-        img.src = imageUrl;
-      });
+        pre.onerror = () => { if (!cancelled) loadPdfFirst(); };
+        pre.src = imageUrl;
+      } else {
+        loadPdfFirst();
+      }
       return () => { cancelled = true; };
     } else {
       // PNG / JPG — load normally
@@ -608,13 +708,40 @@ export default function FloorPlanViewerPage() {
 
   /* ── Re-render PDF at higher resolution when zoom changes significantly */
   useEffect(() => {
-    if (!isPdf || !pdfDocRef.current || !pageSize.w) return;
+    if (!isPdf || !pageSize.w) return;
+
+    // Preview mode: the raster preview is the base image. Fetch + draw the PDF only once the user has zoomed in
+    // past what the preview shows sharply, and only ever for zooming IN (zooming out needs no new bitmap).
+    if (previewModeRef.current) {
+      if (scale <= sharpScaleRef.current * 1.25) return;
+      const target = scale;
+      let cancelled = false;
+      let attempts = 0;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const run = async () => {
+        if (cancelled) return;
+        // A render is already running: try again shortly so the final zoom level still gets sharpened.
+        if (renderingRef.current && attempts++ < 12) { timer = setTimeout(run, 400); return; }
+        const doc = await ensurePdfDoc();
+        if (!doc || cancelled) return;
+        const page = await doc.getPage(1);
+        if (cancelled) return;
+        const unitsPerPoint = pageSizeRef.current.w / page.getViewport({ scale: 1 }).width;
+        if (!Number.isFinite(unitsPerPoint) || unitsPerPoint <= 0) return;
+        if (await renderPdf(unitsPerPoint * target)) sharpScaleRef.current = target;
+      };
+      timer = setTimeout(run, 250);
+      return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    }
+
+    // No raster preview: the PDF render is the only image, re-draw it when the zoom has changed a lot.
+    if (!pdfDocRef.current) return;
     const ratio = scale / (lastRenderScale.current || scale);
     if (ratio > 1.6 || ratio < 0.6) {
       const t = setTimeout(() => renderPdf(scale), 120);
       return () => clearTimeout(t);
     }
-  }, [scale, isPdf, pageSize.w, renderPdf]);
+  }, [scale, isPdf, pageSize.w, renderPdf, ensurePdfDoc]);
 
   /* ── pointer / pinch-zoom / inertia ────────────────────────────────── */
   useEffect(() => {
@@ -1222,6 +1349,13 @@ export default function FloorPlanViewerPage() {
                   showSequence={pinsOnly}
                   sequenceNumber={uploadSeqById?.get(pin.id) ?? pin.sequenceNumber}
                   onSelect={p => setSelectedPinId(p.id)}
+                  focus={
+                    !focusActive
+                      ? undefined
+                      : ((pin.captureIds?.length ?? 0) > 0) === (pinFocus === 'captured')
+                        ? 'highlight'
+                        : 'dim'
+                  }
                 />
               ))}
             </g>
@@ -1305,6 +1439,26 @@ export default function FloorPlanViewerPage() {
         </Box>
       )}
 
+      {/* Filter status: says what is highlighted (tooltips do not show on touch screens). */}
+      {focusActive && (
+        <Box
+          data-no-pan
+          onClick={() => setPinFocus('all')}
+          sx={{
+            position: 'absolute', top: fullscreen ? 56 : 12, left: 60, zIndex: 20, cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 1.25, py: 0.5, borderRadius: '999px',
+            backgroundColor: 'rgba(255,255,255,0.95)', boxShadow: '0 1px 6px rgba(15,23,42,0.16)',
+            fontSize: '0.75rem', fontWeight: 600, color: P.strong,
+          }}
+        >
+          <Box component="span" sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: pinFocus === 'captured' ? '#16a34a' : '#2563eb' }} />
+          {pinFocus === 'captured'
+            ? `Captured · ${capturedPinCount} of ${pinsAll.length}`
+            : `Not captured · ${uncapturedPinCount} of ${pinsAll.length}`}
+          <Box component="span" sx={{ color: P.muted, fontWeight: 500 }}>· tap to clear</Box>
+        </Box>
+      )}
+
       {/* Controls */}
       <Box data-no-pan sx={{ position: 'absolute', top: fullscreen ? 56 : 12, left: 12, display: 'flex', flexDirection: 'column', gap: 0.625, zIndex: 20, pointerEvents: 'auto' }}>
         <CtrlBtn title="Zoom in" small={isMobile} onClick={() => {
@@ -1349,6 +1503,31 @@ export default function FloorPlanViewerPage() {
               ? <VisibilityOffRounded sx={{ fontSize: isMobile ? 15 : 17 }} />
               : <VisibilityRounded sx={{ fontSize: isMobile ? 15 : 17 }} />}
           </CtrlBtn>
+        )}
+        {/* Review filters: tap to highlight the points that are captured / not captured yet; tap again to clear. */}
+        {floorPlan && !pinsOnly && !annotateMode && pinsAll.length > 0 && (
+          <>
+            <CtrlBtn
+              title={pinFocus === 'captured'
+                ? 'Showing captured points. Tap to clear'
+                : `Highlight captured points (${capturedPinCount})`}
+              small={isMobile}
+              active={pinFocus === 'captured'}
+              onClick={() => setPinFocus(f => (f === 'captured' ? 'all' : 'captured'))}
+            >
+              <CheckCircleRounded sx={{ fontSize: isMobile ? 15 : 17 }} />
+            </CtrlBtn>
+            <CtrlBtn
+              title={pinFocus === 'uncaptured'
+                ? 'Showing points not captured yet. Tap to clear'
+                : `Highlight points not captured yet (${uncapturedPinCount})`}
+              small={isMobile}
+              active={pinFocus === 'uncaptured'}
+              onClick={() => setPinFocus(f => (f === 'uncaptured' ? 'all' : 'uncaptured'))}
+            >
+              <RadioButtonUncheckedRounded sx={{ fontSize: isMobile ? 15 : 17 }} />
+            </CtrlBtn>
+          </>
         )}
         {canAnnotate && floorPlan && !pinsOnly && (
           <CtrlBtn
@@ -1460,7 +1639,7 @@ export default function FloorPlanViewerPage() {
           annotationOnly={annotateMode}
           uploadSequence={pinsOnly ? uploadSeqById?.get(selectedPin.id) : undefined}
           onEdit={(p) => {
-            const flat = p.flatName || PREDEF_FLAT_OPTIONS[0];
+            const flat = p.flatName || flatOptions[0];
             const room = p.roomName || '';
             setAnnotateFlat(flat);
             if (isCustomRoomName(flat, room)) {
@@ -1475,7 +1654,7 @@ export default function FloorPlanViewerPage() {
             setSelectedPinId(null);
             annotateDialogOpenedAtRef.current = Date.now();
           }}
-          onDelete={p => { deleteCapturePin(p.id); setSelectedPinId(null); }}
+          onDelete={p => setPinToDelete(p)}
           onClose={() => setSelectedPinId(null)}
         />
       )}
@@ -1792,9 +1971,36 @@ export default function FloorPlanViewerPage() {
       </Snackbar>
 
       <ConfirmDialog
+        open={!!pinToDelete}
+        title="Delete this capture point?"
+        description={(() => {
+          const n = pinToDelete?.captureIds?.length ?? 0;
+          return n > 0
+            ? `This point has ${n} photo capture${n === 1 ? '' : 's'}. Deleting the point also permanently deletes ${n === 1 ? 'that capture and its photo' : 'those captures and their photos'}. This cannot be undone.`
+            : 'This capture point has no photos. It will be removed from the floor plan.';
+        })()}
+        confirmLabel="Delete point"
+        destructive
+        onCancel={() => setPinToDelete(null)}
+        onConfirm={() => {
+          const p = pinToDelete;
+          setPinToDelete(null);
+          if (!p) return;
+          deleteCapturePin(p.id);
+          setSelectedPinId(null);
+        }}
+      />
+
+      <ConfirmDialog
         open={deletePlanOpen}
         title="Delete floor plan?"
-        description={`This removes the ${floor?.label ?? 'floor'} drawing and its capture points. You can upload a new plan afterward.`}
+        description={(() => {
+          const points = pinsAll.length;
+          const photos = pinsAll.reduce((sum, p) => sum + (p.captureIds?.length ?? 0), 0);
+          return `This removes the ${floor?.label ?? 'floor'} drawing and its ${points} capture point${points === 1 ? '' : 's'}`
+            + (photos > 0 ? `, and permanently deletes the ${photos} photo capture${photos === 1 ? '' : 's'} on them` : '')
+            + '. This cannot be undone.';
+        })()}
         confirmLabel="Delete Plan"
         destructive
         onCancel={() => setDeletePlanOpen(false)}
@@ -1855,7 +2061,7 @@ export default function FloorPlanViewerPage() {
               sx={{ borderRadius: '10px', fontSize: '0.9375rem', fontWeight: 500 }}
               MenuProps={{ slotProps: { paper: { sx: { maxHeight: 320 } } } }}
             >
-              {PREDEF_FLAT_OPTIONS.map(f => (
+              {flatOptions.map(f => (
                 <MenuItem key={f} value={f} sx={{ fontSize: '0.9375rem' }}>{f}</MenuItem>
               ))}
             </Select>

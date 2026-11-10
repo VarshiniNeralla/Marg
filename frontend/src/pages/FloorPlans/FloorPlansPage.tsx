@@ -13,6 +13,7 @@ import EmptyState from '@shared/components/EmptyState/EmptyState';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { locationFilterToolbarSx } from '@/utils/locationFilters';
 import { resolveMediaUrl } from '@/config/env';
+import OfflinePackCard from '@shared/components/OfflinePack/OfflinePackCard';
 
 const PLANS_PAGE_SIZE_MOBILE = 9;  // 3 × 3
 const PLANS_PAGE_SIZE_DESKTOP = 8; // 4 × 2
@@ -258,6 +259,9 @@ export default function FloorPlansPage() {
         )}
       </Box>
 
+      {/* Offline site pack: save plans on the phone before leaving coverage (Android app only) */}
+      <OfflinePackCard projectId={projectId || undefined} />
+
       {/* ── Toolbar: project + tower selects (native MUI Select — stable open/close) ── */}
       <Box sx={{ ...toolbarLayout.row, mb: 3 }}>
         <Box sx={toolbarLayout.group}>
@@ -471,6 +475,10 @@ export default function FloorPlansPage() {
                       component="img"
                       src={imageUrl}
                       alt={floor.label}
+                      // Cards below the fold no longer download their full-size plan up front, and decoding
+                      // happens off the main thread so scrolling the grid stays smooth.
+                      loading="lazy"
+                      decoding="async"
                       sx={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                     />
                   ) : (

@@ -93,6 +93,8 @@ export interface UploadedFileResponse {
   processing_status?: 'uploaded' | 'queued' | 'processing' | 'converted' | 'reviewed' | 'published' | 'failed';
   /** Present only while a raw 360 capture is stitching in the background. */
   stitchJobId?: string;
+  /** SHA-256 the server computed over the bytes it received. The phone compares it with its own before deleting. */
+  sha256?: string;
   width?: number | null;
   height?: number | null;
   pages?: number | null;
@@ -129,6 +131,22 @@ export interface StitchJobResponse {
 export async function getCaptureStitchJob(jobId: string): Promise<StitchJobResponse> {
   const { data } = await apiClient.get<ApiResponse<StitchJobResponse>>(
     `/uploads/captures/jobs/${jobId}`,
+  );
+  return data.data!;
+}
+
+export interface ReconcileResponse {
+  present: string[];
+  missing: string[];
+  checked: number;
+}
+
+/** Ask the server which of these photo fingerprints it really holds. Read-only on the server. */
+export async function reconcileFingerprints(sha256: string[], signal?: AbortSignal): Promise<ReconcileResponse> {
+  const { data } = await apiClient.post<ApiResponse<ReconcileResponse>>(
+    '/uploads/captures/reconcile',
+    { sha256 },
+    { signal },
   );
   return data.data!;
 }

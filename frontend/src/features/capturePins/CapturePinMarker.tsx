@@ -20,6 +20,11 @@ interface CapturePinMarkerProps {
   sequenceNumber?: number;
   /** Single tap — select pin (Edit / Delete). */
   onSelect: (pin: WfCapturePin) => void;
+  /**
+   * Review filter. 'highlight' = a point the user asked to see (larger, ringed); 'dim' = every other point
+   * (faded). Leave undefined for the normal look, so nothing changes unless a filter is switched on.
+   */
+  focus?: 'highlight' | 'dim';
 }
 
 /**
@@ -29,11 +34,12 @@ interface CapturePinMarkerProps {
  */
 export default function CapturePinMarker({
   pin, pageW, pageH, scale, selected, dense = false, annotationOnly = false,
-  showSequence = false, sequenceNumber,
+  showSequence = false, sequenceNumber, focus,
 }: CapturePinMarkerProps) {
   const cx = (pin.x / 100) * pageW;
   const cy = (pin.y / 100) * pageH;
   const hasCapture = !annotationOnly && pin.captureIds.length > 0;
+  const emphasis = focus === 'highlight';
 
   // Zoomed-out views: slightly smaller so dense plans stay readable.
   const zoomT = Math.min(1, Math.max(0, (scale - 0.25) / 1.1));
@@ -42,7 +48,7 @@ export default function CapturePinMarker({
     : 4.2 + 1.6 * zoomT;  // ~4.2–5.8px
   // Sequence badge needs a slightly larger disc so the number stays readable.
   const seqBoost = showSequence ? (dense ? 2.2 : 2.8) : 0;
-  const screenR = (selected ? baseR + 1.25 : baseR) + seqBoost;
+  const screenR = (selected ? baseR + 1.25 : baseR) + seqBoost + (emphasis ? 1.5 : 0);
   const screenRing = screenR + (dense ? 3 : 3.5);
   const r = screenR / scale;
   const ringR = screenRing / scale;
@@ -69,7 +75,7 @@ export default function CapturePinMarker({
   return (
     <g
       data-capture-pin={pin.id}
-      style={{ cursor: 'pointer' }}
+      style={{ cursor: 'pointer', opacity: focus === 'dim' ? 0.2 : 1, transition: 'opacity 160ms' }}
     >
       {/* Invisible hit target — easier taps without making the visible dot huge */}
       <circle
@@ -78,13 +84,13 @@ export default function CapturePinMarker({
         pointerEvents="all"
       />
 
-      {selected && (
+      {(selected || emphasis) && (
         <circle
           cx={cx} cy={cy} r={ringR}
-          fill={`${stroke}18`}
+          fill={`${stroke}${emphasis ? '2a' : '18'}`}
           stroke={stroke}
-          strokeOpacity={0.45}
-          strokeWidth={1}
+          strokeOpacity={emphasis ? 0.9 : 0.45}
+          strokeWidth={emphasis ? 1.75 : 1}
           vectorEffect="non-scaling-stroke"
         />
       )}

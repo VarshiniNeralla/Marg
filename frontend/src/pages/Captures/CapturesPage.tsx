@@ -11,6 +11,7 @@ import { can } from '@/utils/permissions';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { buildFloorOptions, floorSelectionLabel, locationFilterMenuPaperSx, locationFilterToolbarSx, type FloorOption } from '@/utils/locationFilters';
 import { resolveCaptureImageCandidates } from '@/utils/captureMedia';
+import { paginateGroups } from '@/utils/paginateGroups';
 import { formatPinLocationLabel, formatTowerLabel, enrichCaptureLocation } from '@/utils/pinLabels';
 import {
   filterGalleryCaptures,
@@ -154,9 +155,9 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
   );
 }
 
-const CAPTURES_PAGE_SIZE_MOBILE = 9;  // 3 columns × 3 rows
-const CAPTURES_PAGE_SIZE_TABLET = 6;  // 3 columns × 2 rows
-const CAPTURES_PAGE_SIZE_DESKTOP = 8; // 4 columns × 2 rows
+const CAPTURES_PAGE_SIZE_MOBILE = 9;   // 3 columns × 3 rows
+const CAPTURES_PAGE_SIZE_TABLET = 9;   // 3 columns × 3 rows
+const CAPTURES_PAGE_SIZE_DESKTOP = 12; // 4 columns × 3 rows
 
 const GALLERY_GRID_SX = {
   display: 'grid',
@@ -301,25 +302,14 @@ export default function CapturesPage() {
 
   const groupedByFloor = useMemo(() => buildFloorGroups(filtered), [filtered, allFloors, allPins]);
 
-  // Paginate whole floor-groups per page — a floor's captures never split across
-  // pages. Packing stops when adding the next group would exceed the target,
-  // unless the page is still empty (then it takes that one group).
-  const floorGroupPages = useMemo(() => {
-    const pages: (typeof groupedByFloor)[] = [];
-    let current: typeof groupedByFloor = [];
-    let currentCount = 0;
-    for (const group of groupedByFloor) {
-      if (current.length > 0 && currentCount + group.captures.length > itemsPerPage) {
-        pages.push(current);
-        current = [];
-        currentCount = 0;
-      }
-      current.push(group);
-      currentCount += group.captures.length;
-    }
-    if (current.length > 0) pages.push(current);
-    return pages.length > 0 ? pages : [[]];
-  }, [groupedByFloor, itemsPerPage]);
+  // Paginate by floor-group: small floors are packed together on a page (up to the page size) and not split.
+  // A floor with MORE captures than one page holds is split into consecutive pages of its own, each under the same
+  // floor header (which then reads "12 of 104 captures"). Before this, such a floor was kept whole on a single page,
+  // so a floor with 100+ captures rendered every card at once and had no usable pagination.
+  const floorGroupPages = useMemo(
+    () => paginateGroups(groupedByFloor, itemsPerPage),
+    [groupedByFloor, itemsPerPage],
+  );
 
   const totalPages = Math.max(1, floorGroupPages.length);
   const paginatedGroupedByFloor = floorGroupPages[Math.min(page, floorGroupPages.length) - 1] ?? [];

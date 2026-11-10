@@ -22,7 +22,10 @@ export default function ConfirmDialog({
   onConfirm, onCancel,
 }: ConfirmDialogProps) {
   return (
-    <Dialog open={open} maxWidth="xs" fullWidth slotProps={{ paper: { sx: { borderRadius: '20px', overflow: 'hidden' } } }}
+    // zIndex: above the full-screen capture / fullscreen-plan layers (1400) and the camera (1500). At the default
+    // modal layer (1300) a confirmation opened from inside one of those screens was drawn BEHIND it, so the button
+    // that opened it looked dead.
+    <Dialog open={open} maxWidth="xs" fullWidth sx={{ zIndex: 1700 }} slotProps={{ paper: { sx: { borderRadius: '20px', overflow: 'hidden' } } }}
       onClose={onCancel}>
       <Box sx={{ p: 3 }}>
         <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, mb: 2 }}>
