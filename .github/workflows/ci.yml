@@ -59,6 +59,13 @@ jobs:
           pip install pytest pytest-asyncio mongomock-motor
       - name: Run tests
         run: pytest tests
+        # Dummy, non-secret values so Settings loads (backend/.env is gitignored and absent in CI).
+        # Tests use mongomock, so no real database is contacted.
+        env:
+          APP_ENV: test
+          MONGO_URI: mongodb://localhost:27017/ci-unused
+          JWT_SECRET: ci-only-jwt-secret-not-used-anywhere-else-0123456789
+          JWT_REFRESH_SECRET: ci-only-refresh-secret-not-used-anywhere-else-9876543210
 
   frontend-build:
     name: Frontend build and typecheck
@@ -107,7 +114,7 @@ jobs:
           cache-from: type=gha,scope=backend
           cache-to: type=gha,scope=backend,mode=max
       - name: Trivy scan (non-blocking)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         continue-on-error: true
         with:
           image-ref: sitevision-backend:ci
@@ -140,7 +147,7 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,scope=frontend,mode=max
       - name: Trivy scan (non-blocking)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         continue-on-error: true
         with:
           image-ref: sitevision-frontend:ci
