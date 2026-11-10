@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SiteVision GitHub Actions deploy role, trusted through GitHub OIDC (no long-lived keys). Pushes images to the SiteVision ECR repositories and runs deploy commands on the SiteVision EC2 instance through SSM.
+
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: VarshiniNeralla
+    Description: GitHub user or organization that owns the repository
+  GitHubRepo:
+    Type: String
+    Default: Marg
+    Description: GitHub repository name (to be confirmed)
+  DeployBranch:
+    Type: String
+    Default: main
+    Description: Branch whose workflow runs may assume the deploy role
+  EnvironmentName:
+    Type: String
+    Default: production
+    Description: GitHub Actions environment whose jobs may assume the deploy role
+  InstanceId:
+    Type: String
+    Default: i-0f40b0a826d92d900
+    AllowedPattern: ^i-[0-9a-f]{8,17}$
+    Description: The SiteVision EC2 instance that deploy commands may be sent to through SSM
+  CreateOidcProvider:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Set to true only if token.actions.githubusercontent.com is not yet registered in this account (an account can hold only one such provider)
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      Tags:
+        - Key: Project
+          Value: SiteVision
+
+  SiteVisionGitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SiteVisionGitHubDeployRole
+      Description: Assumed by GitHub Actions through OIDC to push SiteVision images to ECR and trigger a deploy on the SiteVision EC2 instance through SSM Run Command.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Only the deploy branch and the named environment may assume the role. Pull request runs
+          # (sub = repo:<owner>/<repo>:pull_request) are deliberately not listed and get no AWS access.
+          - Sid: GitHubActionsDeployOnly
+            Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateProvider
+                - !Ref GitHubOidcProvider
+                - !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubOwner}/${GitHubRepo}:ref:refs/heads/${DeployBranch}
+                  - !Sub repo:${GitHubOwner}/${GitHubRepo}:environment:${EnvironmentName}
+      Policies:
+        - PolicyName: SiteVisionGitHubDeployPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: GetECRAuthorizationToken
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: PushSiteVisionDockerImages
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - ecr:BatchGetImage
+                  - ecr:DescribeImages
+                Resource:
+                  - !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/sitevision-backend
+                  - !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/sitevision-frontend
+              # SendCommand is authorized against both the target instance and the document.
+              - Sid: RunDeployCommandOnSiteVisionInstance
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${InstanceId}
+                  - !Sub arn:aws:ssm:${AWS::Region}::document/AWS-RunShellScript
+              # These read-only calls do not support resource-level restriction.
+              - Sid: ReadCommandResults
+                Effect: Allow
+                Action:
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                  - ssm:DescribeInstanceInformation
+                Resource: '*'
+      Tags:
+        - Key: Project
+          Value: SiteVision
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  RoleArn:
+    Description: Role ARN to set as the role-to-assume in the GitHub Actions workflow
+    Value: !GetAtt SiteVisionGitHubDeployRole.Arn

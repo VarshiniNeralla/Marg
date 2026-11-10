@@ -1,0 +1,32 @@
+name: Rollback production
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Known-good image tag to roll back to (for example sha-abc1234 or v37)
+        type: string
+        required: true
+      force:
+        description: Bypass the active-stitch-jobs pre-check
+        type: boolean
+        default: false
+
+# Shares the group with deploy.yml so the two never overlap.
+concurrency:
+  group: sitevision-production-deploy
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  rollback:
+    uses: ./.github/workflows/_deploy-core.yml
+    with:
+      tag: ${{ inputs.tag }}
+      force: ${{ inputs.force }}
+      strict: true
+      mode: rollback
+    secrets: inherit
