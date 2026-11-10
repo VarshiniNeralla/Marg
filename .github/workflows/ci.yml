@@ -66,6 +66,10 @@ jobs:
           MONGO_URI: mongodb://localhost:27017/ci-unused
           JWT_SECRET: ci-only-jwt-secret-not-used-anywhere-else-0123456789
           JWT_REFRESH_SECRET: ci-only-refresh-secret-not-used-anywhere-else-9876543210
+          # Floor-plan upload tests mock the uploader but still require these to be non-empty.
+          CLOUDINARY_CLOUD_NAME: ci-test
+          CLOUDINARY_API_KEY: ci-test-key
+          CLOUDINARY_API_SECRET: ci-test-secret
 
   frontend-build:
     name: Frontend build and typecheck
