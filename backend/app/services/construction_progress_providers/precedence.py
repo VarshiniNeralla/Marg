@@ -53,6 +53,13 @@ COMMON_FINISH_CHAIN: tuple[str, ...] = (
     "common.painting_2nd_coat_9",
 )
 
+# Floor build-up in site order. Tiles cannot be laid until the layers below exist, and
+# once tiled those layers are hidden from the camera - so they are credited from the tile.
+FLOOR_CHAINS: tuple[tuple[str, ...], ...] = (
+    ("flat.floor_screed_1", "flat.waterproofing_8", "flat.toilet_utility_balcony_flooring_14"),
+    ("flat.floor_screed_1", "flat.vitrified_flooring_16"),
+)
+
 _FLAT_PUTTY_IDS: tuple[str, ...] = (
     "flat.putty_1st_coat_25",
     "flat.putty_2nd_coat_26",
@@ -283,6 +290,9 @@ def apply_precedence(room_activities: dict[str, dict]) -> dict:
     if ENABLE_LATER_IMPLIES_EARLIER:
         _apply_later_implies_earlier(out, WALL_FINISH_CHAIN)
         _apply_later_implies_earlier(out, COMMON_FINISH_CHAIN)
+        # Laid tiles hide the screed (and, in wet areas, the waterproofing) beneath them.
+        for chain in FLOOR_CHAINS:
+            _apply_later_implies_earlier(out, chain)
 
     # ── Full fill-forward on the wall-finish chain (disabled in v4) ──────────
     if ENABLE_FILL_FORWARD:

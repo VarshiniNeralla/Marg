@@ -14,7 +14,7 @@ from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.services.construction_progress_providers import (
-    ALL_ACTIVITIES,
+    CORE_ACTIVITIES,
     COMPLETE_THRESHOLD,
     CaptureRef,
     ConstructionProgressProvider,
@@ -993,7 +993,7 @@ class ConstructionProgressService:
             try:
                 result = await self._provider.assess_floor_progress(
                     floor_id=floor_id,
-                    activities=ALL_ACTIVITIES,
+                    activities=CORE_ACTIVITIES,
                     captures=captures,
                     as_of=as_of,
                     flat_units=flat_units or None,

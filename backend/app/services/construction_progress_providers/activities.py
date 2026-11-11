@@ -34,6 +34,12 @@ class ActivityDef:
     visual_criteria: str = ""
     confusable_with: tuple[str, ...] = ()
     weight: float = 1.0
+    # Rooms where this activity is never scored (applicable_rooms is a whitelist,
+    # this is the blacklist - e.g. vitrified flooring is not a toilet activity).
+    excluded_rooms: frozenset[str] = frozenset()
+    # Core-catalog only: the scoring-level activity ids this headline activity is
+    # computed from (empty = scored directly under its own id).
+    components: tuple[str, ...] = ()
 
 
 # ── Frozen ID tables (T6) — do not renumber ─────────────────────────────────
@@ -152,12 +158,11 @@ _COMMON_AREA_ACTIVITY_NAMES = [
 ]
 
 # Proposed observability — site engineer must confirm before shipping (T5).
+# Screed, service lines and waterproofing ARE visible while they are being done (before
+# tiles / false ceiling cover them), so they are scored from photos. Once covered, the
+# later-stage inference in precedence.py credits them from the finish that hides them.
 _CONCEALED_IDS = frozenset({
     "flat.corecutting_for_services_0",
-    "flat.floor_screed_1",
-    "flat.mep_ceiling_services_plumbing_fire_gas_3",
-    "flat.plumbing_pvc_waterline_7",
-    "flat.waterproofing_8",
 })
 
 # Surface groups used by T7 surface-group calls.
@@ -240,8 +245,10 @@ _APPLICABLE_BY_ID: dict[str, frozenset[str]] = {
     "flat.kitchen_bracket_fixing_granite_fixing_dado_19": _ROOMS_KITCHEN,
     "flat.balcony_glass_railing_35": _ROOMS_BALCONY,
     "flat.ms_railing_for_utility_13": _ROOMS_UTILITY,
-    "flat.toilet_utility_dado_15": _ROOMS_TOILET | _ROOMS_UTILITY,
-    "flat.toilet_utility_balcony_flooring_14": _ROOMS_WET,
+    "flat.toilet_utility_dado_15": _ROOMS_TOILET,
+    "flat.toilet_utility_balcony_flooring_14": _ROOMS_TOILET,
+    "flat.waterproofing_8": _ROOMS_WET,
+    "flat.plumbing_pvc_waterline_7": _ROOMS_TOILET | _ROOMS_KITCHEN | _ROOMS_UTILITY,
     "flat.toilet_door_frame_9": _ROOMS_TOILET,
     "flat.plumbing_diverter_flush_valve_fixing_10": _ROOMS_TOILET,
     "flat.cp_fixtures_sanitary_fixtures_34": _ROOMS_TOILET,
@@ -251,6 +258,11 @@ _APPLICABLE_BY_ID: dict[str, frozenset[str]] = {
     "common.corridor_flooring_3": _ROOMS_CORRIDOR,
     "common.staircase_flooring_8": _ROOMS_STAIRCASE,
     "common.fire_doors_shaft_doors_7": _ROOMS_LOBBY_SHAFT,
+}
+
+# Dry-room finish: toilets, utility and balconies get their own wet-area flooring.
+_EXCLUDED_BY_ID: dict[str, frozenset[str]] = {
+    "flat.vitrified_flooring_16": _ROOMS_WET,
 }
 
 _CONFUSABLE: dict[str, tuple[str, ...]] = {
@@ -276,6 +288,7 @@ def _build(section: str, names: list[str], ids: tuple[str, ...]) -> list[Activit
             observability="concealed" if aid in _CONCEALED_IDS else "observable",
             surface_group=_SURFACE_BY_ID.get(aid, "walls"),
             applicable_rooms=_APPLICABLE_BY_ID.get(aid, frozenset()),
+            excluded_rooms=_EXCLUDED_BY_ID.get(aid, frozenset()),
             visual_criteria=VISUAL_CRITERIA.get(aid, ""),
             confusable_with=_CONFUSABLE.get(aid, ()),
             weight=1.0,
@@ -286,16 +299,148 @@ def _build(section: str, names: list[str], ids: tuple[str, ...]) -> list[Activit
 FLAT_ACTIVITIES: list[ActivityDef] = _build("flat", _FLAT_ACTIVITY_NAMES, FROZEN_FLAT_IDS)
 COMMON_AREA_ACTIVITIES: list[ActivityDef] = _build("common", _COMMON_AREA_ACTIVITY_NAMES, FROZEN_COMMON_IDS)
 ALL_ACTIVITIES: list[ActivityDef] = FLAT_ACTIVITIES + COMMON_AREA_ACTIVITIES
+# Legacy 49-activity catalog: kept so stored snapshots / reviews stay readable.
+# It is NOT what a new analysis scores - see CORE_ACTIVITIES below.
+_ALL_BY_ID: dict[str, ActivityDef] = {a.activity_id: a for a in ALL_ACTIVITIES}
+
+
+# ── Core catalog: the activities the product actually tracks ────────────────
+# The 14 headline activities (site order). An id that already exists in the frozen
+# tables is reused (so history lines up); a headline activity that merges several
+# legacy ones gets a new id and is computed from its `components`.
+
+_CORE_PUNNING_CRITERIA = (
+    "Punning Works = cement/POP punning (plaster finish) on WALLS and CEILINGS, scored as "
+    "the average of the two surfaces. Walls and ceilings are scored separately first "
+    "(see component criteria); smooth white putty-looking surfaces are NOT evidence of "
+    "punning stage by themselves."
+)
+_CORE_SERVICE_LINES_CRITERIA = (
+    "Service Lines = ceiling MEP runs (plumbing, fire, gas) plus PVC/CPVC water supply "
+    "lines in wet walls. Scored as the average of the components that are visible. "
+    "Exposed pipes/conduits fixed with clamps in place count; pipe lying on the floor "
+    "or unfixed material does not."
+)
+_CORE_DOOR_SHUTTERS_CRITERIA = (
+    "Door Shutters (Temporary) = the main-entrance shutter and internal door shutters "
+    "hung in their frames (temporary leaves acceptable). A shutter leaning against a "
+    "wall, lying on the floor or still wrapped is NOT fixed (0%)."
+)
+
+# (activity_id, display name, component ids - empty = scored under its own id)
+_CORE_FLAT_SPEC: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("flat.floor_screed_1", "Screed Works", ()),
+    (
+        "flat.core_service_lines", "Service Lines",
+        (
+            "flat.mep_ceiling_services_plumbing_fire_gas_3",
+            "flat.plumbing_pvc_waterline_7",
+        ),
+    ),
+    ("flat.core_punning", "Punning Works", ("flat.ceiling_punning_2", "flat.wall_punning_4")),
+    ("flat.waterproofing_8", "Waterproofing Works", ()),
+    ("flat.toilet_utility_balcony_flooring_14", "Toilet Flooring Works", ()),
+    ("flat.toilet_utility_dado_15", "Toilet Dado Works", ()),
+    ("flat.vitrified_flooring_16", "Vitrified Flooring Works", ()),
+    ("flat.internal_door_frames_18", "Internal Door Frames", ()),
+    (
+        "flat.core_door_shutters_temporary", "Door Shutters (Temporary)",
+        (
+            "flat.main_door_shutter_fixing_temporary_21",
+            "flat.internal_door_shutter_fixing_with_hardware_22",
+        ),
+    ),
+    ("flat.false_ceiling_boxing_24", "False Ceiling Boxing", ()),
+    ("flat.electrical_wiring_23", "Electrical Wiring", ()),
+    ("flat.putty_1st_coat_25", "1st Coat Putty", ()),
+    ("flat.putty_2nd_coat_26", "2nd Coat Putty", ()),
+    ("flat.primer_1st_coat_paint_27", "Primer & 1st Coat Paint", ()),
+)
+
+# Common areas only have the activities that exist in a corridor / lobby.
+_CORE_COMMON_SPEC: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("common.mep_works_fire_fighting_electrical_0", "Service Lines", ()),
+    ("common.wall_punning_works_1", "Punning Works", ()),
+    ("common.false_ceiling_works_2", "False Ceiling Boxing", ()),
+    ("common.putty_1st_coat_4", "1st Coat Putty", ()),
+    ("common.putty_2nd_coat_5", "2nd Coat Putty", ()),
+    ("common.primer_1st_coat_paint_6", "Primer & 1st Coat Paint", ()),
+)
+
+_CORE_MERGED_CRITERIA: dict[str, str] = {
+    "flat.core_punning": _CORE_PUNNING_CRITERIA,
+    "flat.core_service_lines": _CORE_SERVICE_LINES_CRITERIA,
+    "flat.core_door_shutters_temporary": _CORE_DOOR_SHUTTERS_CRITERIA,
+}
+
+
+def _build_core(section: str, spec: tuple[tuple[str, str, tuple[str, ...]], ...]) -> list[ActivityDef]:
+    out: list[ActivityDef] = []
+    for i, (aid, name, components) in enumerate(spec):
+        if components:
+            first = _ALL_BY_ID[components[0]]
+            out.append(ActivityDef(
+                activity_id=aid,
+                name=name,
+                section=section,
+                sequence_index=i,
+                observability="observable",
+                surface_group=first.surface_group,
+                visual_criteria=_CORE_MERGED_CRITERIA[aid],
+                components=components,
+            ))
+        else:
+            base = _ALL_BY_ID[aid]
+            out.append(ActivityDef(
+                activity_id=aid,
+                name=name,
+                section=section,
+                sequence_index=i,
+                observability=base.observability,
+                surface_group=base.surface_group,
+                applicable_rooms=base.applicable_rooms,
+                excluded_rooms=base.excluded_rooms,
+                visual_criteria=base.visual_criteria,
+                confusable_with=base.confusable_with,
+                weight=base.weight,
+            ))
+    return out
+
+
+CORE_FLAT_ACTIVITIES: list[ActivityDef] = _build_core("flat", _CORE_FLAT_SPEC)
+CORE_COMMON_ACTIVITIES: list[ActivityDef] = _build_core("common", _CORE_COMMON_SPEC)
+CORE_ACTIVITIES: list[ActivityDef] = CORE_FLAT_ACTIVITIES + CORE_COMMON_ACTIVITIES
+CORE_IDS: frozenset[str] = frozenset(a.activity_id for a in CORE_ACTIVITIES)
+FROZEN_CORE_FLAT_IDS: tuple[str, ...] = tuple(s[0] for s in _CORE_FLAT_SPEC)
+FROZEN_CORE_COMMON_IDS: tuple[str, ...] = tuple(s[0] for s in _CORE_COMMON_SPEC)
+
+
+def _scoring_set() -> list[ActivityDef]:
+    """What the vision model is actually asked about: each core activity, or its components."""
+    seen: set[str] = set()
+    out: list[ActivityDef] = []
+    for core in CORE_ACTIVITIES:
+        for aid in (core.components or (core.activity_id,)):
+            if aid not in seen:
+                seen.add(aid)
+                out.append(_ALL_BY_ID[aid])
+    return out
+
+
+# Scoring-level activities (components expanded). The engine scores these, then
+# merges components back into their core activity.
+SCORING_ACTIVITIES: list[ActivityDef] = _scoring_set()
 
 
 def activities_as_dicts() -> list[dict]:
     """Serialisable form for the GET /construction-progress/activities endpoint.
 
-    Existing keys are preserved for frontend compatibility; new taxonomy fields
-    are additive only.
+    Core activities come first (the ones a new analysis scores). Legacy activities
+    follow with core=False so old snapshots and reviews can still be named.
+    Existing keys are preserved; new fields are additive only.
     """
-    return [
-        {
+    def row(a: ActivityDef, core: bool) -> dict:
+        return {
             "activityId": a.activity_id,
             "name": a.name,
             "section": a.section,
@@ -303,9 +448,13 @@ def activities_as_dicts() -> list[dict]:
             "observability": a.observability,
             "surfaceGroup": a.surface_group,
             "applicableRooms": sorted(a.applicable_rooms),
+            "excludedRooms": sorted(a.excluded_rooms),
             "visualCriteria": a.visual_criteria,
             "confusableWith": list(a.confusable_with),
             "weight": a.weight,
+            "core": core,
+            "components": list(a.components),
         }
-        for a in ALL_ACTIVITIES
-    ]
+
+    legacy = [a for a in ALL_ACTIVITIES if a.activity_id not in CORE_IDS]
+    return [row(a, True) for a in CORE_ACTIVITIES] + [row(a, False) for a in legacy]

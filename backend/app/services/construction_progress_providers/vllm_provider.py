@@ -46,7 +46,10 @@ from app.services.derived_views_service import get_or_render_views
 from app.services.image_fetch import download_image, resize_if_needed
 from app.services.panorama_service import is_equirectangular, measure_image
 from app.services.panorama_views import DEFAULT_RIG, RIG_VERSION, ViewSpec, render_rig
-from app.services.construction_progress_providers.activities import ActivityDef
+from app.services.construction_progress_providers.activities import (
+    ALL_ACTIVITIES,
+    ActivityDef,
+)
 from app.services.construction_progress_providers.base import (
     ActivityAssessment,
     ActivityStatus,
@@ -85,7 +88,10 @@ COMPLETE_THRESHOLD = 92.0
 # v4.1: strict false-ceiling identification (smooth/white/punned slab ≠ FC).
 # v4.2: stage-aware walls/putty/wiring; evidence↔score consistency; scope language.
 # v4.3: visual-scope — evidence_class; activity≠room-looks-finished; putty/wiring hard stops.
-PROMPT_VERSION = "v4.4-area-scope"
+PROMPT_VERSION = "v4.5-core14"
+
+# Scoring-level (legacy-catalog) definitions, used to score a merged core activity's components.
+_SCORING_BY_ID: dict[str, ActivityDef] = {a.activity_id: a for a in ALL_ACTIVITIES}
 
 # The synthetic flat name room_map_service.py stamps on every common-area
 # room (lobby, lift lobby, shafts, ...), so a capture's own flat_name tells
@@ -561,8 +567,53 @@ def _significant_room_tokens(name: str) -> set[str]:
     return {tok for tok in _room_tokens(name) if not tok.isdigit() and len(tok) > 1}
 
 
+def _room_matches(room_names: frozenset[str], capture_room: str) -> bool:
+    cap_tokens = _significant_room_tokens(capture_room) or _room_tokens(capture_room)
+    if not cap_tokens:
+        return False
+    return any(
+        (_significant_room_tokens(r) or _room_tokens(r)) & cap_tokens for r in room_names
+    )
+
+
+def _merge_components_per_unit(
+    per_unit_best: dict[tuple[str, str], dict[str, dict[str, Any]]],
+    core_activities: list[ActivityDef],
+) -> None:
+    """Fold component scores into their headline activity, in place, then drop the rest.
+
+    A headline activity with ``components`` (e.g. Punning Works = ceiling + wall punning)
+    scores a room as the MEAN of the components that were actually scored there; a component
+    the photos did not show is "unknown", not 0. Confidence is the weakest component's.
+    Everything that is not a core activity is removed so it can never leak into a report.
+    """
+    core_ids = {a.activity_id for a in core_activities}
+    for act_map in per_unit_best.values():
+        for core in core_activities:
+            if not core.components:
+                continue
+            present = [act_map[c] for c in core.components if c in act_map]
+            if not present:
+                continue
+            best = max(present, key=lambda e: float(e["pct"]))
+            evidence_bits = [str(e.get("evidence") or "") for e in present if e.get("evidence")]
+            act_map[core.activity_id] = {
+                "pct": sum(float(e["pct"]) for e in present) / len(present),
+                "conf": min(float(e["conf"]) for e in present),
+                "capture_id": best.get("capture_id") or "",
+                "evidence": " | ".join(evidence_bits)[:400],
+            }
+        for aid in [k for k in act_map if k not in core_ids]:
+            del act_map[aid]
+
+
 def _activity_applies_to_room(activity: ActivityDef, capture_room: str) -> bool:
-    """Empty applicable_rooms = applies everywhere. Otherwise share ≥1 significant token."""
+    """Empty applicable_rooms = applies everywhere. Otherwise share ≥1 significant token.
+
+    ``excluded_rooms`` always wins: an activity never applies to a room matching it.
+    """
+    if activity.excluded_rooms and _room_matches(activity.excluded_rooms, capture_room):
+        return False
     if not activity.applicable_rooms:
         return True
     cap_tokens = _significant_room_tokens(capture_room)
@@ -705,16 +756,29 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         if context and context.get("org_id") and not self._org_id:
             self._org_id = str(context["org_id"])
 
+        # `activities` are the headline (core) activities that get reported. The model is
+        # asked about their scoring-level components (a merged activity such as Punning
+        # Works is scored as ceiling + wall punning), merged back after precedence.
         activities_by_id = {a.activity_id: a for a in activities}
-        activities_by_name = {a.name.strip().lower(): a for a in activities}
+        scoring_acts: list[ActivityDef] = []
+        _seen_scoring: set[str] = set()
+        for _core in activities:
+            for _aid in (_core.components or (_core.activity_id,)):
+                if _aid in _seen_scoring:
+                    continue
+                _seen_scoring.add(_aid)
+                scoring_acts.append(_SCORING_BY_ID.get(_aid, _core if not _core.components else None))
+        scoring_acts = [a for a in scoring_acts if a is not None]
+        scoring_by_id = {a.activity_id: a for a in scoring_acts}
+        activities_by_name = {a.name.strip().lower(): a for a in scoring_acts}
 
         # Only observable activities are asked of the model (T7i). Concealed
         # activities are not invented via fill-forward in v4.
         observable_flat_acts = [
-            a for a in activities if a.section == "flat" and a.observability == "observable"
+            a for a in scoring_acts if a.section == "flat" and a.observability == "observable"
         ]
         observable_common_acts = [
-            a for a in activities if a.section == "common" and a.observability == "observable"
+            a for a in scoring_acts if a.section == "common" and a.observability == "observable"
         ]
 
         # Latest-per-pin dedupe (before/after context dropped in v2 — each
@@ -777,14 +841,14 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
 
         for capture, per_capture in results:
             for raw_id, entry in per_capture.items():
-                activity = activities_by_id.get(raw_id) or activities_by_name.get(
+                activity = scoring_by_id.get(raw_id) or activities_by_name.get(
                     str(raw_id).strip().lower()
                 )
                 if activity is None:
                     raw_l = str(raw_id).strip().lower().replace(" ", "_").replace("-", "_")
                     activity = next(
                         (
-                            a for a in activities
+                            a for a in scoring_acts
                             if a.activity_id == raw_l
                             or a.activity_id.endswith("." + raw_l)
                             or a.name.strip().lower().replace(" ", "_") == raw_l
@@ -815,7 +879,8 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
         # Later⇒earlier finish chain: confirmed paint raises primer/putty/wall
         # punning up to the same coverage %. Never invent paint from putty.
         # Block-backward + MEP↔door gate still apply after that fill.
-        _apply_precedence_per_room(per_unit_best, activities_by_id)
+        _apply_precedence_per_room(per_unit_best, scoring_by_id)
+        _merge_components_per_unit(per_unit_best, activities)
 
         # ── Split into strict / lenient dicts by confidence ────────────────
         per_activity_unit_pct: dict[str, dict[tuple[str, str], float]] = {}

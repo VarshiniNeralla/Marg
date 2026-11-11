@@ -25,9 +25,12 @@ VISUAL_CRITERIA: dict[str, str] = {
         "near shafts and wet areas (often later concealed)."
     ),
     "flat.floor_screed_1": (
-        "DRAFT. In progress: grey cement screed being laid/levelled, wet patches, screed "
-        "rails visible. Complete: continuous level grey screed across the room floor, "
-        "no loose sand piles. Look down at the full floor plane (often under later flooring)."
+        "v4.5 core. Screed = the plain grey cement-sand levelling layer on the structural slab. "
+        "Score ONLY the visible floor: % = screeded floor area / room floor area. Bare rough "
+        "slab with rebar stubs, debris, ponding = 0-10. Screed rails/strips with patches laid = "
+        "20-60. Continuous flat grey screed, no exposed slab = 90-100. Tiles, marble or any "
+        "laid finish on top = screed is DONE (hidden beneath) - do not mark 0. Wet/dark floor "
+        "that is clearly waterproofing coating is NOT screed evidence by itself."
     ),
     "flat.ceiling_punning_2": (
         "DRAFT (v4.3). Score ceiling SURFACE punning only. Do NOT reduce for wires, "
@@ -36,10 +39,13 @@ VISUAL_CRITERIA: dict[str, str] = {
         "Punning. Ordinary punned slab ≠ false ceiling."
     ),
     "flat.mep_ceiling_services_plumbing_fire_gas_3": (
-        "DRAFT. In progress: open ceiling with hanging PVC/GI pipes, fire lines, gas "
-        "lines, or cable trays partially routed. Complete: ceiling MEP runs installed and "
-        "aligned before boxing/false ceiling closes them. Look up at the ceiling zone "
-        "(often later concealed by false ceiling)."
+        "v4.5 core (Service Lines - ceiling part). Score pipes/ducts run along the ceiling "
+        "zone: PVC/GI drain and water lines, fire-fighting sprinkler lines, gas line, "
+        "clamped to the slab or hangers. Pipes only lying on the floor or stacked = 0. "
+        "Short stubs/sleeves only = 10-25; some routes fixed but obvious gaps = 40-70; "
+        "full runs clamped and aligned across the room = 85-100. Electrical conduit and "
+        "wiring belong to Electrical Wiring, not here. A clean slab with no pipes and "
+        "a finished false ceiling hiding the zone = not visible (do not guess)."
     ),
     "flat.wall_punning_4": (
         "DRAFT (v4.3 visual-scope). % = completed punned visible wall area / total relevant "
@@ -61,16 +67,22 @@ VISUAL_CRITERIA: dict[str, str] = {
         "only (scope ratio), never 100% of whole ceiling. Do NOT score boards here."
     ),
     "flat.plumbing_pvc_waterline_7": (
-        "DRAFT. In progress: exposed PVC/CPVC water lines chased in walls or running "
-        "along walls with open joints. Complete: waterline pipes installed to fixtures "
-        "points before tiling conceals them. Look at wall chases and toilet/kitchen wet "
-        "walls (often later concealed)."
+        "v4.5 core (Service Lines - wall part). Score PVC/CPVC/CP water supply lines and "
+        "drain stubs visible in toilet/kitchen/utility walls and chases: pipes with "
+        "elbows/tees reaching the fixture points (WC, basin, shower, sink), clamped and "
+        "capped. Open chase with no pipe = 0-10; partial lines = 30-60; all fixture "
+        "points fed with capped pipe stubs = 85-100. Once wall tiles/dado cover the wall "
+        "this is not visible - leave to later-stage inference."
     ),
     "flat.waterproofing_8": (
-        "DRAFT. In progress: dark coating/membrane on toilet/utility floor-wall junctions, "
-        "brush marks, upturns at walls. Complete: continuous waterproof layer on wet-area "
-        "floors and skirting zone before tiling. Look at toilet/utility floor corners "
-        "(often under tiles)."
+        "v4.5 core. Wet areas only (toilet, utility, balcony, sit-out). Waterproofing = a "
+        "continuous brush/roller-applied coating (grey, black, blue/green, or cementitious "
+        "slurry) over the wet-area floor and turned up the walls (typically 150mm+), "
+        "including corners and around pipe penetrations. % = coated floor+upturn area / "
+        "wet-area floor+upturn area. Bare screed/slab = 0; coating on part of floor or no "
+        "wall upturn = 30-60; fully coated with upturns and corners = 90-100. Ponding "
+        "test water on a coated floor indicates completion. Laid floor tiles on top = "
+        "done (hidden). Dark dampness or dirt is NOT coating."
     ),
     "flat.toilet_door_frame_9": (
         "DRAFT. In progress: toilet door frame leaning/propped, gaps at wall. Complete: "
@@ -97,14 +109,18 @@ VISUAL_CRITERIA: dict[str, str] = {
         "MS utility railing fixed and aligned. Look at utility balcony/rail openings."
     ),
     "flat.toilet_utility_balcony_flooring_14": (
-        "DRAFT. In progress: wet-area floor with adhesive beds, loose tiles, or bare "
-        "screed patches. Complete: toilet/utility/balcony floor tiles laid with even "
-        "joints. Look down at wet-area floors (not dry vitrified rooms)."
+        "v4.5 core (Toilet Flooring Works). TOILET floor only. % = anti-skid/ceramic floor "
+        "tiles fixed in place / toilet floor area. Bare screed or waterproofed floor = 0; "
+        "tiles stacked or loose-laid without bedding = 0 (material only); a few tiles "
+        "set = 10-30; most laid with obvious gaps = 50-80; every tile laid, level, "
+        "slope to drain = 95-100. Wall tiles are NOT floor evidence."
     ),
     "flat.toilet_utility_dado_15": (
-        "DRAFT. In progress: wall tiles partly up, cut edges, adhesive smears. Complete: "
-        "toilet/utility dado tiling continuous to the specified height. Look at wet-room "
-        "wall tile fields."
+        "v4.5 core (Toilet Dado Works). TOILET wall tiles only. % = tiled wall area / "
+        "wall area to be tiled (typically to door-head/ceiling height). Bare plaster or "
+        "waterproof walls = 0; tiles leaning on the wall or stacked = 0; lower rows only = "
+        "20-50; most walls tiled with some panels or the upper band missing = 55-85; "
+        "all walls tiled to full height = 95-100. Floor tiles are NOT dado evidence."
     ),
     "flat.vitrified_flooring_16": (
         "DRAFT (Floor-1 calibrated). Credit ONLY tiles laid and fixed in place. Early: a "
