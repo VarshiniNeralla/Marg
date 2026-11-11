@@ -471,6 +471,8 @@ interface WorkflowState {
   markAllNotificationsRead: () => void;
   deleteNotification: (id: string) => void;
   restoreNotification: (n: MockNotification, index: number) => void;
+  /** Add notifications the server created for this user (not mirrored back). Returns the ones that were new. */
+  mergeServerNotifications: (items: MockNotification[]) => MockNotification[];
 
   // ── Team membership ──
   addUserToProject: (userId: string, projectId: string) => void;
@@ -2597,6 +2599,15 @@ export const useWorkflowStore = create<WorkflowState>()(
       return { notifications: list };
     });
     mirrorApi('createNotification', [n]);
+  },
+  mergeServerNotifications(items) {
+    const known = new Set(get().notifications.map(n => n.id));
+    const fresh = items.filter(n => n && n.id && !known.has(n.id));
+    if (fresh.length) {
+      // Server rows already exist server-side, so unlike pushNotif this does NOT mirror them back.
+      set(s => ({ notifications: [...fresh, ...s.notifications].slice(0, 100) }));
+    }
+    return fresh;
   },
 
   addUserToProject(userId, projectId) {

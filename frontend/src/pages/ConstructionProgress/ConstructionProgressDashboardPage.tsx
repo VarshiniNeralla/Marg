@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Box, Typography, CircularProgress, Button, LinearProgress } from '@mui/material';
-import { ArrowBackRounded, RefreshRounded, PictureAsPdfRounded, TableChartRounded, AutoAwesomeRounded, ApartmentRounded, MeetingRoomRounded } from '@mui/icons-material';
+import { Box, Typography, CircularProgress, Button, LinearProgress, Snackbar, Alert } from '@mui/material';
+import { ArrowBackRounded, RefreshRounded, PictureAsPdfRounded, TableChartRounded, AutoAwesomeRounded, ApartmentRounded, MeetingRoomRounded, NotificationsActiveRounded } from '@mui/icons-material';
 import { Link, useParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { colors, shadows } from '@theme/tokens';
+import { useBackgroundAnalysisStore } from '@store/backgroundAnalysis';
 import {
   constructionProgressService,
   type FloorProgressSnapshot,
@@ -54,10 +55,17 @@ export default function ConstructionProgressDashboardPage() {
   const [notAnalyzed, setNotAnalyzed] = useState(false);
   const analyzingRef = useRef(false);
   const pollGenerationRef = useRef(0);
+  // "Run in background": the analysis runs on the server and the user is notified when it is done.
+  const [backgroundRunning, setBackgroundRunning] = useState(false);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [bgNotice, setBgNotice] = useState<{ text: string; severity: 'success' | 'error' } | null>(null);
+  const [reanalyzeInBackground, setReanalyzeInBackground] = useState(false);
+  const trackBackgroundJob = useBackgroundAnalysisStore(s => s.track);
 
   const finishAnalyze = useCallback((ok: boolean, isReanalysis: boolean, error?: string | null) => {
     analyzingRef.current = false;
     setAnalyzing(false);
+    setActiveJobId(null);
     if (ok) {
       toast.success(isReanalysis ? 'Re-analysis complete' : 'Progress analysis complete');
     } else {
@@ -65,8 +73,16 @@ export default function ConstructionProgressDashboardPage() {
     }
   }, []);
 
-  const pollAnalyzeJob = useCallback(async (id: string, jobId: string, isReanalysis: boolean) => {
+  const pollAnalyzeJob = useCallback(async (
+    id: string,
+    jobId: string,
+    isReanalysis: boolean,
+    opts: { silent?: boolean } = {},
+  ) => {
     const generation = ++pollGenerationRef.current;
+    // Silent = a background analysis: no overlay. The server sends the notification, so this
+    // poll only refreshes the report on screen if the user is still on this page.
+    const silent = !!opts.silent;
     const maxAttempts = 180; // 180 × 5s ≈ 15 min
     for (let i = 0; i < maxAttempts; i++) {
       await new Promise(r => setTimeout(r, 5_000));
@@ -81,16 +97,22 @@ export default function ConstructionProgressDashboardPage() {
             setSnapshot(detail);
             setNotAnalyzed(false);
           }
-          finishAnalyze(true, isReanalysis);
+          if (silent) { setBackgroundRunning(false); setActiveJobId(null); }
+          else finishAnalyze(true, isReanalysis);
           return;
         }
         if (job.status === 'failed') {
-          finishAnalyze(false, isReanalysis, job.error);
+          if (silent) { setBackgroundRunning(false); setActiveJobId(null); }
+          else finishAnalyze(false, isReanalysis, job.error);
           return;
         }
       } catch {
         /* keep polling — brief network blips during a long analyze are expected */
       }
+    }
+    if (silent) {
+      if (pollGenerationRef.current === generation) { setBackgroundRunning(false); setActiveJobId(null); }
+      return;
     }
     if (pollGenerationRef.current === generation) {
       finishAnalyze(
@@ -117,16 +139,23 @@ export default function ConstructionProgressDashboardPage() {
         setSnapshot(detail);
         setNotAnalyzed(false);
       }
-      // Resume overlay if a background job is still running (page refresh / reconnect).
+      // Resume if a job is still running (page refresh / reconnect / came back later).
       if (
         activeJob
         && (activeJob.status === 'pending' || activeJob.status === 'processing')
         && !analyzingRef.current
       ) {
-        analyzingRef.current = true;
-        setAnalyzeIsReanalysis(!!detail);
-        setAnalyzing(true);
-        void pollAnalyzeJob(floorId, activeJob.jobId, !!detail);
+        setActiveJobId(activeJob.jobId);
+        if (activeJob.runInBackground) {
+          // Started with "Run in background": no overlay, just a quiet banner.
+          setBackgroundRunning(true);
+          void pollAnalyzeJob(floorId, activeJob.jobId, !!detail, { silent: true });
+        } else {
+          analyzingRef.current = true;
+          setAnalyzeIsReanalysis(!!detail);
+          setAnalyzing(true);
+          void pollAnalyzeJob(floorId, activeJob.jobId, !!detail);
+        }
       }
     } catch (err: unknown) {
       const status = (err as { status?: number; response?: { status?: number } })?.status
@@ -175,6 +204,7 @@ export default function ConstructionProgressDashboardPage() {
     setAnalyzing(true);
     try {
       const job = await constructionProgressService.analyzeFloor(floorId);
+      setActiveJobId(job.jobId);
       if (job.status === 'completed' && job.snapshotId) {
         const detail = await constructionProgressService.getFloorDetail(floorId);
         if (detail) {
@@ -192,6 +222,52 @@ export default function ConstructionProgressDashboardPage() {
     } catch {
       finishAnalyze(false, isReanalysis, isReanalysis ? 'Failed to start re-analysis' : 'Failed to start analysis');
     }
+  };
+
+  const BACKGROUND_STARTED_TEXT =
+    'Analysis is running in the background. You can keep working — we will notify you as soon as it is ready for review.';
+
+  /** "Run in Background": start the analysis without the blocking overlay. */
+  const handleRunInBackground = async () => {
+    if (!floorId || analyzingRef.current || backgroundRunning) return;
+    const isReanalysis = !!snapshot;
+    setBackgroundRunning(true);
+    try {
+      const job = await constructionProgressService.analyzeFloor(floorId, { background: true });
+      if (job.status === 'failed') {
+        setBackgroundRunning(false);
+        setBgNotice({ text: job.error || 'The analysis could not be started.', severity: 'error' });
+        return;
+      }
+      setActiveJobId(job.jobId);
+      trackBackgroundJob({ jobId: job.jobId, floorId, startedAt: Date.now() });
+      setBgNotice({ text: BACKGROUND_STARTED_TEXT, severity: 'success' });
+      void pollAnalyzeJob(floorId, job.jobId, isReanalysis, { silent: true });
+    } catch {
+      setBackgroundRunning(false);
+      setBgNotice({ text: 'Could not start the analysis in the background. Please try again.', severity: 'error' });
+    }
+  };
+
+  /** "Continue in background" from the overlay: hand a running analysis over to the server. */
+  const handleContinueInBackground = async () => {
+    if (!floorId || !activeJobId) return;
+    const jobId = activeJobId;
+    const isReanalysis = analyzeIsReanalysis;
+    try {
+      await constructionProgressService.continueAnalyzeInBackground(floorId, jobId);
+    } catch {
+      setBgNotice({ text: 'Could not switch to the background. Please keep this screen open.', severity: 'error' });
+      return;
+    }
+    // Stop the blocking wait and hand over to the quiet poll.
+    pollGenerationRef.current += 1;
+    analyzingRef.current = false;
+    setAnalyzing(false);
+    setBackgroundRunning(true);
+    trackBackgroundJob({ jobId, floorId, startedAt: Date.now() });
+    setBgNotice({ text: BACKGROUND_STARTED_TEXT, severity: 'success' });
+    void pollAnalyzeJob(floorId, jobId, isReanalysis, { silent: true });
   };
 
   const handleExportPdf = async () => {
@@ -270,8 +346,20 @@ export default function ConstructionProgressDashboardPage() {
               </Box>
             </Box>
             <Typography sx={{ fontSize: '0.75rem', color: P.muted, lineHeight: 1.45 }}>
-              This often takes 2–5 minutes on large floors. Keep this screen open until the report appears — leaving early can interrupt the wait even though the server may still finish.
+              This often takes 2–5 minutes on large floors. Keep this screen open until the report appears, or continue in the background and we will notify you when it is ready for review.
             </Typography>
+            <Button
+              onClick={() => void handleContinueInBackground()}
+              disabled={!activeJobId}
+              startIcon={<NotificationsActiveRounded sx={{ fontSize: 18 }} />}
+              sx={{
+                border: `1.5px solid ${P.border}`, color: P.strong, px: 2, py: 0.75, borderRadius: '10px',
+                fontWeight: 700, textTransform: 'none', fontSize: '0.8125rem',
+                '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+              }}
+            >
+              Continue in background
+            </Button>
           </Box>
         </Box>
       )}
@@ -296,18 +384,35 @@ export default function ConstructionProgressDashboardPage() {
           <Typography sx={{ fontSize: '0.9375rem', color: P.muted, mb: 3 }}>
             Run the AI progress assessment against every uploaded capture for this floor.
           </Typography>
-          <Button
-            onClick={handleAnalyze}
-            disabled={analyzing}
-            startIcon={analyzing ? <CircularProgress size={14} sx={{ color: '#fff' }} /> : <RefreshRounded />}
-            sx={{
-              background: colors.primaryGradient, color: '#fff', px: 3, py: 1, borderRadius: '10px',
-              fontWeight: 700, textTransform: 'none', boxShadow: shadows.btn,
-              '&:hover': { opacity: 0.92 },
-            }}
-          >
-            {analyzing ? 'Analyzing…' : 'Analyze Now'}
-          </Button>
+          <Box sx={{ display: 'flex', gap: 1.5, justifyContent: 'center', flexWrap: 'wrap' }}>
+            <Button
+              onClick={handleAnalyze}
+              disabled={analyzing || backgroundRunning}
+              startIcon={analyzing ? <CircularProgress size={14} sx={{ color: '#fff' }} /> : <RefreshRounded />}
+              sx={{
+                background: colors.primaryGradient, color: '#fff', px: 3, py: 1, borderRadius: '10px',
+                fontWeight: 700, textTransform: 'none', boxShadow: shadows.btn,
+                '&:hover': { opacity: 0.92 },
+                '&.Mui-disabled': { color: 'rgba(255,255,255,0.8)', opacity: 0.6 },
+              }}
+            >
+              {analyzing ? 'Analyzing…' : 'Analyze Now'}
+            </Button>
+            <Button
+              onClick={() => void handleRunInBackground()}
+              disabled={analyzing || backgroundRunning}
+              startIcon={backgroundRunning
+                ? <CircularProgress size={14} sx={{ color: colors.primary }} />
+                : <NotificationsActiveRounded sx={{ fontSize: 18 }} />}
+              sx={{
+                border: `1.5px solid ${P.border}`, color: P.strong, px: 3, py: 1, borderRadius: '10px',
+                fontWeight: 700, textTransform: 'none',
+                '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+              }}
+            >
+              {backgroundRunning ? 'Running in background…' : 'Run in Background'}
+            </Button>
+          </Box>
         </Box>
       ) : (
         <>
@@ -368,8 +473,8 @@ export default function ConstructionProgressDashboardPage() {
                 Common Area Finishing
               </Button>
               <Button
-                onClick={() => setConfirmReanalyzeOpen(true)}
-                disabled={analyzing}
+                onClick={() => { setReanalyzeInBackground(false); setConfirmReanalyzeOpen(true); }}
+                disabled={analyzing || backgroundRunning}
                 startIcon={analyzing ? <CircularProgress size={14} sx={{ color: colors.primary }} /> : <RefreshRounded sx={{ fontSize: 18 }} />}
                 sx={{
                   border: `1.5px solid ${P.border}`, color: P.strong, px: 2, py: 0.75, borderRadius: '10px',
@@ -378,6 +483,20 @@ export default function ConstructionProgressDashboardPage() {
                 }}
               >
                 {analyzing ? 'Re-analyzing…' : 'Re-analyze'}
+              </Button>
+              <Button
+                onClick={() => { setReanalyzeInBackground(true); setConfirmReanalyzeOpen(true); }}
+                disabled={analyzing || backgroundRunning}
+                startIcon={backgroundRunning
+                  ? <CircularProgress size={14} sx={{ color: colors.primary }} />
+                  : <NotificationsActiveRounded sx={{ fontSize: 18 }} />}
+                sx={{
+                  border: `1.5px solid ${P.border}`, color: P.strong, px: 2, py: 0.75, borderRadius: '10px',
+                  fontWeight: 600, textTransform: 'none', fontSize: '0.8125rem',
+                  '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+                }}
+              >
+                {backgroundRunning ? 'Running in background…' : 'Run in Background'}
               </Button>
             </Box>
           </Box>
@@ -456,14 +575,31 @@ export default function ConstructionProgressDashboardPage() {
         open={confirmReanalyzeOpen}
         title="Re-analyze this floor?"
         description="This will run progress analysis again using the latest captures and room map. The current report will be replaced with a new snapshot."
-        confirmLabel="Re-analyze"
+        confirmLabel={reanalyzeInBackground ? 'Re-analyze in background' : 'Re-analyze'}
         cancelLabel="Cancel"
         onConfirm={() => {
           setConfirmReanalyzeOpen(false);
-          void handleAnalyze();
+          if (reanalyzeInBackground) void handleRunInBackground();
+          else void handleAnalyze();
         }}
         onCancel={() => setConfirmReanalyzeOpen(false)}
       />
+
+      <Snackbar
+        open={!!bgNotice}
+        autoHideDuration={8000}
+        onClose={(_e, reason) => { if (reason !== 'clickaway') setBgNotice(null); }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert
+          severity={bgNotice?.severity ?? 'success'}
+          variant="filled"
+          onClose={() => setBgNotice(null)}
+          sx={{ maxWidth: 520 }}
+        >
+          {bgNotice?.text}
+        </Alert>
+      </Snackbar>
     </>
   );
 }

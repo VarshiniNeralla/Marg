@@ -164,7 +164,7 @@ jobs:
           FORCE: ${{ inputs.force }}
         run: |
           source "$RUNNER_TEMP/ssm.sh"
-          # Read-only. Counts capture_stitch_jobs in pending/processing across EVERY tenant
+          # Read-only. Counts stitch AND progress-analysis jobs in pending/processing across EVERY tenant
           # database, using the running backend container's own settings (mirrors
           # app/db/mongodb.py). Prints only the count, never a connection string.
           # Fail closed: if the count cannot be obtained, the deploy is refused unless force=true.
@@ -176,11 +176,17 @@ jobs:
           from app.core.config import get_settings
           from app.core.tenancy import TENANTS, multi_tenant_enabled
 
+          # Every kind of background work a restart would interrupt.
+          JOB_COLLECTIONS = ["capture_stitch_jobs", "construction_progress_analyze_jobs", "progress_analysis_jobs"]
+
           async def count(uri, db_name):
               client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=8000)
               try:
-                  return await client[db_name]["capture_stitch_jobs"].count_documents(
-                      {"status": {"$in": ["pending", "processing"]}})
+                  total = 0
+                  for coll in JOB_COLLECTIONS:
+                      total += await client[db_name][coll].count_documents(
+                          {"status": {"$in": ["pending", "processing"]}})
+                  return total
               finally:
                   client.close()
 

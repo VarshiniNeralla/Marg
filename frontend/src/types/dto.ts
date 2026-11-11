@@ -509,7 +509,9 @@ export type NotifTypeDTO =
   | 'floor_plan_uploaded'
   | 'floor_plan_deleted'
   | 'review_approved'
-  | 'review_rejected';
+  | 'review_rejected'
+  | 'progress_analysis_complete'
+  | 'progress_analysis_failed';
 
 export interface NotificationResponse {
   id: string;

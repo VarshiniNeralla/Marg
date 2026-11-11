@@ -93,7 +93,16 @@ async def get_floor_detail(floor_id: str, ctx: CallerContext, db: DB, _manager_o
     status_code=status.HTTP_202_ACCEPTED,
     summary="Start a background progress analysis job for a floor",
 )
-async def analyze_floor(floor_id: str, ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
+async def analyze_floor(
+    floor_id: str,
+    ctx: CallerContext,
+    db: DB,
+    _manager_or_admin: ManagerOrAdminUser,
+    background: bool = Query(
+        False,
+        description="Run in background: notify the requester and org admins when the analysis finishes.",
+    ),
+):
     """Enqueue analyze work and return a pollable job.
 
     Inline POST used to hold the HTTP connection for many minutes; tunnel /
@@ -110,8 +119,34 @@ async def analyze_floor(floor_id: str, ctx: CallerContext, db: DB, _manager_or_a
         org_id=ctx.org_id,
         floor_id=floor_id,
         analyzed_by=ctx.user_id,
+        background=background,
     )
     return success_response(data=job, message="Progress analysis started")
+
+
+@router.put(
+    "/floors/{floor_id}/analyze/jobs/{job_id}/background",
+    summary="Continue a running analysis in the background (notify when done)",
+)
+async def continue_analyze_in_background(
+    floor_id: str,
+    job_id: str,
+    ctx: CallerContext,
+    db: DB,
+    _manager_or_admin: ManagerOrAdminUser,
+):
+    from app.services.construction_progress_analyze_job_service import (
+        ConstructionProgressAnalyzeJobService,
+    )
+
+    service = ConstructionProgressService(db)
+    await _assert_floor_access(ctx, db, service, floor_id)
+    job = await ConstructionProgressAnalyzeJobService(db).mark_background(
+        org_id=ctx.org_id, floor_id=floor_id, job_id=job_id,
+    )
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis job not found")
+    return success_response(data=job, message="Analysis will continue in the background")
 
 
 @router.get(

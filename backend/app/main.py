@@ -85,6 +85,21 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error(f"Stitch job recovery failed at startup (continuing): {exc}")
 
+    # Same for floor progress analyses: they run as asyncio tasks too, so a restart
+    # (every deploy) would otherwise strand a background analysis forever and the user
+    # would never get the "ready for review" notification. Re-dispatch them.
+    try:
+        from app.services.construction_progress_analyze_job_service import (
+            ConstructionProgressAnalyzeJobService,
+        )
+
+        async def _recover_progress_analysis(db):
+            await ConstructionProgressAnalyzeJobService(db).recover_orphaned_jobs()
+
+        await _for_each_database(_recover_progress_analysis, "Progress analysis recovery")
+    except Exception as exc:
+        logger.error(f"Progress analysis recovery failed at startup (continuing): {exc}")
+
     logger.info("Application startup complete.")
     yield
 
