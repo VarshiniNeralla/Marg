@@ -142,27 +142,75 @@ jobs:
           done
           echo "UNHEALTHY after retries"
           docker ps --format '{{.Names}} {{.Image}} {{.Status}}' || true
-          docker logs --tail 40 $BACKEND_CONTAINER 2>&1 || true
+          # Container logs are deliberately NOT printed: this repository is public, so workflow logs are
+          # public. Read them on the host: docker logs sv-backend
           exit 1
           REMOTE
           }
           HELPER
+
+      - name: Check the instance is online in SSM
+        run: |
+          st=$(aws ssm describe-instance-information \
+                --filters "Key=InstanceIds,Values=$EC2_INSTANCE_ID" \
+                --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)
+          if [ "$st" != "Online" ]; then
+            echo "::error::Instance $EC2_INSTANCE_ID is not Online in SSM (status: ${st:-none}). Is it stopped?"
+            exit 1
+          fi
 
       - name: Pre-check - refuse deploy if stitch jobs are active
         env:
           FORCE: ${{ inputs.force }}
         run: |
           source "$RUNNER_TEMP/ssm.sh"
-          # TODO(stitch-precheck): PLACEHOLDER. Replace with a real check, e.g. an
-          # SSM command that queries the backend (admin/internal endpoint listing
-          # running stitch jobs) or inspects the stitch-spool directory / Redis
-          # queue, and sets STITCH_ACTIVE=1 when work is in flight.
-          STITCH_ACTIVE=0
-          if [ "$STITCH_ACTIVE" = "1" ] && [ "$FORCE" != "true" ]; then
-            echo "::error::Stitch jobs are active. Re-run with force=true to bypass."
+          # Read-only. Counts capture_stitch_jobs in pending/processing across EVERY tenant
+          # database, using the running backend container's own settings (mirrors
+          # app/db/mongodb.py). Prints only the count, never a connection string.
+          # Fail closed: if the count cannot be obtained, the deploy is refused unless force=true.
+          REMOTE=$(cat <<'REMOTE_EOF'
+          if [ -z "$(docker ps -q -f name=^sv-backend$)" ]; then echo "STITCH_ACTIVE=0 (backend not running)"; exit 0; fi
+          docker exec -i sv-backend python - <<'PYEOF'
+          import asyncio
+          from motor.motor_asyncio import AsyncIOMotorClient
+          from app.core.config import get_settings
+          from app.core.tenancy import TENANTS, multi_tenant_enabled
+
+          async def count(uri, db_name):
+              client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=8000)
+              try:
+                  return await client[db_name]["capture_stitch_jobs"].count_documents(
+                      {"status": {"$in": ["pending", "processing"]}})
+              finally:
+                  client.close()
+
+          async def main():
+              s = get_settings()
+              if multi_tenant_enabled():
+                  targets = [((getattr(s, t.mongo_uri_setting, "") or "").strip(), t.db_name) for t in TENANTS]
+                  targets = [x for x in targets if x[0]]
+              else:
+                  targets = [(s.MONGO_URI, s.DB_NAME)]
+              total = 0
+              for uri, name in targets:
+                  total += await count(uri, name)
+              print("STITCH_ACTIVE=%d" % total)
+
+          asyncio.run(main())
+          PYEOF
+          REMOTE_EOF
+          )
+          STITCH_ACTIVE=unknown
+          if ssm_run "$REMOTE" "sitevision stitch pre-check"; then
+            n=$(echo "$OUT" | grep -o 'STITCH_ACTIVE=[0-9]*' | head -n1 | cut -d= -f2)
+            if [ -n "$n" ]; then STITCH_ACTIVE="$n"; fi
+          fi
+          echo "Stitch pre-check: active=$STITCH_ACTIVE force=$FORCE"
+          echo "Stitch jobs active: $STITCH_ACTIVE" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$STITCH_ACTIVE" != "0" ] && [ "$FORCE" != "true" ]; then
+            echo "::error::Stitch jobs are active or could not be checked (active=$STITCH_ACTIVE). Wait, or re-run with force=true."
             exit 1
           fi
-          echo "Stitch pre-check: placeholder passed (force=$FORCE)"
 
       - name: Record previous running tag
         id: prev
