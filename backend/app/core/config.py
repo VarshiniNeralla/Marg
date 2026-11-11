@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     # ── MongoDB ───────────────────────────────────────────────────────────────
     MONGO_URI: str
     DB_NAME: str = "virtual_tour"
+    # Amazon DocumentDB does not support retryable writes; set false when pointing at it.
+    MONGO_RETRY_WRITES: bool = True
 
     # ── Multi-tenancy (database per tenant) ───────────────────────────────────
     # Off by default: the app keeps using MONGO_URI/DB_NAME exactly as before.

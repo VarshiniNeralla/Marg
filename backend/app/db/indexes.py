@@ -1,6 +1,19 @@
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ASCENDING, DESCENDING, TEXT
+from pymongo.errors import OperationFailure
+
+
+async def _create_text_index(collection, keys, *, name: str) -> None:
+    """Text indexes are optional: nothing in the app issues $text queries.
+
+    Amazon DocumentDB rejects a text index combined with other keys, so a failure here
+    must never stop startup (the same call still creates the index on MongoDB).
+    """
+    try:
+        await collection.create_index(keys, name=name)
+    except OperationFailure as exc:
+        logger.warning(f"Skipped optional text index {name}: {exc.details or exc}")
 
 
 async def create_indexes(db: AsyncIOMotorDatabase) -> None:
@@ -33,8 +46,8 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         [("org_id", ASCENDING), ("is_active", ASCENDING)], name="user_org_active"
     )
     # Text index for admin user search
-    await db.users.create_index(
-        [("name", TEXT), ("email", TEXT)], name="user_text_search"
+    await _create_text_index(
+        db.users, [("name", TEXT), ("email", TEXT)], name="user_text_search"
     )
 
     # ── user_projects ─────────────────────────────────────────────────────────
@@ -61,7 +74,8 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.projects.create_index(
         [("org_id", ASCENDING), ("created_at", DESCENDING)], name="project_org_date"
     )
-    await db.projects.create_index(
+    await _create_text_index(
+        db.projects,
         [("org_id", ASCENDING), ("name", TEXT), ("description", TEXT)],
         name="project_text_search",
     )
@@ -123,7 +137,8 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         [("floor_id", ASCENDING), ("room_number", ASCENDING)],
         name="room_number_per_floor",
     )
-    await db.rooms.create_index(
+    await _create_text_index(
+        db.rooms,
         [("org_id", ASCENDING), ("name", TEXT), ("room_number", TEXT)],
         name="room_text_search",
     )

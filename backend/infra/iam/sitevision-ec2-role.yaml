@@ -74,6 +74,17 @@ Resources:
                 Condition:
                   Bool:
                     aws:SecureTransport: 'true'
+              # The DocumentDB master secret (managed by DocumentDB; random suffix after the cluster id).
+              # Used only by the host's start script to build the database connection string at runtime.
+              - Sid: ReadDocumentDbSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!cluster-f68a082f-f140-4b32-ae03-e91526893ee3-??????
+                Condition:
+                  Bool:
+                    aws:SecureTransport: 'true'
               - Sid: DecryptAppSecretsKey
                 Effect: Allow
                 Action:

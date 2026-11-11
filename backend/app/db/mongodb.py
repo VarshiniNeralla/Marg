@@ -36,7 +36,7 @@ def _open_tenant_client(tenant: Tenant) -> Optional[AsyncIOMotorClient]:
         connectTimeoutMS=10000,
         maxPoolSize=25,
         minPoolSize=1,
-        retryWrites=True,
+        retryWrites=settings.MONGO_RETRY_WRITES,
     )
 
 
@@ -89,7 +89,7 @@ async def connect_db(retries: int = 5, base_delay: float = 1.0) -> None:
         connectTimeoutMS=10000,
         maxPoolSize=50,
         minPoolSize=5,
-        retryWrites=True,
+        retryWrites=settings.MONGO_RETRY_WRITES,
     )
     _mongo.db = _mongo.client[settings.DB_NAME]
 
