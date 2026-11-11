@@ -24,7 +24,7 @@ def _by_id(aid: str) -> ActivityDef:
 
 
 def test_prompt_version_is_v4_4():
-    assert PROMPT_VERSION == "v4.4-area-scope"
+    assert PROMPT_VERSION == "v4.5-core14"
     assert ENABLE_FILL_FORWARD is False
     assert ENABLE_PAINT_IMPLIES_PUTTY is True
 

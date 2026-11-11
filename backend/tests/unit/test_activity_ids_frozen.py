@@ -46,7 +46,7 @@ def test_ids_come_from_frozen_tuples_not_enumerate_slug():
 
 def test_activities_as_dicts_keeps_core_keys():
     rows = activities_as_dicts()
-    assert len(rows) == 49
+    assert len(rows) == 52  # 49 legacy + 3 merged core activities
     for row in rows:
         assert "activityId" in row
         assert "name" in row

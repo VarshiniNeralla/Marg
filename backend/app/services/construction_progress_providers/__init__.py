@@ -1,5 +1,6 @@
 from app.services.construction_progress_providers.activities import (
     ALL_ACTIVITIES,
+    CORE_ACTIVITIES,
     COMMON_AREA_ACTIVITIES,
     FLAT_ACTIVITIES,
     ActivityDef,
@@ -18,6 +19,7 @@ from app.services.construction_progress_providers.vllm_provider import (
 
 __all__ = [
     "ALL_ACTIVITIES",
+    "CORE_ACTIVITIES",
     "COMMON_AREA_ACTIVITIES",
     "FLAT_ACTIVITIES",
     "ActivityDef",
