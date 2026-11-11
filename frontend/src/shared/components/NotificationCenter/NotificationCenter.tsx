@@ -7,10 +7,12 @@ import {
 import {
   NotificationsRounded, CameraAltRounded, CheckCircleRounded, ViewInArRounded,
   BugReportRounded, UploadFileRounded, CloseRounded, DoneAllRounded, DeleteOutlineRounded,
+  AutoAwesomeRounded, ErrorOutlineRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import type { MockNotification, NotifType } from '@/data/mockData';
+import { formatNotificationTime } from '@/utils/notificationTime';
 
 const NAV_OFFSET = 56;
 
@@ -23,6 +25,8 @@ const notifIcon: Record<NotifType, React.ReactNode> = {
   floor_plan_deleted:  <DeleteOutlineRounded sx={{ fontSize: 15 }} />,
   review_approved:     <CheckCircleRounded sx={{ fontSize: 15 }} />,
   review_rejected:     <CloseRounded sx={{ fontSize: 15 }} />,
+  progress_analysis_complete: <AutoAwesomeRounded sx={{ fontSize: 15 }} />,
+  progress_analysis_failed:   <ErrorOutlineRounded sx={{ fontSize: 15 }} />,
 };
 const notifColor: Record<NotifType, string> = {
   capture_uploaded:    '#2563eb',
@@ -33,6 +37,8 @@ const notifColor: Record<NotifType, string> = {
   floor_plan_deleted:  '#dc2626',
   review_approved:     '#16a34a',
   review_rejected:     '#dc2626',
+  progress_analysis_complete: '#7c3aed',
+  progress_analysis_failed:   '#dc2626',
 };
 
 function NotificationPanel({
@@ -141,7 +147,7 @@ function NotificationPanel({
                 <Typography sx={{ fontSize: { xs: '0.75rem', sm: '0.75rem' }, color: colors.textMuted, mt: 0.25, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word' }}>
                   {n.body}
                 </Typography>
-                <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, mt: 0.5 }}>{n.createdAt}</Typography>
+                <Typography sx={{ fontSize: '0.6875rem', color: colors.textSubdued, mt: 0.5 }}>{formatNotificationTime(n.createdAt)}</Typography>
               </Box>
               <Box
                 className="notif-delete"

@@ -243,6 +243,8 @@ export interface AnalyzeJob {
   startedAt?: string | null;
   completedAt?: string | null;
   updatedAt?: string | null;
+  /** True when the user chose "Run in background": the server notifies when it finishes. */
+  runInBackground?: boolean;
 }
 
 async function unwrap<T>(promise: Promise<{ data: ApiResponse<T> }>): Promise<T> {
@@ -263,13 +265,22 @@ export const constructionProgressService = {
     return unwrap(apiClient.get(`/construction-progress/floors/${floorId}`));
   },
 
-  analyzeFloor(floorId: string): Promise<AnalyzeJob> {
+  analyzeFloor(floorId: string, opts: { background?: boolean } = {}): Promise<AnalyzeJob> {
     // Starts a background job — the HTTP call returns immediately. Poll
     // getAnalyzeJob / getActiveAnalyzeJob until completed|failed.
+    // background=true additionally asks the server to notify when it finishes.
     return unwrap(
       apiClient.post(`/construction-progress/floors/${floorId}/analyze`, undefined, {
         timeout: 60_000,
+        params: opts.background ? { background: true } : undefined,
       }),
+    );
+  },
+
+  /** Turn a running (foreground) analysis into a background one: notify me when it is done. */
+  continueAnalyzeInBackground(floorId: string, jobId: string): Promise<AnalyzeJob> {
+    return unwrap(
+      apiClient.put(`/construction-progress/floors/${floorId}/analyze/jobs/${jobId}/background`, {}),
     );
   },
 

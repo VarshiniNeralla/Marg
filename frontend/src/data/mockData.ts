@@ -215,7 +215,7 @@ export interface MockDefect {
 export const mockDefects: MockDefect[] = [];
 
 // ── Notifications ─────────────────────────────────────────────────────────────
-export type NotifType = 'capture_uploaded' | 'review_requested' | 'tour_published' | 'defect_assigned' | 'floor_plan_uploaded' | 'floor_plan_deleted' | 'review_approved' | 'review_rejected';
+export type NotifType = 'capture_uploaded' | 'review_requested' | 'tour_published' | 'defect_assigned' | 'floor_plan_uploaded' | 'floor_plan_deleted' | 'review_approved' | 'review_rejected' | 'progress_analysis_complete' | 'progress_analysis_failed';
 
 export interface MockNotification {
   id: string;

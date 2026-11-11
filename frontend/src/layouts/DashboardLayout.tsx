@@ -21,6 +21,7 @@ import { initUploadNow } from '@store/uploadNow';
 // Registers the "use the floor plan saved on this phone first" lookup before any page shows a plan.
 import '@store/offlinePlanStore';
 import UploadNowPanel from '@shared/components/UploadNow/UploadNowPanel';
+import BackgroundAnalysisWatcher from '@shared/components/BackgroundAnalysis/BackgroundAnalysisWatcher';
 import { pendingFileUploadCount } from '@store/fileUploadQueue';
 import { pendingWriteCount, failedWriteCount } from '@store/writeQueue';
 import NotificationCenter from '@/shared/components/NotificationCenter/NotificationCenter';
@@ -502,6 +503,7 @@ Log out?`,
       </Box>
 
       <UploadNowPanel />
+      <BackgroundAnalysisWatcher />
 
       {/* Account menu */}
       <Menu
