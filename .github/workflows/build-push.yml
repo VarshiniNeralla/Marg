@@ -1,0 +1,153 @@
+name: Build and push images
+
+# Pushes sha-<7char> tags only. NEVER push "latest": ECR tags are immutable
+# except latest, and deploys must reference an exact, traceable tag.
+# (Existing manual tags are vN; sha-* tags never collide with them.)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: build-push-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
+
+jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.backend }}
+      frontend: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.frontend }}
+      tag: sha-${{ steps.sha.outputs.short }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+            frontend:
+              - 'frontend/**'
+
+  backend:
+    name: Push backend image
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      tag: ${{ needs.changes.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - name: Skip if tag already exists (immutable tags)
+        id: exists
+        run: |
+          if aws ecr describe-images --repository-name sitevision-backend \
+               --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::sitevision-backend:$TAG already exists, skipping push"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          TAG: ${{ needs.changes.outputs.tag }}
+      - name: Build and push
+        id: build
+        if: steps.exists.outputs.exists != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: true
+          provenance: false
+          tags: ${{ vars.ECR_REGISTRY }}/sitevision-backend:${{ needs.changes.outputs.tag }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+      - name: Summary
+        run: |
+          {
+            echo "### Backend image"
+            echo "- Repository: \`sitevision-backend\`"
+            echo "- Tag: \`$TAG\`"
+            echo "- Digest: \`${DIGEST:-already existed, not rebuilt}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          TAG: ${{ needs.changes.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+  frontend:
+    name: Push frontend image
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      tag: ${{ needs.changes.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - name: Skip if tag already exists (immutable tags)
+        id: exists
+        run: |
+          if aws ecr describe-images --repository-name sitevision-frontend \
+               --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::sitevision-frontend:$TAG already exists, skipping push"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          TAG: ${{ needs.changes.outputs.tag }}
+      - name: Build and push
+        id: build
+        if: steps.exists.outputs.exists != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          push: true
+          provenance: false
+          tags: ${{ vars.ECR_REGISTRY }}/sitevision-frontend:${{ needs.changes.outputs.tag }}
+          build-args: |
+            VITE_API_BASE_URL=${{ vars.VITE_API_BASE_URL || '/' }}
+            VITE_CLOUDINARY_CLOUD_NAME=${{ vars.VITE_CLOUDINARY_CLOUD_NAME }}
+            VITE_CLOUDINARY_UPLOAD_PRESET=${{ vars.VITE_CLOUDINARY_UPLOAD_PRESET }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+      - name: Summary
+        run: |
+          {
+            echo "### Frontend image"
+            echo "- Repository: \`sitevision-frontend\`"
+            echo "- Tag: \`$TAG\`"
+            echo "- Digest: \`${DIGEST:-already existed, not rebuilt}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          TAG: ${{ needs.changes.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}

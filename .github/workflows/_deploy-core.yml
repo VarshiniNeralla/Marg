@@ -1,0 +1,270 @@
+name: Deploy core (reusable)
+
+# Shared by deploy.yml and rollback.yml. Not triggered directly.
+# Flow: verify images exist -> [environment approval] -> stitch pre-check ->
+#       record previous tag -> start.sh <tag> via SSM -> health check ->
+#       on failure auto-rollback to the previous tag and fail the job.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Image tag to run (sha-<7char> or vN)
+        type: string
+        required: true
+      force:
+        description: Bypass the active-stitch-jobs pre-check
+        type: boolean
+        default: false
+      strict:
+        description: Fail (true) or quietly skip (false) when the tag is missing in ECR
+        type: boolean
+        default: true
+      mode:
+        description: Label only - deploy or rollback
+        type: string
+        default: deploy
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
+  EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+  # ASSUMPTION: container names and script path on the host. Adjust if they differ.
+  START_SCRIPT: /opt/sitevision/start.sh
+  BACKEND_CONTAINER: sv-backend
+  FRONTEND_CONTAINER: sv-frontend
+  # TODO(per-service tags): start.sh currently takes ONE tag used for both
+  # services. When it supports separate args, change DEPLOY_ARGS to e.g.
+  # "--backend $BACKEND_TAG --frontend $FRONTEND_TAG" and set those tags.
+  DEPLOY_ARGS_TEMPLATE: '{TAG}'
+
+jobs:
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    outputs:
+      ok: ${{ steps.check.outputs.ok }}
+    steps:
+      - name: Validate tag format
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$TAG" = "latest" ] || ! [[ "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::Invalid or forbidden tag '$TAG' (latest is never deployed)"
+            exit 1
+          fi
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Check both images exist in ECR
+        id: check
+        env:
+          TAG: ${{ inputs.tag }}
+          STRICT: ${{ inputs.strict }}
+        run: |
+          ok=true
+          for repo in sitevision-backend sitevision-frontend; do
+            if ! aws ecr describe-images --repository-name "$repo" \
+                 --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+              echo "::warning::$repo:$TAG not found in ECR"
+              ok=false
+            fi
+          done
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          if [ "$ok" != "true" ] && [ "$STRICT" = "true" ]; then
+            echo "::error::Tag $TAG is missing for at least one service; refusing to deploy"
+            exit 1
+          fi
+          if [ "$ok" != "true" ]; then
+            echo "Skipping deploy: not every service has an image for $TAG (path-filtered build)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  deploy:
+    name: ${{ inputs.mode }} ${{ inputs.tag }}
+    needs: verify
+    if: needs.verify.outputs.ok == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Write SSM helper
+        run: |
+          cat > "$RUNNER_TEMP/ssm.sh" <<'HELPER'
+          # ssm_run "<remote shell script>" "<comment>"
+          # Sets OUT (stdout of the remote command); returns 0 only on Success.
+          ssm_run() {
+            local params="$RUNNER_TEMP/ssm-params.json" id st=Pending i
+            jq -n --arg c "$1" '{commands:[$c], executionTimeout:["900"]}' > "$params"
+            id=$(aws ssm send-command \
+                  --instance-ids "$EC2_INSTANCE_ID" \
+                  --document-name AWS-RunShellScript \
+                  --comment "${2:-github-actions}" \
+                  --parameters "file://$params" \
+                  --query Command.CommandId --output text) || return 1
+            for i in $(seq 1 200); do
+              sleep 5
+              st=$(aws ssm get-command-invocation --command-id "$id" \
+                    --instance-id "$EC2_INSTANCE_ID" --query Status --output text 2>/dev/null || echo Pending)
+              case "$st" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            done
+            OUT=$(aws ssm get-command-invocation --command-id "$id" \
+                    --instance-id "$EC2_INSTANCE_ID" --query StandardOutputContent --output text)
+            echo "$OUT"
+            aws ssm get-command-invocation --command-id "$id" \
+              --instance-id "$EC2_INSTANCE_ID" --query StandardErrorContent --output text >&2 || true
+            echo "SSM command $id finished with status: $st"
+            [ "$st" = "Success" ]
+          }
+
+          # Remote health script for a tag. Retries ~5 minutes.
+          health_script() {
+            cat <<REMOTE
+          TAG='$1'
+          for i in \$(seq 1 30); do
+            ok=1
+            docker exec $BACKEND_CONTAINER python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8002/health/ready', timeout=4).status == 200 else 1)" >/dev/null 2>&1 || ok=0
+            docker exec $FRONTEND_CONTAINER wget -q -O /dev/null http://127.0.0.1:8080/nginx-health >/dev/null 2>&1 || ok=0
+            for c in $BACKEND_CONTAINER $FRONTEND_CONTAINER; do
+              img=\$(docker inspect "\$c" --format '{{.Config.Image}}' 2>/dev/null)
+              [ "\${img##*:}" = "\$TAG" ] || ok=0
+            done
+            if [ \$ok -eq 1 ]; then echo "HEALTHY on tag \$TAG"; exit 0; fi
+            echo "attempt \$i: not healthy yet"; sleep 10
+          done
+          echo "UNHEALTHY after retries"
+          docker ps --format '{{.Names}} {{.Image}} {{.Status}}' || true
+          # Container logs are deliberately NOT printed: this repository is public, so workflow logs are
+          # public. Read them on the host: docker logs sv-backend
+          exit 1
+          REMOTE
+          }
+          HELPER
+
+      - name: Check the instance is online in SSM
+        run: |
+          st=$(aws ssm describe-instance-information \
+                --filters "Key=InstanceIds,Values=$EC2_INSTANCE_ID" \
+                --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)
+          if [ "$st" != "Online" ]; then
+            echo "::error::Instance $EC2_INSTANCE_ID is not Online in SSM (status: ${st:-none}). Is it stopped?"
+            exit 1
+          fi
+
+      - name: Pre-check - refuse deploy if stitch jobs are active
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          source "$RUNNER_TEMP/ssm.sh"
+          # Read-only. Counts capture_stitch_jobs in pending/processing across EVERY tenant
+          # database, using the running backend container's own settings (mirrors
+          # app/db/mongodb.py). Prints only the count, never a connection string.
+          # Fail closed: if the count cannot be obtained, the deploy is refused unless force=true.
+          REMOTE=$(cat <<'REMOTE_EOF'
+          if [ -z "$(docker ps -q -f name=^sv-backend$)" ]; then echo "STITCH_ACTIVE=0 (backend not running)"; exit 0; fi
+          docker exec -i sv-backend python - <<'PYEOF'
+          import asyncio
+          from motor.motor_asyncio import AsyncIOMotorClient
+          from app.core.config import get_settings
+          from app.core.tenancy import TENANTS, multi_tenant_enabled
+
+          async def count(uri, db_name):
+              client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=8000)
+              try:
+                  return await client[db_name]["capture_stitch_jobs"].count_documents(
+                      {"status": {"$in": ["pending", "processing"]}})
+              finally:
+                  client.close()
+
+          async def main():
+              s = get_settings()
+              if multi_tenant_enabled():
+                  targets = [((getattr(s, t.mongo_uri_setting, "") or "").strip(), t.db_name) for t in TENANTS]
+                  targets = [x for x in targets if x[0]]
+              else:
+                  targets = [(s.MONGO_URI, s.DB_NAME)]
+              total = 0
+              for uri, name in targets:
+                  total += await count(uri, name)
+              print("STITCH_ACTIVE=%d" % total)
+
+          asyncio.run(main())
+          PYEOF
+          REMOTE_EOF
+          )
+          STITCH_ACTIVE=unknown
+          if ssm_run "$REMOTE" "sitevision stitch pre-check"; then
+            n=$(echo "$OUT" | grep -o 'STITCH_ACTIVE=[0-9]*' | head -n1 | cut -d= -f2)
+            if [ -n "$n" ]; then STITCH_ACTIVE="$n"; fi
+          fi
+          echo "Stitch pre-check: active=$STITCH_ACTIVE force=$FORCE"
+          echo "Stitch jobs active: $STITCH_ACTIVE" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$STITCH_ACTIVE" != "0" ] && [ "$FORCE" != "true" ]; then
+            echo "::error::Stitch jobs are active or could not be checked (active=$STITCH_ACTIVE). Wait, or re-run with force=true."
+            exit 1
+          fi
+
+      - name: Record previous running tag
+        id: prev
+        run: |
+          source "$RUNNER_TEMP/ssm.sh"
+          ssm_run "docker inspect $BACKEND_CONTAINER --format '{{.Config.Image}}' 2>/dev/null | sed 's/.*://' | sed 's/^/PREV_TAG=/'" "sitevision read previous tag" || true
+          prev=$(echo "$OUT" | grep -o 'PREV_TAG=.*' | head -n1 | cut -d= -f2)
+          if [ -z "$prev" ] || [ "$prev" = "latest" ]; then
+            echo "::warning::Previous tag unknown or 'latest'; auto-rollback will not be possible"
+            prev=""
+          fi
+          echo "PREV_TAG=$prev" >> "$GITHUB_ENV"
+          echo "Previous tag: ${prev:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy via SSM
+        id: deploy
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          source "$RUNNER_TEMP/ssm.sh"
+          args="${DEPLOY_ARGS_TEMPLATE//\{TAG\}/$TAG}"
+          ssm_run "$START_SCRIPT $args" "sitevision ${{ inputs.mode }} $TAG"
+
+      - name: Health check
+        id: health
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          source "$RUNNER_TEMP/ssm.sh"
+          ssm_run "$(health_script "$TAG")" "sitevision health $TAG"
+
+      - name: Roll back on failure
+        if: failure() && steps.deploy.outcome != 'skipped'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          source "$RUNNER_TEMP/ssm.sh"
+          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$TAG" ]; then
+            echo "::error::No distinct previous tag recorded; cannot auto-roll back. Manual action needed."
+            exit 1
+          fi
+          echo "::warning::Deploy of $TAG failed; rolling back to $PREV_TAG"
+          args="${DEPLOY_ARGS_TEMPLATE//\{TAG\}/$PREV_TAG}"
+          ssm_run "$START_SCRIPT $args" "sitevision auto-rollback $PREV_TAG" || echo "::error::start.sh for rollback failed"
+          if ssm_run "$(health_script "$PREV_TAG")" "sitevision rollback health $PREV_TAG"; then
+            echo "Rolled back to $PREV_TAG (healthy). Failed tag: $TAG" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Rollback to $PREV_TAG is NOT healthy. Manual intervention required."
+            echo "ROLLBACK UNHEALTHY ($PREV_TAG)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # The deploy failed, so the job must fail regardless of rollback result.
+          exit 1
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "Deployed ${{ inputs.tag }} (previous: ${PREV_TAG:-unknown})" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,58 @@
+name: Deploy to production
+
+on:
+  workflow_run:
+    workflows: ["Build and push images"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Image tag to deploy (for example sha-abc1234)
+        type: string
+        required: true
+      force:
+        description: Bypass the active-stitch-jobs pre-check
+        type: boolean
+        default: false
+
+# One deploy/rollback at a time across both workflows. Never cancel a running one.
+concurrency:
+  group: sitevision-production-deploy
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve tag
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+    steps:
+      - id: t
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="sha-${HEAD_SHA::7}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: resolve
+    uses: ./.github/workflows/_deploy-core.yml
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}
+      force: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+      # workflow_run: skip quietly if the path-filtered build did not produce both images.
+      # workflow_dispatch: fail loudly.
+      strict: ${{ github.event_name == 'workflow_dispatch' }}
+      mode: deploy
+    secrets: inherit
