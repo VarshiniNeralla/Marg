@@ -22,6 +22,7 @@ import { initUploadNow } from '@store/uploadNow';
 import '@store/offlinePlanStore';
 import UploadNowPanel from '@shared/components/UploadNow/UploadNowPanel';
 import BackgroundAnalysisWatcher from '@shared/components/BackgroundAnalysis/BackgroundAnalysisWatcher';
+import BackgroundAnalysisIndicator from '@shared/components/BackgroundAnalysis/BackgroundAnalysisIndicator';
 import { pendingFileUploadCount } from '@store/fileUploadQueue';
 import { pendingWriteCount, failedWriteCount } from '@store/writeQueue';
 import NotificationCenter from '@/shared/components/NotificationCenter/NotificationCenter';
@@ -504,6 +505,7 @@ Log out?`,
 
       <UploadNowPanel />
       <BackgroundAnalysisWatcher />
+      <BackgroundAnalysisIndicator />
 
       {/* Account menu */}
       <Menu

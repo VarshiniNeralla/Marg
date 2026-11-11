@@ -5,6 +5,7 @@ import { Link, useParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { colors, shadows } from '@theme/tokens';
 import { useBackgroundAnalysisStore } from '@store/backgroundAnalysis';
+import { analysisStageLabel, formatElapsed, softProgressPct } from '@/utils/analysisProgress';
 import {
   constructionProgressService,
   type FloorProgressSnapshot,
@@ -22,28 +23,6 @@ import { exportConstructionProgressExcel } from '@/utils/constructionProgressExc
 
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#ffffff', bg: '#f7f8fa' };
 
-/** Soft stage labels — backend has no live % yet; elapsed time drives which hint we show. */
-function analysisStageLabel(elapsedSec: number): string {
-  if (elapsedSec < 25) return 'Reading floor plan & mapping rooms…';
-  if (elapsedSec < 70) return 'Scoring captures against finishing works…';
-  if (elapsedSec < 150) return 'Building room heatmap & flat summaries…';
-  return 'Finalizing progress report — almost done…';
-}
-
-function formatElapsed(elapsedSec: number): string {
-  const m = Math.floor(elapsedSec / 60);
-  const s = elapsedSec % 60;
-  return m > 0 ? `${m}:${String(s).padStart(2, '0')}` : `${s}s`;
-}
-
-/**
- * Visual progress that keeps moving while we wait on a long sync POST.
- * Asymptotes toward ~92% so it never looks "done" before the server responds.
- */
-function softProgressPct(elapsedSec: number): number {
-  return Math.min(92, Math.round(8 + 84 * (1 - Math.exp(-elapsedSec / 90))));
-}
-
 export default function ConstructionProgressDashboardPage() {
   const { floorId } = useParams<{ floorId: string }>();
   const [loading, setLoading] = useState(true);
@@ -60,7 +39,8 @@ export default function ConstructionProgressDashboardPage() {
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [bgNotice, setBgNotice] = useState<{ text: string; severity: 'success' | 'error' } | null>(null);
   const [reanalyzeInBackground, setReanalyzeInBackground] = useState(false);
-  const trackBackgroundJob = useBackgroundAnalysisStore(s => s.track);
+  // Ask the server for the background list right away so the app-wide indicator appears at once.
+  const refreshBackgroundAnalyses = useBackgroundAnalysisStore(s => s.refresh);
 
   const finishAnalyze = useCallback((ok: boolean, isReanalysis: boolean, error?: string | null) => {
     analyzingRef.current = false;
@@ -240,7 +220,7 @@ export default function ConstructionProgressDashboardPage() {
         return;
       }
       setActiveJobId(job.jobId);
-      trackBackgroundJob({ jobId: job.jobId, floorId, startedAt: Date.now() });
+      void refreshBackgroundAnalyses();
       setBgNotice({ text: BACKGROUND_STARTED_TEXT, severity: 'success' });
       void pollAnalyzeJob(floorId, job.jobId, isReanalysis, { silent: true });
     } catch {
@@ -265,7 +245,7 @@ export default function ConstructionProgressDashboardPage() {
     analyzingRef.current = false;
     setAnalyzing(false);
     setBackgroundRunning(true);
-    trackBackgroundJob({ jobId, floorId, startedAt: Date.now() });
+    void refreshBackgroundAnalyses();
     setBgNotice({ text: BACKGROUND_STARTED_TEXT, severity: 'success' });
     void pollAnalyzeJob(floorId, jobId, isReanalysis, { silent: true });
   };

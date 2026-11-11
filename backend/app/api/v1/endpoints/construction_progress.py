@@ -150,6 +150,35 @@ async def continue_analyze_in_background(
 
 
 @router.get(
+    "/analyze/background",
+    summary="Background analyses that are running or recently finished",
+)
+async def list_background_analyses(ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
+    """Feeds the app-wide "analysis running / ready to open" indicator.
+
+    Admins see every background analysis in their organisation. Managers scoped to
+    specific projects only see runs on floors inside those projects, the same boundary
+    `_assert_floor_access` enforces for the floor routes.
+    """
+    from app.services.construction_progress_analyze_job_service import (
+        ConstructionProgressAnalyzeJobService,
+    )
+
+    jobs = await ConstructionProgressAnalyzeJobService(db).list_background_jobs(org_id=ctx.org_id)
+    accessible = await RBACService(db).get_accessible_project_ids(ctx.user_id, ctx.org_id, ctx.role)
+    if accessible is not None:
+        service = ConstructionProgressService(db)
+        allowed = set(accessible)
+        visible = []
+        for job in jobs:
+            project_id = await service.get_floor_project_id(ctx.org_id, job.get("floorId", ""))
+            if project_id is not None and project_id in allowed:
+                visible.append(job)
+        jobs = visible
+    return success_response(data=jobs)
+
+
+@router.get(
     "/floors/{floor_id}/analyze/jobs/{job_id}",
     summary="Poll a floor progress analysis job",
 )

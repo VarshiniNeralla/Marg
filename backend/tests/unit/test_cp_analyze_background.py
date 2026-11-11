@@ -182,6 +182,66 @@ async def test_a_notification_failure_never_fails_the_analysis(db, service, monk
     assert (await db[COLLECTION_JOBS].find_one({"_id": job["jobId"]}))["status"] == "completed"
 
 
+def _job(job_id, *, org=ORG, floor="f1", status="processing", background=True, by=None, completed_ago=None, created_ago=0):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    return {
+        "_id": job_id, "orgId": org, "floorId": floor, "analyzedBy": by, "status": status,
+        "runInBackground": background, "notifiedAt": None, "floorLabel": f"Label {job_id}",
+        "createdAt": now - timedelta(minutes=created_ago), "heartbeatAt": now,
+        "completedAt": (now - timedelta(minutes=completed_ago)) if completed_ago is not None else None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_listing_shows_running_and_recently_finished_background_jobs_only(db, service):
+    admin = await _add_user(db, "admin")
+    await db[COLLECTION_JOBS].insert_many([
+        _job("running", status="processing", by=admin, created_ago=1),
+        _job("queued", status="pending", created_ago=2),
+        _job("just-done", status="completed", completed_ago=10, created_ago=15),
+        _job("old-done", status="completed", completed_ago=60 * 5, created_ago=60 * 5 + 3),   # 5h ago: hidden
+        _job("foreground", background=False, status="processing"),                            # not a background run
+        _job("other-org", org=OTHER_ORG, status="processing"),                                # other organisation
+    ])
+    jobs = await service.list_background_jobs(org_id=ORG)
+    assert [j["jobId"] for j in jobs] == ["running", "queued", "just-done"]  # newest first
+    running = jobs[0]
+    assert running["status"] == "processing" and running["runInBackground"] is True
+    assert running["floorLabel"] == "Label running"
+    assert running["startedByName"] == "admin"          # looked up from the users collection
+    assert jobs[1]["startedByName"] is None             # unknown requester is not an error
+
+
+@pytest.mark.asyncio
+async def test_listing_marks_a_dead_background_job_failed_instead_of_running_forever(db, service):
+    from datetime import datetime, timedelta, timezone
+
+    doc = _job("zombie", status="processing", created_ago=120)
+    doc["heartbeatAt"] = datetime.now(timezone.utc) - timedelta(hours=2)
+    await db[COLLECTION_JOBS].insert_one(doc)
+    jobs = await service.list_background_jobs(org_id=ORG)
+    assert [(j["jobId"], j["status"]) for j in jobs] == [("zombie", "failed")]
+
+
+@pytest.mark.asyncio
+async def test_floor_label_is_resolved_when_the_job_is_queued(db, service):
+    await db["projects"].insert_one({"_id": "p1", "orgId": ORG, "name": "Tower Heights"})
+    await db["towers"].insert_one({"_id": "t1", "orgId": ORG, "projectId": "p1", "name": "Tower A"})
+    await db["floors"].insert_one({"_id": FLOOR, "orgId": ORG, "towerId": "t1", "label": "Floor 7"})
+    job = await service.start_analyze(org_id=ORG, floor_id=FLOOR, analyzed_by=REQUESTER, background=True)
+    assert job["floorLabel"] == "Tower Heights · Tower A · Floor 7"
+    stored = await db[COLLECTION_JOBS].find_one({"_id": job["jobId"]})
+    assert stored["floorLabel"] == "Tower Heights · Tower A · Floor 7"
+
+
+@pytest.mark.asyncio
+async def test_unknown_floor_still_queues_with_no_label(db, service):
+    job = await service.start_analyze(org_id=ORG, floor_id="no-such-floor", analyzed_by=REQUESTER, background=True)
+    assert job["floorLabel"] is None and job["status"] == "pending"
+
+
 @pytest.mark.asyncio
 async def test_stale_background_job_notifies_its_requester(db, service):
     from datetime import datetime, timedelta, timezone

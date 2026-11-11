@@ -5,11 +5,11 @@ import { useAuthStore, isManagerOrAdmin } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
 import { useBackgroundAnalysisStore } from '@store/backgroundAnalysis';
 import { notificationService } from '@/services/notificationService';
-import { constructionProgressService } from '@/services/constructionProgressService';
+import { isActiveStatus } from '@/utils/analysisProgress';
 import type { MockNotification, NotifType } from '@/data/mockData';
 
-const IDLE_POLL_MS = 30_000;   // pick up notifications created while the user was elsewhere
-const JOB_POLL_MS = 5_000;     // tracked jobs: notice completion quickly
+const IDLE_POLL_MS = 30_000;   // nothing running: a slow check is enough
+const ACTIVE_POLL_MS = 5_000;  // something is running: notice completion quickly
 const ANALYSIS_TYPES: NotifType[] = ['progress_analysis_complete', 'progress_analysis_failed'];
 
 interface ServerNotification {
@@ -38,9 +38,9 @@ function toMock(n: ServerNotification): MockNotification {
 }
 
 /**
- * Delivers "analysis ready for review" alerts for analyses started with Run in background.
- * Mounted once in the dashboard layout so it keeps working when the user navigates away
- * from the Construction Progress page. Renders nothing except a small snackbar.
+ * Keeps the app-wide background-analysis state fresh and delivers the "ready for review" alert.
+ * Mounted once in the dashboard layout so it keeps working when the user navigates away from
+ * the Construction Progress page. Renders nothing except a snackbar.
  */
 export default function BackgroundAnalysisWatcher() {
   const navigate = useNavigate();
@@ -48,8 +48,11 @@ export default function BackgroundAnalysisWatcher() {
   const allowed = isManagerOrAdmin(user);
   const [alertNotif, setAlertNotif] = useState<MockNotification | null>(null);
   const refreshing = useRef(false);
+  const jobs = useBackgroundAnalysisStore(s => s.jobs);
+  const hasActive = jobs.some(j => isActiveStatus(j.status));
+  const prevActiveIds = useRef<Set<string>>(new Set());
 
-  const refresh = useCallback(async () => {
+  const refreshNotifications = useCallback(async () => {
     if (refreshing.current) return;
     refreshing.current = true;
     try {
@@ -66,50 +69,62 @@ export default function BackgroundAnalysisWatcher() {
   }, []);
 
   // The server inserts the notification just after it flips the job to completed, so look again shortly.
-  const refreshSoon = useCallback(() => {
-    void refresh();
-    window.setTimeout(() => void refresh(), 1_500);
-    window.setTimeout(() => void refresh(), 6_000);
-  }, [refresh]);
+  const refreshNotificationsSoon = useCallback(() => {
+    void refreshNotifications();
+    window.setTimeout(() => void refreshNotifications(), 1_500);
+    window.setTimeout(() => void refreshNotifications(), 6_000);
+  }, [refreshNotifications]);
 
-  // 1) Slow poll + refresh whenever the tab/app comes back to the foreground.
+  // 1) Notifications: slow poll, plus refresh whenever the tab/app comes back to the foreground.
   useEffect(() => {
     if (!allowed) return;
-    void refresh();
+    void refreshNotifications();
     const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') void refresh();
+      if (document.visibilityState === 'visible') void refreshNotifications();
     }, IDLE_POLL_MS);
-    const onVisible = () => { if (document.visibilityState === 'visible') void refresh(); };
+    const onVisible = () => { if (document.visibilityState === 'visible') void refreshNotifications(); };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [allowed, refresh]);
+  }, [allowed, refreshNotifications]);
 
-  // 2) Fast poll for analyses started in this session.
+  // 2) The job list behind the status indicator: 5s while something runs, 30s otherwise.
+  //    Re-created when a run starts or ends, so a freshly started run is picked up at once.
   useEffect(() => {
     if (!allowed) return;
-    const timer = window.setInterval(async () => {
-      const { jobs, untrack } = useBackgroundAnalysisStore.getState();
-      for (const job of Object.values(jobs)) {
-        try {
-          const latest = await constructionProgressService.getAnalyzeJob(job.floorId, job.jobId);
-          if (latest.status === 'completed' || latest.status === 'failed') {
-            untrack(job.jobId);
-            refreshSoon();
-          }
-        } catch {
-          /* keep tracking through brief network blips */
-        }
+    let cancelled = false;
+    let timer: number | undefined;
+    const tick = async () => {
+      if (document.visibilityState === 'visible') {
+        await useBackgroundAnalysisStore.getState().refresh();
       }
-    }, JOB_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [allowed, refreshSoon]);
+      if (!cancelled) timer = window.setTimeout(() => void tick(), hasActive ? ACTIVE_POLL_MS : IDLE_POLL_MS);
+    };
+    void tick();
+    const onVisible = () => { if (document.visibilityState === 'visible') void useBackgroundAnalysisStore.getState().refresh(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [allowed, hasActive]);
 
-  // Do not carry tracked jobs from one signed-in user to the next.
+  // 3) A run that was active and no longer is has just finished: fetch its notification now.
   useEffect(() => {
-    if (!user) useBackgroundAnalysisStore.getState().clear();
+    const nowActive = new Set(jobs.filter(j => isActiveStatus(j.status)).map(j => j.jobId));
+    if ([...prevActiveIds.current].some(id => !nowActive.has(id))) refreshNotificationsSoon();
+    prevActiveIds.current = nowActive;
+  }, [jobs, refreshNotificationsSoon]);
+
+  // Do not carry one signed-in user's state to the next.
+  useEffect(() => {
+    if (!user) {
+      prevActiveIds.current = new Set(); // clearing the list is not "a run finished"
+      useBackgroundAnalysisStore.getState().clear();
+    }
   }, [user]);
 
   if (!allowed) return null;

@@ -5,12 +5,19 @@
  */
 const ISO_LIKE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
 
-export function formatNotificationTime(value: string, now: Date = new Date()): string {
-  if (!value || !ISO_LIKE.test(value)) return value;
+/** Epoch ms for a server timestamp, or null if it is missing or not a date. A bare timestamp is UTC. */
+export function parseServerTime(value: string | null | undefined): number | null {
+  if (!value || !ISO_LIKE.test(value)) return null;
   // Server timestamps are UTC; Mongo may drop the offset, so treat a bare one as UTC.
   const hasZone = /(Z|[+-]\d{2}:?\d{2})$/.test(value);
-  const when = new Date(hasZone ? value : `${value.replace(' ', 'T')}Z`);
-  if (Number.isNaN(when.getTime())) return value;
+  const ms = new Date(hasZone ? value : `${value.replace(' ', 'T')}Z`).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+export function formatNotificationTime(value: string, now: Date = new Date()): string {
+  const ms = parseServerTime(value);
+  if (ms === null) return value;
+  const when = new Date(ms);
 
   const diffMin = Math.round((now.getTime() - when.getTime()) / 60_000);
   if (diffMin < 1) return 'Just now';
