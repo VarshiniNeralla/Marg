@@ -245,6 +245,14 @@ export interface AnalyzeJob {
   updatedAt?: string | null;
   /** True when the user chose "Run in background": the server notifies when it finishes. */
   runInBackground?: boolean;
+  /** "Project · Tower · Floor", resolved by the server when the analysis is queued. */
+  floorLabel?: string | null;
+  overallProgressPct?: number | null;
+}
+
+/** A background analysis as listed for the app-wide status indicator. */
+export interface BackgroundAnalysisJob extends AnalyzeJob {
+  startedByName?: string | null;
 }
 
 async function unwrap<T>(promise: Promise<{ data: ApiResponse<T> }>): Promise<T> {
@@ -275,6 +283,11 @@ export const constructionProgressService = {
         params: opts.background ? { background: true } : undefined,
       }),
     );
+  },
+
+  /** Background analyses that are running or finished recently (admins: whole org; managers: their projects). */
+  listBackgroundAnalyses(): Promise<BackgroundAnalysisJob[]> {
+    return unwrap(apiClient.get('/construction-progress/analyze/background'));
   },
 
   /** Turn a running (foreground) analysis into a background one: notify me when it is done. */

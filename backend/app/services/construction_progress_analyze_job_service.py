@@ -59,6 +59,8 @@ def _serialize_job(doc: dict[str, Any]) -> dict[str, Any]:
         "completedAt": doc.get("completedAt"),
         "updatedAt": doc.get("updatedAt"),
         "runInBackground": bool(doc.get("runInBackground")),
+        "floorLabel": doc.get("floorLabel"),
+        "overallProgressPct": doc.get("overallProgressPct"),
     }
 
 
@@ -103,6 +105,8 @@ class ConstructionProgressAnalyzeJobService:
 
         job_id = str(uuid.uuid4())
         now = _utcnow()
+        # Known up front so the "analysis running" indicator can say WHICH floor.
+        floor_label = await self._context_label(org_id, floor_id)
         await self._db[COLLECTION_JOBS].insert_one(
             {
                 "_id": job_id,
@@ -120,7 +124,7 @@ class ConstructionProgressAnalyzeJobService:
                 # Background mode: notify when done. notifiedAt makes that exactly-once.
                 "runInBackground": bool(background),
                 "notifiedAt": None,
-                "floorLabel": None,
+                "floorLabel": floor_label,
                 "overallProgressPct": None,
             }
         )
@@ -138,8 +142,78 @@ class ConstructionProgressAnalyzeJobService:
                 "completedAt": None,
                 "updatedAt": now,
                 "runInBackground": bool(background),
+                "floorLabel": floor_label,
             }
         )
+
+    async def list_background_jobs(
+        self,
+        *,
+        org_id: str,
+        finished_within: timedelta = timedelta(hours=2),
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Background analyses an admin should see in the app-wide indicator: everything
+        still running plus whatever finished recently (so "ready, open it" is not lost
+        when the browser was closed). Newest first, each with who started it."""
+        # A run that died without a heartbeat would otherwise look "running" forever.
+        active = await self._db[COLLECTION_JOBS].find(
+            {"orgId": org_id, "runInBackground": True, "status": {"$in": list(_ACTIVE_STATUSES)}},
+            {"floorId": 1},
+        ).to_list(length=100)
+        for floor_id in {d.get("floorId") for d in active if d.get("floorId")}:
+            await self._fail_stale_jobs(org_id=org_id, floor_id=floor_id)
+
+        cutoff = _utcnow() - finished_within
+        docs = await self._db[COLLECTION_JOBS].find(
+            {
+                "orgId": org_id,
+                "runInBackground": True,
+                "$or": [
+                    {"status": {"$in": list(_ACTIVE_STATUSES)}},
+                    {"completedAt": {"$gte": cutoff}},
+                ],
+            }
+        ).sort("createdAt", -1).to_list(length=limit)
+
+        names = await self._user_names([d.get("analyzedBy") for d in docs])
+        out = []
+        for d in docs:
+            item = _serialize_job(d)
+            item["startedByName"] = names.get(str(d.get("analyzedBy") or ""))
+            out.append(item)
+        return out
+
+    async def _user_names(self, user_ids: list[Any]) -> dict[str, str]:
+        ids = {str(u) for u in user_ids if u}
+        if not ids:
+            return {}
+        try:
+            keys: list[Any] = []
+            for uid in ids:
+                keys.append(uid)
+                if ObjectId.is_valid(uid):
+                    keys.append(ObjectId(uid))
+            found: dict[str, str] = {}
+            async for u in self._db[COLLECTION_USERS].find({"_id": {"$in": keys}}, {"name": 1}):
+                if u.get("name"):
+                    found[str(u["_id"])] = str(u["name"])
+            return found
+        except Exception as exc:
+            logger.warning("[cp-analyze-job] could not look up user names: {!r}", exc)
+            return {}
+
+    async def _context_label(self, org_id: str, floor_id: str) -> Optional[str]:
+        """"Project · Tower · Floor" for a floor, or None when it cannot be resolved."""
+        try:
+            ctx = await ConstructionProgressService(self._db)._get_floor_context(org_id, floor_id)
+            if ctx:
+                return " · ".join(
+                    str(p) for p in (ctx.get("projectName"), ctx.get("towerName"), ctx.get("floorLabel")) if p
+                ) or None
+        except Exception as exc:
+            logger.warning("[cp-analyze-job] could not resolve floor label floor={}: {!r}", floor_id, exc)
+        return None
 
     async def mark_background(
         self, *, org_id: str, floor_id: str, job_id: str,

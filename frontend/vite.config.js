@@ -19,6 +19,11 @@ export default defineConfig({
       '@pages': resolve(__dirname, 'src/pages'),
     },
   },
+  // Vitest only (ignored by `vite build`): MUI ships ESM that Node cannot resolve by itself,
+  // so let Vite transform it when components are rendered in tests.
+  test: {
+    server: { deps: { inline: [/@mui\//, /react-transition-group/] } },
+  },
   server: {
     host: true, // expose on LAN so others can open http://<your-ip>:5173
     port: 5173,
