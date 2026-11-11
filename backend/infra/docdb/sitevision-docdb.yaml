@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SiteVision production database on Amazon DocumentDB (MongoDB compatible), private to the SiteVision EC2 security group.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  AppSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group of the SiteVision EC2 instance (only source allowed in).
+  MinCapacity:
+    Type: Number
+    Default: 1
+  MaxCapacity:
+    Type: Number
+    Default: 4
+
+Resources:
+  DocDbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SiteVision DocumentDB - port 27017 from the app security group only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 27017
+          ToPort: 27017
+          SourceSecurityGroupId: !Ref AppSecurityGroupId
+          Description: SiteVision app to DocumentDB
+      Tags:
+        - Key: Name
+          Value: sitevision-docdb-sg
+
+  DocDbSubnetGroup:
+    Type: AWS::DocDB::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: SiteVision DocumentDB subnets
+      SubnetIds: !Ref SubnetIds
+
+  DocDbClusterParameterGroup:
+    Type: AWS::DocDB::DBClusterParameterGroup
+    Properties:
+      Description: SiteVision DocumentDB cluster parameters (TLS enforced)
+      Family: docdb8.0
+      Parameters:
+        tls: enabled
+
+  DocDbCluster:
+    Type: AWS::DocDB::DBCluster
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBClusterIdentifier: sitevision-prod
+      EngineVersion: 8.0.0
+      MasterUsername: svadmin
+      ManageMasterUserPassword: true
+      DBSubnetGroupName: !Ref DocDbSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DocDbSecurityGroup
+      DBClusterParameterGroupName: !Ref DocDbClusterParameterGroup
+      StorageEncrypted: true
+      BackupRetentionPeriod: 7
+      DeletionProtection: true
+      EnableCloudwatchLogsExports:
+        - audit
+        - profiler
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: !Ref MinCapacity
+        MaxCapacity: !Ref MaxCapacity
+      Tags:
+        - Key: Name
+          Value: sitevision-prod
+        - Key: app
+          Value: sitevision
+
+  DocDbInstance:
+    Type: AWS::DocDB::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DocDbCluster
+      DBInstanceClass: db.serverless
+      DBInstanceIdentifier: sitevision-prod-1
+      Tags:
+        - Key: app
+          Value: sitevision
+
+Outputs:
+  ClusterEndpoint:
+    Value: !GetAtt DocDbCluster.Endpoint
+  Port:
+    Value: !GetAtt DocDbCluster.Port
+  SecurityGroupId:
+    Value: !Ref DocDbSecurityGroup
