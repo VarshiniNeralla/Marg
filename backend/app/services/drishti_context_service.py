@@ -20,7 +20,8 @@ from typing import Any, Optional
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.services.construction_progress_service import ConstructionProgressService
+from app.services.construction_progress_providers.progress_aggregation import activity_pct
+from app.services.construction_progress_service import ConstructionProgressService, present_snapshot_doc
 
 _SNAPSHOT_COLLECTION = "construction_progress_snapshots"
 _COMMON_AREA_FLAT = "Common Area"
@@ -391,18 +392,28 @@ class DrishtiContextService:
                     "commonAreaName": unit_name,
                     "activityName": activity.get("activityName"),
                     "activityId": activity.get("activityId"),
-                    "completionPct": activity.get("completionPct"),
+                    "completionPct": activity_pct(activity),
                     "status": activity.get("status"),
-                    "confidencePct": activity.get("confidencePct"),
+                    "assessmentStatus": activity.get("assessmentStatus"),
+                    "detectionType": activity.get("detectionType"),
+                    "override": activity.get("override"),
+                    "reviewRequired": activity.get("reviewRequired"),
                     "evidence": activity.get("evidence") or "",
                     "capturesCount": captures_count,
                 })
-                if activity.get("status") in _ASSESSED_STATUSES:
-                    assessed_pcts.append(float(activity.get("completionPct") or 0.0))
+                observed = activity_pct(activity)
+                if observed is not None and activity.get("status") in _ASSESSED_STATUSES:
+                    assessed_pcts.append(float(observed))
 
         result["units"] = units
         result["uncapturedUnits"] = uncaptured_units
         result["overallCompletionPct"] = round(sum(assessed_pcts) / len(assessed_pcts), 1) if assessed_pcts else None
+        result["overallMeaning"] = (
+            "estimate: mean over the activities that could be observed in the units listed; "
+            "activities with completionPct null are unknown and are NOT counted as 0"
+        )
+        result["observedActivities"] = len(assessed_pcts)
+        result["unknownActivities"] = sum(1 for u in units if u["completionPct"] is None)
 
         if not any_unit_at_all:
             result["resolutionStatus"] = "not_configured"
@@ -460,9 +471,12 @@ class DrishtiContextService:
             {
                 "activityName": a.get("activityName"),
                 "activityId": a.get("activityId"),
-                "completionPct": a.get("completionPct"),
+                "completionPct": activity_pct(a),
                 "status": a.get("status"),
-                "confidencePct": a.get("confidencePct"),
+                "assessmentStatus": a.get("assessmentStatus"),
+                "detectionType": a.get("detectionType"),
+                "override": a.get("override"),
+                "reviewRequired": a.get("reviewRequired"),
                 "evidence": a.get("evidence") or "",
             }
             for a in room.get("activities", [])
@@ -487,7 +501,9 @@ class DrishtiContextService:
         ]
         latest_by_floor: dict[str, dict[str, Any]] = {}
         async for row in self._db[_SNAPSHOT_COLLECTION].aggregate(pipeline):
-            latest_by_floor[str(row["_id"])] = row["doc"]
+            # Same calculation + UTC dates as the dashboard / single-floor read, so a
+            # project or tower answer never quotes a stale stored number.
+            latest_by_floor[str(row["_id"])] = present_snapshot_doc(row["doc"])
         return latest_by_floor
 
     async def find_activity_across_project(
@@ -586,7 +602,7 @@ class DrishtiContextService:
             all_assessed_pcts.extend(
                 float(u["completionPct"]) for u in floor_result["units"]
                 if u.get("status") in _ASSESSED_STATUSES and u.get("completionPct") is not None
-            )
+            )  # unknown activities carry completionPct None and are skipped, never counted as 0
 
         floors_analyzed = sum(1 for e in floor_entries if snapshots.get(e["floorId"]))
         if not floor_entries:
@@ -604,6 +620,7 @@ class DrishtiContextService:
             "activityIds": ids,
             "byFloor": by_floor,
             "overallCompletionPct": round(sum(all_assessed_pcts) / len(all_assessed_pcts), 1) if all_assessed_pcts else None,
+            "overallMeaning": "estimate: mean over observed activities only; unknown activities are not counted as 0",
             "floorsSearched": len(floor_entries),
             "floorsAnalyzed": floors_analyzed,
             "resolutionStatus": resolution_status,
@@ -634,11 +651,14 @@ class DrishtiContextService:
         activities_assessed = 0
         activities_not_assessed = 0
         activities_not_observable = 0
+        activities_unable = 0
         for flat in flats:
             for room in flat.get("rooms", []):
                 for activity in room.get("activities", []):
                     activities_configured += 1
                     status = activity.get("status")
+                    if activity.get("assessmentStatus") == "unable_to_determine":
+                        activities_unable += 1
                     if status == "not_assessed":
                         activities_not_assessed += 1
                     elif status == "not_observable":
@@ -657,6 +677,7 @@ class DrishtiContextService:
             "activitiesAssessed": activities_assessed,
             "activitiesNotAssessed": activities_not_assessed,
             "activitiesNotObservable": activities_not_observable,
+            "activitiesUnableToDetermine": activities_unable,
             "coveragePct": coverage_pct,
             "analyzed": True,
         }

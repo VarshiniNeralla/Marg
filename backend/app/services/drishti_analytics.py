@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from app.services.construction_progress_providers.progress_aggregation import activity_pct
+
 _COMMON_AREA_FLAT = "Common Area"
 
 # Activity statuses that carry a real progress signal — mirrors
@@ -61,12 +63,16 @@ def rank_activities(
             "activityId": activity.get("activityId"),
             "roomName": room_name,
             "flatName": room_flat_name,
-            "completionPct": float(activity.get("completionPct") or 0.0),
+            "completionPct": activity_pct(activity),
             "status": status,
+            "assessmentStatus": activity.get("assessmentStatus"),
+            "detectionType": activity.get("detectionType"),
+            "override": activity.get("override"),
+            "reviewRequired": activity.get("reviewRequired"),
             "evidence": activity.get("evidence") or "",
         })
     reverse = direction != "slowest"
-    items.sort(key=lambda x: x["completionPct"], reverse=reverse)
+    items.sort(key=lambda x: float(x["completionPct"] or 0.0), reverse=reverse)
     return items
 
 
@@ -93,8 +99,12 @@ def list_activities_by_status(
             "activityId": activity.get("activityId"),
             "roomName": room_name,
             "flatName": room_flat_name,
-            "completionPct": float(activity.get("completionPct") or 0.0),
+            "completionPct": activity_pct(activity),
             "status": status,
+            "assessmentStatus": activity.get("assessmentStatus"),
+            "detectionType": activity.get("detectionType"),
+            "override": activity.get("override"),
+            "reviewRequired": activity.get("reviewRequired"),
             "evidence": activity.get("evidence") or "",
         })
     items.sort(key=lambda x: (x["activityName"] or "", x["flatName"] or "", x["roomName"] or ""))
@@ -166,8 +176,11 @@ def list_floor_level_activities_by_status(
                 "floorId": floor_id,
                 "floorName": floor_name,
                 "status": status,
-                "completionPct": float(activity.get("completionPct") or 0.0),
-                "confidencePct": activity.get("confidencePct"),
+                # unknown stays None - "could not tell" is not 0%
+                "completionPct": activity_pct(activity),
+                "assessmentStatus": activity.get("assessmentStatus"),
+                "detectionType": activity.get("detectionType"),
+                "reviewRequired": activity.get("reviewRequired"),
                 "section": act_section,
                 "grain": "floor_rollup",
             })
@@ -193,6 +206,9 @@ def rank_flats(
         {
             "flatName": f.get("flatName"),
             "completionPct": float(f.get("completionPct") or 0.0),
+            "estimatePct": f.get("estimatePct"),
+            "coveragePct": f.get("coveragePct"),
+            "scopeStatus": f.get("scopeStatus"),
             "roomsComplete": f.get("roomsComplete"),
             "roomsTotal": f.get("roomsTotal"),
         }
@@ -219,15 +235,26 @@ def rank_common_areas(
 
     items: list[dict[str, Any]] = []
     for room in common_flat.get("rooms", []):
-        rankable = [
-            a for a in room.get("activities", []) if a.get("status") in _RANKABLE_STATUSES
-        ]
-        if not rankable:
+        if room.get("progressPct") is not None:
+            # The engine's own room number (counted progress) - never re-derived here.
+            if not int(room.get("capturesCount") or 0):
+                continue
+            items.append({
+                "commonAreaName": room.get("roomName"),
+                "completionPct": float(room["progressPct"]),
+                "estimatePct": room.get("estimatePct"),
+                "coveragePct": room.get("coveragePct"),
+                "roomStatus": room.get("status"),
+                "capturesCount": room.get("capturesCount", 0),
+            })
             continue
-        mean_pct = sum(float(a.get("completionPct") or 0.0) for a in rankable) / len(rankable)
+        # Older snapshot without engine room numbers: mean of the observed activities.
+        observed = [p for p in (activity_pct(a) for a in room.get("activities", [])) if p is not None]
+        if not observed:
+            continue
         items.append({
             "commonAreaName": room.get("roomName"),
-            "completionPct": round(mean_pct, 1),
+            "completionPct": round(sum(observed) / len(observed), 1),
             "capturesCount": room.get("capturesCount", 0),
         })
     reverse = direction != "least_progressed"
@@ -242,7 +269,7 @@ def rank_unfinished_work(
     completionPct < threshold_pct, sorted ascending (least complete = most
     urgent first). Adds `gapPct` (100 - completionPct) for direct display."""
     items = rank_activities(rooms, direction="slowest", flat_name=flat_name)
-    items = [i for i in items if i["completionPct"] < threshold_pct]
+    items = [i for i in items if i["completionPct"] is not None and i["completionPct"] < threshold_pct]
     for item in items:
         item["gapPct"] = round(100.0 - item["completionPct"], 1)
     return items

@@ -7,6 +7,7 @@ comparison views.
 """
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timezone
 from typing import Any
 
@@ -213,6 +214,25 @@ def finishing_summaries(flat_progress: list[dict[str, Any]]) -> tuple[dict[str, 
     flat_summary = floor_finishing_summary(flats)
     common_summary = floor_finishing_summary(common)
     return flat_summary, common_summary, blended_floor_pct(flat_summary, common_summary)
+
+
+def present_snapshot_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """In-memory copy of a stored snapshot with the current calculation applied and UTC dates.
+
+    Same recalculation the dashboard read path performs, but without persisting, so callers that read many
+    snapshots at once (Drishti's project/tower rollups) agree with the dashboard on every number.
+    """
+    out = copy.deepcopy(doc)
+    flats = list(out.get("flatProgress") or [])
+    heal_flat_progress_coverage(flats, list(out.get("heatmapPins") or []))
+    recompute_flat_finishing_pcts(flats)
+    flat_summary, common_summary, overall = finishing_summaries(flats)
+    out["flatProgress"] = flats
+    out["flatFinishing"] = flat_summary
+    out["commonFinishing"] = common_summary
+    if flats:
+        out["overallProgressPct"] = overall
+    return iso_utc_walk(out)
 
 
 _DISAMBIGUATE_BASES = frozenset({"dress", "sit-out", "balcony"})

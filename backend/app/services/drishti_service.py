@@ -31,6 +31,7 @@ from app.services.llm_usage_service import LLMUsageService
 from app.services.drishti_context_service import DrishtiContextService, _COMMON_AREA_FLAT, _find_flat
 from app.services.drishti_forecast_service import DrishtiForecastService
 from app.services.drishti_prompts import DRISHTI_ANSWER_PROMPT
+from app.services.drishti_view import prepare_payload_for_llm
 from app.services.drishti_query_planner import DrishtiQueryPlanner, QueryPlan
 
 _COLLECTION = "drishti_conversations"
@@ -664,7 +665,7 @@ class DrishtiService:
             f"{m['role']}: {m['content']}" for m in recent_messages
         )
         user_prompt = (
-            f"Facts payload (JSON):\n{json.dumps(facts_payload, default=str)}\n\n"
+            f"Facts payload (JSON):\n{json.dumps(prepare_payload_for_llm(facts_payload), default=str)}\n\n"
             f"Recent conversation:\n{history_text}\n\n"
             f"Question: {question}"
         )
@@ -786,6 +787,8 @@ def _trim_floor_snapshot(snapshot: Optional[dict[str, Any]]) -> Optional[dict[st
         "overallStatus": snapshot.get("overallStatus"),
         "executiveSummary": snapshot.get("executiveSummary"),
         "summaryCards": snapshot.get("summaryCards"),
+        "flatFinishing": snapshot.get("flatFinishing"),
+        "commonFinishing": snapshot.get("commonFinishing"),
         "flatProgress": snapshot.get("flatProgress"),
         "snapshotDate": snapshot.get("snapshotDate"),
     }

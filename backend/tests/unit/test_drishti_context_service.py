@@ -655,7 +655,12 @@ class TestGetCommonAreaCategoryStatus:
 class TestGetCommonAreaCategoryStatusAcrossProject:
     @pytest.mark.asyncio
     async def test_aggregates_per_floor_across_project(self):
-        db = _make_db([], [], [_LIFT_LOBBY_SNAPSHOT])
+        # Batched reads apply the dashboard's coverage heal, which follows the frozen map pins.
+        pins = [
+            {"flatName": "Common Area", "roomName": "Lift Lobby", "x": 10, "y": 10, "sequenceNumber": 1, "capturesCount": 4},
+            {"flatName": "Common Area", "roomName": "Corridor", "x": 20, "y": 20, "sequenceNumber": 2, "capturesCount": 3},
+        ]
+        db = _make_db([], [], [{**_LIFT_LOBBY_SNAPSHOT, "heatmapPins": pins}])
         service = DrishtiContextService(db)
 
         result = await service.get_common_area_category_status_across_project(
