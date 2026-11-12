@@ -316,6 +316,20 @@ _LOCATION_ACTIVITIES_PATTERN = re.compile(
 _LOCATION_SIGNAL_PATTERN = re.compile(r"\b(?:in|at|for)\s+(?:the\s+)?\w", re.IGNORECASE)
 
 
+# "Which activity is progressing faster / slowest / ahead / behind": a ranking over ACTIVITIES. Written to
+# survive typos ("progressinf") because the classifier model sometimes returns "general" for these.
+_ACTIVITY_RANKING_PATTERN = re.compile(
+    r"\bactivit(?:y|ies)\b.*\b(?:fast\w*|slow\w*|ahead|behind|lagg?\w*|most|least|best|worst|furthest)\b"
+    r"|\b(?:fast\w*|slow\w*|ahead|behind|lagg?\w*|most|least|best|worst|furthest)\b.*\bactivit(?:y|ies)\b",
+    re.IGNORECASE,
+)
+_RANK_SLOW_WORDS = re.compile(r"\b(?:slow\w*|behind|lagg?\w*|least|worst)\b", re.IGNORECASE)
+
+
+def _scan_question_for_ranking_direction(question: str) -> str:
+    return "slowest" if _RANK_SLOW_WORDS.search(question) else "fastest"
+
+
 def _correct_intent_from_question(intent: str, question: str) -> str:
     """Deterministic post-classification correction for the two patterns
     confirmed to trip up the classifier in practice: a question that
@@ -331,6 +345,12 @@ def _correct_intent_from_question(intent: str, question: str) -> str:
     progress" (no location named at all) is a legitimate activity_list
     question and must NOT be corrected just because "which"/"activities"
     both appear — only "...OTHER activities...IN <place>" should."""
+    if (
+        _ACTIVITY_RANKING_PATTERN.search(question)
+        and not _COMMON_AREA_ACTIVITY_PATTERN.search(question)
+        and intent in ("general", "project_overview", "activity_status", "unfinished_work")
+    ):
+        return "activity_ranking"
     if _COMMON_AREA_ACTIVITY_PATTERN.search(question) and intent in ("activity_status", "common_area_status"):
         return "common_area_activity_status"
     if (
@@ -483,6 +503,8 @@ class DrishtiQueryPlanner:
 
         ranking_target = scope_hints.get("rankingTarget") or None
         ranking_direction = scope_hints.get("rankingDirection") or None
+        if not ranking_direction and intent == "activity_ranking":
+            ranking_direction = _scan_question_for_ranking_direction(question)
         raw_statuses = scope_hints.get("activityListStatuses") or []
         activity_list_statuses = [s for s in raw_statuses if s in _VALID_ACTIVITY_LIST_STATUSES]
 

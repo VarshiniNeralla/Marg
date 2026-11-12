@@ -76,6 +76,50 @@ def rank_activities(
     return items
 
 
+def rank_activity_types(
+    rooms: list[dict[str, Any]], direction: str = "fastest", *, activity_ids: Optional[list[str]] = None,
+) -> list[dict[str, Any]]:
+    """One row per ACTIVITY (not per room): how far along each activity is across the given rooms.
+
+    Answers "which activity is progressing faster / slowest". Only activities that were actually
+    observed in a room count; unknown results are never averaged in as 0. There is a single snapshot,
+    so "faster" means "further along", not a rate over time - the row says so via `rankedBy`.
+    """
+    wanted = set(activity_ids or [])
+    groups: dict[str, dict[str, Any]] = {}
+    for room_name, room_flat_name, activity in _iter_room_activities(rooms):
+        aid = str(activity.get("activityId") or "")
+        if not aid or (wanted and aid not in wanted):
+            continue
+        g = groups.setdefault(aid, {
+            "activityId": aid, "activityName": activity.get("activityName") or activity.get("name"),
+            "pcts": [], "unknown": 0, "completed": 0, "inProgress": 0, "notStarted": 0, "needsReview": 0,
+        })
+        pct = activity_pct(activity) if activity.get("status") in _RANKABLE_STATUSES else None
+        if pct is None:
+            g["unknown"] += 1
+            continue
+        g["pcts"].append(pct)
+        g["completed"] += pct >= 100.0
+        g["inProgress"] += 0.0 < pct < 100.0
+        g["notStarted"] += pct <= 0.0
+        g["needsReview"] += bool(activity.get("reviewRequired"))
+    items = []
+    for g in groups.values():
+        if not g["pcts"]:
+            continue
+        items.append({
+            "activityId": g["activityId"], "activityName": g["activityName"],
+            "averageCompletionPct": round(sum(g["pcts"]) / len(g["pcts"]), 1),
+            "roomsObserved": len(g["pcts"]), "roomsCompleted": g["completed"],
+            "roomsInProgress": g["inProgress"], "roomsNotStarted": g["notStarted"],
+            "roomsUnknown": g["unknown"], "roomsNeedingReview": g["needsReview"],
+            "rankedBy": "average completion over the rooms where the activity was observed",
+        })
+    items.sort(key=lambda x: (x["averageCompletionPct"], x["roomsObserved"]), reverse=direction != "slowest")
+    return items
+
+
 def list_activities_by_status(
     rooms: list[dict[str, Any]], statuses: list[str], *, flat_name: Optional[str] = None,
 ) -> list[dict[str, Any]]:

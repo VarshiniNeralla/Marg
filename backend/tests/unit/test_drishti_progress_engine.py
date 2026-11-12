@@ -311,3 +311,91 @@ def test_prompt_no_longer_calls_unclear_photos_missing_coverage():
 
 def test_classifier_maps_new_wordings_to_existing_statuses():
     assert "unable to determine" in DRISHTI_CLASSIFIER_PROMPT and "mostly complete" in DRISHTI_CLASSIFIER_PROMPT
+
+
+# --- "which activity is progressing faster" (no activity named, no floor named) -----------------------
+
+def _rooms_for_ranking():
+    return [
+        {"roomName": "Living", "flatName": "Flat 01", "activities": [
+            _activity(PUTTY, "1st Coat Putty", 80.0, "in_progress", "in_progress"),
+            _activity(FLOOR, "Vitrified Flooring", 20.0, "in_progress", "in_progress"),
+            _activity(PAINT, "Primer", 0.0, "unable_to_determine", "not_assessed"),
+        ]},
+        {"roomName": "Bedroom", "flatName": "Flat 01", "activities": [
+            _activity(PUTTY, "1st Coat Putty", 100.0, "completed", "completed"),
+            _activity(FLOOR, "Vitrified Flooring", 40.0, "in_progress", "in_progress"),
+        ]},
+    ]
+
+
+def test_activity_types_are_ranked_by_average_over_observed_rooms():
+    ranked = drishti_analytics.rank_activity_types(_rooms_for_ranking(), "fastest")
+    assert [r["activityId"] for r in ranked] == [PUTTY, FLOOR]
+    assert ranked[0]["averageCompletionPct"] == 90.0 and ranked[0]["roomsObserved"] == 2
+    assert ranked[0]["roomsCompleted"] == 1 and ranked[0]["roomsInProgress"] == 1
+    assert ranked[1]["averageCompletionPct"] == 30.0
+
+
+def test_unknown_only_activity_is_not_ranked_and_never_counts_as_zero():
+    ids = [r["activityId"] for r in drishti_analytics.rank_activity_types(_rooms_for_ranking())]
+    assert PAINT not in ids
+
+
+def test_slowest_direction_and_activity_filter():
+    slow = drishti_analytics.rank_activity_types(_rooms_for_ranking(), "slowest")
+    assert slow[0]["activityId"] == FLOOR
+    only = drishti_analytics.rank_activity_types(_rooms_for_ranking(), activity_ids=[FLOOR])
+    assert [r["activityId"] for r in only] == [FLOOR]
+
+
+@pytest.mark.parametrize("question,direction", [
+    ("Which activity is progressinf faster", "fastest"),      # the exact typo from the tablet
+    ("Which activity is progressing faster?", "fastest"),
+    ("which activities are slowest", "slowest"),
+    ("what are the activities behind schedule", "slowest"),
+])
+def test_ranking_questions_are_recognised_even_when_classified_general(question, direction):
+    from app.services.drishti_query_planner import _correct_intent_from_question, _scan_question_for_ranking_direction
+    assert _correct_intent_from_question("general", question) == "activity_ranking"
+    assert _scan_question_for_ranking_direction(question) == direction
+
+
+@pytest.mark.parametrize("question", [
+    "which activities are in progress", "what is the status of painting across the common areas",
+    "how is MEP progressing across the project",
+])
+def test_other_activity_questions_are_not_hijacked(question):
+    from app.services.drishti_query_planner import _correct_intent_from_question
+    assert _correct_intent_from_question("general", question) != "activity_ranking"
+
+
+@pytest.mark.asyncio
+async def test_project_wide_ranking_without_a_named_activity_returns_the_ranking(monkeypatch):
+    plan = QueryPlan(intent="activity_ranking", floor_id=None, ranking_target="activity",
+                     ranking_direction="fastest", resolved_scope_for_persistence={})
+    ctx = {"projectId": "p1", "overallProgressPct": 15.9, "floorsAnalyzed": 1, "floorsNotYetAnalyzed": 0,
+           "summaryCards": {}, "towers": [{"towerId": "t1", "towerName": "T1",
+                                           "floors": [{"floorId": "f6", "floorName": "Floor 6"}]}]}
+    monkeypatch.setattr(service_module.DrishtiContextService, "get_project_context", AsyncMock(return_value=ctx))
+    monkeypatch.setattr(service_module.DrishtiQueryPlanner, "plan", AsyncMock(return_value=plan))
+    monkeypatch.setattr(service_module.DrishtiQueryPlanner, "resolve_entities", lambda self, p, s, prev: plan)
+    monkeypatch.setattr(service_module.DrishtiContextService, "get_latest_snapshots_for_floors",
+                        AsyncMock(return_value={"f6": present_snapshot_doc(stored_snapshot())}))
+    captured = {}
+
+    async def fake_chat(system_prompt, user_prompt, **kwargs):
+        captured["user"] = user_prompt
+        return {"answer": "ok"}
+
+    monkeypatch.setattr(service_module.drishti_llm_client, "chat_completion_json", fake_chat)
+    await DrishtiService(_make_db(_FakeConversationCollection())).ask(
+        "org1", "u1", "manager", "p1", "Which activity is progressing faster")
+    facts = json.loads(captured["user"].split("Facts payload (JSON):\n", 1)[1].split("\n\nRecent conversation:", 1)[0])
+    ranking = facts["activityRanking"]
+    assert ranking and ranking[0]["averageCompletionPct"] >= ranking[-1]["averageCompletionPct"]
+    assert {r["activityId"] for r in ranking} <= {PUTTY, PUTTY2, FLOOR}      # the unknown paint is not ranked
+
+
+def test_prompt_tells_the_model_how_to_answer_ranking_questions():
+    assert "activityRanking" in DRISHTI_ANSWER_PROMPT and "NOT a speed over time" in DRISHTI_ANSWER_PROMPT
