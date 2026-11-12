@@ -18,7 +18,9 @@ const BTN_BASE = {
   textTransform: 'none',
   fontSize: '0.875rem',
   lineHeight: 1.2,
-  whiteSpace: 'nowrap',
+  whiteSpace: 'normal',
+  textAlign: 'center',
+  justifyContent: 'center',
 } as const;
 
 const OUTLINED = {
@@ -50,7 +52,7 @@ function Group({ label, children, cols = 2 }: { label: string; children: React.R
       >
         {label}
       </Typography>
-      <Box sx={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gap: 1.5 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: `repeat(${cols}, minmax(0, 1fr))` }, gap: 1.5 }}>
         {children}
       </Box>
     </Box>
@@ -76,19 +78,14 @@ export default function FloorActionToolbar({
       data-testid="floor-action-toolbar"
       sx={{
         display: 'grid',
-        // phone: stacked; tablet: View + Analysis / Reports row; desktop: one row of three.
-        gridTemplateColumns: {
-          xs: 'minmax(0, 1fr)',
-          sm: 'repeat(2, minmax(0, 1fr))',
-          md: 'repeat(3, minmax(0, 1fr))',
-        },
+        // phone/tablet: three stacked groups of two equal buttons; wide desktop: one row of three groups.
+        gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'repeat(3, minmax(0, 1fr))' },
         columnGap: 3,
         rowGap: 2.5,
         p: 2,
         borderRadius: '14px',
         backgroundColor: '#fff',
         border: `1.5px solid ${P.border}`,
-        '& > section:last-of-type': { gridColumn: { sm: '1 / -1', md: 'auto' } },
       }}
     >
       <Group label="View">

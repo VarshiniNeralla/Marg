@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Box, Typography, Modal, IconButton, CircularProgress, Button } from '@mui/material';
-import { MapRounded, CloseRounded, ImageNotSupportedRounded, RefreshRounded } from '@mui/icons-material';
+import { Box, Typography, CircularProgress, Button } from '@mui/material';
+import { MapRounded, ImageNotSupportedRounded, RefreshRounded } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
 import { resolveMediaUrl } from '@/config/env';
-import { floorCoordScale, polygonCentroid, normalizePolygon, polygonToSvgPoints } from './heatmapGeometry';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getCapturePinsForFloor } from '@store/workflowSelectors';
 import type {
@@ -18,28 +17,6 @@ const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#fff
 const IMAGE_TIMEOUT_MS = 20_000;
 const IMAGE_ERROR_TEXT = 'The floor plan image could not be loaded.';
 const IMAGE_TIMEOUT_TEXT = 'The floor plan took too long to load.';
-
-/** Fold legacy "uploaded" into in_progress — capture always implies work underway. */
-function displayState(state: RoomHeatmapState): Exclude<RoomHeatmapState, 'uploaded'> {
-  return state === 'uploaded' ? 'in_progress' : state;
-}
-
-const STATE_COLOR: Record<Exclude<RoomHeatmapState, 'uploaded'>, string> = {
-  no_images: '#cbd5e1',
-  in_progress: colors.warning,
-  completed: colors.success,
-};
-
-const STATE_LABEL: Record<Exclude<RoomHeatmapState, 'uploaded'>, string> = {
-  no_images: 'No Photos Uploaded Yet',
-  in_progress: 'Work In Progress',
-  completed: 'Completed',
-};
-
-const LEGEND_STATES: Array<Exclude<RoomHeatmapState, 'uploaded' | 'no_images'>> = [
-  'in_progress',
-  'completed',
-];
 
 function pointInPolygon(x: number, y: number, polygon: RoomHeatmapEntry['polygon']): boolean {
   let inside = false;
@@ -61,7 +38,7 @@ function roomsAlignedToPins(
   pins: Array<{ x: number; y: number }>,
   heatmapPins?: HeatmapPinMarker[],
 ): RoomHeatmapEntry[] {
-  const colored = rooms.filter(r => displayState(r.state) !== 'no_images' && r.polygon?.length);
+  const colored = rooms.filter(r => r.state !== 'no_images' && r.polygon?.length);
   if (heatmapPins && heatmapPins.length > 0) {
     return colored.filter(room => {
       if (/^Pin\s+\d+$/i.test(room.roomName)) {
@@ -109,56 +86,6 @@ function uploadSequenceByPinId(
   return new Map(numbered.map((p, i) => [p.id, i + 1]));
 }
 
-type RoomPanelInfo = {
-  roomName: string;
-  flatName: string;
-  state: RoomHeatmapState;
-  capturesCount: number;
-  pinLabel?: string;
-};
-
-function RoomDetailPanel({ room, onClose }: { room: RoomPanelInfo; onClose: () => void }) {
-  const state = displayState(room.state);
-  return (
-    <Modal open onClose={onClose} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', p: 2 }}>
-      <Box sx={{ width: '100%', maxWidth: 420, backgroundColor: '#fff', borderRadius: '16px', p: 3, outline: 'none' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
-          <Typography sx={{ fontSize: '1.0625rem', fontWeight: 700, color: colors.textStrong }}>
-            {room.roomName}
-          </Typography>
-          <IconButton onClick={onClose} size="small">
-            <CloseRounded sx={{ fontSize: 20 }} />
-          </IconButton>
-        </Box>
-        <Typography sx={{ fontSize: '0.8125rem', color: colors.textMuted, mb: 0.75 }}>
-          {room.flatName}
-        </Typography>
-        {room.pinLabel && (
-          <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.primary, mb: 2 }}>
-            {room.pinLabel}
-          </Typography>
-        )}
-        <Box
-          sx={{
-            display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 1.25, py: 0.5,
-            borderRadius: '8px', backgroundColor: `${STATE_COLOR[state]}18`, mb: 2,
-          }}
-        >
-          <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: STATE_COLOR[state] }} />
-          <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: STATE_COLOR[state] }}>
-            {STATE_LABEL[state]}
-          </Typography>
-        </Box>
-        <Typography sx={{ fontSize: '0.875rem', color: colors.textBody }}>
-          {state === 'no_images'
-            ? 'No 360° capture has been taken in this room yet — ask the field engineer to photograph it so it can be included in the next analysis.'
-            : `${room.capturesCount} capture${room.capturesCount === 1 ? '' : 's'} analyzed for this room.`}
-        </Typography>
-      </Box>
-    </Modal>
-  );
-}
-
 export default function FloorPlanHeatmapOverlay({
   floorPlanImageUrl,
   floorPlanId,
@@ -171,11 +98,10 @@ export default function FloorPlanHeatmapOverlay({
   /** Frozen at analysis — preferred over live workflow pins when present. */
   heatmapPins?: HeatmapPinMarker[];
 }) {
-  const [selectedRoom, setSelectedRoom] = useState<RoomPanelInfo | null>(null);
+  const [selectedPin, setSelectedPin] = useState<{ id: string; label: string } | null>(null);
   const [imgLoaded, setImgLoaded] = useState(false);
   const [imgError, setImgError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const [activeRoomIdx, setActiveRoomIdx] = useState<number | null>(null);
   // Stored URLs are either a relative /media/... path (auth-gated, needs the API base and token)
   // or an absolute Cloudinary URL; resolveMediaUrl handles both.
   const imageSrc = useMemo(() => resolveMediaUrl(floorPlanImageUrl) ?? '', [floorPlanImageUrl]);
@@ -251,49 +177,15 @@ export default function FloorPlanHeatmapOverlay({
 
   const visibleRooms = roomsAlignedToPins(rooms, pins, heatmapPins);
 
-  // Rooms with a drawable polygon; coordinates may be fractions (0-1) or percentages (0-100).
-  const drawnRooms = useMemo(() => {
-    const withPoly = rooms.filter(r => (r.polygon?.length ?? 0) >= 3);
-    const scale = floorCoordScale(withPoly.map(r => r.polygon));
-    const items = withPoly
-      .map(r => ({
-        room: r,
-        state: displayState(r.state),
-        points: polygonToSvgPoints(r.polygon, scale),
-        centroid: polygonCentroid(normalizePolygon(r.polygon, scale)),
-      }))
-      .filter(i => i.points);
-    // Grey "no photos" rooms underneath, coloured rooms on top.
-    return items.sort((a, b) => Number(b.state === 'no_images') - Number(a.state === 'no_images'));
-  }, [rooms]);
-  const activeRoom = activeRoomIdx != null ? drawnRooms[activeRoomIdx] ?? null : null;
-
-  const noImageCount = rooms.filter(r => displayState(r.state) === 'no_images').length;
-  const coverageGapShare = rooms.length > 0 ? noImageCount / rooms.length : 0;
-
   function openPinRoom(pin: (typeof pins)[number]) {
-    // Prefer the pin's attributed room from the analysis snapshot — never
+    // Prefer the pin's attributed room from the analysis snapshot - never
     // resolve via overlapping polygons (that was the wrong-room click bug).
-    if (pin.roomName && pin.flatName) {
-      setSelectedRoom({
-        roomName: pin.roomName,
-        flatName: pin.flatName,
-        state: pin.state ?? 'in_progress',
-        capturesCount: pin.capturesCount ?? 1,
-        pinLabel: `Pin ${pin.sequenceNumber}`,
-      });
-      return;
+    let label = pin.roomName && pin.flatName ? `${pin.flatName} - ${pin.roomName}` : null;
+    if (!label) {
+      const match = visibleRooms.find(r => pointInPolygon(pin.x, pin.y, r.polygon));
+      if (match) label = `${match.flatName} - ${match.roomName}`;
     }
-    const match = visibleRooms.find(r => pointInPolygon(pin.x, pin.y, r.polygon));
-    if (match) {
-      setSelectedRoom({
-        roomName: match.roomName,
-        flatName: match.flatName,
-        state: match.state,
-        capturesCount: match.capturesCount,
-        pinLabel: `Pin ${pin.sequenceNumber}`,
-      });
-    }
+    setSelectedPin(prev => (prev?.id === pin.id ? null : { id: pin.id, label: label ?? 'Room not identified' }));
   }
 
   return (
@@ -305,29 +197,8 @@ export default function FloorPlanHeatmapOverlay({
             Floor Plan Heatmap
           </Typography>
         </Box>
-        <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
-          {LEGEND_STATES.map(state => (
-            <Box key={state} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <Box sx={{ width: 9, height: 9, borderRadius: '3px', backgroundColor: STATE_COLOR[state] }} />
-              <Typography sx={{ fontSize: '0.6875rem', color: P.muted }}>{STATE_LABEL[state]}</Typography>
-            </Box>
-          ))}
-        </Box>
+        <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>Tap a pin to see its room</Typography>
       </Box>
-
-      {coverageGapShare >= 0.5 && (
-        <Box sx={{
-          display: 'flex', alignItems: 'flex-start', gap: 1, mb: 2, px: 1.5, py: 1.125,
-          borderRadius: '10px', backgroundColor: `${STATE_COLOR.no_images}22`, border: `1px solid ${STATE_COLOR.no_images}`,
-        }}>
-          <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: STATE_COLOR.no_images, flexShrink: 0, mt: 0.5 }} />
-          <Typography sx={{ fontSize: '0.8125rem', color: P.strong, lineHeight: 1.5 }}>
-            <strong>{noImageCount} of {rooms.length} rooms</strong> have no photos uploaded yet — this is a
-            coverage gap, not an analysis error. Unmarked rooms on the floor plan will get a color once a
-            field engineer captures a 360° photo there.
-          </Typography>
-        </Box>
-      )}
 
       {!imageSrc ? (
         <Box sx={{ textAlign: 'center', py: 4, color: P.muted }}>
@@ -360,7 +231,7 @@ export default function FloorPlanHeatmapOverlay({
           )}
           <Box
             sx={{ position: 'relative', display: imgLoaded && !imgError ? 'block' : 'none' }}
-            onClick={() => setActiveRoomIdx(null)}
+            onClick={() => setSelectedPin(null)}
           >
             <Box
               key={reloadKey}
@@ -371,50 +242,6 @@ export default function FloorPlanHeatmapOverlay({
               onError={() => setImgError(IMAGE_ERROR_TEXT)}
               sx={{ width: '100%', display: 'block' }}
             />
-            {/* Room heat: polygons in a 0-100 viewBox stretched over the image. */}
-            {drawnRooms.length > 0 && (
-              <Box
-                component="svg"
-                viewBox="0 0 100 100"
-                preserveAspectRatio="none"
-                aria-label="Room progress heatmap"
-                sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1 }}
-              >
-                {drawnRooms.map((d, i) => (
-                  <polygon
-                    key={`${d.room.flatName}|${d.room.roomName}|${i}`}
-                    points={d.points}
-                    fill={STATE_COLOR[d.state]}
-                    fillOpacity={d.state === 'no_images' ? 0.25 : 0.35}
-                    stroke={STATE_COLOR[d.state]}
-                    strokeWidth={activeRoomIdx === i ? 2.5 : 1}
-                    strokeOpacity={0.85}
-                    vectorEffect="non-scaling-stroke"
-                    style={{ cursor: 'pointer' }}
-                    onClick={(e) => { e.stopPropagation(); setActiveRoomIdx(i); }}
-                  >
-                    <title>{`${d.room.roomName} - ${STATE_LABEL[d.state]}`}</title>
-                  </polygon>
-                ))}
-              </Box>
-            )}
-            {activeRoom?.centroid && (
-              <Box
-                sx={{
-                  position: 'absolute', left: `${activeRoom.centroid.x}%`, top: `${activeRoom.centroid.y}%`,
-                  transform: 'translate(-50%, -50%)', zIndex: 3, pointerEvents: 'none',
-                  px: 1, py: 0.5, borderRadius: '8px', backgroundColor: 'rgba(17,24,39,0.9)', color: '#fff',
-                  maxWidth: '70%', textAlign: 'center',
-                }}
-              >
-                <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, lineHeight: 1.2 }}>
-                  {activeRoom.room.roomName}
-                </Typography>
-                <Typography sx={{ fontSize: '0.6875rem', lineHeight: 1.2, opacity: 0.85 }}>
-                  {STATE_LABEL[activeRoom.state]}
-                </Typography>
-              </Box>
-            )}
             {/* Pin markers — clickable; open the attributed room panel. */}
             {pins.map(pin => (
               <Box
@@ -425,9 +252,9 @@ export default function FloorPlanHeatmapOverlay({
                 }}
                 sx={{
                   position: 'absolute', left: `${pin.x}%`, top: `${pin.y}%`,
-                  transform: 'translate(-50%, -100%)', zIndex: 2,
+                  transform: 'translate(-50%, -100%)', zIndex: selectedPin?.id === pin.id ? 5 : 2,
                   cursor: 'pointer',
-                  '&:hover > div': { transform: 'rotate(-45deg) scale(1.08)' },
+                  '&:hover > div:first-of-type': { transform: 'rotate(-45deg) scale(1.08)' },
                 }}
               >
                 <Box
@@ -443,15 +270,25 @@ export default function FloorPlanHeatmapOverlay({
                     {pin.sequenceNumber}
                   </Typography>
                 </Box>
+                {selectedPin?.id === pin.id && (
+                  <Box
+                    role="status"
+                    sx={{
+                      position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)', mb: 0.75,
+                      px: 1.25, py: 0.625, borderRadius: '8px', whiteSpace: 'nowrap', pointerEvents: 'none',
+                      backgroundColor: 'rgba(17,24,39,0.92)', color: '#fff', fontSize: '0.8125rem', fontWeight: 600,
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+                    }}
+                  >
+                    {selectedPin.label}
+                  </Box>
+                )}
               </Box>
             ))}
           </Box>
         </Box>
       )}
 
-      {selectedRoom && (
-        <RoomDetailPanel room={selectedRoom} onClose={() => setSelectedRoom(null)} />
-      )}
     </Box>
   );
 }
