@@ -307,18 +307,25 @@ class DrishtiService:
                 org_id, project_context, plan.activity_ids,
             )
 
-        if not plan.floor_id and plan.activity_ids and plan.intent in ("activity_status", "activity_ranking", "unfinished_work"):
-            if plan.intent == "activity_status":
-                payload["activity"] = await self._context_service.find_activity_across_project(
-                    org_id, project_context, plan.activity_ids,
+        if not plan.floor_id and plan.activity_ids and plan.intent == "activity_status":
+            payload["activity"] = await self._context_service.find_activity_across_project(
+                org_id, project_context, plan.activity_ids,
+            )
+
+        # Ranking / unfinished-work questions are comparative: they name no particular activity
+        # ("which activity is progressing faster"), so they must NOT depend on one being resolved.
+        if not plan.floor_id and plan.intent in ("activity_ranking", "unfinished_work"):
+            project_rooms = await self._rooms_across_project(org_id, project_context)
+            if plan.intent == "activity_ranking":
+                direction = plan.ranking_direction or "fastest"
+                payload["activityRanking"] = drishti_analytics.rank_activity_types(
+                    project_rooms, direction, activity_ids=plan.activity_ids or None,
                 )
+                ranked = drishti_analytics.rank_activities(project_rooms, direction)
+                payload["ranking"] = ranked if plan.activity_ids else ranked[:30]
             else:
-                project_rooms = await self._rooms_across_project(org_id, project_context)
-                if plan.intent == "activity_ranking":
-                    direction = plan.ranking_direction or "fastest"
-                    payload["ranking"] = drishti_analytics.rank_activities(project_rooms, direction)
-                else:
-                    payload["unfinishedWork"] = drishti_analytics.rank_unfinished_work(project_rooms)
+                unfinished = drishti_analytics.rank_unfinished_work(project_rooms)
+                payload["unfinishedWork"] = unfinished if plan.activity_ids else unfinished[:30]
 
         # "Which activities are in progress/not started/..." (and its
         # natural follow-up "what are those N activities?") needs the REAL
@@ -515,6 +522,10 @@ class DrishtiService:
             rooms = _rooms_in_scope(floor_snapshot, plan.flat_name, plan.common_area_name)
             if plan.intent == "activity_ranking":
                 payload["ranking"] = drishti_analytics.rank_activities(rooms, direction, flat_name=plan.flat_name)
+                payload["activityRanking"] = drishti_analytics.rank_activity_types(
+                    [{**r, "flatName": r.get("flatName", plan.flat_name)} for r in rooms], direction,
+                    activity_ids=plan.activity_ids or None,
+                )
             elif plan.intent == "flat_ranking":
                 payload["ranking"] = drishti_analytics.rank_flats(floor_snapshot.get("flatProgress", []), direction)
             elif plan.intent == "common_area_ranking":

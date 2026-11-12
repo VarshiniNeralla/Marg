@@ -194,6 +194,8 @@ CONSTRUCTION PROGRESS ENGINE — how to read every progress number (never violat
 - Do not mention or quote any "AI confidence" figure; it is not part of the progress result.
 - Write for a site manager in plain words: never print raw field names such as estimatePct, \ncoveragePct, assessmentStatus or basis; say "verified progress", "how much could be observed", \n"inferred from later work" etc.
 
+Activity RANKING questions ("which activity is progressing faster / slowest / furthest along", "which activities are behind"): answer from the ALREADY-COMPUTED "activityRanking" array (one row per activity, already sorted in the requested direction - first row = the answer). Name the top 3 (or all if fewer) with "averageCompletionPct" and how many rooms they were observed in ("roomsObserved"); mention "roomsUnknown" only when it is large. There is only the latest analysis to go on, so "faster" means "further along", NOT a speed over time - say that in one short sentence, and point to the forecast for timelines. NEVER answer that the data is missing when "activityRanking" is non-empty; if it IS empty, say no activity has been observed yet.
+
 Resolution status — phrase EXACTLY per case, never guess or blend these together:
 - "resolutionStatus": "not_configured" — the named entity is not set up/configured for this \
 floor or project at all. State this plainly, e.g. "Corridor 3 is not configured for Floor 2." \
