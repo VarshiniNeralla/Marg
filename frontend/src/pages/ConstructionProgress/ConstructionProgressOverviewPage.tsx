@@ -3,6 +3,7 @@ import { Box, Typography, CircularProgress, Select, MenuItem, IconButton, Modal,
 import { InsightsRounded, ChevronRightRounded, HourglassEmptyRounded, FolderOpenRounded, BusinessRounded, LayersRounded, DeleteOutlineRounded } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
+import { formatDate } from '@/utils/dateFormat';
 import { toast } from 'react-toastify';
 import { useAuthStore, isAdmin } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
@@ -30,9 +31,8 @@ function progressColor(pct: number | null): string {
 
 function formatLastInspection(value: string | null): string {
   if (!value) return 'Not yet inspected';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return 'Not yet inspected';
-  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  const formatted = formatDate(value);
+  return formatted === '—' ? 'Not yet inspected' : formatted;
 }
 
 function SelectorStep({

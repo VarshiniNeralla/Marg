@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Typography, CircularProgress } from '@mui/material';
 import { TimelineRounded } from '@mui/icons-material';
 import { colors, shadows } from '@theme/tokens';
+import { formatDate } from '@/utils/dateFormat';
 import { constructionProgressService, type TimelinePoint } from '@/services/constructionProgressService';
 
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#ffffff' };
@@ -11,12 +12,6 @@ const CHART_H = 160;
 const PAD_X = 12;
 const PAD_TOP = 16;
 const PAD_BOTTOM = 24;
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-}
 
 export default function ProgressTimelineChart({ floorId }: { floorId: string }) {
   const [loading, setLoading] = useState(true);

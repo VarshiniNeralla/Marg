@@ -24,7 +24,7 @@ def _by_id(aid: str) -> ActivityDef:
 
 
 def test_prompt_version_is_v4_4():
-    assert PROMPT_VERSION == "v4.5-core14"
+    assert PROMPT_VERSION == "v4.6-activity-rules"
     assert ENABLE_FILL_FORWARD is False
     assert ENABLE_PAINT_IMPLIES_PUTTY is True
 
@@ -78,12 +78,14 @@ def test_status_for_pct_unchanged():
 
 
 def test_flat_progress_counts_unphotographed_rooms_as_zero_in_pct():
-    """Bedroom photographed at 40%; toilet and kitchen not photographed contribute 0% to the flat mean."""
-    activities_by_id = {a.activity_id: a for a in FLAT_ACTIVITIES}
-    aid = "flat.wall_punning_4"
-    per_pct = {
-        aid: {("Flat 01", "Bedroom-2"): 40.0},
-    }
+    """One observed activity in one room counts only against that room's applicable activities; the two
+    unphotographed rooms contribute 0, so a single reading can never carry the flat."""
+    from app.services.construction_progress_providers.activities import CORE_FLAT_ACTIVITIES
+    from app.services.construction_progress_providers.vllm_provider import _activity_applies_to_room
+
+    activities_by_id = {a.activity_id: a for a in CORE_FLAT_ACTIVITIES}
+    aid = "flat.core_punning"
+    per_pct = {aid: {("Flat 01", "Bedroom-2"): 40.0}}
     per_conf = {aid: {("Flat 01", "Bedroom-2"): 90.0}}
     per_ev = {aid: {("Flat 01", "Bedroom-2"): "c1"}}
     per_ev_text = {aid: {("Flat 01", "Bedroom-2"): "Walls punned"}}
@@ -94,17 +96,16 @@ def test_flat_progress_counts_unphotographed_rooms_as_zero_in_pct():
         per_activity_unit_conf=per_conf,
         per_activity_unit_evidence=per_ev,
         per_activity_unit_evidence_text=per_ev_text,
-        flat_room_rosters={
-            "Flat 01": ["Bedroom-2", "M. Toilet", "Kitchen"],
-        },
+        flat_room_rosters={"Flat 01": ["Bedroom-2", "M. Toilet", "Kitchen"]},
     )
     assert len(flats) == 1
     fp: FlatProgress = flats[0]
     assert fp.rooms_photographed == 1
     assert fp.rooms_required == 3
     assert fp.rooms_complete == 0
-    # Mean over ALL required rooms: unphotographed rooms contribute 0% (40 + 0 + 0) / 3.
-    assert fp.completion_pct == 13.3
+    applicable = sum(1 for a in CORE_FLAT_ACTIVITIES if _activity_applies_to_room(a, "Bedroom-2"))
+    # Room progress = 40 / applicable activities (work nobody verified is not counted); flat = mean of 3 rooms.
+    assert fp.completion_pct == round(40.0 / applicable / 3, 1)
     assert fp.is_fully_complete is False
 
 
@@ -142,26 +143,45 @@ def test_floor_finishing_from_flats_not_activity_card_mean():
     assert overall == 10.0
 
 
-def test_flat_fully_complete_requires_all_required_rooms():
-    activities_by_id = {a.activity_id: a for a in FLAT_ACTIVITIES}
-    aid = "flat.wall_punning_4"
-    units = {
-        ("Flat 01", "Bedroom-2"): 100.0,
-        ("Flat 01", "Kitchen"): 100.0,
-    }
-    flats = _build_flat_progress(
-        activities_by_id=activities_by_id,
-        per_activity_unit_pct={aid: units},
-        per_activity_unit_conf={aid: {u: 90.0 for u in units}},
-        per_activity_unit_evidence={aid: {u: "c1" for u in units}},
-        per_activity_unit_evidence_text={aid: {u: "ok" for u in units}},
-        flat_room_rosters={"Flat 01": ["Bedroom-2", "Kitchen"]},
-    )
-    fp = flats[0]
-    assert fp.is_fully_complete is True
-    assert fp.completion_pct == 100.0
-    assert fp.rooms_photographed == 2
-    assert fp.rooms_required == 2
+def test_flat_fully_complete_requires_all_required_rooms_and_every_applicable_activity():
+    from app.services.construction_progress_providers.activities import CORE_FLAT_ACTIVITIES
+    from app.services.construction_progress_providers.vllm_provider import _activity_applies_to_room
+
+    activities_by_id = {a.activity_id: a for a in CORE_FLAT_ACTIVITIES}
+    rooms = ["Bedroom-2", "Kitchen"]
+
+    def build(skip_one: bool):
+        pct, conf, ev, txt = {}, {}, {}, {}
+        for room in rooms:
+            unit = ("Flat 01", room)
+            for a in CORE_FLAT_ACTIVITIES:
+                if not _activity_applies_to_room(a, room):
+                    continue
+                if skip_one and room == "Kitchen" and a.activity_id == "flat.electrical_wiring_23":
+                    continue
+                pct.setdefault(a.activity_id, {})[unit] = 100.0
+                conf.setdefault(a.activity_id, {})[unit] = 90.0
+                ev.setdefault(a.activity_id, {})[unit] = "c1"
+                txt.setdefault(a.activity_id, {})[unit] = "ok"
+        return _build_flat_progress(
+            activities_by_id=activities_by_id,
+            per_activity_unit_pct=pct,
+            per_activity_unit_conf=conf,
+            per_activity_unit_evidence=ev,
+            per_activity_unit_evidence_text=txt,
+            flat_room_rosters={"Flat 01": rooms},
+        )[0]
+
+    done = build(skip_one=False)
+    assert done.is_fully_complete is True
+    assert done.completion_pct == 100.0
+    assert done.rooms_photographed == 2 and done.rooms_required == 2
+
+    # One applicable activity nobody observed in one room: the flat is NOT complete and never reads 100.
+    partial = build(skip_one=True)
+    assert partial.is_fully_complete is False
+    assert partial.rooms_complete == 1
+    assert partial.completion_pct < 100.0
 
 
 def test_common_activities_count_unchanged():

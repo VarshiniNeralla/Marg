@@ -2,19 +2,13 @@ import React from 'react';
 import { Box, Typography } from '@mui/material';
 import {
   MeetingRoomRounded, TaskAltRounded, PhotoLibraryRounded,
-  EventAvailableRounded, VerifiedRounded, GridViewRounded,
+  EventAvailableRounded, GridViewRounded,
 } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
 import type { SummaryCards } from '@/services/constructionProgressService';
+import { formatDate, formatDateTime } from '@/utils/dateFormat';
 
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#ffffff' };
-
-function formatDate(value: string | null): string {
-  if (!value) return '—';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-}
 
 function tierColor(pct: number): string {
   if (pct >= 75) return colors.success;
@@ -150,29 +144,43 @@ function RatioCard({ icon, label, completed, inProgress, notStarted, notAssessed
 export default function SummaryCardsRow({
   cards,
   overallProgressPct,
+  analysedAt,
 }: {
   cards: SummaryCards;
   /** When provided, shown beside coverage so progress ≠ photo coverage. */
   overallProgressPct?: number;
+  /** When the analysis snapshot was produced. */
+  analysedAt?: string | null;
 }) {
-  const confColor = tierColor(cards.avgConfidencePct);
   const coveragePct = cards.coveragePct;
   const progressPct = overallProgressPct;
   const showProgressCoverage =
     typeof coveragePct === 'number' || typeof progressPct === 'number';
   const progressColor = tierColor(progressPct ?? 0);
   const coverageColor = tierColor(coveragePct ?? 0);
+  // Progress/Coverage (optional) + Rooms + Activities + Images + Last Inspection.
+  const cardCount = 4 + (showProgressCoverage ? 1 : 0);
 
   return (
     <Box
       sx={{
         display: 'grid',
-        // Wider cards (3 across) so labels/meta never need ellipsis; two tidy rows.
+        // 6-column track: 2 across on tablet, 3 across on desktop. The leftover cards in the
+        // last row stretch to fill it, so there is never a lone half-width orphan.
         gridTemplateColumns: {
           xs: 'repeat(1, minmax(0, 1fr))',
-          sm: 'repeat(2, minmax(0, 1fr))',
-          md: 'repeat(3, minmax(0, 1fr))',
+          sm: 'repeat(6, minmax(0, 1fr))',
         },
+        '& > *': { gridColumn: { sm: 'span 3', md: 'span 2' } },
+        // Tablet (2 across): an odd last card spans the full row.
+        // Desktop (3 across): 1 leftover spans the row, 2 leftovers split it in half.
+        '& > *:last-child': {
+          gridColumn: {
+            sm: cardCount % 2 === 1 ? 'span 6' : 'span 3',
+            md: cardCount % 3 === 1 ? 'span 6' : cardCount % 3 === 2 ? 'span 3' : 'span 2',
+          },
+        },
+        ...(cardCount % 3 === 2 ? { '& > *:nth-last-child(2)': { gridColumn: { sm: 'span 3', md: 'span 3' } } } : {}),
         gap: 1.25,
         alignItems: 'start',
       }}
@@ -229,14 +237,13 @@ export default function SummaryCardsRow({
           {formatDate(cards.lastInspection)}
         </Typography>
         <Typography sx={{ fontSize: '0.6875rem', color: P.muted, lineHeight: 1.35 }}>
-          most recent AI analysis
+          latest capture reviewed
         </Typography>
-      </CardShell>
-      <CardShell icon={<VerifiedRounded sx={{ fontSize: 15 }} />} label="Avg. AI Confidence" accent={confColor}>
-        <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: P.strong, lineHeight: 1.2 }}>
-          {Math.round(cards.avgConfidencePct)}%
-        </Typography>
-        <ProgressBar pct={cards.avgConfidencePct} color={confColor} />
+        {analysedAt && (
+          <Typography sx={{ fontSize: '0.6875rem', color: P.muted, lineHeight: 1.35 }}>
+            Analysed {formatDateTime(analysedAt)}
+          </Typography>
+        )}
       </CardShell>
     </Box>
   );

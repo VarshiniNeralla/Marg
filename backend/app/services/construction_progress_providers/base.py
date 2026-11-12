@@ -64,6 +64,13 @@ class ActivityAssessment:
     completion_pct: float
     confidence_pct: float
     evidence_capture_ids: list[str] = field(default_factory=list)
+    # v4.6 structured assessment (all additive; defaults keep old callers working)
+    assessment_status: str = ""            # not_started | in_progress | mostly_complete | completed | unable_to_determine
+    detection_type: str = "direct"         # direct | inferred | mixed | manual
+    coverage_pct: float = 0.0              # share of applicable rooms where the activity was observed
+    review_required: bool = False
+    review_reason: str = ""
+    evidence_details: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -82,6 +89,16 @@ class RoomActivityAssessment:
     # fill-forward is re-enabled (off by default in v4).
     evidence: str = ""
     status: ActivityStatus = "in_progress"
+    assessment_status: str = ""
+    detection_type: str = "direct"         # direct | inferred | manual
+    visual_indicators_found: list[str] = field(default_factory=list)
+    visual_indicators_missing: list[str] = field(default_factory=list)
+    explanation: str = ""
+    review_required: bool = False
+    review_reason: str = ""
+    evidence_details: list[dict] = field(default_factory=list)
+    inferred_from: str = ""
+    last_captured_at: object = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +163,9 @@ class FloorProgressResult:
     completion_tokens: int = 0
     total_tokens: int = 0
     latency_ms: float = 0.0
+    # captures that were actually scored (latest per pin) and the newest capture date among them
+    scored_capture_ids: list[str] = field(default_factory=list)
+    last_inspection: object = None
 
 
 class ConstructionProgressProvider(ABC):

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Box, Typography, MenuItem, Select, CircularProgress } from '@mui/material';
 import { CompareArrowsRounded, TrendingUpRounded } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
+import { formatDate } from '@/utils/dateFormat';
 import {
   constructionProgressService,
   type TimelinePoint,
@@ -9,12 +10,6 @@ import {
 } from '@/services/constructionProgressService';
 
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#ffffff' };
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
-}
 
 export default function ProgressComparisonView({ floorId }: { floorId: string }) {
   const [points, setPoints] = useState<TimelinePoint[]>([]);
