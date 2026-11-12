@@ -23,6 +23,33 @@ export type ActivityStatus =
   | 'in_progress'
   | 'completed';
 
+/** Server-owned assessment wording. unable_to_determine means UNKNOWN (never 0%). */
+export type AssessmentStatus =
+  | 'not_started'
+  | 'in_progress'
+  | 'mostly_complete'
+  | 'completed'
+  | 'unable_to_determine';
+
+export type DetectionType = 'direct' | 'inferred' | 'mixed' | 'manual';
+
+export type ScopeStatus =
+  | 'completed'
+  | 'in_progress'
+  | 'not_started'
+  | 'awaiting_evidence'
+  | 'no_photos';
+
+export interface EvidenceDetail {
+  captureId: string;
+  role: 'direct' | 'inferred';
+  flatName: string;
+  roomName: string;
+  views: string[];
+  capturedAt: string | null;
+  confidencePct: number;
+}
+
 export interface ActivityAssessment {
   activityId: string;
   name: string;
@@ -32,6 +59,12 @@ export interface ActivityAssessment {
   completionPct: number;
   confidencePct: number;
   evidenceCaptureIds: string[];
+  assessmentStatus?: AssessmentStatus;
+  detectionType?: DetectionType;
+  coveragePct?: number;
+  reviewRequired?: boolean;
+  reviewReason?: string;
+  evidenceDetails?: EvidenceDetail[];
 }
 
 export type RoomHeatmapState = 'no_images' | 'uploaded' | 'in_progress' | 'completed';
@@ -68,6 +101,30 @@ export interface RoomActivityAssessment {
   evidence?: string;
   /** Optional per-room status; used to exclude not_observable from averages. */
   status?: ActivityStatus;
+  assessmentStatus?: AssessmentStatus;
+  detectionType?: 'direct' | 'inferred' | 'manual';
+  visualIndicatorsFound?: string[];
+  visualIndicatorsMissing?: string[];
+  explanation?: string;
+  reviewRequired?: boolean;
+  reviewReason?: string;
+  evidenceDetails?: EvidenceDetail[];
+  /** Activity id this was inferred from (a later activity that implies it). */
+  inferredFrom?: string;
+  lastCapturedAt?: string | null;
+  /** Manager override bookkeeping. */
+  aiCompletionPct?: number | null;
+  override?: ActivityOverride;
+  aiDisagrees?: boolean;
+}
+
+export interface ActivityOverride {
+  pct: number;
+  verdict: string;
+  reason: string;
+  by: string;
+  at: string;
+  aiPct: number | null;
 }
 
 export interface RoomProgress {
@@ -81,6 +138,14 @@ export interface RoomProgress {
   pinNumbers?: number[];
   /** Captures resolved into this room — drives coverage UI independently of AI scores. */
   capturesCount?: number;
+  progressPct?: number;
+  estimatePct?: number | null;
+  coveragePct?: number;
+  observedActivities?: number;
+  applicableActivities?: number;
+  scopeStatus?: ScopeStatus;
+  reviewRequired?: boolean;
+  lastInspection?: string | null;
 }
 
 export interface FlatProgress {
@@ -94,6 +159,25 @@ export interface FlatProgress {
   roomsPhotographed?: number;
   isFullyComplete?: boolean;
   rooms: RoomProgress[];
+  /** Progress of the work that WAS observed. */
+  estimatePct?: number | null;
+  /** Share of applicable activity-checks that were observed. */
+  coveragePct?: number;
+  scopeStatus?: ScopeStatus;
+  reviewRequired?: boolean;
+  lastInspection?: string | null;
+}
+
+/** Server rollup for all flats (flatFinishing) or the common area (commonFinishing); may be {} on old data. */
+export interface FinishingSummary {
+  progressPct?: number;
+  estimatePct?: number | null;
+  coveragePct?: number;
+  total?: number;
+  completed?: number;
+  inProgress?: number;
+  awaitingEvidence?: number;
+  notStarted?: number;
 }
 
 export interface SummaryCards {
@@ -133,6 +217,8 @@ export interface FloorProgressSnapshot {
   /** Present on snapshots created after pin/box alignment fix. */
   heatmapPins?: HeatmapPinMarker[];
   flatProgress: FlatProgress[];
+  flatFinishing?: FinishingSummary;
+  commonFinishing?: FinishingSummary;
   summaryCards: SummaryCards;
   executiveSummary: string;
   model: string;

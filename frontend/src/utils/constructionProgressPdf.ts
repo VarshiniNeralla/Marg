@@ -8,6 +8,7 @@ import type {
 } from '@/services/constructionProgressService';
 import { ACTIVITY_STATUS_LABELS } from '@/services/constructionProgressService';
 import { exportHtmlToPdf } from '@/utils/htmlToPdf';
+import { formatDate, formatDateTime } from '@/utils/dateFormat';
 
 const BRAND_NAME = 'SiteVision';
 const BRAND_TAGLINE = 'AI Construction Intelligence';
@@ -51,13 +52,6 @@ function escapeHtml(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
-}
-
-function formatDate(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
 function isCommonFlat(flat: FlatProgress): boolean {
@@ -234,6 +228,8 @@ function pageShell(inner: string, pageNum: number, totalPages: number): string {
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function roomExportPct(room: RoomProgress): number {
+  // The server owns the calculation; the old client-side average is only a fallback for older snapshots.
+  if (typeof room.progressPct === 'number') return Math.round(room.progressPct);
   if (room.isComplete) return 100;
   const scorable = room.activities.filter(a => a.status !== 'not_observable');
   if (scorable.length === 0) return room.activities.length > 0 ? 100 : 0;
@@ -291,7 +287,7 @@ function buildKeyFindings(snapshot: FloorProgressSnapshot): string[] {
 
   if (typeof cards.coveragePct === 'number') {
     findings.push(
-      `Photo coverage is ${Math.round(cards.coveragePct)}% of roster rooms (${cards.imagesAnalyzed} images analyzed; avg AI confidence ${Math.round(cards.avgConfidencePct)}%).`,
+      `Photo coverage is ${Math.round(cards.coveragePct)}% of roster rooms (${cards.imagesAnalyzed} images analyzed).`,
     );
   }
 
@@ -366,8 +362,8 @@ function buildCoverPage(snapshot: FloorProgressSnapshot, generatedAt: string): s
         <p>${typeof snapshot.summaryCards.coveragePct === 'number' ? `${Math.round(snapshot.summaryCards.coveragePct)}%` : '—'} of roster rooms photographed</p>
       </div>
       <div class="finding-card">
-        <h3>Images · Confidence</h3>
-        <p>${snapshot.summaryCards.imagesAnalyzed} images · ${Math.round(snapshot.summaryCards.avgConfidencePct)}% avg</p>
+        <h3>Images Analyzed</h3>
+        <p>${snapshot.summaryCards.imagesAnalyzed} images reviewed</p>
       </div>
     </div>
     <h2 class="section-title">Key Findings</h2>
@@ -711,9 +707,7 @@ function buildNotesHtml(): string {
 // ── Assembly ───────────────────────────────────────────────────────────────────
 
 export async function buildConstructionProgressPdfHtml(snapshot: FloorProgressSnapshot): Promise<string> {
-  const generatedAt = new Date().toLocaleString(undefined, {
-    day: 'numeric', month: 'long', year: 'numeric', hour: 'numeric', minute: '2-digit',
-  });
+  const generatedAt = formatDateTime(new Date().toISOString());
 
   const pages: string[] = [];
 

@@ -2,13 +2,8 @@ import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { blobToBase64 } from '@/utils/htmlToPdf';
+import { formatDate } from '@/utils/dateFormat';
 import { ACTIVITY_STATUS_LABELS, type FloorProgressSnapshot } from '@/services/constructionProgressService';
-
-function formatDate(iso: string | null | undefined): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString();
-}
 
 export async function exportConstructionProgressExcel(
   snapshot: FloorProgressSnapshot,
@@ -28,7 +23,6 @@ export async function exportConstructionProgressExcel(
     ['Floor', snapshot.floorName],
     ['Overall Progress', `${Math.round(snapshot.overallProgressPct)}%`],
     ['Coverage %', typeof snapshot.summaryCards.coveragePct === 'number' ? `${Math.round(snapshot.summaryCards.coveragePct)}%` : ''],
-    ['AI Confidence', `${Math.round(snapshot.overallConfidencePct)}%`],
     ['Images Analyzed', snapshot.imagesAnalyzedCount],
     ['Rooms Completed', snapshot.summaryCards.roomsCompleted],
     ['Rooms In Progress', snapshot.summaryCards.roomsInProgress],
@@ -90,7 +84,9 @@ export async function exportConstructionProgressExcel(
   (snapshot.flatProgress ?? []).forEach(flat => {
     flat.rooms.forEach(room => {
       const scorable = room.activities.filter(a => a.status !== 'not_observable');
-      const roomPct = room.isComplete
+      const roomPct = typeof room.progressPct === 'number'
+        ? Math.round(room.progressPct)
+        : room.isComplete
         ? 100
         : scorable.length === 0
           ? (room.activities.length > 0 ? 100 : 0)

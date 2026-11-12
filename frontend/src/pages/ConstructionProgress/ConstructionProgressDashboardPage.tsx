@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Typography, CircularProgress, Button, LinearProgress, Snackbar, Alert } from '@mui/material';
-import { ArrowBackRounded, RefreshRounded, PictureAsPdfRounded, TableChartRounded, AutoAwesomeRounded, ApartmentRounded, MeetingRoomRounded, NotificationsActiveRounded } from '@mui/icons-material';
+import { ArrowBackRounded, RefreshRounded, AutoAwesomeRounded, NotificationsActiveRounded } from '@mui/icons-material';
 import { Link, useParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { colors, shadows } from '@theme/tokens';
@@ -10,6 +10,7 @@ import {
   constructionProgressService,
   type FloorProgressSnapshot,
 } from '@/services/constructionProgressService';
+import FloorActionToolbar from '@/components/ConstructionProgress/FloorActionToolbar';
 import ProgressRing from '@/components/ConstructionProgress/ProgressRing';
 import SummaryCardsRow from '@/components/ConstructionProgress/SummaryCardsRow';
 import ExecutiveSummaryPanel from '@/components/ConstructionProgress/ExecutiveSummaryPanel';
@@ -364,13 +365,13 @@ export default function ConstructionProgressDashboardPage() {
           <Typography sx={{ fontSize: '0.9375rem', color: P.muted, mb: 3 }}>
             Run the AI progress assessment against every uploaded capture for this floor.
           </Typography>
-          <Box sx={{ display: 'flex', gap: 1.5, justifyContent: 'center', flexWrap: 'wrap' }}>
+          <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center', flexDirection: { xs: 'column', sm: 'row' }, alignItems: 'stretch', maxWidth: 520, mx: 'auto' }}>
             <Button
               onClick={handleAnalyze}
               disabled={analyzing || backgroundRunning}
               startIcon={analyzing ? <CircularProgress size={14} sx={{ color: '#fff' }} /> : <RefreshRounded />}
               sx={{
-                background: colors.primaryGradient, color: '#fff', px: 3, py: 1, borderRadius: '10px',
+                background: colors.primaryGradient, color: '#fff', px: 3, minHeight: 44, flex: 1, borderRadius: '10px',
                 fontWeight: 700, textTransform: 'none', boxShadow: shadows.btn,
                 '&:hover': { opacity: 0.92 },
                 '&.Mui-disabled': { color: 'rgba(255,255,255,0.8)', opacity: 0.6 },
@@ -385,7 +386,7 @@ export default function ConstructionProgressDashboardPage() {
                 ? <CircularProgress size={14} sx={{ color: colors.primary }} />
                 : <NotificationsActiveRounded sx={{ fontSize: 18 }} />}
               sx={{
-                border: `1.5px solid ${P.border}`, color: P.strong, px: 3, py: 1, borderRadius: '10px',
+                border: `1.5px solid ${P.border}`, color: P.strong, px: 3, minHeight: 44, flex: 1, borderRadius: '10px',
                 fontWeight: 700, textTransform: 'none',
                 '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
               }}
@@ -396,8 +397,8 @@ export default function ConstructionProgressDashboardPage() {
         </Box>
       ) : (
         <>
-          <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 2, mb: 3, flexWrap: 'wrap' }}>
-            <Box>
+          <Box sx={{ mb: 3 }}>
+            <Box sx={{ mb: 2 }}>
               <Typography sx={{ fontSize: '1.375rem', fontWeight: 800, color: P.strong }}>
                 {snapshot.floorName}
               </Typography>
@@ -405,80 +406,15 @@ export default function ConstructionProgressDashboardPage() {
                 {[snapshot.projectName, snapshot.towerName].filter(Boolean).join(' · ')}
               </Typography>
             </Box>
-            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-              <Button
-                onClick={handleExportPdf}
-                startIcon={<PictureAsPdfRounded sx={{ fontSize: 18 }} />}
-                sx={{
-                  border: `1.5px solid ${P.border}`, color: P.strong, px: 2, py: 0.75, borderRadius: '10px',
-                  fontWeight: 600, textTransform: 'none', fontSize: '0.8125rem',
-                  '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
-                }}
-              >
-                PDF Report
-              </Button>
-              <Button
-                onClick={handleExportExcel}
-                startIcon={<TableChartRounded sx={{ fontSize: 18 }} />}
-                sx={{
-                  border: `1.5px solid ${P.border}`, color: P.strong, px: 2, py: 0.75, borderRadius: '10px',
-                  fontWeight: 600, textTransform: 'none', fontSize: '0.8125rem',
-                  '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
-                }}
-              >
-                Excel Report
-              </Button>
-              <Button
-                component={Link}
-                to={`/construction-progress/${floorId}/flats`}
-                startIcon={<ApartmentRounded sx={{ fontSize: 18 }} />}
-                sx={{
-                  border: `1.5px solid ${P.border}`, color: P.strong, px: 2, py: 0.75, borderRadius: '10px',
-                  fontWeight: 600, textTransform: 'none', fontSize: '0.8125rem',
-                  '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
-                }}
-              >
-                Flat Finishing Works
-              </Button>
-              <Button
-                component={Link}
-                to={`/construction-progress/${floorId}/common`}
-                startIcon={<MeetingRoomRounded sx={{ fontSize: 18 }} />}
-                sx={{
-                  border: `1.5px solid ${P.border}`, color: P.strong, px: 2, py: 0.75, borderRadius: '10px',
-                  fontWeight: 600, textTransform: 'none', fontSize: '0.8125rem',
-                  '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
-                }}
-              >
-                Common Area Finishing
-              </Button>
-              <Button
-                onClick={() => { setReanalyzeInBackground(false); setConfirmReanalyzeOpen(true); }}
-                disabled={analyzing || backgroundRunning}
-                startIcon={analyzing ? <CircularProgress size={14} sx={{ color: colors.primary }} /> : <RefreshRounded sx={{ fontSize: 18 }} />}
-                sx={{
-                  border: `1.5px solid ${P.border}`, color: P.strong, px: 2, py: 0.75, borderRadius: '10px',
-                  fontWeight: 600, textTransform: 'none', fontSize: '0.8125rem',
-                  '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
-                }}
-              >
-                {analyzing ? 'Re-analyzing…' : 'Re-analyze'}
-              </Button>
-              <Button
-                onClick={() => { setReanalyzeInBackground(true); setConfirmReanalyzeOpen(true); }}
-                disabled={analyzing || backgroundRunning}
-                startIcon={backgroundRunning
-                  ? <CircularProgress size={14} sx={{ color: colors.primary }} />
-                  : <NotificationsActiveRounded sx={{ fontSize: 18 }} />}
-                sx={{
-                  border: `1.5px solid ${P.border}`, color: P.strong, px: 2, py: 0.75, borderRadius: '10px',
-                  fontWeight: 600, textTransform: 'none', fontSize: '0.8125rem',
-                  '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
-                }}
-              >
-                {backgroundRunning ? 'Running in background…' : 'Run in Background'}
-              </Button>
-            </Box>
+            <FloorActionToolbar
+              floorId={floorId}
+              analyzing={analyzing}
+              backgroundRunning={backgroundRunning}
+              onPdf={handleExportPdf}
+              onExcel={handleExportExcel}
+              onReanalyze={() => { setReanalyzeInBackground(false); setConfirmReanalyzeOpen(true); }}
+              onRunInBackground={() => { setReanalyzeInBackground(true); setConfirmReanalyzeOpen(true); }}
+            />
           </Box>
 
           <Box
@@ -512,9 +448,34 @@ export default function ConstructionProgressDashboardPage() {
               </Typography>
               <Typography sx={{ fontSize: '0.8125rem', color: P.muted, mt: 1 }}>
                 {snapshot.imagesAnalyzedCount} image{snapshot.imagesAnalyzedCount === 1 ? '' : 's'} analyzed
-                {' · '}
-                AI confidence {Math.round(snapshot.overallConfidencePct)}%
               </Typography>
+              {[
+                { label: 'Flat finishing', unit: 'flats', s: snapshot.flatFinishing },
+                { label: 'Common area', unit: 'regions', s: snapshot.commonFinishing },
+              ].filter(x => (x.s?.total ?? 0) > 0).length > 0 && (
+                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' }, gap: 1, mt: 1.5 }}>
+                  {[
+                    { label: 'Flat finishing', unit: 'flats', s: snapshot.flatFinishing },
+                    { label: 'Common area', unit: 'regions', s: snapshot.commonFinishing },
+                  ].filter(x => (x.s?.total ?? 0) > 0).map(x => (
+                    <Box key={x.label} sx={{ px: 1.5, py: 1, borderRadius: '10px', backgroundColor: P.bg, border: `1px solid ${P.border}` }}>
+                      <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: P.muted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                        {x.label}
+                      </Typography>
+                      <Typography sx={{ fontSize: '1.125rem', fontWeight: 800, color: P.strong, lineHeight: 1.2 }}>
+                        {Math.round(x.s?.progressPct ?? 0)}%
+                        <Typography component="span" sx={{ fontSize: '0.75rem', fontWeight: 600, color: P.muted }}>
+                          {' '}verified · {Math.round(x.s?.coveragePct ?? 0)}% coverage
+                        </Typography>
+                      </Typography>
+                      <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
+                        {x.s?.completed ?? 0} of {x.s?.total} {x.unit} complete
+                        {(x.s?.awaitingEvidence ?? 0) > 0 ? ` · ${x.s?.awaitingEvidence} awaiting evidence` : ''}
+                      </Typography>
+                    </Box>
+                  ))}
+                </Box>
+              )}
             </Box>
           </Box>
 
@@ -522,6 +483,7 @@ export default function ConstructionProgressDashboardPage() {
             <SummaryCardsRow
               cards={snapshot.summaryCards}
               overallProgressPct={snapshot.overallProgressPct}
+              analysedAt={snapshot.snapshotDate}
             />
           </Box>
 

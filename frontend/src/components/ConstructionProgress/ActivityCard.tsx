@@ -8,6 +8,8 @@ import {
   type ActivityStatus,
 } from '@/services/constructionProgressService';
 import EvidenceLightbox from './EvidenceLightbox';
+import { AssessmentChip, DetectionChip, ReviewChip } from './ProgressChips';
+import { UNABLE_TO_DETERMINE, assessmentColor, roomCoverageText, safePct, showsPercent } from '@/utils/progressDisplay';
 
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#ffffff' };
 
@@ -28,7 +30,10 @@ function statusBg(status: ActivityStatus): string {
 
 export default function ActivityCard({ activity }: { activity: ActivityAssessment }) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
-  const hasEvidence = activity.evidenceCaptureIds.length > 0;
+  const details = activity.evidenceDetails ?? [];
+  const evidenceCount = details.length > 0 ? details.length : (activity.evidenceCaptureIds?.length ?? 0);
+  const hasEvidence = evidenceCount > 0;
+  const assessment = activity.assessmentStatus;
   // Defensive: never show "No Photos Yet" when evidence exists.
   const displayStatus: ActivityStatus =
     activity.status === 'no_evidence' && hasEvidence ? 'in_progress' : activity.status;
@@ -48,19 +53,56 @@ export default function ActivityCard({ activity }: { activity: ActivityAssessmen
           <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong, lineHeight: 1.35 }}>
             {activity.name}
           </Typography>
-          <Box
-            sx={{
-              px: 1, py: 0.25, borderRadius: '6px', flexShrink: 0,
-              backgroundColor: statusBg(displayStatus), whiteSpace: 'nowrap',
-            }}
-          >
-            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: statusColor(displayStatus) }}>
-              {ACTIVITY_STATUS_LABELS[displayStatus]}
-            </Typography>
-          </Box>
+          {assessment ? (
+            <AssessmentChip status={assessment} />
+          ) : (
+            <Box
+              sx={{
+                px: 1, py: 0.25, borderRadius: '6px', flexShrink: 0,
+                backgroundColor: statusBg(displayStatus), whiteSpace: 'nowrap',
+              }}
+            >
+              <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: statusColor(displayStatus) }}>
+                {ACTIVITY_STATUS_LABELS[displayStatus]}
+              </Typography>
+            </Box>
+          )}
         </Box>
 
-        {notObservable ? (
+        {assessment && (activity.detectionType || activity.reviewRequired || typeof activity.coveragePct === 'number') && (
+          <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', alignItems: 'center', mb: 1 }}>
+            <DetectionChip type={activity.detectionType} />
+            {activity.reviewRequired && <ReviewChip reason={activity.reviewReason} />}
+            {roomCoverageText(activity.coveragePct) && (
+              <Typography sx={{ fontSize: '0.6875rem', color: P.muted }}>{roomCoverageText(activity.coveragePct)}</Typography>
+            )}
+          </Box>
+        )}
+
+        {assessment ? (
+          showsPercent(assessment) ? (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: hasEvidence ? 1 : 0 }}>
+              <Box sx={{ flex: 1 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.375 }}>
+                  <Typography sx={{ fontSize: '0.6875rem', color: P.muted, fontWeight: 600 }}>Completion</Typography>
+                  <Typography sx={{ fontSize: '0.6875rem', color: P.strong, fontWeight: 700 }}>
+                    {safePct(activity.completionPct, assessment === 'completed')}%
+                  </Typography>
+                </Box>
+                <Box sx={{ height: 5, borderRadius: '999px', backgroundColor: colors.borderLight, overflow: 'hidden' }}>
+                  <Box sx={{ height: '100%', width: `${safePct(activity.completionPct, assessment === 'completed')}%`, backgroundColor: assessmentColor(assessment).fg, borderRadius: '999px', transition: `width ${motion.durationSlow} ${motion.easeOut}` }} />
+                </Box>
+              </Box>
+              {activity.confidencePct > 0 && (
+                <Typography sx={{ fontSize: '0.6875rem', color: P.muted, whiteSpace: 'nowrap' }}>
+                  {Math.round(activity.confidencePct)}% confidence
+                </Typography>
+              )}
+            </Box>
+          ) : (
+            <Typography sx={{ fontSize: '0.75rem', color: P.muted, mb: hasEvidence ? 1 : 0 }}>{UNABLE_TO_DETERMINE}</Typography>
+          )
+        ) : notObservable ? (
           <Typography sx={{ fontSize: '0.75rem', color: P.muted, mb: 0 }}>
             Not visually observable from site photos — scored from documents or site records when available.
           </Typography>
@@ -109,7 +151,7 @@ export default function ActivityCard({ activity }: { activity: ActivityAssessmen
             }}
           >
             <PhotoLibraryRounded sx={{ fontSize: 14 }} />
-            {activity.evidenceCaptureIds.length} evidence image{activity.evidenceCaptureIds.length === 1 ? '' : 's'}
+            {evidenceCount} evidence image{evidenceCount === 1 ? '' : 's'}
           </Box>
         )}
       </Box>
@@ -117,7 +159,8 @@ export default function ActivityCard({ activity }: { activity: ActivityAssessmen
       {lightboxOpen && (
         <EvidenceLightbox
           activityName={activity.name}
-          captureIds={activity.evidenceCaptureIds}
+          captureIds={activity.evidenceCaptureIds ?? []}
+          details={details.length > 0 ? details : undefined}
           onClose={() => setLightboxOpen(false)}
         />
       )}

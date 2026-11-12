@@ -1,7 +1,9 @@
-import React, { useMemo, useState } from 'react';
-import { Box, Typography, Modal, IconButton, CircularProgress } from '@mui/material';
-import { MapRounded, CloseRounded, ImageNotSupportedRounded } from '@mui/icons-material';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Box, Typography, Modal, IconButton, CircularProgress, Button } from '@mui/material';
+import { MapRounded, CloseRounded, ImageNotSupportedRounded, RefreshRounded } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
+import { resolveMediaUrl } from '@/config/env';
+import { floorCoordScale, polygonCentroid, normalizePolygon, polygonToSvgPoints } from './heatmapGeometry';
 import { useWorkflowStore } from '@store/workflowStore';
 import { getCapturePinsForFloor } from '@store/workflowSelectors';
 import type {
@@ -11,6 +13,11 @@ import type {
 } from '@/services/constructionProgressService';
 
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#ffffff' };
+
+/** If the floor plan has not loaded after this long, stop the spinner and offer Retry. */
+const IMAGE_TIMEOUT_MS = 20_000;
+const IMAGE_ERROR_TEXT = 'The floor plan image could not be loaded.';
+const IMAGE_TIMEOUT_TEXT = 'The floor plan took too long to load.';
 
 /** Fold legacy "uploaded" into in_progress — capture always implies work underway. */
 function displayState(state: RoomHeatmapState): Exclude<RoomHeatmapState, 'uploaded'> {
@@ -166,6 +173,30 @@ export default function FloorPlanHeatmapOverlay({
 }) {
   const [selectedRoom, setSelectedRoom] = useState<RoomPanelInfo | null>(null);
   const [imgLoaded, setImgLoaded] = useState(false);
+  const [imgError, setImgError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [activeRoomIdx, setActiveRoomIdx] = useState<number | null>(null);
+  // Stored URLs are either a relative /media/... path (auth-gated, needs the API base and token)
+  // or an absolute Cloudinary URL; resolveMediaUrl handles both.
+  const imageSrc = useMemo(() => resolveMediaUrl(floorPlanImageUrl) ?? '', [floorPlanImageUrl]);
+
+  useEffect(() => {
+    setImgLoaded(false);
+    setImgError(null);
+  }, [imageSrc]);
+
+  // Safeguard: never spin forever, even if neither onLoad nor onError fires.
+  useEffect(() => {
+    if (!imageSrc || imgLoaded || imgError) return undefined;
+    const id = window.setTimeout(() => setImgError(IMAGE_TIMEOUT_TEXT), IMAGE_TIMEOUT_MS);
+    return () => window.clearTimeout(id);
+  }, [imageSrc, imgLoaded, imgError, reloadKey]);
+
+  function retryImage() {
+    setImgLoaded(false);
+    setImgError(null);
+    setReloadKey(k => k + 1);
+  }
   const allPins = useWorkflowStore(s => s.capturePins);
   const allCaptures = useWorkflowStore(s => s.captures);
   const floorPlans = useWorkflowStore(s => s.floorPlans);
@@ -219,6 +250,23 @@ export default function FloorPlanHeatmapOverlay({
         })();
 
   const visibleRooms = roomsAlignedToPins(rooms, pins, heatmapPins);
+
+  // Rooms with a drawable polygon; coordinates may be fractions (0-1) or percentages (0-100).
+  const drawnRooms = useMemo(() => {
+    const withPoly = rooms.filter(r => (r.polygon?.length ?? 0) >= 3);
+    const scale = floorCoordScale(withPoly.map(r => r.polygon));
+    const items = withPoly
+      .map(r => ({
+        room: r,
+        state: displayState(r.state),
+        points: polygonToSvgPoints(r.polygon, scale),
+        centroid: polygonCentroid(normalizePolygon(r.polygon, scale)),
+      }))
+      .filter(i => i.points);
+    // Grey "no photos" rooms underneath, coloured rooms on top.
+    return items.sort((a, b) => Number(b.state === 'no_images') - Number(a.state === 'no_images'));
+  }, [rooms]);
+  const activeRoom = activeRoomIdx != null ? drawnRooms[activeRoomIdx] ?? null : null;
 
   const noImageCount = rooms.filter(r => displayState(r.state) === 'no_images').length;
   const coverageGapShare = rooms.length > 0 ? noImageCount / rooms.length : 0;
@@ -281,26 +329,92 @@ export default function FloorPlanHeatmapOverlay({
         </Box>
       )}
 
-      {!floorPlanImageUrl || rooms.length === 0 ? (
+      {!imageSrc ? (
         <Box sx={{ textAlign: 'center', py: 4, color: P.muted }}>
           <ImageNotSupportedRounded sx={{ fontSize: 28, mb: 1 }} />
           <Typography sx={{ fontSize: '0.8125rem' }}>No floor plan or room map available yet.</Typography>
         </Box>
       ) : (
         <Box sx={{ position: 'relative', width: '100%', borderRadius: '10px', overflow: 'hidden', border: `1px solid ${colors.borderLight}` }}>
-          {!imgLoaded && (
+          {imgError && (
+            <Box role="alert" sx={{ textAlign: 'center', py: 5, px: 2, color: P.muted }}>
+              <ImageNotSupportedRounded sx={{ fontSize: 28, mb: 1 }} />
+              <Typography sx={{ fontSize: '0.8125rem', mb: 1.5 }}>{imgError}</Typography>
+              <Button
+                onClick={retryImage}
+                startIcon={<RefreshRounded sx={{ fontSize: 18 }} />}
+                sx={{
+                  minHeight: 44, px: 2.5, borderRadius: '10px', textTransform: 'none', fontWeight: 700,
+                  border: `1.5px solid ${P.border}`, color: P.strong,
+                  '&:hover': { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+                }}
+              >
+                Retry
+              </Button>
+            </Box>
+          )}
+          {!imgLoaded && !imgError && (
             <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
               <CircularProgress size={22} sx={{ color: colors.primary }} />
             </Box>
           )}
-          <Box sx={{ position: 'relative', display: imgLoaded ? 'block' : 'none' }}>
+          <Box
+            sx={{ position: 'relative', display: imgLoaded && !imgError ? 'block' : 'none' }}
+            onClick={() => setActiveRoomIdx(null)}
+          >
             <Box
+              key={reloadKey}
               component="img"
-              src={floorPlanImageUrl}
+              src={imageSrc}
               alt="Floor plan"
-              onLoad={() => setImgLoaded(true)}
+              onLoad={() => { setImgLoaded(true); setImgError(null); }}
+              onError={() => setImgError(IMAGE_ERROR_TEXT)}
               sx={{ width: '100%', display: 'block' }}
             />
+            {/* Room heat: polygons in a 0-100 viewBox stretched over the image. */}
+            {drawnRooms.length > 0 && (
+              <Box
+                component="svg"
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                aria-label="Room progress heatmap"
+                sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1 }}
+              >
+                {drawnRooms.map((d, i) => (
+                  <polygon
+                    key={`${d.room.flatName}|${d.room.roomName}|${i}`}
+                    points={d.points}
+                    fill={STATE_COLOR[d.state]}
+                    fillOpacity={d.state === 'no_images' ? 0.25 : 0.35}
+                    stroke={STATE_COLOR[d.state]}
+                    strokeWidth={activeRoomIdx === i ? 2.5 : 1}
+                    strokeOpacity={0.85}
+                    vectorEffect="non-scaling-stroke"
+                    style={{ cursor: 'pointer' }}
+                    onClick={(e) => { e.stopPropagation(); setActiveRoomIdx(i); }}
+                  >
+                    <title>{`${d.room.roomName} - ${STATE_LABEL[d.state]}`}</title>
+                  </polygon>
+                ))}
+              </Box>
+            )}
+            {activeRoom?.centroid && (
+              <Box
+                sx={{
+                  position: 'absolute', left: `${activeRoom.centroid.x}%`, top: `${activeRoom.centroid.y}%`,
+                  transform: 'translate(-50%, -50%)', zIndex: 3, pointerEvents: 'none',
+                  px: 1, py: 0.5, borderRadius: '8px', backgroundColor: 'rgba(17,24,39,0.9)', color: '#fff',
+                  maxWidth: '70%', textAlign: 'center',
+                }}
+              >
+                <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, lineHeight: 1.2 }}>
+                  {activeRoom.room.roomName}
+                </Typography>
+                <Typography sx={{ fontSize: '0.6875rem', lineHeight: 1.2, opacity: 0.85 }}>
+                  {STATE_LABEL[activeRoom.state]}
+                </Typography>
+              </Box>
+            )}
             {/* Pin markers — clickable; open the attributed room panel. */}
             {pins.map(pin => (
               <Box

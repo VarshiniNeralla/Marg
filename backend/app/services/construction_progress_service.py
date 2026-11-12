@@ -164,78 +164,55 @@ def heal_flat_progress_coverage(
     return changed
 
 
-def recompute_flat_finishing_pcts(flat_progress: list[dict[str, Any]]) -> bool:
-    """Flat % = mean over the FULL room roster; uncaptured rooms count as 0%.
+def _core_applicable_ids(flat_name: str, room_name: str) -> list[str]:
+    """Applicable core activity ids for one room (Common Area regions use the common catalogue)."""
+    from app.services.construction_progress_providers.activities import (
+        CORE_COMMON_ACTIVITIES,
+        CORE_FLAT_ACTIVITIES,
+    )
+    from app.services.construction_progress_providers.vllm_provider import _activity_applies_to_room
 
-    Previous v4.4 averaged only photographed rooms, so 4 nearly-done rooms
-    read as ~85% while most of the flat had never been captured.
-    """
-    changed = False
+    catalogue = CORE_COMMON_ACTIVITIES if flat_name == _COMMON_AREA_FLAT else CORE_FLAT_ACTIVITIES
+    return [a.activity_id for a in catalogue if _activity_applies_to_room(a, room_name)]
+
+
+def _is_legacy_activity_set(flat_progress: list[dict[str, Any]]) -> bool:
+    """Snapshots made before the 14-activity catalogue list activities we cannot rebuild denominators for."""
+    from app.services.construction_progress_providers.activities import CORE_IDS
+
     for fp in flat_progress or []:
-        rooms = list(fp.get("rooms") or [])
-        rooms_required = max(int(fp.get("roomsRequired") or 0), len(rooms))
-        if not rooms and rooms_required <= 0:
-            continue
-        photographed = 0
-        complete = 0
-        room_work_pcts: list[float] = []
-        for room in rooms:
-            has_cap = (
-                int(room.get("capturesCount") or 0) >= 1
-                or bool(room.get("activities") or [])
-                or bool(room.get("pinNumbers") or [])
-            )
-            if has_cap:
-                photographed += 1
-            if room.get("isComplete"):
-                complete += 1
-                room_work_pcts.append(100.0)
-                continue
-            if not has_cap:
-                room_work_pcts.append(0.0)
-                continue
-            acts = [
-                a for a in (room.get("activities") or [])
-                if a.get("status") != "not_observable"
-            ]
-            if not acts:
-                room_work_pcts.append(0.0)
-                continue
-            avg = sum(float(a.get("completionPct") or 0.0) for a in acts) / len(acts)
-            room_work_pcts.append(min(avg, 99.0))
+        for room in fp.get("rooms") or []:
+            for act in room.get("activities") or []:
+                if str(act.get("activityId") or "") not in CORE_IDS:
+                    return True
+    return False
 
-        # Pad denominator when roster expects more rooms than listed.
-        while len(room_work_pcts) < rooms_required:
-            room_work_pcts.append(0.0)
 
-        completion_pct = (
-            round(sum(room_work_pcts) / len(room_work_pcts), 1)
-            if room_work_pcts
-            else 0.0
-        )
-        is_fully = (
-            rooms_required > 0
-            and photographed >= rooms_required
-            and complete >= rooms_required
-        )
-        if is_fully:
-            completion_pct = 100.0
-        elif completion_pct >= 100.0 and not is_fully:
-            completion_pct = 99.0
+def recompute_flat_finishing_pcts(flat_progress: list[dict[str, Any]]) -> bool:
+    """Recalculate every room / flat number in place via progress_aggregation (the one calculation).
 
-        updates = {
-            "completionPct": completion_pct,
-            "roomsComplete": complete,
-            "roomsPhotographed": photographed,
-            "roomsRequired": rooms_required,
-            "roomsTotal": rooms_required,  # always full roster in UI "X of Y"
-            "isFullyComplete": is_fully,
-        }
-        for key, val in updates.items():
-            if fp.get(key) != val:
-                fp[key] = val
-                changed = True
-    return changed
+    Counted progress treats work nobody could verify as not yet counted (never as proof of no work), and
+    coverage is reported next to it. See progress_aggregation's module docstring for the methodology.
+    """
+    from app.services.construction_progress_providers.progress_aggregation import recompute_flat_progress
+
+    applicable = None if _is_legacy_activity_set(flat_progress) else _core_applicable_ids
+    return recompute_flat_progress(flat_progress, applicable)
+
+
+def finishing_summaries(flat_progress: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any], float]:
+    """(flat finishing summary, common-area summary, blended floor %) from recomputed flat docs."""
+    from app.services.construction_progress_providers.progress_aggregation import (
+        COMMON_AREA_NAME,
+        blended_floor_pct,
+        floor_finishing_summary,
+    )
+
+    flats = [fp for fp in flat_progress or [] if str(fp.get("flatName") or "") != COMMON_AREA_NAME]
+    common = [fp for fp in flat_progress or [] if str(fp.get("flatName") or "") == COMMON_AREA_NAME]
+    flat_summary = floor_finishing_summary(flats)
+    common_summary = floor_finishing_summary(common)
+    return flat_summary, common_summary, blended_floor_pct(flat_summary, common_summary)
 
 
 _DISAMBIGUATE_BASES = frozenset({"dress", "sit-out", "balcony"})
@@ -1038,6 +1015,12 @@ class ConstructionProgressService:
                 "completionPct": a.completion_pct,
                 "confidencePct": a.confidence_pct,
                 "evidenceCaptureIds": a.evidence_capture_ids,
+                "assessmentStatus": a.assessment_status,
+                "detectionType": a.detection_type,
+                "coveragePct": a.coverage_pct,
+                "reviewRequired": a.review_required,
+                "reviewReason": a.review_reason,
+                "evidenceDetails": a.evidence_details,
             })
 
         captures_by_room: dict[tuple[str, str], int] = {}
@@ -1124,6 +1107,16 @@ class ConstructionProgressService:
                                 "confidencePct": a.confidence_pct,
                                 "evidenceCaptureIds": a.evidence_capture_ids,
                                 "evidence": a.evidence or "",
+                                "assessmentStatus": a.assessment_status,
+                                "detectionType": a.detection_type,
+                                "visualIndicatorsFound": a.visual_indicators_found,
+                                "visualIndicatorsMissing": a.visual_indicators_missing,
+                                "explanation": a.explanation,
+                                "reviewRequired": a.review_required,
+                                "reviewReason": a.review_reason,
+                                "evidenceDetails": a.evidence_details,
+                                "inferredFrom": a.inferred_from,
+                                "lastCapturedAt": a.last_captured_at,
                                 "status": (
                                     getattr(a, "status", None)
                                     or (
@@ -1277,26 +1270,15 @@ class ConstructionProgressService:
         heal_flat_progress_coverage(flat_progress_docs, heatmap_pins)
         recompute_flat_finishing_pcts(flat_progress_docs)
 
-        from app.services.construction_progress_providers.vllm_provider import (
-            rollup_floor_finishing_progress,
-        )
-        from app.services.construction_progress_providers.base import FlatProgress as _FlatProgress
-
-        flat_for_rollup = [
-            _FlatProgress(
-                flat_name=str(fp["flatName"]),
-                completion_pct=float(fp.get("completionPct") or 0.0),
-                rooms_complete=int(fp.get("roomsComplete") or 0),
-                rooms_total=int(fp.get("roomsTotal") or 0),
-                rooms_required=int(fp.get("roomsRequired") or 0),
-                rooms_photographed=int(fp.get("roomsPhotographed") or 0),
-                is_fully_complete=bool(fp.get("isFullyComplete")),
-            )
-            for fp in flat_progress_docs
-            if str(fp.get("flatName") or "").lower() != "common area"
-        ]
-        overall_finishing_pct = rollup_floor_finishing_progress(
-            flat_for_rollup, result.activities,
+        flat_summary, common_summary, overall_finishing_pct = finishing_summaries(flat_progress_docs)
+        # The floor is only "Completed" when every flat AND every common region is - not when a few
+        # floor-level activity averages happen to read 100 %.
+        overall_status = (
+            "completed"
+            if flat_summary["total"] > 0
+            and flat_summary["completed"] == flat_summary["total"]
+            and common_summary["completed"] == common_summary["total"]
+            else "in_progress"
         )
 
         # Coverage ≠ progress: rooms with ≥1 usable capture ÷ roster rooms.
@@ -1327,11 +1309,13 @@ class ConstructionProgressService:
             "overallProgressPct": overall_finishing_pct,
             "overallConfidencePct": result.overall_confidence_pct,
             "overallStatus": overall_status,
-            "imagesAnalyzedCount": len(captures),
+            "imagesAnalyzedCount": len(result.scored_capture_ids) or len(captures),
             "activities": activity_docs,
             "roomHeatmap": room_heatmap,
             "heatmapPins": heatmap_pins,
             "flatProgress": flat_progress_docs,
+            "flatFinishing": flat_summary,
+            "commonFinishing": common_summary,
             "summaryCards": {
                 "roomsCompleted": rooms_completed,
                 "roomsInProgress": rooms_in_progress,
@@ -1341,8 +1325,10 @@ class ConstructionProgressService:
                 "activitiesNotStarted": activities_not_started,
                 "activitiesNotAssessed": activities_not_assessed,
                 "activitiesNotObservable": activities_not_observable,
-                "imagesAnalyzed": len(captures),
-                "lastInspection": last_inspection,
+                "imagesAnalyzed": len(result.scored_capture_ids) or len(captures),
+                # Newest capture date among the photos that were actually scored (not the analysis date).
+                "lastInspection": result.last_inspection or last_inspection,
+                "analysedAt": as_of,
                 "avgConfidencePct": avg_confidence,
                 "coveragePct": coverage_pct,
             },
@@ -1392,30 +1378,11 @@ class ConstructionProgressService:
         pins = list(doc.get("heatmapPins") or [])
         healed = heal_flat_progress_coverage(flats, pins)
         recomputed = recompute_flat_finishing_pcts(flats)
-        if healed or recomputed:
-            doc["flatProgress"] = flats
-            # Keep floor headline in sync with corrected flat %.
-            from app.services.construction_progress_providers.vllm_provider import (
-                rollup_floor_finishing_progress,
-            )
-            from app.services.construction_progress_providers.base import (
-                FlatProgress as _FlatProgress,
-            )
-
-            flat_for_rollup = [
-                _FlatProgress(
-                    flat_name=str(fp.get("flatName") or ""),
-                    completion_pct=float(fp.get("completionPct") or 0.0),
-                    rooms_complete=int(fp.get("roomsComplete") or 0),
-                    rooms_total=int(fp.get("roomsTotal") or 0),
-                    rooms_required=int(fp.get("roomsRequired") or 0),
-                    rooms_photographed=int(fp.get("roomsPhotographed") or 0),
-                    is_fully_complete=bool(fp.get("isFullyComplete")),
-                )
-                for fp in flats
-                if str(fp.get("flatName") or "").lower() != "common area"
-            ]
-            overall = rollup_floor_finishing_progress(flat_for_rollup, [])
+        flat_summary, common_summary, overall = finishing_summaries(flats)
+        doc["flatProgress"] = flats
+        doc["flatFinishing"] = flat_summary
+        doc["commonFinishing"] = common_summary
+        if healed or recomputed or abs(float(doc.get("overallProgressPct") or 0.0) - overall) > 0.05:
             doc["overallProgressPct"] = overall
             try:
                 await self._db[_COLLECTION].update_one(
@@ -1423,6 +1390,8 @@ class ConstructionProgressService:
                     {
                         "$set": {
                             "flatProgress": flats,
+                            "flatFinishing": flat_summary,
+                            "commonFinishing": common_summary,
                             "overallProgressPct": overall,
                             "updatedAt": _utcnow(),
                         }
@@ -1591,6 +1560,12 @@ class ConstructionProgressService:
             if project is not None and project.get("archived") is True:
                 continue
             latest = latest_by_floor.get(floor_id)
+            overall_for_list = latest.get("overallProgressPct") if latest else None
+            if latest and latest.get("flatProgress"):
+                # Same single calculation as the floor dashboard, so the list and the detail never disagree.
+                _flats = list(latest.get("flatProgress") or [])
+                recompute_flat_finishing_pcts(_flats)
+                overall_for_list = finishing_summaries(_flats)[2]
             summaries.append({
                 "floorId": floor_id,
                 "projectId": floor_project_id,
@@ -1598,9 +1573,10 @@ class ConstructionProgressService:
                 "towerId": str(floor.get("towerId") or ""),
                 "towerName": str((tower or {}).get("name") or ""),
                 "floorName": str(floor.get("label") or ""),
-                "overallProgressPct": latest.get("overallProgressPct") if latest else None,
+                "overallProgressPct": overall_for_list,
                 "overallStatus": latest.get("overallStatus", "in_progress") if latest else None,
-                "lastInspection": (latest.get("summaryCards") or {}).get("lastInspection") if latest else None,
+                "lastInspection": iso_utc((latest.get("summaryCards") or {}).get("lastInspection")) if latest else None,
+                "analysedAt": iso_utc(latest.get("snapshotDate")) if latest else None,
                 "analyzed": latest is not None,
             })
         return summaries
@@ -1612,7 +1588,7 @@ class ConstructionProgressService:
         return [
             {
                 "snapshotId": str(d["_id"]),
-                "snapshotDate": d.get("snapshotDate"),
+                "snapshotDate": iso_utc(d.get("snapshotDate")),
                 "overallProgressPct": d.get("overallProgressPct", 0.0),
             }
             for d in docs
@@ -1677,6 +1653,8 @@ def _serialize_snapshot(doc: dict[str, Any] | None) -> dict[str, Any] | None:
         "roomHeatmap": doc.get("roomHeatmap", []),
         "heatmapPins": doc.get("heatmapPins", []),
         "flatProgress": doc.get("flatProgress", []),
+        "flatFinishing": doc.get("flatFinishing") or {},
+        "commonFinishing": doc.get("commonFinishing") or {},
         "summaryCards": doc.get("summaryCards", {}),
         "executiveSummary": doc.get("executiveSummary", ""),
         "model": doc.get("model", ""),
@@ -1685,7 +1663,29 @@ def _serialize_snapshot(doc: dict[str, Any] | None) -> dict[str, Any] | None:
         "rigVersion": doc.get("rigVersion") if doc.get("rigVersion") is not None else doc.get("rig_version"),
         "createdAt": doc.get("createdAt"),
     }
-    return refresh_media_urls_in(payload)
+    return iso_utc_walk(refresh_media_urls_in(payload))
+
+
+def iso_utc(value: Any) -> Any:
+    """datetime -> ISO-8601 string that ALWAYS carries the UTC marker.
+
+    MongoDB hands back naive datetimes; serialised as-is they have no timezone, so a browser reads them as
+    LOCAL time and shows the wrong day/time (the date inconsistencies seen on the dashboard and reports).
+    """
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value
+
+
+def iso_utc_walk(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return iso_utc(value)
+    if isinstance(value, dict):
+        return {k: iso_utc_walk(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [iso_utc_walk(v) for v in value]
+    return value
 
 
 def _prompt_version() -> str:

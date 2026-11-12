@@ -113,6 +113,8 @@ class ReviewCorrectionApplier:
             room_name=activity_room,
             snapshot_id=snapshot_id,
             corrections=doc.get("activityCorrections") or [],
+            reviewed_by=str(doc.get("reviewedBy") or doc.get("reviewed_by") or ""),
+            reviewed_at=doc.get("createdAt") or doc.get("created_at"),
         )
         return {
             "pins": pin_result,
@@ -273,6 +275,8 @@ class ReviewCorrectionApplier:
         room_name: str,
         snapshot_id: str,
         corrections: list[Any],
+        reviewed_by: str = "",
+        reviewed_at: Any = None,
     ) -> dict[str, Any]:
         usable = [c for c in corrections if isinstance(c, dict) and c.get("activityId")]
         if not usable:
@@ -396,6 +400,12 @@ class ReviewCorrectionApplier:
                 }
                 target_room.setdefault("activities", []).append(act)
             else:
+                # Keep the AI's own reading next to the human one. The override is applied on top of it and
+                # is re-applied after every later analysis (see backfill_floor), never silently replaced.
+                if "aiCompletionPct" not in act:
+                    act["aiCompletionPct"] = act.get("completionPct")
+                    act["aiAssessmentStatus"] = act.get("assessmentStatus")
+                    act["aiDetectionType"] = act.get("detectionType") or "direct"
                 act["completionPct"] = pct_f
                 act["completion_pct"] = pct_f
                 act["humanCorrected"] = True
@@ -403,6 +413,24 @@ class ReviewCorrectionApplier:
                 if note:
                     act["evidence"] = note
                 act["status"] = status
+            # Auditable manual override record + the structured assessment fields.
+            from app.services.construction_progress_providers.progress_aggregation import status_for_pct
+
+            act["override"] = {
+                "pct": pct_f,
+                "verdict": verdict,
+                "reason": note,
+                "by": reviewed_by,
+                "at": reviewed_at or _utcnow(),
+                "aiPct": act.get("aiCompletionPct"),
+            }
+            act["detectionType"] = "manual"
+            act["assessmentStatus"] = status_for_pct(pct_f)
+            act["reviewRequired"] = False
+            act["reviewReason"] = ""
+            ai_pct = act.get("aiCompletionPct")
+            if ai_pct is not None and abs(float(ai_pct) - pct_f) >= 30.0:
+                act["aiDisagrees"] = True
             updated += 1
 
         # Floor-level activity cards are averages — leave them alone.
