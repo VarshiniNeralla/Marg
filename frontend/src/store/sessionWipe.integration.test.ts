@@ -173,3 +173,33 @@ describe('nothing waiting: the normal clean-up still happens', () => {
     expect(h.ls.get(parkedKey('u1'))).toBeUndefined();
   });
 });
+
+describe('one company never sees another company data on the same device', () => {
+  it('owner not recorded + writes waiting: the previous data is parked and the store is reset for the new person', async () => {
+    h.pendingWrites = 2;
+    h.ls.set(WORKFLOW_STORE_KEY, '{"state":{"captures":["my-home-capture"]}}');
+    const ok = await startClientSession('kohinoor-manager', 'kohinoor-org');
+    expect(ok).toBe(true);
+    expect(h.resetToSeed).toHaveBeenCalledTimes(1);                       // not left on screen
+    expect(h.ls.get(parkedKey('unattributed'))).toContain('my-home-capture'); // ...and not deleted
+    expect(h.clearFileUploadQueue).not.toHaveBeenCalled();
+  });
+
+  it('data recorded for another company is parked even when the same user id is reused', async () => {
+    h.pendingWrites = 1;
+    h.ls.set(LAST_USER_KEY, 'u1');
+    h.ls.set('sitesurelabs-store-tenant-v1', 'myhome-org');
+    h.ls.set(WORKFLOW_STORE_KEY, '{"state":{"captures":["x"]}}');
+    await startClientSession('u1', 'kohinoor-org');
+    expect(h.resetToSeed).toHaveBeenCalledTimes(1);
+    expect(h.ls.get('sitesurelabs-store-tenant-v1')).toBe('kohinoor-org');
+  });
+
+  it('the same person in the same company keeps their live data', async () => {
+    h.pendingWrites = 1;
+    h.ls.set(LAST_USER_KEY, 'u1');
+    h.ls.set('sitesurelabs-store-tenant-v1', 'myhome-org');
+    await startClientSession('u1', 'myhome-org');
+    expect(h.resetToSeed).not.toHaveBeenCalled();
+  });
+});

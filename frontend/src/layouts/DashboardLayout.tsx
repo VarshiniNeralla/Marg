@@ -1,5 +1,6 @@
 import BrandLogo from '@/shared/components/BrandLogo';
 import React, { useEffect, useState } from 'react';
+import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import {
   Box, IconButton, Avatar, Menu, MenuItem, Divider, Typography, Drawer, useMediaQuery, Tooltip,
@@ -189,31 +190,30 @@ export default function DashboardLayout() {
 
   const badge = roleBadge(user?.role);
 
-  async function handleLogout() {
-    const pendingUploads = pendingFileUploadCount();
-    const pendingWrites = pendingWriteCount();
-    const failedWrites = failedWriteCount();
-    if (pendingUploads > 0 || pendingWrites > 0 || failedWrites > 0) {
-      // Nothing is discarded any more: waiting photos and changes stay saved on this phone for your next sign-in.
-      const ok = window.confirm(
-        pendingUploads > 0
-          ? `${pendingUploads} photo(s) have not been uploaded yet.
+  const [logoutPrompt, setLogoutPrompt] = useState<string | null>(null);
 
-They will stay safely saved on this phone and upload after you sign in again. Do not clear the app data or uninstall the app until then.
-
-Log out?`
-          : `${pendingWrites + failedWrites} change(s) have not synced yet.
-
-They stay saved on this phone and sync after you sign in again.
-
-Log out?`,
-      );
-      if (!ok) return;
-    }
+  async function performLogout() {
     try { await authService.logout(); } catch { /* ignore */ }
     await endClientSession('logout');
     clearAuth();
     navigate('/login');
+  }
+
+  function handleLogout() {
+    setAvatarAnchor(null);
+    const pendingUploads = pendingFileUploadCount();
+    const pendingWrites = pendingWriteCount();
+    const failedWrites = failedWriteCount();
+    if (pendingUploads > 0 || pendingWrites > 0 || failedWrites > 0) {
+      // Nothing is discarded: waiting photos and changes stay saved on this device for your next sign-in.
+      setLogoutPrompt(
+        pendingUploads > 0
+          ? `${pendingUploads} photo(s) have not been uploaded yet. They stay safely saved on this device and upload after you sign in again. Do not clear the app data or uninstall the app until then.`
+          : `${pendingWrites + failedWrites} change(s) have not synced yet. They stay saved on this device and sync after you sign in again.`,
+      );
+      return;
+    }
+    void performLogout();
   }
 
   function active(path: string) {
@@ -544,6 +544,17 @@ Log out?`,
       </Menu>
 
       {(isAdmin(user) || isManager(user)) && <DrishtiFloatingLauncher />}
+
+      <ConfirmDialog
+        open={logoutPrompt !== null}
+        title="Sign out?"
+        description={logoutPrompt ?? ''}
+        confirmLabel="Sign out"
+        cancelLabel="Stay signed in"
+        destructive
+        onCancel={() => setLogoutPrompt(null)}
+        onConfirm={() => { setLogoutPrompt(null); void performLogout(); }}
+      />
     </Box>
   );
 }

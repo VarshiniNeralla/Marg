@@ -50,10 +50,33 @@ describe('planSessionTransition: nothing waiting is ever wiped', () => {
     expect(login.needsOwnerWarning).toBe(false);
   });
 
-  it('owner unknown (older install) is treated as the same person, so nothing is lost', () => {
+  it('owner unknown (older install) with work waiting is set aside, never shown to the next person', () => {
     const p = planSessionTransition({ event: 'login', ownerId: null, newUserId: 'u2', hasWaitingWork: true });
+    expect(p.wipe).toBe(false);          // still nothing is deleted
+    expect(p.keepLive).toBe(false);      // but the previous data is not left on screen for u2
+    expect(p.parkPrevious).toBe(true);
+  });
+
+  it('a different company is never shown the previous company data, even if the owner is the same id', () => {
+    const p = planSessionTransition({
+      event: 'login', ownerId: 'u1', newUserId: 'u1', hasWaitingWork: true, ownerTenant: 'myhome-org', newTenant: 'kohinoor-org',
+    });
+    expect(p.parkPrevious).toBe(true);
+    expect(p.keepLive).toBe(false);
     expect(p.wipe).toBe(false);
+  });
+
+  it('same company and same person keeps working as before', () => {
+    const p = planSessionTransition({
+      event: 'login', ownerId: 'u1', newUserId: 'u1', hasWaitingWork: true, ownerTenant: 'org-a', newTenant: 'org-a',
+    });
     expect(p.keepLive).toBe(true);
+    expect(p.parkPrevious).toBe(false);
+  });
+
+  it('nothing waiting and owner unknown -> clean-up, so a stale store cannot survive', () => {
+    const p = planSessionTransition({ event: 'login', ownerId: null, newUserId: 'u2', hasWaitingWork: false });
+    expect(p.wipe).toBe(true);
   });
 
   it('wipe is never combined with any keep/park outcome', () => {
