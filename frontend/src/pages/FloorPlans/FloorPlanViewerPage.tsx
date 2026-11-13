@@ -1228,13 +1228,12 @@ export default function FloorPlanViewerPage() {
       sx={{
         position: 'relative',
         width: '100%',
-        flex: fullscreen ? 1 : undefined,
         // Tablets: fill remaining viewport so the page doesn't scroll (scroll
         // steals the pointer and cancels the tap before a point can be placed).
         height: fullscreen ? undefined : compactChrome ? '100%' : {
           xs: pinsOnly ? 'calc(100dvh - 150px)' : 'calc(100dvh - 190px)',
           sm: pinsOnly ? 'calc(100dvh - 170px)' : 'calc(100dvh - 210px)',
-          md: pinsOnly ? 'calc(100vh - 200px)' : 'calc(100vh - 230px)',
+          md: pinsOnly ? 'calc(100dvh - 200px)' : 'calc(100dvh - 230px)',
         },
         flex: fullscreen || compactChrome ? 1 : undefined,
         minHeight: fullscreen ? undefined : compactChrome ? 0 : { xs: 360, sm: 560, md: 600 },
@@ -1925,7 +1924,7 @@ export default function FloorPlanViewerPage() {
                 </Typography>
               </Box>
               <Box sx={{
-                overflowY: 'auto', maxHeight: 'calc(100vh - 340px)',
+                overflowY: 'auto', maxHeight: 'calc(100dvh - 340px)',
                 '&::-webkit-scrollbar': { width: 3 },
                 '&::-webkit-scrollbar-track': { background: 'transparent' },
                 '&::-webkit-scrollbar-thumb': { background: P.border, borderRadius: '99px' },

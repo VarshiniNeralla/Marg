@@ -19,7 +19,7 @@ export default function LoadingScreen({
         alignItems: 'center',
         justifyContent: 'center',
         gap: 2,
-        minHeight: fullscreen ? '100vh' : '240px',
+        minHeight: fullscreen ? '100dvh' : '240px',
         background: fullscreen ? colors.bg : 'transparent',
       }}
     >

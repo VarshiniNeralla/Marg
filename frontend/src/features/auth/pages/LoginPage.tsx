@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Box, Typography, FormHelperText, Collapse, useMediaQuery, useTheme } from '@mui/material';
 import { EngineeringRounded, ManageAccountsRounded, AdminPanelSettingsRounded, ErrorRounded, ExpandMoreRounded } from '@mui/icons-material';
@@ -16,6 +16,7 @@ import { KOHINOOR_DEMO_CREDENTIALS, KOHINOOR_DEMO_PASSWORD_HINT } from '../demoC
 import AuthCard from '../components/AuthCard';
 import Input from '@shared/components/Input/Input';
 import Button from '@shared/components/Button/Button';
+import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { motion as m } from 'framer-motion';
 
 const labelSx = {
@@ -100,6 +101,19 @@ export default function LoginPage() {
   const [serverError, setServerError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [demoOpen, setDemoOpen] = useState(false);
+  // Replaces window.confirm: a native alert looks out of place and is unreliable inside the Android WebView.
+  const [photoPrompt, setPhotoPrompt] = useState<number | null>(null);
+  const photoPromptResolve = useRef<((goOn: boolean) => void) | null>(null);
+  const askAboutWaitingPhotos = (count: number) =>
+    new Promise<boolean>((resolve) => {
+      photoPromptResolve.current = resolve;
+      setPhotoPrompt(count);
+    });
+  const answerPhotoPrompt = (goOn: boolean) => {
+    setPhotoPrompt(null);
+    photoPromptResolve.current?.(goOn);
+    photoPromptResolve.current = null;
+  };
   // The page's tenant is only a hint. The SERVER decides the real tenant (Host header) and tells us via GET /tenant;
   // if the two disagree, or the server cannot be confirmed for Kohinoor, we neither list that organization's demo
   // accounts nor allow credentials to be sent to a backend that would use another database.
@@ -167,12 +181,7 @@ export default function LoginPage() {
       // that person and come back when they sign in; say so before going on.
       const preview = await previewLoginTransition(data.user.id);
       if (preview.differentPerson && preview.lockedPhotos > 0) {
-        const NL = '\n\n';
-        const goOn = window.confirm(
-          `${preview.lockedPhotos} photo(s) taken by another account are still waiting on this phone.${NL}`
-          + `They will NOT be deleted. They stay saved on this phone, locked to that account, and upload when that person signs in again.${NL}`
-          + 'Continue signing in?',
-        );
+        const goOn = await askAboutWaitingPhotos(preview.lockedPhotos);
         if (!goOn) {
           try { await authService.logout(); } catch { /* ignore */ }
           return;
@@ -500,6 +509,15 @@ export default function LoginPage() {
         </Box>
         )}
       </Box>
+      <ConfirmDialog
+        open={photoPrompt !== null}
+        title="Photos from another account are waiting"
+        description={`${photoPrompt ?? 0} photo(s) taken by another account are still waiting on this device. They will not be deleted: they stay saved here, locked to that account, and upload when that person signs in again.`}
+        confirmLabel="Continue signing in"
+        cancelLabel="Cancel"
+        onConfirm={() => answerPhotoPrompt(true)}
+        onCancel={() => answerPhotoPrompt(false)}
+      />
     </AuthCard>
   );
 }

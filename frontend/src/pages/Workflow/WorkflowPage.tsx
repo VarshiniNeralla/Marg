@@ -699,7 +699,7 @@ export default function WorkflowPage() {
               <AddRounded sx={{ fontSize: 17 }} />
             </Box>
           </Box>
-          <Box sx={{ p: 1, maxHeight: { md: 'calc(100vh - 220px)' }, overflowY: 'auto' }}>
+          <Box sx={{ p: 1, maxHeight: { md: 'calc(100dvh - 220px)' }, overflowY: 'auto' }}>
             {activeProjects.length === 0
               ? <Typography sx={{ p: 2, fontSize: '0.8125rem', color: colors.textMuted, textAlign: 'center' }}>No projects yet.</Typography>
               : renderTree()}

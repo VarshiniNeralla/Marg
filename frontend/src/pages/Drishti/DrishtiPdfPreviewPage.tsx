@@ -28,7 +28,7 @@ export default function DrishtiPdfPreviewPage() {
   }, []);
 
   return (
-    <Box sx={{ p: 2, background: '#e8edf3', minHeight: '100vh' }}>
+    <Box sx={{ p: 2, background: '#e8edf3', minHeight: '100dvh' }}>
       {css ? <style>{css}</style> : null}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
         <Typography sx={{ fontWeight: 700 }} data-page-count={pageCount}>

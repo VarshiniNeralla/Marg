@@ -428,11 +428,11 @@ export default function DashboardLayout() {
   }
 
   return (
-    <Box sx={{ display: 'flex', minHeight: '100vh', backgroundColor: colors.bg }}>
+    <Box sx={{ display: 'flex', minHeight: '100dvh', backgroundColor: colors.bg }}>
       {/* Desktop sidebar */}
       {!isMobile && (
         <Box sx={{ width: sidebarW, flexShrink: 0, transition: `width 220ms cubic-bezier(0.4,0,0.2,1)` }}>
-          <Box component="nav" sx={{ position: 'fixed', top: 0, left: 0, width: sidebarW, height: '100vh', backgroundColor: colors.card, boxShadow: '1px 0 0 rgba(15,23,42,0.05)', zIndex: zIndex.sidebar, overflow: 'hidden', transition: `width 220ms cubic-bezier(0.4,0,0.2,1)` }}>
+          <Box component="nav" sx={{ position: 'fixed', top: 0, left: 0, width: sidebarW, height: '100dvh', backgroundColor: colors.card, boxShadow: '1px 0 0 rgba(15,23,42,0.05)', zIndex: zIndex.sidebar, overflow: 'hidden', transition: `width 220ms cubic-bezier(0.4,0,0.2,1)` }}>
             <SidebarInner collapsed={sidebarCollapsed} />
           </Box>
         </Box>

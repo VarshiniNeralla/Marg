@@ -251,7 +251,7 @@ export default function NotificationCenter() {
               sx: {
                 top: NAV_OFFSET,
                 width: '100%',
-                maxHeight: `calc(100vh - ${NAV_OFFSET}px)`,
+                maxHeight: `calc(100dvh - ${NAV_OFFSET}px)`,
                 borderRadius: '0 0 16px 16px',
                 boxShadow: '0 20px 48px rgba(15,23,42,0.16)',
                 overflow: 'hidden',
