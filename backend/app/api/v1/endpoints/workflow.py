@@ -1492,6 +1492,7 @@ async def create_capture(payload: dict[str, Any], ctx: CallerContext, db: DB, _=
     # Predefined-pin rooms used to omit towerId/projectId, which produced gallery
     # labels like "· · Floor 2".
     await _enrich_capture_location_fields(db, ctx, payload)
+    await _assert_capture_refs_belong_to_org(db, ctx, payload)
 
     # Attribution is server-owned: clients historically sent uploadedBy="You".
     display_name = await _resolve_user_display_name(db, ctx.user_id)
@@ -1941,6 +1942,37 @@ async def delete_floor_plan(floor_plan_id: str, ctx: CallerContext, db: DB, _=De
     assets = plan.get("mediaAssets") or plan.get("media_assets") or []
     await delete_media_assets(assets, org_id=ctx.org_id)
     return success_response(message="Floor plan deleted")
+
+
+async def _exists_in_org(db: AsyncIOMotorDatabase, collection: str, ctx: CallerContext, entity_id: str) -> bool:
+    by_id = await db[collection].find_one({"_id": _id_filter(entity_id), "orgId": ctx.org_id}, {"_id": 1})
+    if by_id:
+        return True
+    return bool(await db[collection].find_one({"id": entity_id, "orgId": ctx.org_id}, {"_id": 1}))
+
+
+async def _assert_capture_refs_belong_to_org(
+    db: AsyncIOMotorDatabase, ctx: CallerContext, payload: dict[str, Any],
+) -> None:
+    """A capture may only point at a project/tower that exists in the caller's own organization.
+
+    A stale write queue left on a shared browser by a person from another company used to be replayed under the
+    next person's login and created that company's captures inside this one (they pointed at a project that does
+    not exist here, so they showed up as orphans in the gallery). Failing closed here makes that impossible
+    whatever the client does.
+    """
+    for label, collection, keys in (
+        ("project", "projects", ("projectId", "project_id")),
+        ("tower", "towers", ("towerId", "tower_id")),
+    ):
+        ref = next((str(payload[k]).strip() for k in keys if payload.get(k)), "")
+        if ref and not await _exists_in_org(db, collection, ctx, ref):
+            logger.warning(
+                "[capture-create] rejected: {} {} does not exist in org={} (caller={})", label, ref, ctx.org_id, ctx.user_id,
+            )
+            raise ValidationException(
+                f"This capture belongs to a {label} that does not exist in your organization, so it was not saved.",
+            )
 
 
 async def _enrich_capture_location_fields(
