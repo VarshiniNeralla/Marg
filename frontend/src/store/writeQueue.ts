@@ -55,6 +55,18 @@ export interface PendingWrite {
   /** When set to 'failed', the entry is kept for manual retry instead of dropped. */
   status?: 'pending' | 'failed';
   lastError?: string;
+  /** Organization of the person who made the change. It is only ever sent while that organization is signed in. */
+  tenant?: string;
+}
+
+function currentTenant(): string | null {
+  return useAuthStore.getState().user?.org_id || null;
+}
+
+/** A change recorded under another company's login. Kept (never dropped), but never sent from this session. */
+function isForeign(entry: PendingWrite): boolean {
+  const tenant = currentTenant();
+  return !!entry.tenant && !!tenant && entry.tenant !== tenant;
 }
 
 type WriteOps = typeof workflowApiService;
@@ -231,6 +243,12 @@ async function flush(): Promise<void> {
       // Other changes (tours, publishing, ...) are not held: they go out as usual, past any held entries.
       if (isUploadHeld()) {
         const next = queue.find(e => e.status !== 'failed' && !isHeldWriteOp(e.op));
+        if (!next) break;
+        entry = next;
+      }
+
+      if (isForeign(entry)) {
+        const next = queue.find(e => e.status !== 'failed' && !isForeign(e) && (!isUploadHeld() || !isHeldWriteOp(e.op)));
         if (!next) break;
         entry = next;
       }
@@ -435,6 +453,7 @@ export function enqueueWrite<K extends WriteOpName>(
     context,
     attempts: 0,
     createdAt: Date.now(),
+    tenant: currentTenant() ?? undefined,
   });
   save();
   void flush();
