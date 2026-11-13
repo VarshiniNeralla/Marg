@@ -7,7 +7,8 @@ import { claimUnownedPhotos, clearFileUploadQueue, photosLockedToOthers, waiting
 import { WORKFLOW_STORE_KEY } from './persistence';
 import { flushAllDebouncedStorage } from './safeStorage';
 import {
-  dropParkedWork, parkWork, planSessionTransition, readLastUserId, readParkedWork, writeLastUserId,
+  UNATTRIBUTED_OWNER, dropParkedWork, parkWork, planSessionTransition, readLastUserId, readParkedWork,
+  readStoreTenant, writeLastUserId, writeStoreTenant,
 } from './uploadOwnership';
 
 const SESSION_STORAGE_PREFIXES = [
@@ -113,16 +114,19 @@ export async function previewLoginTransition(newUserId: string): Promise<LoginTr
  * Returns false only if the previous person's work could not be safely copied aside, in which case NOTHING was
  * changed and the login must not go on.
  */
-export async function startClientSession(newUserId: string): Promise<boolean> {
+export async function startClientSession(newUserId: string, newTenant?: string | null): Promise<boolean> {
   const owner = readLastUserId(localStorage);
   const waiting = await hasWaitingWork();
-  const plan = planSessionTransition({ event: 'login', ownerId: owner, newUserId, hasWaitingWork: waiting });
+  const plan = planSessionTransition({
+    event: 'login', ownerId: owner, newUserId, hasWaitingWork: waiting,
+    ownerTenant: readStoreTenant(localStorage), newTenant: newTenant ?? null,
+  });
 
-  if (plan.parkPrevious && owner) {
+  if (plan.parkPrevious) {
     // Pin every older photo to its person first, so nothing is ever attributed to the wrong login.
-    await claimUnownedPhotos(owner);
+    if (owner) await claimUnownedPhotos(owner);
     flushAllDebouncedStorage();
-    const ok = parkWork(localStorage, owner, {
+    const ok = parkWork(localStorage, owner ?? UNATTRIBUTED_OWNER, {
       workflow: localStorage.getItem(WORKFLOW_STORE_KEY),
       writes: exportWriteQueueRaw(),
     });
@@ -158,5 +162,6 @@ export async function startClientSession(newUserId: string): Promise<boolean> {
   }
 
   writeLastUserId(localStorage, newUserId);
+  if (newTenant) writeStoreTenant(localStorage, newTenant);
   return true;
 }

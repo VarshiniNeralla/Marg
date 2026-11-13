@@ -178,7 +178,7 @@ export default function LoginPage() {
           return;
         }
       }
-      const started = await startClientSession(data.user.id);
+      const started = await startClientSession(data.user.id, data.user.org_id || data.user.org_slug || null);
       if (!started) {
         setServerError('Could not safely set aside the photos waiting on this phone, so sign-in was stopped to protect them. Free some storage space and try again.');
         try { await authService.logout(); } catch { /* ignore */ }

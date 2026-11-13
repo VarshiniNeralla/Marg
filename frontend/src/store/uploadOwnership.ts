@@ -13,6 +13,10 @@
  */
 
 export const LAST_USER_KEY = 'sitesurelabs-last-user-v1';
+/** Which company (tenant) the data held on this device belongs to. A different company must never see it. */
+export const STORE_TENANT_KEY = 'sitesurelabs-store-tenant-v1';
+/** Parked work whose owner was not recorded (older installs); kept, never shown to anyone automatically. */
+export const UNATTRIBUTED_OWNER = 'unattributed';
 const PARKED_PREFIX = 'sitesurelabs-parked-v1:';
 
 export interface KeyValueStore {
@@ -31,6 +35,10 @@ export interface TransitionInput {
   newUserId?: string | null;
   /** Anything unsent at all: photos or queued changes. */
   hasWaitingWork: boolean;
+  /** Company the data on this device belongs to, if recorded. */
+  ownerTenant?: string | null;
+  /** Company of the person signing in now. */
+  newTenant?: string | null;
 }
 
 export interface TransitionPlan {
@@ -47,7 +55,7 @@ export interface TransitionPlan {
 }
 
 export function planSessionTransition(input: TransitionInput): TransitionPlan {
-  const { event, ownerId, newUserId, hasWaitingWork } = input;
+  const { event, ownerId, newUserId, hasWaitingWork, ownerTenant, newTenant } = input;
   const none: TransitionPlan = {
     wipe: false, keepLive: false, parkPrevious: false, restoreForNewUser: false, needsOwnerWarning: false,
   };
@@ -58,13 +66,35 @@ export function planSessionTransition(input: TransitionInput): TransitionPlan {
   }
 
   // login
-  const differentPerson = !!ownerId && !!newUserId && ownerId !== newUserId;
+  // Another company's data must never be shown, whatever the user ids say.
+  const otherCompany = !!ownerTenant && !!newTenant && ownerTenant !== newTenant;
+  // Owner not recorded (older install) with work waiting: we cannot prove it is the same person, so it is set aside
+  // (kept, not deleted) instead of being shown to whoever signs in next. This is how one company's floors and
+  // captures ended up in another company's gallery.
+  const ownerUnknown = !ownerId && !!newUserId && hasWaitingWork;
+  const differentPerson = otherCompany || ownerUnknown || (!!ownerId && !!newUserId && ownerId !== newUserId);
   if (!hasWaitingWork) return { ...none, wipe: true, restoreForNewUser: true };
   if (!differentPerson) return { ...none, keepLive: true };
   return { ...none, parkPrevious: true, restoreForNewUser: true, needsOwnerWarning: true };
 }
 
 // ── last signed-in person ────────────────────────────────────────────────────
+
+export function readStoreTenant(store: KeyValueStore): string | null {
+  try {
+    return store.getItem(STORE_TENANT_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeStoreTenant(store: KeyValueStore, tenant: string): void {
+  try {
+    store.setItem(STORE_TENANT_KEY, tenant);
+  } catch {
+    /* best effort */
+  }
+}
 
 export function readLastUserId(store: KeyValueStore): string | null {
   try {
