@@ -5,7 +5,7 @@ import { colors } from '@theme/tokens';
 
 export default function LandingLayout() {
   return (
-    <Box sx={{ minHeight: '100vh', backgroundColor: colors.bg }}>
+    <Box sx={{ minHeight: '100dvh', backgroundColor: colors.bg }}>
       <Outlet />
     </Box>
   );

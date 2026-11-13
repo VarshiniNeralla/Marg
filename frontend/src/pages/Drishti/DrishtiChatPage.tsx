@@ -376,7 +376,7 @@ export default function DrishtiChatPage() {
       position: 'relative',
       mx: { xs: -1, sm: -1.5, md: -2 },
       mb: { xs: -1, md: -2 },
-      height: { xs: 'calc(100vh - 120px)', md: 'calc(100vh - 100px)' },
+      height: { xs: 'calc(100dvh - 120px)', md: 'calc(100dvh - 100px)' },
       display: 'flex',
       borderTop: `1px solid ${colors.border}`,
       backgroundColor: colors.bg,

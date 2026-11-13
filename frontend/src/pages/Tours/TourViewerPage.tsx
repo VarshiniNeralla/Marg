@@ -1473,13 +1473,13 @@ export default function TourViewerPage() {
     <Box sx={{
       borderRadius: fullscreen ? 0 : { xs: '16px', md: '20px' },
       width: '100%',
-      height: fullscreen ? '100vh' : {
+      height: fullscreen ? '100dvh' : {
         xs: 'clamp(320px, 62vw, 420px)',
         sm: 'clamp(380px, 54vw, 500px)',
         md: 'clamp(440px, 48vw, 600px)',
         lg: 'clamp(480px, 44vw, 680px)',
       },
-      minHeight: fullscreen ? '100vh' : { xs: 320, md: 440 },
+      minHeight: fullscreen ? '100dvh' : { xs: 320, md: 440 },
       position: 'relative',
       overflow: 'hidden',
       backgroundColor: '#0f1929',
