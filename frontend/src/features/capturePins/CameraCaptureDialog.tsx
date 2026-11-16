@@ -8,6 +8,23 @@ import { Capacitor } from '@capacitor/core';
 import { Insta360Camera } from '@/plugins/insta360Camera';
 import { INSTA360_SSID_PATTERNS, getInsta360Password, saveInsta360Password } from './insta360Config';
 
+/** Downscaled copy of a (possibly huge) photo for on-screen preview; falls back to the original if it cannot. */
+async function makePreviewUrl(blob: Blob, maxWidth = 1600): Promise<string> {
+  try {
+    const bitmap = await createImageBitmap(blob, { resizeWidth: maxWidth, resizeQuality: 'medium' });
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
+    bitmap.close?.();
+    const small = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+    if (small) return URL.createObjectURL(small);
+  } catch {
+    /* fall through to the original */
+  }
+  return URL.createObjectURL(blob);
+}
+
 type Phase = 'starting' | 'live' | 'captured' | 'uploading' | 'error'
   | 'insta360-password' | 'insta360-connecting' | 'insta360-capturing';
 
@@ -96,7 +113,11 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
       const response = await fetch(Capacitor.convertFileSrc(filePath));
       const blob = await response.blob();
       const file = new File([blob], fileName, { type: blob.type || 'image/jpeg' });
-      setShot({ url: URL.createObjectURL(blob), file });
+      // Show a small copy: a 72-megapixel frame takes the WebView many seconds to decode just to display.
+      // The full-size file is what gets uploaded.
+      const t0 = performance.now();
+      setShot({ url: await makePreviewUrl(blob), file });
+      console.info(`[insta360] preview ready in ${Math.round(performance.now() - t0)} ms (${Math.round(blob.size / 1048576)} MB frame)`);
       setPhase('captured');
     } catch (e) {
       setError((e as { message?: string })?.message || 'Could not capture from the Insta360 camera.');
