@@ -127,14 +127,9 @@ function saveLastCaptureLocation(userId: string | null | undefined, loc: LastCap
 
 /* Which physical camera captures pins on this device — sticky per-device
    choice (an engineer either carries the Insta360 for a shoot or doesn't;
-   re-prompting every pin would be busywork). The Insta360 X3's OSC WiFi AP
-   advertises as "X3 <SERIAL>.OSC" (confirmed on-device: "X3 8TV8SF.OSC") —
-   note the space after "X3", not an underscore. */
+   re-prompting every pin would be busywork). The camera model is not assumed:
+   the WiFi name filters and the password live in features/capturePins/insta360Config. */
 const CAMERA_SOURCE_KEY = 'sitesurelabs-camera-source-v1';
-const INSTA360_SSID_PATTERN = 'X3 ';
-// Insta360's factory-default WiFi password for the X3's own OSC AP (confirmed
-// on-device) — not a per-device secret, so no need to prompt or persist it.
-const INSTA360_WIFI_PASSWORD = '88888888';
 type CameraSource = 'device' | 'insta360';
 
 function loadCameraSource(): CameraSource {
@@ -2509,8 +2504,7 @@ export default function CaptureWorkflowPage() {
           // If camera was for a new pin but no image taken, clear the pending pin
           // so the user isn't stuck with a pin they can't complete.
         }}
-        insta360SsidPattern={cameraSource === 'insta360' ? INSTA360_SSID_PATTERN : undefined}
-        insta360Password={cameraSource === 'insta360' ? INSTA360_WIFI_PASSWORD : undefined}
+        insta360={cameraSource === 'insta360'}
       />
 
       {/* Hidden file input for mobile fallback when getUserMedia is blocked */}

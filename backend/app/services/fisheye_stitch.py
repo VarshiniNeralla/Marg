@@ -376,12 +376,23 @@ def parse_embedded_calibration(data: bytes) -> Optional[DualFisheyeCalibration]:
     return None
 
 
+# "Insta360 X3", "Insta360 X5", "Insta360 ONE X2", "Insta360 X4 Air", and any later "Insta360 X<n>" / "ONE <name>"
+# / "GO <n>" the vendor ships. Requiring the vendor prefix is deliberate: a bare "X3" matches by chance inside
+# ~15 MB of JPEG data on essentially every file, which labelled EVERY camera as an X3 and gave it the X3-only
+# measured lens parameters.
+_MODEL_RE = re.compile(rb"Insta360[ _]((?:ONE[ _][A-Z0-9]+)|(?:X\d+(?:[ _]Air)?)|(?:GO[ _]?\d+[A-Za-z]*))")
+# The model name lives in the EXIF/XMP block at the start of the file and in the trailer at its end; scanning
+# only those regions keeps the match meaningful (and fast).
+_MODEL_SCAN_BYTES = 256 * 1024
+
+
 def detect_model(data: bytes) -> Optional[str]:
-    """Best-effort camera model from the file's ASCII strings (e.g. 'ONE X2')."""
-    for pat in (rb"Insta360 ONE X2", rb"Insta360 X3", rb"Insta360 X4",
-                rb"Insta360 X5", rb"ONE X2", rb"X3", rb"X4", rb"X5"):
-        if pat in data:
-            return pat.decode("ascii", "replace").replace("Insta360 ", "")
+    """Camera model from the file's own metadata (e.g. 'X3', 'X5', 'X6', 'ONE X2'); None when it is not stated."""
+    regions = (data[:_MODEL_SCAN_BYTES], data[-_MODEL_SCAN_BYTES:] if len(data) > _MODEL_SCAN_BYTES else b"")
+    for region in regions:
+        m = _MODEL_RE.search(region)
+        if m:
+            return m.group(1).decode("ascii", "replace").replace("_", " ")
     return None
 
 
@@ -2178,6 +2189,13 @@ def _stitch_arrays(
                 cx1, cy1, r1 = 2957.0 * s, 2944.0 * s, 3048.0 * s
                 cx2, cy2, r2 = 2991.0 * s, 2872.0 * s, 3164.0 * s
                 source = "profile_x3_hardcoded"
+            # A side-by-side calibration holds lens2 in FULL-FRAME x (the embedded ones do, and the stitcher later
+            # subtracts W/2 to get the right-hand region). Every value above was measured/guessed inside the RIGHT
+            # region, so shift it into full-frame x. Without this lens2's centre landed at x = cx2 - W/2 < 0, the
+            # whole back hemisphere sampled outside its image and came out black (real X5 capture: sphere coverage
+            # 0.64-0.68, both recovery attempts rejected). This regressed when the embedded side-by-side offset
+            # was introduced; it never showed on X3 files because they carry a trailer calibration.
+            cx2 += W // 2
             calib = DualFisheyeCalibration(
                 lens1=LensCalibration(cx1, cy1, r1, (0.0, 0.0, 0.0)),
                 lens2=LensCalibration(cx2, cy2, r2, (0.0, 0.0, 0.0)),
