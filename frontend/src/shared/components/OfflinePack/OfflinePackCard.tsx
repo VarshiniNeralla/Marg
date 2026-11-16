@@ -12,6 +12,7 @@ import {
   allPlanKeys, buildFloorRows, floorStatus, keysToDownload, leavingCoverageWarnings, planMediaKeys, summariseTowers, type PlanLike,
 } from '@store/offlinePack';
 import { formatBytes } from '@store/storageCheck';
+import { formatTowerLabel } from '@/utils/pinLabels';
 
 interface Props {
   /** Limit the pack to one project's towers. Omit for every tower the person can see. */
@@ -64,14 +65,14 @@ export default function OfflinePackCard({ projectId, projectName }: Props) {
   }, [scopedFloors, floorPlans, capturePins]);
 
   const summaries = useMemo(
-    () => summariseTowers(scopedTowers.map(t => ({ id: t.id, name: t.name })), scopedFloors, planOfFloor, saved),
+    () => summariseTowers(scopedTowers.map(t => ({ id: t.id, name: formatTowerLabel(t.name) || t.name })), scopedFloors, planOfFloor, saved),
     [scopedTowers, scopedFloors, planOfFloor, saved],
   );
 
   const warnings = useMemo(() => leavingCoverageWarnings(summaries), [summaries]);
 
   const rows = useMemo(
-    () => buildFloorRows(scopedTowers.map(t => ({ id: t.id, name: t.name })), scopedFloors, planOfFloor, saved, known),
+    () => buildFloorRows(scopedTowers.map(t => ({ id: t.id, name: formatTowerLabel(t.name) || t.name })), scopedFloors, planOfFloor, saved, known),
     [scopedTowers, scopedFloors, planOfFloor, saved, known],
   );
   const newRows = rows.filter(r => r.isNew);

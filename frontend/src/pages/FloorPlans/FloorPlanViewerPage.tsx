@@ -286,6 +286,8 @@ export default function FloorPlanViewerPage() {
   const [annotateMode, setAnnotateMode]   = useState(false);
   const [placeArmed, setPlaceArmed]       = useState(false);
   const [pendingAnnotate, setPendingAnnotate] = useState<{ x: number; y: number } | null>(null);
+  // Save point must act once per placement, however fast it is tapped.
+  const annotateSavingRef = useRef(false);
   const [editingPinId, setEditingPinId] = useState<string | null>(null);
   const [annotateFlat, setAnnotateFlat]   = useState<string>(PREDEF_FLAT_OPTIONS[0]);
   const [annotateRoom, setAnnotateRoom]   = useState<string>('Living / Dining');
@@ -2143,6 +2145,9 @@ export default function FloorPlanViewerPage() {
               || !floorPlan
             }
             onClick={() => {
+              if (annotateSavingRef.current) return;
+              annotateSavingRef.current = true;
+              window.setTimeout(() => { annotateSavingRef.current = false; }, 700);
               const resolvedRoom = annotateRoom === PREDEF_ROOM_OTHER
                 ? annotateCustomRoom.trim()
                 : annotateRoom.trim();

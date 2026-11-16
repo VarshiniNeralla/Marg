@@ -11,7 +11,8 @@ import {
 import type { UploadedFileResponse } from '@/services/uploadService';
 import { STORE_VERSION, WORKFLOW_STORE_KEY } from './persistence';
 import { createDebouncedJsonStorage } from './safeStorage';
-import { isUnconfirmedCapturedPin, markServerSeen } from './pinSync';
+import { isUnconfirmedCapturedPin, isUnconfirmedPlacedPin, markServerSeen, pinClientAgeMs } from './pinSync';
+import { isSamePlace } from '@/utils/pinDuplicates';
 import { addTombstones, tombstoneMap, tombstoneSet, clearTombstones } from './tombstones';
 import { useAuthStore, isFieldEngineer, isManagerOrAdmin } from './authStore';
 import { findOwnFloorPlanTour } from '@/utils/captureOwnership';
@@ -895,10 +896,11 @@ export const useWorkflowStore = create<WorkflowState>()(
                 // A point with photos that the server has NEVER confirmed: its create was lost, not deleted by
                 // someone else. Dropping it here threw away the point and its photos for good.
                 if (isUnconfirmedCapturedPin(p)) return true;
+                // A labelled point placed on this device that the server has never confirmed stays until it is
+                // confirmed (and is re-sent below), instead of disappearing once the grace window has passed.
+                if (isUnconfirmedPlacedPin(p)) return true;
                 const labeled = Boolean(p.flatName && p.roomName) || p.isPredefined;
-                const age = typeof p.clientCreatedAt === 'number'
-                  ? now - p.clientCreatedAt
-                  : (p.createdAt === 'Just now' ? 0 : Infinity);
+                const age = pinClientAgeMs(p, now);
                 return labeled && age < PIN_CREATE_GRACE_MS;
               });
             })()
@@ -2048,6 +2050,16 @@ export const useWorkflowStore = create<WorkflowState>()(
       }
     } else if (isPredefined) {
       resolvedSource = source ?? 'predefined';
+    }
+
+    // The same labelled point, at the same spot, on the same plan, is the same point: a double tap on Save, or a replayed
+    // action, must never add a second copy. (Only for admin / manager placement; an engineer's captures are separate stops.)
+    if (isPredefined && resolvedFlat && resolvedRoom) {
+      const twin = existingOnPlan.find(p => isSamePlace(
+        { id: p.id, x: p.x, y: p.y, floorPlanId: p.floorPlanId, flatName: p.flatName, roomName: p.roomName },
+        { id: id, x, y, floorPlanId, flatName: resolvedFlat, roomName: resolvedRoom },
+      ));
+      if (twin) return twin.id;
     }
 
     const displayName = resolvedRoom || `Pin ${sequenceNumber}`;
