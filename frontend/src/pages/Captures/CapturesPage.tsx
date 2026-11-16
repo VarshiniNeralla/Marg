@@ -14,6 +14,7 @@ import { resolveCaptureImageCandidates } from '@/utils/captureMedia';
 import { paginateGroups } from '@/utils/paginateGroups';
 import { formatPinLocationLabel, formatTowerLabel, enrichCaptureLocation } from '@/utils/pinLabels';
 import {
+  capturesInSelection,
   collectFloorCaptureIds,
   filterGalleryCaptures,
 } from '@/utils/captureGallery';
@@ -199,7 +200,7 @@ export default function CapturesPage() {
   // "Delete all" on a floor header (field engineer's Capture History): what is about to be removed, shown in the
   // confirmation before anything is deleted.
   const [deleteFloorTarget, setDeleteFloorTarget] = useState<
-    { label: string; ids: string[]; shown: number; earlier: number } | null
+    { label: string; ids: string[]; shown: number; earlier: number; scope: 'project' | 'tower' | 'floor' } | null
   >(null);
 
   // Pull finished stitch panoramas onto any still-empty capture cards (common
@@ -349,7 +350,26 @@ export default function CapturesPage() {
     const label = [showProjectName ? group.projectName : '', formatTowerLabel(group.towerName), group.floorLabel]
       .filter(Boolean)
       .join(' · ') || group.floorLabel;
-    setDeleteFloorTarget({ label, ids, shown, earlier });
+    setDeleteFloorTarget({ label, ids, shown, earlier, scope: 'floor' });
+  };
+
+  // "Delete all" in the toolbar follows the CURRENT selection and nothing wider: a project removes that project's
+  // captures, a tower only that tower's (inside the selected project), a floor only that floor's (inside the
+  // selected tower). `filtered` is already narrowed by exactly those three choices (and, for engineers, to their
+  // own captures), so other projects, towers and floors can never be included.
+  const requestDeleteSelection = () => {
+    if (!projectId || projectId === 'all' || !selectedProject) return;
+    const { scope, cards } = capturesInSelection(filtered, {
+      projectId, towerId, floorId, floorLabel: floorSelectionLabel(floorId, availableFloors),
+    });
+    const { ids, shown, earlier } = collectFloorCaptureIds(cards, allPins, ownCaptureIdSet(mockCaptures, user));
+    if (ids.length === 0) return;
+    const parts = scope === 'floor'
+      ? [selectedFloor?.label, selectedTower ? formatTowerLabel(selectedTower.name) : '', selectedProject.name]
+      : scope === 'tower'
+        ? [selectedTower ? formatTowerLabel(selectedTower.name) : '', selectedProject.name]
+        : [selectedProject.name];
+    setDeleteFloorTarget({ label: parts.filter(Boolean).join(' · '), ids, shown, earlier, scope });
   };
 
   const confirmDeleteFloor = () => {
@@ -562,6 +582,30 @@ export default function CapturesPage() {
             {sortOrder === 'latest'
               ? <ArrowDownwardRounded sx={{ fontSize: 14, color: P.muted }} />
               : <ArrowUpwardRounded sx={{ fontSize: 14, color: P.muted }} />}
+          </Box>
+        )}
+
+        {/* Delete all: scoped to whatever project / tower / floor is selected above */}
+        {canDeleteWholeFloor && selectedProject && filtered.length > 0 && (
+          <Box
+            component="button"
+            type="button"
+            onClick={requestDeleteSelection}
+            title={floorId && floorId !== 'all' && towerId && towerId !== 'all'
+              ? 'Delete all captures on the selected floor'
+              : towerId && towerId !== 'all'
+                ? 'Delete all captures in the selected tower'
+                : 'Delete all captures in the selected project'}
+            sx={{
+              display: 'inline-flex', alignItems: 'center', gap: 0.75, flexShrink: 0,
+              px: 1.5, py: 0.875, borderRadius: '10px', border: `1.5px solid ${P.border}`, backgroundColor: P.white,
+              color: P.strong, fontFamily: 'inherit', fontSize: '0.8125rem', fontWeight: 600, whiteSpace: 'nowrap', cursor: 'pointer',
+              transition: T, alignSelf: { xs: 'stretch', md: 'center' }, justifyContent: 'center',
+              '&:hover': { borderColor: colors.danger, color: colors.danger, backgroundColor: colors.dangerBg },
+            }}
+          >
+            <DeleteSweepRounded sx={{ fontSize: 16 }} />
+            Delete all
           </Box>
         )}
       </Box>
@@ -806,9 +850,11 @@ export default function CapturesPage() {
 
       <ConfirmDialog
         open={!!deleteFloorTarget}
-        title="Delete all captures on this floor?"
+        title={deleteFloorTarget?.scope === 'project' ? 'Delete all captures in this project?'
+          : deleteFloorTarget?.scope === 'tower' ? 'Delete all captures in this tower?'
+            : 'Delete all captures on this floor?'}
         description={deleteFloorTarget
-          ? `This will permanently delete ${deleteFloorTarget.ids.length} capture${deleteFloorTarget.ids.length === 1 ? '' : 's'} on ${deleteFloorTarget.label}`
+          ? `This will permanently delete ${deleteFloorTarget.ids.length} capture${deleteFloorTarget.ids.length === 1 ? '' : 's'} on ${deleteFloorTarget.label}, and nothing from any other ${deleteFloorTarget.scope === 'project' ? 'project' : deleteFloorTarget.scope === 'tower' ? 'tower or project' : 'floor, tower or project'}`
             + (deleteFloorTarget.earlier > 0
               ? ` (${deleteFloorTarget.shown} shown here plus ${deleteFloorTarget.earlier} earlier visit${deleteFloorTarget.earlier === 1 ? '' : 's'} of the same points)`
               : '')
