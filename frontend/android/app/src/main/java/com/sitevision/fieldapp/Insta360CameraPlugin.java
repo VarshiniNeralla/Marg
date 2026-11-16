@@ -52,8 +52,10 @@ import java.net.URL;
 public class Insta360CameraPlugin extends Plugin {
     private static final String CAMERA_HOST = "192.168.42.1";
     private static final int HTTP_TIMEOUT_MS = 8000;
-    private static final int STATUS_POLL_INTERVAL_MS = 1000;
-    private static final int STATUS_POLL_MAX_ATTEMPTS = 20;
+    // Poll twice a second (Insta360 recommends at most once a second for /osc/info; the status call is light) so the
+    // photo is picked up within ~0.5 s of the camera finishing instead of up to a full second later.
+    private static final int STATUS_POLL_INTERVAL_MS = 500;
+    private static final int STATUS_POLL_MAX_ATTEMPTS = 60;
     private static final String TAG = "Insta360Camera";
     // The X3 can leave photo mode between shots (it answers camera.takePicture with HTTP 400
     // "disabledCommand: Currently camera is not working in image mode"). Before every shot we check the
@@ -253,13 +255,19 @@ public class Insta360CameraPlugin extends Plugin {
 
         new Thread(() -> {
             try {
+                final long tStart = System.currentTimeMillis();
                 // Pace the shots, then make sure the camera is in photo mode BEFORE triggering.
                 long sinceLast = System.currentTimeMillis() - lastCaptureFinishedAtMs;
                 if (sinceLast < MIN_CAPTURE_GAP_MS) {
                     Thread.sleep(MIN_CAPTURE_GAP_MS - sinceLast);
                 }
+                final long tPaced = System.currentTimeMillis();
                 ensureImageMode();
+                final long tMode = System.currentTimeMillis();
                 ensureRawPhotoOutput();
+                ensureHdrOff();
+                logCaptureOptions();
+                final long tRaw = System.currentTimeMillis();
 
                 // Trigger the still capture and wait for the file. If the camera still answers
                 // "disabledCommand" (it is not in image mode), switch it back and try again.
@@ -282,6 +290,7 @@ public class Insta360CameraPlugin extends Plugin {
                     }
                 }
 
+                final long tShot = System.currentTimeMillis();
                 if (fileUrl == null) {
                     call.reject("Timed out waiting for the camera to finish capturing.");
                     return;
@@ -311,6 +320,13 @@ public class Insta360CameraPlugin extends Plugin {
                 File outFile = new File(getContext().getCacheDir(), fileName);
                 downloadToFile(absoluteUrl, outFile);
                 lastCaptureFinishedAtMs = System.currentTimeMillis();
+                final long tDone = lastCaptureFinishedAtMs;
+                // Where the time goes, per step (ms): pacing wait, mode check, raw-output check, shutter+camera
+                // processing (until the file is ready), file download.
+                Log.i(TAG, "capture timing ms: pace=" + (tPaced - tStart) + " mode=" + (tMode - tPaced)
+                        + " rawOpt=" + (tRaw - tMode) + " shutterAndProcessing=" + (tShot - tRaw)
+                        + " download=" + (tDone - tShot) + " total=" + (tDone - tStart)
+                        + " bytes=" + outFile.length());
 
                 JSObject result = new JSObject();
                 result.put("filePath", outFile.getAbsolutePath());
@@ -379,6 +395,7 @@ public class Insta360CameraPlugin extends Plugin {
         for (int attempt = 0; attempt < STATUS_POLL_MAX_ATTEMPTS; attempt++) {
             JSONObject statusJson = new JSONObject(httpPost("/osc/commands/status", "{\"id\":\"" + commandId + "\"}"));
             String state = statusJson.getString("state");
+            Log.i(TAG, "takePicture poll " + attempt + ": state=" + state + " completion=" + statusJson.opt("progress"));
             if ("done".equals(state)) {
                 JSONObject results = statusJson.optJSONObject("results");
                 return results != null ? results.optString("fileUrl", null) : null;
@@ -427,6 +444,41 @@ public class Insta360CameraPlugin extends Plugin {
             Log.i(TAG, "setOptions photoStitching=none -> " + set.optString("state"));
         } catch (Exception e) {
             Log.w(TAG, "could not check photoStitching, continuing: " + e.getMessage());
+        }
+    }
+
+    /**
+     * HDR makes the camera bracket three exposures: the shot takes several seconds longer (measured on an X5:
+     * about 12.2 s with HDR on versus 8.6 s off) and the OSC answer then describes three originals rather than the
+     * single raw frame the backend stitcher expects. Switch it off when the camera offers the option. Best effort.
+     */
+    private void ensureHdrOff() {
+        try {
+            JSONObject response = oscCommand("camera.getOptions", "{\"optionNames\":[\"hdr\"]}");
+            JSONObject results = response.optJSONObject("results");
+            JSONObject options = results != null ? results.optJSONObject("options") : null;
+            if (options == null || !options.has("hdr")) {
+                return; // this camera has no HDR option
+            }
+            if ("off".equalsIgnoreCase(options.optString("hdr", ""))) {
+                return;
+            }
+            JSONObject set = oscCommand("camera.setOptions", "{\"options\":{\"hdr\":\"off\"}}");
+            Log.i(TAG, "setOptions hdr=off -> " + set.optString("state"));
+        } catch (Exception e) {
+            Log.w(TAG, "could not check hdr, continuing: " + e.getMessage());
+        }
+    }
+
+    /** Logs the options that decide how long a still takes (self-timer delay, HDR bracketing, stitching, exposure). */
+    private void logCaptureOptions() {
+        try {
+            JSONObject r = oscCommand("camera.getOptions", "{\"optionNames\":[\"captureMode\",\"exposureDelay\",\"hdr\","
+                    + "\"photoStitching\",\"exposureProgram\",\"iso\",\"shutterSpeed\",\"whiteBalance\"]}");
+            JSONObject results = r.optJSONObject("results");
+            Log.i(TAG, "capture options: " + (results != null ? results.optJSONObject("options") : r));
+        } catch (Exception e) {
+            Log.w(TAG, "could not read capture options: " + e.getMessage());
         }
     }
 
