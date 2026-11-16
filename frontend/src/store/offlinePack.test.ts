@@ -138,3 +138,50 @@ describe('looksLikePlanFile', () => {
     expect(looksLikePlanFile(new Uint8Array(0))).toBe(false);
   });
 });
+
+describe('choosing floors / new plans', () => {
+  const towers = [{ id: 't1', name: 'Tower 1' }];
+  const floors = [
+    { id: 'f1', towerId: 't1', label: 'Floor 1', number: 1 },
+    { id: 'f2', towerId: 't1', label: 'Floor 2', number: 2 },
+    { id: 'f3', towerId: 't1', label: 'Floor 3', number: 3 },
+  ];
+  const plans: Record<string, PlanLike> = {
+    f1: plan('p1', 'f1', '/media/a1.png'),
+    f2: plan('p2', 'f2', '/media/a2.png'),
+    f3: plan('p3', 'f3', '/media/a3.png'),
+  };
+  const planOf = (id: string) => plans[id];
+
+  it('lists one row per floor with a saveable plan, saved or not', async () => {
+    const { buildFloorRows } = await import('./offlinePack');
+    const rows = buildFloorRows(towers, floors, planOf, new Set(['/media/a1.png']), new Set());
+    expect(rows.map(r => [r.label, r.saved])).toEqual([['Floor 1', true], ['Floor 2', false], ['Floor 3', false]]);
+  });
+
+  it('with nothing known yet (first download) no floor is called new', async () => {
+    const { buildFloorRows } = await import('./offlinePack');
+    expect(buildFloorRows(towers, floors, planOf, new Set(), new Set()).some(r => r.isNew)).toBe(false);
+  });
+
+  it('a plan added after the last download is new; a floor the person skipped is not', async () => {
+    const { buildFloorRows } = await import('./offlinePack');
+    // last download knew floors 1 and 2 and saved only floor 1 (floor 2 was skipped on purpose); floor 3 appeared later
+    const rows = buildFloorRows(towers, floors, planOf, new Set(['/media/a1.png']), new Set(['/media/a1.png', '/media/a2.png']));
+    expect(rows.find(r => r.label === 'Floor 2')?.isNew).toBe(false);
+    expect(rows.find(r => r.label === 'Floor 3')?.isNew).toBe(true);
+    expect(rows.find(r => r.label === 'Floor 1')?.isNew).toBe(false);
+  });
+
+  it('a replaced plan (new address) counts as new', async () => {
+    const { buildFloorRows } = await import('./offlinePack');
+    const replaced: Record<string, PlanLike> = { ...plans, f1: plan('p1', 'f1', '/media/a1-v2.png') };
+    const rows = buildFloorRows(towers, floors, id => replaced[id], new Set(['/media/a1.png']), new Set(['/media/a1.png']));
+    expect(rows.find(r => r.label === 'Floor 1')).toMatchObject({ saved: false, isNew: true });
+  });
+
+  it('lists every address the pack could save for chosen floors', async () => {
+    const { allPlanKeys } = await import('./offlinePack');
+    expect(allPlanKeys(['f1', 'f3'], planOf).sort()).toEqual(['/media/a1.png', '/media/a3.png']);
+  });
+});

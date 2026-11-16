@@ -18,6 +18,8 @@ import type { WfCapturePin } from '@store/workflowStore';
 import { useDeviceType, usesCameraCapture } from '@/hooks/useDeviceType';
 import { enqueueFileUpload } from '@store/fileUploadQueue';
 import CapturePinMarker from '@features/capturePins/CapturePinMarker';
+import PendingPinMarker from '@/features/capturePins/PendingPinMarker';
+import PointCountBadge from '@/features/capturePins/PointCountBadge';
 import PinActionPanel from '@features/capturePins/PinActionPanel';
 import CameraCaptureDialog from '@features/capturePins/CameraCaptureDialog';
 import PinUploadDialog from '@features/capturePins/PinUploadDialog';
@@ -1360,6 +1362,11 @@ export default function FloorPlanViewerPage() {
             </g>
           )}
 
+          {/* The spot just tapped, shown before it is saved so the exact position is clear */}
+          {floorPlan && pendingAnnotate && !editingPinId && (
+            <PendingPinMarker x={pendingAnnotate.x} y={pendingAnnotate.y} pageW={pageSize.w} pageH={pageSize.h} scale={scale} />
+          )}
+
           {/* Layer 3: AI defect markers — future */}
           {/* <g id="layer-defects"> ... </g> */}
 
@@ -1436,6 +1443,15 @@ export default function FloorPlanViewerPage() {
               : `Tap plan to place a capture point`}
           </Typography>
         </Box>
+      )}
+
+      {/* The real number of capture points on this plan (stacked duplicates counted once), for admins and managers */}
+      {canAnnotate && !pinsOnly && floorPlan && (
+        <PointCountBadge
+          pins={pinsAll}
+          canManage={canUsePins}
+          onRemove={ids => { ids.forEach(id => deleteCapturePin(id)); setSelectedPinId(null); }}
+        />
       )}
 
       {/* Filter status: says what is highlighted (tooltips do not show on touch screens). */}
@@ -2026,7 +2042,11 @@ export default function FloorPlanViewerPage() {
         }}
         maxWidth="xs"
         fullWidth
+        // Keep the plan (and the new marker) visible while the point is being labelled: a light backdrop, and the
+        // dialog sits at the bottom instead of covering the middle of the plan.
+        sx={{ '& .MuiDialog-container': { alignItems: 'flex-end' } }}
         slotProps={{
+          backdrop: { sx: { backgroundColor: 'rgba(15,23,42,0.10)' } },
           paper: {
             sx: {
               m: 2,

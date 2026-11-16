@@ -176,3 +176,54 @@ export function looksLikePlanFile(head: Uint8Array): boolean {
     || (starts([0x52, 0x49, 0x46, 0x46]) && head[8] === 0x57 && head[9] === 0x45 && head[10] === 0x42 && head[11] === 0x50) // WebP
   );
 }
+
+// ── choosing floors ──────────────────────────────────────────────────────────
+
+export interface FloorRow {
+  floorId: string;
+  towerId: string;
+  towerName: string;
+  label: string;
+  number: number;
+  /** Everything this floor's plan needs is already saved on the device. */
+  saved: boolean;
+  /** Not saved, and the plan appeared after the last time the person downloaded (so it is worth pointing out). */
+  isNew: boolean;
+}
+
+/** Every plan address the pack could save for these floors. */
+export function allPlanKeys(floorIds: string[], planOfFloor: (floorId: string) => PlanLike | undefined): string[] {
+  const out = new Set<string>();
+  for (const id of floorIds) {
+    const plan = planOfFloor(id);
+    if (plan) planMediaKeys(plan).forEach(k => out.add(k));
+  }
+  return [...out];
+}
+
+/**
+ * One row per floor that has a plan the pack can save, for the "choose floors" list.
+ * `known` = the plan addresses that existed the last time the person downloaded. A plan that is not saved AND not known
+ * is NEW (added since), so it can be offered as "Download new plans" without bringing back floors the person skipped.
+ */
+export function buildFloorRows(
+  towers: { id: string; name: string }[],
+  floors: { id: string; towerId: string; label?: string; number?: number }[],
+  planOfFloor: (floorId: string) => PlanLike | undefined,
+  saved: ReadonlySet<string>,
+  known: ReadonlySet<string>,
+): FloorRow[] {
+  const rows: FloorRow[] = [];
+  for (const t of towers) {
+    for (const f of floors) {
+      if (f.towerId !== t.id) continue;
+      const plan = planOfFloor(f.id);
+      const status = floorStatus(plan, saved);
+      if (status === 'no-plan' || status === 'unsupported' || !plan) continue;
+      const isSaved = status === 'available';
+      const isNew = !isSaved && known.size > 0 && planMediaKeys(plan).some(k => !known.has(k));
+      rows.push({ floorId: f.id, towerId: t.id, towerName: t.name, label: f.label || `Floor ${f.number ?? ''}`.trim(), number: f.number ?? 0, saved: isSaved, isNew });
+    }
+  }
+  return rows.sort((a, b) => a.towerName.localeCompare(b.towerName, undefined, { numeric: true }) || a.number - b.number);
+}

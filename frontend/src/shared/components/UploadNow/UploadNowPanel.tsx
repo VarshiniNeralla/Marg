@@ -113,6 +113,8 @@ export default function UploadNowPanel() {
   // Everyone signed in can always reach the upload screen (mode, review, status), even when nothing is waiting.
   const showEntry = !showBanner && !open && !!role;
   const modeLabel = mode === 'manual' ? 'When I tap' : 'Automatic';
+  // Admins and managers have the round Drishti assistant button at the bottom right: keep clear of it.
+  const rightOffset = role === 'field_engineer' ? 12 : 92;
 
   if (!showBanner && !open && !showEntry) return null;
 
@@ -171,7 +173,7 @@ export default function UploadNowPanel() {
           aria-label="Uploads"
           onClick={openDialog}
           sx={{
-            position: 'fixed', right: 12, bottom: 12, zIndex: 1250, display: 'inline-flex', alignItems: 'center', gap: 0.75,
+            position: 'fixed', right: rightOffset, bottom: 12, zIndex: 1250, display: 'inline-flex', alignItems: 'center', gap: 0.75,
             px: 1.5, py: 1, minHeight: 44, borderRadius: '999px', border: `1.5px solid ${colors.border}`, backgroundColor: colors.card,
             boxShadow: '0 8px 24px rgba(15,23,42,0.16)', color: colors.textStrong, fontFamily: 'inherit', fontSize: '0.8125rem',
             fontWeight: 700, cursor: 'pointer',
@@ -187,7 +189,7 @@ export default function UploadNowPanel() {
         <Box
           role="status"
           sx={{
-            position: 'fixed', left: { xs: 12, md: 'auto' }, right: 12, bottom: 12, zIndex: 1250,
+            position: 'fixed', left: { xs: 12, md: 'auto' }, right: rightOffset, bottom: 12, zIndex: 1250,
             maxWidth: { md: 420 }, borderRadius: '16px', backgroundColor: colors.card,
             border: `1.5px solid ${uploading ? colors.primary : colors.border}`,
             boxShadow: '0 12px 32px rgba(15,23,42,0.18)', p: 1.5, display: 'flex', flexDirection: 'column', gap: 1,
