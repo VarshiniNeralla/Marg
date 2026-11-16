@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectFloorCaptureIds } from './captureGallery';
+import { capturesInSelection, collectFloorCaptureIds } from './captureGallery';
 
 const pin = (...captureIds: string[]) => ({ captureIds });
 
@@ -36,5 +36,37 @@ describe('collectFloorCaptureIds (delete a whole floor from Capture History)', (
 
   it('handles an empty floor', () => {
     expect(collectFloorCaptureIds([], [pin('a')])).toEqual({ ids: [], shown: 0, earlier: 0 });
+  });
+});
+
+describe('capturesInSelection (toolbar Delete all follows the current selection)', () => {
+  const cap = (id: string, projectId: string, towerId: string, floorLabel: string) => ({ id, projectId, towerId, floorLabel });
+  const all = [
+    cap('p1-tA-f1', 'P1', 'tA', 'Floor 1'), cap('p1-tA-f2', 'P1', 'tA', 'Floor 2'),
+    cap('p1-tB-f1', 'P1', 'tB', 'Floor 1'), cap('p2-tA-f1', 'P2', 'tA', 'Floor 1'),
+  ];
+  const ids = (r: { cards: { id: string }[] }) => r.cards.map(c => c.id).sort();
+
+  it('project selected: every capture of that project, none of another project', () => {
+    const r = capturesInSelection(all, { projectId: 'P1', towerId: 'all', floorId: 'all' });
+    expect(r.scope).toBe('project');
+    expect(ids(r)).toEqual(['p1-tA-f1', 'p1-tA-f2', 'p1-tB-f1']);
+  });
+
+  it('tower selected: only that tower inside the project (not the same tower id in another project)', () => {
+    const r = capturesInSelection(all, { projectId: 'P1', towerId: 'tA', floorId: 'all' });
+    expect(r.scope).toBe('tower');
+    expect(ids(r)).toEqual(['p1-tA-f1', 'p1-tA-f2']);
+  });
+
+  it('floor selected: only that floor of that tower, not the same floor label elsewhere', () => {
+    const r = capturesInSelection(all, { projectId: 'P1', towerId: 'tA', floorId: 'f1', floorLabel: 'Floor 1' });
+    expect(r.scope).toBe('floor');
+    expect(ids(r)).toEqual(['p1-tA-f1']);
+  });
+
+  it('a floor whose label cannot be resolved matches nothing instead of widening', () => {
+    const r = capturesInSelection(all, { projectId: 'P1', towerId: 'tA', floorId: 'f1', floorLabel: null });
+    expect(r.cards).toEqual([]);
   });
 });

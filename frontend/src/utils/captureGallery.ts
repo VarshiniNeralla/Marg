@@ -72,3 +72,24 @@ export function filterGalleryCaptures(
     return isGalleryVisibleCapture(c, allPinCaptureIds, latestPinCaptureIds);
   });
 }
+
+/**
+ * The captures a toolbar "Delete all" may touch for the current selection, and nothing wider:
+ *  - project only          -> that project's captures
+ *  - project + tower       -> that tower's captures inside that project
+ *  - project + tower + floor -> that floor's captures inside that tower (a floor with no resolvable label matches nothing)
+ */
+export function capturesInSelection<T extends { projectId: string; towerId: string; floorLabel: string }>(
+  captures: readonly T[],
+  sel: { projectId: string; towerId?: string | null; floorId?: string | null; floorLabel?: string | null },
+): { scope: 'project' | 'tower' | 'floor'; cards: T[] } {
+  const hasTower = !!sel.towerId && sel.towerId !== 'all';
+  const hasFloor = hasTower && !!sel.floorId && sel.floorId !== 'all';
+  const scope = hasFloor ? 'floor' : hasTower ? 'tower' : 'project';
+  const cards = captures.filter(c =>
+    c.projectId === sel.projectId
+    && (!hasTower || c.towerId === sel.towerId)
+    && (!hasFloor || (sel.floorLabel != null && c.floorLabel === sel.floorLabel)),
+  );
+  return { scope, cards };
+}
