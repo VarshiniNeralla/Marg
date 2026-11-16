@@ -14,6 +14,8 @@ import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { locationFilterToolbarSx } from '@/utils/locationFilters';
 import { resolveMediaUrl } from '@/config/env';
 import OfflinePackCard from '@shared/components/OfflinePack/OfflinePackCard';
+import { OFFLINE_PACK_CHANGED_EVENT, getSavedKeys, offlinePackSupported } from '@store/offlinePlanStore';
+import { floorStatus, type PlanLike } from '@store/offlinePack';
 
 const PLANS_PAGE_SIZE_MOBILE = 9;  // 3 × 3
 const PLANS_PAGE_SIZE_DESKTOP = 8; // 4 × 2
@@ -69,6 +71,14 @@ export default function FloorPlansPage() {
   const capturePins = useWorkflowStore(s => s.capturePins);
   const deleteFloorPlan = useWorkflowStore(s => s.deleteFloorPlan);
   const [searchParams] = useSearchParams();
+  // A plan just saved for offline use must replace the thumbnail's network address straight away: re-render when the
+  // pack changes (otherwise a card that failed to load while offline stays a broken image until the page is reopened).
+  const [, bumpOfflinePack] = useState(0);
+  useEffect(() => {
+    const onChange = () => bumpOfflinePack(n => n + 1);
+    window.addEventListener(OFFLINE_PACK_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(OFFLINE_PACK_CHANGED_EVENT, onChange);
+  }, []);
 
   // Field engineers only see assigned projects (same as Capture Workflow / History).
   const assignedProjectIds = useMemo(() => {
@@ -260,7 +270,7 @@ export default function FloorPlansPage() {
       </Box>
 
       {/* Offline site pack: save plans on the phone before leaving coverage (Android app only) */}
-      <OfflinePackCard projectId={projectId || undefined} />
+      <OfflinePackCard projectId={projectId || undefined} projectName={project?.name} />
 
       {/* ── Toolbar: project + tower selects (native MUI Select — stable open/close) ── */}
       <Box sx={{ ...toolbarLayout.row, mb: 3 }}>
@@ -438,6 +448,10 @@ export default function FloorPlansPage() {
                 ?? ((planRecord as any).mediaAssets as any)?.[0]?.original_url ?? null)
               : null;
 
+            // Saved on this device (Android app): shown on the card so it is obvious which floors work without internet.
+            const savedOffline = offlinePackSupported() && !!planRecord
+              && floorStatus(planRecord as unknown as PlanLike, getSavedKeys()) === 'available';
+
             const href = hasPlan
               ? `/floor-plans/${project.id}/${tower?.id}/${floor.id}`
               : isEngineer
@@ -483,6 +497,16 @@ export default function FloorPlansPage() {
                     />
                   ) : (
                     <LayersRounded sx={{ fontSize: 32, color: hasPlan ? P.blue : P.subtle, opacity: 0.5 }} />
+                  )}
+
+                  {savedOffline && (
+                    <Box data-testid="floor-offline-badge" sx={{
+                      position: 'absolute', top: 8, right: 8, display: 'inline-flex', alignItems: 'center', gap: 0.5,
+                      px: 0.875, py: 0.25, borderRadius: '999px', backgroundColor: 'rgba(22,163,74,0.95)', color: '#fff',
+                      fontSize: '0.6875rem', fontWeight: 700,
+                    }}>
+                      <CheckCircleRounded sx={{ fontSize: 12 }} /> Offline
+                    </Box>
                   )}
 
                   {/* Gradient label overlay */}
