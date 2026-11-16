@@ -107,7 +107,11 @@ export function evaluatePreChecks(i: PreCheckInput): PreCheckResult {
 
   if (i.connection === 'none') blockers.push('No internet connection. Connect to Wi-Fi or mobile data first.');
   else if (!i.serverReachable) blockers.push('The server cannot be reached right now. Check your connection and try again.');
-  if (!i.signedIn) blockers.push('You are signed out. Sign in again. Your photos stay safely on this phone.');
+  // Without a connection the sign-in cannot be renewed either, so "signed out" would only be a confusing second
+  // message for the same problem: say it only when the connection itself is fine.
+  if (!i.signedIn && i.connection !== 'none' && i.serverReachable) {
+    blockers.push('You are signed out. Sign in again. Your photos stay safely on this phone.');
+  }
 
   if (i.connection === 'cellular' && i.bytesToSend > MOBILE_DATA_WARN_BYTES) {
     warnings.push(`You are on mobile data and about ${formatBytes(i.bytesToSend)} will be sent. Wi-Fi is better for this much.`);

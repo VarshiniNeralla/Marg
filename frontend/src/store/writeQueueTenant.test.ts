@@ -29,7 +29,12 @@ vi.mock('./authStore', () => ({
   useAuthStore: { getState: () => ({ isAuthenticated: true, user: { org_id: h.org, role: 'admin' } }) },
 }));
 vi.mock('./tombstones', () => ({ isTombstoned: () => false }));
-vi.mock('./uploadHold', () => ({ isHeldWriteOp: () => false, isUploadHeld: () => false }));
+vi.mock('./uploadHold', () => ({
+  isHeldWriteOp: () => false,
+  isUploadHeld: () => false,
+  getUploadSession: () => ({ scopePinIds: null, phase: 'open' }),
+  isWriteOutOfScope: () => false,
+}));
 
 import { clearWriteQueue, enqueueWrite, flushWriteQueue, pendingWriteCount } from './writeQueue';
 

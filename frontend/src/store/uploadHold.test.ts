@@ -79,3 +79,60 @@ describe('what "Upload when I tap" holds back', () => {
     for (const op of ['createTour', 'updateTour', 'deleteTour', 'updateCapturePublish', 'createNotification', 'createAuditLog', 'updateProject', 'createFloorPlan']) expect(isHeldWriteOp(op)).toBe(false);
   });
 });
+
+describe('one-time repair of a stored "Automatically" choice for field engineers', () => {
+  it('clears it once for a field engineer, never for other roles, and never again', async () => {
+    const mem = new Map<string, string>();
+    (globalThis as unknown as { localStorage: Storage }).localStorage = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => { mem.set(k, v); },
+      removeItem: (k: string) => { mem.delete(k); },
+      clear: () => mem.clear(), key: () => null, length: 0,
+    } as Storage;
+    const hold = await import('./uploadHold');
+
+    hold.setUploadMode('auto');
+    expect(hold.applyFieldEngineerModeDefaultOnce('manager')).toBe(false);          // other roles are left alone
+    expect(hold.getUploadSession().mode).toBe('auto');
+
+    expect(hold.applyFieldEngineerModeDefaultOnce('field_engineer')).toBe(true);    // repaired
+    expect(hold.getUploadSession().mode).toBeNull();
+    expect(hold.effectiveMode(hold.getUploadSession().mode, 'field_engineer')).toBe('manual');
+
+    hold.setUploadMode('auto');                                                      // a deliberate later choice sticks
+    expect(hold.applyFieldEngineerModeDefaultOnce('field_engineer')).toBe(false);
+    expect(hold.getUploadSession().mode).toBe('auto');
+  });
+});
+
+describe('a partial Upload now only sends the ticked points', () => {
+  const pinOf = (cid: string) => ({ c1: 'pinA', c2: 'pinB' } as Record<string, string>)[cid];
+
+  it('works out which point a held change belongs to', async () => {
+    const { pinOfHeldWrite } = await import('./uploadHold');
+    expect(pinOfHeldWrite('createCapturePin', [{ id: 'pinA' }], pinOf)).toBe('pinA');
+    expect(pinOfHeldWrite('updateCapturePin', ['pinB', { x: 1 }], pinOf)).toBe('pinB');
+    expect(pinOfHeldWrite('createCapture', [{ id: 'c2' }], pinOf)).toBe('pinB');
+    expect(pinOfHeldWrite('createRoom', [{ id: 'r1' }], pinOf)).toBeNull();      // structure, not one point
+    expect(pinOfHeldWrite('createCapture', [{ id: 'unknown' }], pinOf)).toBeNull();
+  });
+
+  it('holds the details of points that were not ticked, sends the ticked ones and everything unrelated', async () => {
+    const { isWriteOutOfScope } = await import('./uploadHold');
+    const scope = ['pinA'];
+    expect(isWriteOutOfScope('createCapturePin', [{ id: 'pinB' }], scope, 'uploading', pinOf)).toBe(true);
+    expect(isWriteOutOfScope('createCapture', [{ id: 'c2' }], scope, 'uploading', pinOf)).toBe(true);
+    expect(isWriteOutOfScope('createCapturePin', [{ id: 'pinA' }], scope, 'uploading', pinOf)).toBe(false);
+    expect(isWriteOutOfScope('createCapture', [{ id: 'c1' }], scope, 'uploading', pinOf)).toBe(false);
+    expect(isWriteOutOfScope('createRoom', [{ id: 'r1' }], scope, 'uploading', pinOf)).toBe(false);
+    expect(isWriteOutOfScope('createTour', [{ id: 't' }], scope, 'uploading', pinOf)).toBe(false);
+    // a change whose point cannot be worked out is never held back forever
+    expect(isWriteOutOfScope('createCapture', [{ id: 'unknown' }], scope, 'uploading', pinOf)).toBe(false);
+  });
+
+  it('applies nothing unless a partial upload is actually running', async () => {
+    const { isWriteOutOfScope } = await import('./uploadHold');
+    expect(isWriteOutOfScope('createCapturePin', [{ id: 'pinB' }], ['pinA'], 'open', pinOf)).toBe(false);
+    expect(isWriteOutOfScope('createCapturePin', [{ id: 'pinB' }], null, 'uploading', pinOf)).toBe(false);
+  });
+});

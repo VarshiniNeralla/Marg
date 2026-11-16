@@ -27,7 +27,18 @@ import { workflowApiService } from '@/services/workflowApiService';
 import { useAuthStore, isFieldEngineer } from './authStore';
 import { isTombstoned } from './tombstones';
 import { removeEntry, moveEntryToBack } from './writeQueueOps';
-import { isHeldWriteOp, isUploadHeld } from './uploadHold';
+import { getUploadSession, isHeldWriteOp, isUploadHeld, isWriteOutOfScope } from './uploadHold';
+
+// Finds the point a capture belongs to (registered by the screen that can see the workflow store, which this module
+// cannot import without a cycle). Used to keep a partial Upload now from sending details of floors that were not ticked.
+let pinOfCaptureResolver: (captureId: string) => string | undefined = () => undefined;
+export function registerPinOfCaptureResolver(fn: (captureId: string) => string | undefined): void {
+  pinOfCaptureResolver = fn;
+}
+function isOutOfScope(e: PendingWrite): boolean {
+  const s = getUploadSession();
+  return isWriteOutOfScope(e.op, e.args, s.scopePinIds, s.phase, pinOfCaptureResolver);
+}
 
 const QUEUE_KEY = 'sitesurelabs-write-queue-v1';
 const MAX_QUEUE = 1000;
@@ -253,6 +264,13 @@ async function flush(): Promise<void> {
         entry = next;
       }
 
+      // A partial Upload now: details of points that were not ticked wait with their photos.
+      if (isOutOfScope(entry)) {
+        const next = queue.find(e => e.status !== 'failed' && !isForeign(e) && !isOutOfScope(e) && (!isUploadHeld() || !isHeldWriteOp(e.op)));
+        if (!next) break;
+        entry = next;
+      }
+
       // Failed entries sit at the back until retried — never block fresh work.
       if (entry.status === 'failed') {
         skippedFailed += 1;
@@ -469,10 +487,15 @@ export function pendingWriteCount(): number {
   return queue.filter(e => e.status !== 'failed').length;
 }
 
+/** Writes the running Upload now still has to send (changes for points that were not ticked wait and do not count). */
+export function scopedPendingWriteCount(): number {
+  return queue.filter(e => e.status !== 'failed' && !isOutOfScope(e)).length;
+}
+
 /** Writes that exhausted retries but are kept for manual replay. */
 /** Changes being held for "Upload when I tap" (pins, rooms, captures), not counting ordinary changes in flight. */
 export function heldWriteCount(): number {
-  return queue.filter(e => e.status !== 'failed' && isHeldWriteOp(e.op)).length;
+  return queue.filter(e => e.status !== 'failed' && isHeldWriteOp(e.op) && !isOutOfScope(e)).length;
 }
 export function failedWriteCount(): number {
   return queue.filter(e => e.status === 'failed').length;

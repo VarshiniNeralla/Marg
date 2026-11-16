@@ -6,15 +6,21 @@ import {
 import { colors } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import {
-  getUploadMode, getUploadSession, setUploadMode, subscribeUploadSession, type UploadMode,
+  applyFieldEngineerModeDefaultOnce, getUploadMode, getUploadSession, setUploadMode, subscribeUploadSession, type UploadMode,
 } from '@store/uploadHold';
+import { useAuthStore } from '@store/authStore';
+import { formatTowerLabel } from '@/utils/pinLabels';
 import {
   gatherPreChecks, getLastUploadNowResult, pauseUploadNow, readUploadNowStatus, resumeUploadNow, startUploadNow,
   type UploadNowStatus,
 } from '@store/uploadNow';
+import { registerPinOfCaptureResolver } from '@store/writeQueue';
 import { FILE_QUEUE_CHANGED_EVENT, resendUnconfirmedPhotos, retryFileUpload, waitingPhotoInfos } from '@store/fileUploadQueue';
 import { buildReview, describeProgress, isUnsent, type PinFloor, type PreCheckResult, type ReviewSummary } from '@store/uploadPlan';
 import { checkStorageRoom, describeStorage, formatBytes, type StorageRoom } from '@store/storageCheck';
+
+// A partial Upload now needs to know which point a capture belongs to (see writeQueue).
+registerPinOfCaptureResolver(id => useWorkflowStore.getState().capturePins.find(p => p.captureIds.includes(id))?.id);
 
 const EMPTY_STATUS: UploadNowStatus = {
   phase: 'open',
@@ -45,6 +51,10 @@ function pinName(pinId: string): string {
 
 export default function UploadNowPanel() {
   const session = useSyncExternalStore(subscribeUploadSession, getUploadSession, getUploadSession);
+  const role = useAuthStore(st => st.user?.role);
+  // Re-render when the one-time mode repair changes the stored choice.
+  const [, bumpMode] = useState(0);
+  useEffect(() => { if (applyFieldEngineerModeDefaultOnce(role)) bumpMode(n => n + 1); }, [role]);
   const mode = getUploadMode();
   const [status, setStatus] = useState<UploadNowStatus>(EMPTY_STATUS);
   const [review, setReview] = useState<ReviewSummary | null>(null);
@@ -96,13 +106,24 @@ export default function UploadNowPanel() {
   const uploading = session.phase === 'uploading';
   const waiting = review?.totalPhotos ?? 0;
   const lastResult = getLastUploadNowResult();
-  const showBanner = mode === 'manual' && (waiting > 0 || uploading || status.unconfirmed > 0 || status.writesPending > 0);
+  const showBanner =
+    (mode === 'manual' && (waiting > 0 || uploading || status.unconfirmed > 0 || status.writesPending > 0))
+    // Automatic mode: nothing needs a tap, but photos that are still waiting (no signal) or failed must stay visible.
+    || (mode === 'auto' && (waiting > 0 || uploading || status.failed.length > 0));
+  // Everyone signed in can always reach the upload screen (mode, review, status), even when nothing is waiting.
+  const showEntry = !showBanner && !open && !!role;
+  const modeLabel = mode === 'manual' ? 'When I tap' : 'Automatic';
 
-  if (!showBanner && !open) return null;
+  if (!showBanner && !open && !showEntry) return null;
 
   const floorsAll = review?.floors ?? [];
   const chosen = floorsAll.filter(f => !unticked.has(f.floorId));
   const chosenPhotos = chosen.reduce((n, f) => n + f.photos, 0);
+  // Changes (points, rooms, capture details) can still be waiting after every photo has gone up, for example the
+  // finishing details sent once the server has stitched a photo. Without this they could only ever be sent together
+  // with a new photo, so a trip would end with "Changes waiting to be sent" and no way to send them.
+  const changesOnly = floorsAll.length === 0 && status.writesPending > 0;
+  const canSend = chosenPhotos > 0 || changesOnly;
   const chosenPins = chosen.flatMap(f => f.pinIds);
   const allChosen = floorsAll.length > 0 && chosen.length === floorsAll.length;
   const toggleFloors = (ids: string[], on: boolean) => setUnticked(prev => {
@@ -114,17 +135,18 @@ export default function UploadNowPanel() {
     const m = new Map<string, { name: string; floors: typeof floorsAll }>();
     for (const f of floorsAll) {
       const k = f.towerId ?? 'other';
-      if (!m.has(k)) m.set(k, { name: f.towerName ?? 'Other points', floors: [] });
+      if (!m.has(k)) m.set(k, { name: f.towerName ? formatTowerLabel(f.towerName) : 'Other points', floors: [] });
       m.get(k)!.floors.push(f);
     }
     return [...m.values()];
   })();
 
   const onUploadNow = async () => {
-    if (!pre?.canStart || chosenPhotos === 0) return;
+    if (!pre?.canStart || !canSend) return;
     setStarting(true);
     try {
-      await startUploadNow(allChosen ? null : chosenPins);
+      // Everything when all floors are ticked, or when only leftover changes are being sent (no floors to pick from).
+      await startUploadNow(allChosen || changesOnly ? null : chosenPins);
     } finally {
       setStarting(false);
       void refresh();
@@ -141,6 +163,26 @@ export default function UploadNowPanel() {
 
   return (
     <>
+      {showEntry && (
+        <Box
+          component="button"
+          type="button"
+          data-testid="uploads-entry"
+          aria-label="Uploads"
+          onClick={openDialog}
+          sx={{
+            position: 'fixed', right: 12, bottom: 12, zIndex: 1250, display: 'inline-flex', alignItems: 'center', gap: 0.75,
+            px: 1.5, py: 1, minHeight: 44, borderRadius: '999px', border: `1.5px solid ${colors.border}`, backgroundColor: colors.card,
+            boxShadow: '0 8px 24px rgba(15,23,42,0.16)', color: colors.textStrong, fontFamily: 'inherit', fontSize: '0.8125rem',
+            fontWeight: 700, cursor: 'pointer',
+          }}
+        >
+          <CloudUploadRounded sx={{ color: colors.primary, fontSize: 20 }} /> Uploads
+          <Box component="span" data-testid="upload-mode-label" sx={{ ml: 0.25, px: 0.875, py: 0.125, borderRadius: '999px', backgroundColor: colors.primarySoft, color: colors.primary, fontSize: '0.6875rem', fontWeight: 700 }}>
+            {modeLabel}
+          </Box>
+        </Box>
+      )}
       {showBanner && (
         <Box
           role="status"
@@ -168,7 +210,9 @@ export default function UploadNowPanel() {
                   ? 'Keep the app open until this finishes.'
                   : resumeLabel
                     ? 'Trip in progress. Tap to review and upload when you are ready.'
-                    : 'Nothing is sent until you tap Upload now.'}
+                    : mode === 'auto'
+                      ? 'Mode: Automatic. They upload on their own when there is signal. Tap Review to change.'
+                      : 'Mode: When I tap. Nothing is sent until you tap Upload now. Tap Review to change.'}
               </Typography>
             </Box>
             <Box
@@ -296,7 +340,8 @@ export default function UploadNowPanel() {
               )}
               {status.writesPending > 0 && (
                 <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.75 }}>
-                  Also waiting: {status.writesPending} point / room change{status.writesPending === 1 ? '' : 's'}. They go first, then the photos.
+                  Also waiting: {status.writesPending} point / room / capture change{status.writesPending === 1 ? '' : 's'}.{' '}
+                  {changesOnly ? 'Tap Send changes now to send them.' : 'They go first, then the photos.'}
                 </Typography>
               )}
             </Box>
@@ -416,16 +461,16 @@ export default function UploadNowPanel() {
                   </Box>
                 )}
                 <Box
-                  onClick={() => { if (!starting && !checking && pre?.canStart && chosenPhotos > 0) void onUploadNow(); }}
+                  onClick={() => { if (!starting && !checking && pre?.canStart && canSend) void onUploadNow(); }}
                   sx={{
                     display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2.5, py: 1, minHeight: 42, borderRadius: '12px',
                     fontSize: '0.875rem', fontWeight: 600, color: '#fff', userSelect: 'none',
                     background: colors.primaryGradient, boxShadow: '0 3px 10px rgba(37,99,235,0.28)',
-                    cursor: pre?.canStart && chosenPhotos > 0 ? 'pointer' : 'not-allowed',
-                    opacity: pre?.canStart && chosenPhotos > 0 ? 1 : 0.45,
+                    cursor: pre?.canStart && canSend ? 'pointer' : 'not-allowed',
+                    opacity: pre?.canStart && canSend ? 1 : 0.45,
                   }}
                 >
-                  <CloudUploadRounded sx={{ fontSize: 18 }} /> {allChosen || chosenPhotos === 0 ? 'Upload now' : `Upload selected (${chosenPhotos})`}
+                  <CloudUploadRounded sx={{ fontSize: 18 }} /> {changesOnly ? 'Send changes now' : allChosen || chosenPhotos === 0 ? 'Upload now' : `Upload selected (${chosenPhotos})`}
                 </Box>
               </>
             )}
