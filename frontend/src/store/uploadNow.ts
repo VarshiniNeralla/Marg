@@ -10,8 +10,9 @@
  */
 import { Network } from '@capacitor/network';
 import { API_BASE_URL } from '@/config/env';
+import { restoreSessionFromCookie } from '@/services/sessionRefresh';
 import { useAuthStore } from './authStore';
-import { flushWriteQueue, heldWriteCount, pendingWriteCount } from './writeQueue';
+import { flushWriteQueue, heldWriteCount, scopedPendingWriteCount } from './writeQueue';
 import {
   flushFileUploadQueue, releaseVerifiedPhotos, unconfirmedPhotoCount, waitingPhotoInfos, FILE_UPLOAD_SUCCEEDED_EVENT,
   type ReleaseResult,
@@ -80,7 +81,17 @@ export async function gatherPreChecks(bytesToSend: number): Promise<PreCheckResu
     connection === 'none' ? Promise.resolve(false) : serverReachable(),
     readBattery(),
   ]);
-  const auth = useAuthStore.getState();
+  let auth = useAuthStore.getState();
+  // Back online with a remembered sign-in but no live token (the app was reopened offline): renew it quietly instead of
+  // telling the person to sign in again.
+  if (reachable && auth.isAuthenticated && !auth.accessToken) {
+    try {
+      await restoreSessionFromCookie();
+    } catch {
+      /* keep the original state; the check below reports it */
+    }
+    auth = useAuthStore.getState();
+  }
   return evaluatePreChecks({
     serverReachable: reachable,
     signedIn: auth.isAuthenticated && !!auth.accessToken,
@@ -177,7 +188,7 @@ async function tickOnce(): Promise<void> {
   const infos = await scopedInfos();
   const unsent = infos.filter(isUnsent).length;
   const failed = infos.filter(p => p.status === 'failed').length;
-  const writes = pendingWriteCount();
+  const writes = scopedPendingWriteCount();
   const total = computeProgress(getUploadSession().batchTotal, unsent, failed);
   recordBatchProgress(total.done);
 

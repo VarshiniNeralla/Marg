@@ -69,6 +69,12 @@ describe('evaluatePreChecks', () => {
     expect(signedOut.blockers[0]).toMatch(/safely on this phone/);
   });
 
+  it('offline, the only blocker is the connection (no confusing "signed out" on top of it)', () => {
+    const r = evaluatePreChecks({ ...ok, connection: 'none', serverReachable: false, signedIn: false });
+    expect(r.blockers).toHaveLength(1);
+    expect(r.blockers[0]).toMatch(/No internet connection/);
+  });
+
   it('big upload over mobile data warns but does not block', () => {
     const r = evaluatePreChecks({ ...ok, connection: 'cellular', bytesToSend: MOBILE_DATA_WARN_BYTES + 1 });
     expect(r.canStart).toBe(true);

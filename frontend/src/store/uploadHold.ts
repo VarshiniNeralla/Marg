@@ -101,6 +101,26 @@ export function getUploadMode(): UploadMode {
   return effectiveMode(session.mode, useAuthStore.getState().user?.role);
 }
 
+const MODE_MIGRATION_KEY = 'sitesurelabs-upload-mode-default-v2';
+
+/**
+ * One-time repair: a field engineer whose phone holds an explicit "Automatically" choice (left by earlier testing or an
+ * older build) never saw the Upload now banner and had no way back to "When I tap". Clear that stored choice once so the
+ * role default (When I tap) applies again; they can still pick Automatically from the Upload dialog at any time.
+ */
+export function applyFieldEngineerModeDefaultOnce(role: string | null | undefined): boolean {
+  if (role !== 'field_engineer') return false;
+  try {
+    if (localStorage.getItem(MODE_MIGRATION_KEY)) return false;
+    localStorage.setItem(MODE_MIGRATION_KEY, '1');
+  } catch {
+    return false;
+  }
+  if (session.mode !== 'auto') return false;
+  commit({ ...session, mode: null, phase: 'open' });
+  return true;
+}
+
 export function setUploadMode(mode: UploadMode): void {
   // Switching to auto while a session is open lets everything waiting go up on its own; make that explicit.
   commit({ ...session, mode, phase: mode === 'auto' ? 'open' : session.phase });
@@ -117,6 +137,37 @@ export const HELD_WRITE_OPS: ReadonlySet<string> = new Set([
 
 export function isHeldWriteOp(op: string): boolean {
   return HELD_WRITE_OPS.has(op);
+}
+
+/**
+ * The point a held change belongs to, when it belongs to one. Rooms and flats describe the building, not one point,
+ * so they return null. `pinOfCapture` finds the point a capture is attached to.
+ */
+export function pinOfHeldWrite(op: string, args: unknown[], pinOfCapture: (captureId: string) => string | undefined): string | null {
+  const first = args[0];
+  const idOf = (v: unknown): string | null =>
+    v && typeof v === 'object' && typeof (v as { id?: unknown }).id === 'string' ? (v as { id: string }).id : null;
+  if (op === 'createCapturePin') return idOf(first);
+  if (op === 'updateCapturePin') return typeof first === 'string' ? first : null;
+  if (op === 'createCapture') {
+    const captureId = idOf(first);
+    return captureId ? pinOfCapture(captureId) ?? null : null;
+  }
+  return null;
+}
+
+/**
+ * During a PARTIAL Upload now (some floors ticked), the pin and capture details of points that were not ticked stay
+ * on the phone with their photos. Otherwise the server would get capture records with no image for those floors.
+ * A change whose point cannot be worked out is sent (never held back forever).
+ */
+export function isWriteOutOfScope(
+  op: string, args: unknown[], scope: string[] | null, phase: SessionPhase,
+  pinOfCapture: (captureId: string) => string | undefined,
+): boolean {
+  if (scope == null || phase !== 'uploading' || !isHeldWriteOp(op)) return false;
+  const pin = pinOfHeldWrite(op, args, pinOfCapture);
+  return pin != null && !scope.includes(pin);
 }
 
 /** True while automatic triggers must not start any upload. */
