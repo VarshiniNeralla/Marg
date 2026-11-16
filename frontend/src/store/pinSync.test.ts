@@ -33,3 +33,31 @@ describe('markServerSeen', () => {
     expect(markServerSeen([])).toEqual([]);
   });
 });
+
+describe('isUnconfirmedPlacedPin (an admin-placed labelled point the server has not confirmed)', () => {
+  it('is protected until the server confirms it, whether it is labelled or marked predefined', async () => {
+    const { isUnconfirmedPlacedPin } = await import('./pinSync');
+    expect(isUnconfirmedPlacedPin({ serverSeen: false, flatName: 'Flat 01', roomName: 'Living' })).toBe(true);
+    expect(isUnconfirmedPlacedPin({ serverSeen: false, isPredefined: true })).toBe(true);
+  });
+
+  it('is not protected once confirmed, when it predates the flag, or when it is an unlabelled free point', async () => {
+    const { isUnconfirmedPlacedPin } = await import('./pinSync');
+    expect(isUnconfirmedPlacedPin({ serverSeen: true, flatName: 'Flat 01', roomName: 'Living' })).toBe(false);
+    expect(isUnconfirmedPlacedPin({ flatName: 'Flat 01', roomName: 'Living' })).toBe(false);
+    expect(isUnconfirmedPlacedPin({ serverSeen: false })).toBe(false);
+  });
+});
+
+describe('pinClientAgeMs (only a point with a real timestamp from this device can be kept by the short window)', () => {
+  it('has an age only when this device stamped the point', async () => {
+    const { pinClientAgeMs } = await import('./pinSync');
+    expect(pinClientAgeMs({ clientCreatedAt: 1000 }, 61_000)).toBe(60_000);
+  });
+
+  it('has no age (never kept by the window) without that timestamp, even if its text says "Just now"', async () => {
+    const { pinClientAgeMs } = await import('./pinSync');
+    expect(pinClientAgeMs({}, 61_000)).toBe(Infinity);
+    expect(pinClientAgeMs({ clientCreatedAt: 'Just now' }, 61_000)).toBe(Infinity);
+  });
+});
