@@ -255,3 +255,69 @@ class TestDecodeRawRgb:
       img = mod._decode_raw_rgb(b"fake", "capture.dng")
       assert calls == ["rawpy"]
       assert img.shape == (80, 160, 3)
+
+
+class TestDetectModel:
+    """The model must come from the file's own metadata, never from chance byte matches."""
+
+    @staticmethod
+    def _file(marker: bytes, where: str = "head") -> bytes:
+        body = np.random.default_rng(7).integers(0, 256, 3_000_000, dtype=np.uint8).tobytes()
+        return (b"\xff\xd8" + marker + b"\x00" + body) if where == "head" else (body + b"\x00" + marker)
+
+    @pytest.mark.parametrize("marker,expected", [
+        (b"Insta360 X3", "X3"),
+        (b"Insta360 X4", "X4"),
+        (b"Insta360 X5", "X5"),
+        (b"Insta360 X6", "X6"),          # a future model needs no code change
+        (b"Insta360 ONE X2", "ONE X2"),
+        (b"Insta360 X4 Air", "X4 Air"),
+    ])
+    def test_reads_model_from_metadata(self, marker, expected):
+        from app.services.fisheye_stitch import detect_model
+        assert detect_model(self._file(marker)) == expected
+        assert detect_model(self._file(marker, "tail")) == expected
+
+    def test_random_bytes_are_never_labelled_x3(self):
+        """Regression: a bare 'X3' matched by chance in every large file, so every camera was treated as an X3."""
+        from app.services.fisheye_stitch import detect_model
+        for seed in range(5):
+            data = np.random.default_rng(seed).integers(0, 256, 6_000_000, dtype=np.uint8).tobytes()
+            assert detect_model(data) is None
+
+    def test_unknown_model_uses_the_generic_profile(self):
+        from app.services.fisheye_stitch import detect_model, profile_for
+        prof = profile_for(detect_model(self._file(b"Insta360 X6")))
+        assert prof.model == "generic"
+        assert profile_for(detect_model(self._file(b"Insta360 X5"))).model == "X5"
+
+
+class TestSideBySideWithoutCalibration:
+    """A camera that embeds no calibration (e.g. the Insta360 X5 over OSC) is stitched from the detected circles."""
+
+    @staticmethod
+    def _dual_fisheye_jpeg(side: int = 600) -> bytes:
+        import cv2
+        img = np.zeros((side, 2 * side, 3), np.uint8)
+        yy, xx = np.mgrid[0:side, 0:side]
+        inside = (xx - side / 2) ** 2 + (yy - side / 2) ** 2 <= (side / 2 - 2) ** 2
+        for k, colour in enumerate(((60, 160, 220), (220, 160, 60))):
+            tex = ((xx // 24 + yy // 24) % 2 * 70 + 120).astype(np.uint8)
+            region = img[:, k * side:(k + 1) * side]
+            for c in range(3):
+                region[..., c] = np.where(inside, np.clip(tex * colour[c] / 255.0 + 40, 0, 255), 0)
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        assert ok
+        return buf.tobytes()
+
+    def test_both_hemispheres_are_covered(self):
+        """Regression: lens2's centre was left in right-region x, landed left of the frame, and the whole back
+        hemisphere came out black (sphere coverage ~0.65, stitch rejected)."""
+        from app.services.fisheye_stitch import stitch_equirectangular
+        result = stitch_equirectangular(self._dual_fisheye_jpeg(), "IMG_20240101_000000_00_001.insp",
+                                        out_w=512, out_h=256)
+        assert result is not None
+        assert result.metadata["calibration_source"] == "detected"
+        assert result.metadata["sphere_coverage"] > 0.97
+        l2 = result.metadata["lens2"]
+        assert l2["cx"] > 600, "lens2 centre must be expressed in full-frame x (right half of the 1200px frame)"

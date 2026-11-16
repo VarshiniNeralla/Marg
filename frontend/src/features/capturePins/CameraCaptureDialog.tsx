@@ -6,9 +6,10 @@ import {
 } from '@mui/icons-material';
 import { Capacitor } from '@capacitor/core';
 import { Insta360Camera } from '@/plugins/insta360Camera';
+import { INSTA360_SSID_PATTERNS, getInsta360Password, saveInsta360Password } from './insta360Config';
 
 type Phase = 'starting' | 'live' | 'captured' | 'uploading' | 'error'
-  | 'insta360-connecting' | 'insta360-capturing';
+  | 'insta360-password' | 'insta360-connecting' | 'insta360-capturing';
 
 interface CameraCaptureDialogProps {
   open: boolean;
@@ -16,22 +17,20 @@ interface CameraCaptureDialogProps {
   /** Receives the captured frame as a File and performs the upload. Resolve to close. */
   onCapture: (file: File) => Promise<void>;
   onClose: () => void;
-  /** When set, capture is sourced from the Insta360 camera over its own WiFi AP
-   *  (OSC HTTP API) instead of the device's own getUserMedia camera. The SSID
-   *  pattern matches the camera's advertised AP name, e.g. "X3 " for an X3. */
-  insta360SsidPattern?: string;
-  /** WPA2 password for the Insta360's WiFi AP (visible on the camera/companion app). */
-  insta360Password?: string;
+  /** When true, capture is sourced from an Insta360 camera (any model) over its own WiFi AP (OSC HTTP API)
+   *  instead of the device's own getUserMedia camera. The camera is found by its AP name pattern and its WiFi
+   *  password is the saved one (or the factory default); see insta360Config. */
+  insta360?: boolean;
 }
 
 /**
  * Full-screen camera capture for mobile/tablet. Either opens the rear
- * ("environment") camera via getUserMedia, or — when insta360SsidPattern is
+ * ("environment") camera via getUserMedia, or — when insta360 is
  * given — connects to the Insta360 camera's own WiFi AP and triggers a
  * physical capture over its OSC HTTP API. Either path hands the resulting
  * File to the existing upload pipeline via onCapture, unchanged.
  */
-export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose, insta360SsidPattern, insta360Password }: CameraCaptureDialogProps) {
+export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose, insta360 }: CameraCaptureDialogProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -77,11 +76,21 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
     }
   }, [stopStream]);
 
-  const captureFromInsta360 = useCallback(async (ssidPattern: string, password?: string) => {
+  const [wifiPassword, setWifiPassword] = useState(() => getInsta360Password());
+
+  const captureFromInsta360 = useCallback(async (password?: string) => {
+    const pw = (password ?? getInsta360Password()).trim();
+    if (!pw) {
+      // No camera password known yet: ask once. It is remembered on this device after a successful connection.
+      setError('');
+      setPhase('insta360-password');
+      return;
+    }
     setPhase('insta360-connecting');
     setError('');
     try {
-      await Insta360Camera.connect({ ssidPattern, password });
+      await Insta360Camera.connect({ ssidPatterns: INSTA360_SSID_PATTERNS, password: pw });
+      saveInsta360Password(pw);
       setPhase('insta360-capturing');
       const { filePath, fileName } = await Insta360Camera.capturePhoto();
       const response = await fetch(Capacitor.convertFileSrc(filePath));
@@ -98,8 +107,8 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
   // Open/close lifecycle
   useEffect(() => {
     if (open) {
-      if (insta360SsidPattern) {
-        void captureFromInsta360(insta360SsidPattern, insta360Password);
+      if (insta360) {
+        void captureFromInsta360();
       } else {
         void startStream(facingMode);
       }
@@ -124,7 +133,7 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
 
   // Re-acquire when the user flips the camera
   useEffect(() => {
-    if (insta360SsidPattern) return;
+    if (insta360) return;
     if (open && phase !== 'captured' && phase !== 'uploading') {
       void startStream(facingMode);
     }
@@ -154,8 +163,8 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
   function retake() {
     if (shot) URL.revokeObjectURL(shot.url);
     setShot(null);
-    if (insta360SsidPattern) {
-      void captureFromInsta360(insta360SsidPattern, insta360Password);
+    if (insta360) {
+      void captureFromInsta360();
     } else {
       void startStream(facingMode);
     }
@@ -184,7 +193,7 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
           <CloseRounded />
         </IconButton>
         <Typography sx={{ color: '#fff', fontSize: '0.9375rem', fontWeight: 700 }}>{pinLabel}</Typography>
-        {!insta360SsidPattern && (phase === 'live' || phase === 'starting') ? (
+        {!insta360 && (phase === 'live' || phase === 'starting') ? (
           <IconButton onClick={() => setFacingMode(m => (m === 'environment' ? 'user' : 'environment'))} sx={{ color: '#fff', backgroundColor: 'rgba(255,255,255,0.12)', '&:hover': { backgroundColor: 'rgba(255,255,255,0.2)' } }}>
             <CameraswitchRounded />
           </IconButton>
@@ -194,8 +203,15 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
       {/* Video / preview surface */}
       <Box sx={{ flex: 1, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
         {shot ? (
-          <Box component="img" src={shot.url} alt="Captured" sx={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
-        ) : insta360SsidPattern ? (
+          <>
+            <Box component="img" src={shot.url} alt="Captured" sx={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+            {insta360 && (
+              <Typography sx={{ position: 'absolute', top: 64, left: 0, right: 0, textAlign: 'center', px: 3, color: 'rgba(255,255,255,0.85)', fontSize: '0.75rem', textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}>
+                Raw camera frame (two fisheye views). The stitched 360° panorama is created after you confirm.
+              </Typography>
+            )}
+          </>
+        ) : insta360 ? (
           <WifiTetheringRounded sx={{ fontSize: 64, color: 'rgba(255,255,255,0.25)' }} />
         ) : (
           <video ref={videoRef} playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -213,15 +229,49 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
           </Box>
         )}
 
-        {phase === 'error' && (
+        {(phase === 'error' || phase === 'insta360-password') && (
           <Box sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1.5, px: 4, textAlign: 'center', backgroundColor: 'rgba(0,0,0,0.8)' }}>
-            <ErrorOutlineRounded sx={{ fontSize: 44, color: '#f87171' }} />
-            <Typography sx={{ color: '#fff', fontSize: '0.9375rem', fontWeight: 600 }}>{error}</Typography>
+            {phase === 'error' ? (
+              <>
+                <ErrorOutlineRounded sx={{ fontSize: 44, color: '#f87171' }} />
+                <Typography sx={{ color: '#fff', fontSize: '0.9375rem', fontWeight: 600 }}>{error}</Typography>
+              </>
+            ) : (
+              <>
+                <WifiTetheringRounded sx={{ fontSize: 44, color: '#fff' }} />
+                <Typography sx={{ color: '#fff', fontSize: '1rem', fontWeight: 700 }}>Connect to your Insta360 camera</Typography>
+                <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.8125rem', maxWidth: 360 }}>
+                  Turn the camera on with its WiFi enabled, then enter the camera's WiFi password once.
+                  It is saved on this device and used automatically from now on.
+                </Typography>
+              </>
+            )}
+            {insta360 && (
+              <Box sx={{ width: '100%', maxWidth: 320, mt: 1 }}>
+                <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.75rem', mb: 0.75 }}>
+                  Camera WiFi password (on the camera: Settings, then WiFi)
+                </Typography>
+                <Box
+                  component="input"
+                  value={wifiPassword}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWifiPassword(e.target.value)}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  aria-label="Camera WiFi password"
+                  sx={{ width: '100%', boxSizing: 'border-box', px: 1.5, py: 1.1, borderRadius: '10px', border: '1px solid rgba(255,255,255,0.3)', backgroundColor: 'rgba(255,255,255,0.08)', color: '#fff', fontSize: '0.9375rem', outline: 'none', '&:focus': { borderColor: '#fff' } }}
+                />
+              </Box>
+            )}
             <Box
-              onClick={() => (insta360SsidPattern ? captureFromInsta360(insta360SsidPattern, insta360Password) : startStream(facingMode))}
-              sx={{ mt: 1, px: 2.5, py: 1, borderRadius: '10px', backgroundColor: 'rgba(255,255,255,0.14)', color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(255,255,255,0.22)' } }}
+              onClick={() => {
+                if (!insta360) { void startStream(facingMode); return; }
+                if (!wifiPassword.trim()) return;
+                void captureFromInsta360(wifiPassword);
+              }}
+              sx={{ opacity: insta360 && !wifiPassword.trim() ? 0.5 : 1, mt: 1, px: 2.5, py: 1, borderRadius: '10px', backgroundColor: 'rgba(255,255,255,0.14)', color: '#fff', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(255,255,255,0.22)' } }}
             >
-              Try again
+              {phase === 'insta360-password' ? 'Connect' : 'Try again'}
             </Box>
           </Box>
         )}

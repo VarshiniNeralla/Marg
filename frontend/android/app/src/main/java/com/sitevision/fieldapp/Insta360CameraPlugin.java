@@ -28,7 +28,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 
 /**
- * Bridges the Insta360 X3's OSC (Open Spherical Camera) HTTP API into a
+ * Bridges any Insta360 camera's OSC (X3, X4, X5, X6 and later; the model is read from /osc/info, never assumed) (Open Spherical Camera) HTTP API into a
  * single-shot "trigger capture, download the file" call from the web layer.
  *
  * The camera is its own WiFi access point at a fixed IP (192.168.42.1) with
@@ -67,6 +67,7 @@ public class Insta360CameraPlugin extends Plugin {
     private volatile long lastCaptureFinishedAtMs = 0;
     private ConnectivityManager.NetworkCallback networkCallback;
     private volatile Network cameraNetwork;
+    private volatile String cameraModel = "";
 
     @Override
     public void load() {
@@ -82,9 +83,8 @@ public class Insta360CameraPlugin extends Plugin {
 
     @PluginMethod
     public void connect(PluginCall call) {
-        String ssidPattern = call.getString("ssidPattern");
-        if (ssidPattern == null || ssidPattern.trim().isEmpty()) {
-            call.reject("ssidPattern is required");
+        if (readSsidTiers(call).isEmpty()) {
+            call.reject("ssidPatterns (or ssidPattern) is required");
             return;
         }
 
@@ -106,8 +106,38 @@ public class Insta360CameraPlugin extends Plugin {
         connectInternal(call);
     }
 
+    /** One SSID filter to try: PATTERN_PREFIX for a plain name prefix, PATTERN_ADVANCED_GLOB for a glob ("." = any char). */
+    private static final class SsidTier {
+        final String pattern;
+        final int type;
+        SsidTier(String pattern, int type) { this.pattern = pattern; this.type = type; }
+    }
+
+    /**
+     * SSID filters to try, in order. The web layer passes `ssidPatterns` ([{pattern, mode: "prefix"|"glob"}]) so no
+     * camera model is hard-coded here; the legacy single `ssidPattern` (a prefix) still works.
+     */
+    private java.util.List<SsidTier> readSsidTiers(PluginCall call) {
+        java.util.List<SsidTier> tiers = new java.util.ArrayList<>();
+        com.getcapacitor.JSArray arr = call.getArray("ssidPatterns");
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) continue;
+                String p = o.optString("pattern", "");
+                if (p.isEmpty()) continue;
+                boolean glob = "glob".equalsIgnoreCase(o.optString("mode", "prefix"));
+                tiers.add(new SsidTier(p, glob ? android.os.PatternMatcher.PATTERN_ADVANCED_GLOB : android.os.PatternMatcher.PATTERN_PREFIX));
+            }
+        }
+        String legacy = call.getString("ssidPattern");
+        if (tiers.isEmpty() && legacy != null && !legacy.trim().isEmpty()) {
+            tiers.add(new SsidTier(legacy, android.os.PatternMatcher.PATTERN_PREFIX));
+        }
+        return tiers;
+    }
+
     private void connectInternal(PluginCall call) {
-        String ssidPattern = call.getString("ssidPattern");
         String password = call.getString("password");
 
         if (cameraNetwork != null) {
@@ -115,8 +145,30 @@ public class Insta360CameraPlugin extends Plugin {
             return;
         }
 
+        java.util.List<SsidTier> tiers = readSsidTiers(call);
+        final Handler mainHandler = new Handler(Looper.getMainLooper());
+        final boolean[] settled = { false };
+        requestCameraNetwork(call, tiers, 0, password, mainHandler, settled);
+
+        // The framework has no built-in timeout for requestNetwork without a
+        // duration overload on all supported API levels; enforce one here so
+        // a call never hangs forever if the camera is unreachable. It spans ALL filters, so a camera whose
+        // network name matches only a later (broader) filter still has time to be found.
+        mainHandler.postDelayed(() -> {
+            if (!settled[0]) {
+                settled[0] = true;
+                call.reject("Timed out waiting for the camera's WiFi network. The camera stops broadcasting its WiFi after a while: press its power button to wake it, then try again. Also check that the camera is on with its "
+                        + "WiFi enabled and that the camera's WiFi password is correct.");
+            }
+        }, 15000L + 10000L * Math.max(0, tiers.size() - 1));
+    }
+
+    /** Requests the camera AP with tier `index`; when the system reports no match, falls through to the next filter. */
+    private void requestCameraNetwork(PluginCall call, java.util.List<SsidTier> tiers, int index, String password,
+                                      Handler mainHandler, boolean[] settled) {
+        SsidTier tier = tiers.get(index);
         WifiNetworkSpecifier.Builder specifierBuilder = new WifiNetworkSpecifier.Builder()
-                .setSsidPattern(new android.os.PatternMatcher(ssidPattern, android.os.PatternMatcher.PATTERN_PREFIX));
+                .setSsidPattern(new android.os.PatternMatcher(tier.pattern, tier.type));
         if (password != null && !password.isEmpty()) {
             specifierBuilder.setWpa2Passphrase(password);
         }
@@ -126,9 +178,6 @@ public class Insta360CameraPlugin extends Plugin {
                 .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .setNetworkSpecifier(specifierBuilder.build())
                 .build();
-
-        final Handler mainHandler = new Handler(Looper.getMainLooper());
-        final boolean[] settled = { false };
 
         networkCallback = new ConnectivityManager.NetworkCallback() {
             @Override
@@ -143,8 +192,20 @@ public class Insta360CameraPlugin extends Plugin {
             public void onUnavailable() {
                 cameraNetwork = null;
                 if (settled[0]) return;
+                if (index + 1 < tiers.size()) {
+                    Log.w(TAG, "no network matched filter '" + tier.pattern + "', trying the next filter");
+                    try {
+                        connectivityManager.unregisterNetworkCallback(this);
+                    } catch (IllegalArgumentException ignored) {
+                        // already unregistered
+                    }
+                    requestCameraNetwork(call, tiers, index + 1, password, mainHandler, settled);
+                    return;
+                }
                 settled[0] = true;
-                call.reject("Could not connect to the camera's WiFi network. Make sure the camera is powered on and its WiFi is enabled.");
+                call.reject("Could not connect to the camera's WiFi network. Make sure the camera is powered on and its "
+                        + "WiFi is enabled, and that the camera WiFi password is correct (newer cameras such as the X4 and "
+                        + "X5 use their own password, shown in the camera's WiFi settings).");
             }
 
             @Override
@@ -156,16 +217,6 @@ public class Insta360CameraPlugin extends Plugin {
         };
 
         connectivityManager.requestNetwork(request, networkCallback);
-
-        // The framework has no built-in timeout for requestNetwork without a
-        // duration overload on all supported API levels; enforce one here so
-        // a call never hangs forever if the camera is unreachable.
-        mainHandler.postDelayed(() -> {
-            if (!settled[0]) {
-                settled[0] = true;
-                call.reject("Timed out waiting for the camera's WiFi network.");
-            }
-        }, 15000);
     }
 
     private void checkOscInfo(PluginCall call) {
@@ -175,6 +226,17 @@ public class Insta360CameraPlugin extends Plugin {
                 JSObject result = new JSObject();
                 result.put("connected", true);
                 result.put("ssid", "");
+                // Identify the camera from its own answer (model-agnostic: X3, X4, X5, X6, whatever ships next).
+                try {
+                    JSONObject info = new JSONObject(body);
+                    result.put("model", info.optString("model", ""));
+                    result.put("firmwareVersion", info.optString("firmwareVersion", ""));
+                    cameraModel = info.optString("model", "");
+                    Log.i(TAG, "connected to camera model='" + cameraModel + "' firmware='"
+                            + info.optString("firmwareVersion", "") + "'");
+                } catch (Exception parseError) {
+                    Log.w(TAG, "could not parse /osc/info: " + parseError.getMessage());
+                }
                 call.resolve(result);
             } catch (Exception e) {
                 call.reject("Connected to camera WiFi but /osc/info did not respond: " + e.getMessage(), e);
@@ -197,6 +259,7 @@ public class Insta360CameraPlugin extends Plugin {
                     Thread.sleep(MIN_CAPTURE_GAP_MS - sinceLast);
                 }
                 ensureImageMode();
+                ensureRawPhotoOutput();
 
                 // Trigger the still capture and wait for the file. If the camera still answers
                 // "disabledCommand" (it is not in image mode), switch it back and try again.
@@ -252,6 +315,7 @@ public class Insta360CameraPlugin extends Plugin {
                 JSObject result = new JSObject();
                 result.put("filePath", outFile.getAbsolutePath());
                 result.put("fileName", fileName);
+                result.put("model", cameraModel);
                 call.resolve(result);
             } catch (Exception e) {
                 call.reject("Capture failed: " + e.getMessage(), e);
@@ -336,6 +400,36 @@ public class Insta360CameraPlugin extends Plugin {
         return new JSONObject(httpPost("/osc/commands/execute", body));
     }
 
+    /**
+     * The backend stitcher expects the camera's UN-stitched dual-fisheye frame. Newer cameras can stitch on the
+     * device and, when they do, return a finished panorama that the fisheye stitcher would then wrongly process.
+     * Insta360's OSC lists `photoStitching` ("none" | "ondevice") and `photoStitchingSupport`; when the camera
+     * advertises "none", select it so every model hands over the same raw frame. Cameras without the option
+     * (the X3) already return raw frames and are left untouched. Best effort: never blocks a capture.
+     */
+    private void ensureRawPhotoOutput() {
+        try {
+            JSONObject response = oscCommand("camera.getOptions",
+                    "{\"optionNames\":[\"photoStitching\",\"photoStitchingSupport\"]}");
+            JSONObject results = response.optJSONObject("results");
+            JSONObject options = results != null ? results.optJSONObject("options") : null;
+            if (options == null) {
+                return;
+            }
+            String support = String.valueOf(options.opt("photoStitchingSupport"));
+            if (!support.contains("none")) {
+                return; // option not offered: this camera/firmware already returns the raw frame
+            }
+            if ("none".equalsIgnoreCase(options.optString("photoStitching", ""))) {
+                return;
+            }
+            JSONObject set = oscCommand("camera.setOptions", "{\"options\":{\"photoStitching\":\"none\"}}");
+            Log.i(TAG, "setOptions photoStitching=none -> " + set.optString("state"));
+        } catch (Exception e) {
+            Log.w(TAG, "could not check photoStitching, continuing: " + e.getMessage());
+        }
+    }
+
     /** The camera's current captureMode ("image", "video", ...), or null if it could not be read. */
     private String readCaptureMode() {
         try {
@@ -387,6 +481,7 @@ public class Insta360CameraPlugin extends Plugin {
         conn.setConnectTimeout(HTTP_TIMEOUT_MS);
         conn.setReadTimeout(HTTP_TIMEOUT_MS);
         conn.setRequestMethod("GET");
+        applyOscHeaders(conn);
         try {
             return readBody(conn);
         } finally {
@@ -400,6 +495,7 @@ public class Insta360CameraPlugin extends Plugin {
         conn.setReadTimeout(HTTP_TIMEOUT_MS);
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        applyOscHeaders(conn);
         conn.setDoOutput(true);
         byte[] payload = jsonBody.getBytes("UTF-8");
         try (OutputStream os = conn.getOutputStream()) {
@@ -410,6 +506,12 @@ public class Insta360CameraPlugin extends Plugin {
         } finally {
             conn.disconnect();
         }
+    }
+
+    /** Headers Insta360's OSC documentation lists for every request; older firmware ignores them, newer requires them. */
+    private void applyOscHeaders(HttpURLConnection conn) {
+        conn.setRequestProperty("Accept", "application/json");
+        conn.setRequestProperty("X-XSRF-Protected", "1");
     }
 
     private void downloadToFile(String url, File outFile) throws IOException {
