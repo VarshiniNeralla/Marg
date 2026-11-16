@@ -6,26 +6,36 @@
  * automatically treated as "needs download" and the old copy is cleaned up.
  */
 
-/** Stable key for a media address: just the /media/... path, with no host and no access_token. */
+/** Query parameters that only carry access/validity and never decide which file is meant. */
+const VOLATILE_PARAMS = ['access_token', 'exp', 'sig'];
+
+/** Stable key for a saveable address: the /media/... path (no host, no tokens) or a Cloudinary plan address. */
 export function mediaKey(url: string | null | undefined): string | null {
   if (!url) return null;
   const raw = url.trim();
   if (!raw) return null;
   let path: string;
   let search = '';
+  let host = '';
   try {
     const u = new URL(raw, 'http://placeholder.invalid');
     path = u.pathname;
+    host = u.hostname.toLowerCase();
     const params = new URLSearchParams(u.search);
-    params.delete('access_token');
+    // Login token and the server's per-response signature (exp + sig) change every time the data is refreshed,
+    // so none of them can be part of the key: with them in it, a saved plan stopped matching after the next sync.
+    for (const volatile of VOLATILE_PARAMS) params.delete(volatile);
     const rest = params.toString();
     search = rest ? `?${rest}` : '';
   } catch {
     return null;
   }
-  // Only the app's own stored media can be saved. Hosted-elsewhere images (e.g. Cloudinary) are left alone.
-  if (!path.startsWith('/media/')) return null;
-  return `${path}${search}`;
+  // The app's own stored media: just the path, whatever server name it was reached by.
+  if (path.startsWith('/media/')) return `${path}${search}`;
+  // Floor plans uploaded earlier live on Cloudinary (most projects). Those addresses are public and stable, so they
+  // are saved too, keyed by their full address (the host is part of the key: a path alone would not identify them).
+  if (host === 'res.cloudinary.com') return `https://${host}${path}${search}`;
+  return null;
 }
 
 export interface PlanLike {
@@ -131,7 +141,11 @@ export function orphanKeys(saved: Iterable<string>, currentlyNeeded: ReadonlySet
 export function savedFileName(key: string, hash: string): string {
   const path = key.split('?')[0];
   const dot = path.lastIndexOf('.');
-  const ext = dot > path.lastIndexOf('/') ? path.slice(dot).toLowerCase().replace(/[^a-z0-9.]/g, '') : '';
+  let ext = dot > path.lastIndexOf('/') ? path.slice(dot).toLowerCase().replace(/[^a-z0-9.]/g, '') : '';
+  if (!ext) {
+    const fmt = /[/,]f_(png|jpg|jpeg|webp)/.exec(path);
+    if (fmt) ext = `.${fmt[1] === 'jpeg' ? 'jpg' : fmt[1]}`;
+  }
   return `${hash}${ext}`;
 }
 

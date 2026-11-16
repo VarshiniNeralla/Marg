@@ -29,7 +29,15 @@ function readManifest(): Record<string, SavedFile> {
   try {
     const raw = localStorage.getItem(MANIFEST_KEY);
     const parsed = raw ? (JSON.parse(raw) as Record<string, SavedFile>) : {};
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    if (!parsed || typeof parsed !== 'object') return {};
+    // Older versions keyed files by an address that still carried the per-response signature; re-key them by the
+    // stable address so the plans already on the device keep working instead of being downloaded again.
+    const out: Record<string, SavedFile> = {};
+    for (const [key, file] of Object.entries(parsed)) {
+      const stable = mediaKey(key) ?? key;
+      if (!out[stable]) out[stable] = file;
+    }
+    return out;
   } catch {
     return {};
   }
@@ -136,6 +144,26 @@ export async function cleanupOrphanFiles(currentlyNeeded: ReadonlySet<string>): 
   }
   commit(next);
   return drop.length;
+}
+
+/**
+ * Delete files in the pack folder that the list of saved plans does not point to (copies left behind when the same
+ * plan was downloaded again under a changed address). Never touches a file the list refers to.
+ */
+export async function sweepUntrackedFiles(): Promise<number> {
+  if (!offlinePackSupported()) return 0;
+  try {
+    const { files } = await Filesystem.readdir({ path: DIR, directory: Directory.Data });
+    const tracked = new Set(Object.values(manifest).map(f => f.path.split('/').pop()));
+    let removed = 0;
+    for (const f of files) {
+      if (tracked.has(f.name)) continue;
+      await Filesystem.deleteFile({ path: `${DIR}/${f.name}`, directory: Directory.Data }).then(() => { removed++; }).catch(() => {});
+    }
+    return removed;
+  } catch {
+    return 0;
+  }
 }
 
 /** Forget a saved file whose copy has gone missing from disk (cache cleared), so the app falls back to the network. */

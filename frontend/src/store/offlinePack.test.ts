@@ -16,12 +16,22 @@ describe('mediaKey', () => {
     expect(c).toBe(a);
   });
 
+  it('ignores the signature the server re-issues on every refresh (exp + sig), so a saved plan survives a sync', () => {
+    const first = mediaKey('https://h/media/floorplans/a.png?exp=1795427764&sig=d1f394aa902d7035ae0d4792d4694eb2&access_token=T1');
+    const second = mediaKey('https://h/media/floorplans/a.png?exp=1795999999&sig=ffffffffffffffffffffffffffffffff&access_token=T2');
+    expect(first).toBe('/media/floorplans/a.png');
+    expect(second).toBe(first);
+  });
+
   it('keeps other query parameters (they can change which file is meant)', () => {
     expect(mediaKey('/media/x.pdf?v=2&access_token=T')).toBe('/media/x.pdf?v=2');
   });
 
   it('only the app\'s own media can be saved', () => {
-    expect(mediaKey('https://res.cloudinary.com/demo/image/upload/plan.png')).toBeNull();
+    expect(mediaKey('https://example.com/demo/image/upload/plan.png')).toBeNull();
+    expect(mediaKey('https://res.cloudinary.com/demo/image/upload/dn_300,f_png,pg_1/v1/SiteVision/floorplans/org/fp1'))
+      .toBe('https://res.cloudinary.com/demo/image/upload/dn_300,f_png,pg_1/v1/SiteVision/floorplans/org/fp1');
+    expect(savedFileName('https://res.cloudinary.com/d/image/upload/dn_300,f_png,pg_1/v1/x/fp1', 'abc')).toBe('abc.png');
     expect(mediaKey('')).toBeNull();
     expect(mediaKey(null)).toBeNull();
     expect(mediaKey(undefined)).toBeNull();
@@ -42,7 +52,7 @@ describe('planMediaKeys / floorStatus', () => {
 
   it('no plan, or a plan hosted elsewhere, is reported honestly', () => {
     expect(floorStatus(undefined, new Set())).toBe('no-plan');
-    expect(floorStatus(plan('p', 'f', 'https://res.cloudinary.com/x/plan.png'), new Set())).toBe('unsupported');
+    expect(floorStatus(plan('p', 'f', 'https://example.com/x/plan.png'), new Set())).toBe('unsupported');
     expect(floorStatus(plan('p', 'f', null), new Set())).toBe('no-plan');
   });
 
