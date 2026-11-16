@@ -1,15 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Box, LinearProgress, Typography } from '@mui/material';
+import { Box, Checkbox, LinearProgress, Typography } from '@mui/material';
 import { CloudDownloadRounded, CheckCircleRounded, WarningAmberRounded, LayersRounded } from '@mui/icons-material';
 import { colors } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import { resolveFloorPlanForFloor } from '@store/workflowSelectors';
 import {
   cleanupOrphanFiles, downloadPlanFiles, getSavedKeys, offlinePackSupported, OFFLINE_PACK_CHANGED_EVENT, savedBytes,
-  sweepUntrackedFiles, verifySavedFiles,
+  sweepUntrackedFiles, verifySavedFiles, getKnownKeys, markKeysKnown,
 } from '@store/offlinePlanStore';
 import {
-  floorStatus, keysToDownload, leavingCoverageWarnings, planMediaKeys, summariseTowers, type PlanLike,
+  allPlanKeys, buildFloorRows, floorStatus, keysToDownload, leavingCoverageWarnings, planMediaKeys, summariseTowers, type PlanLike,
 } from '@store/offlinePack';
 import { formatBytes } from '@store/storageCheck';
 
@@ -34,9 +34,13 @@ export default function OfflinePackCard({ projectId, projectName }: Props) {
   const [busy, setBusy] = useState<{ done: number; total: number } | null>(null);
   const [failures, setFailures] = useState<string[]>([]);
   const [justSaved, setJustSaved] = useState<number | null>(null);
+  // "Choose floors": which floors are ticked, and whether the list is open.
+  const [chooserOpen, setChooserOpen] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [known, setKnown] = useState<Set<string>>(() => getKnownKeys());
 
   useEffect(() => {
-    const onChange = () => setSaved(getSavedKeys());
+    const onChange = () => { setSaved(getSavedKeys()); setKnown(getKnownKeys()); };
     window.addEventListener(OFFLINE_PACK_CHANGED_EVENT, onChange);
     return () => window.removeEventListener(OFFLINE_PACK_CHANGED_EVENT, onChange);
   }, []);
@@ -66,6 +70,12 @@ export default function OfflinePackCard({ projectId, projectName }: Props) {
 
   const warnings = useMemo(() => leavingCoverageWarnings(summaries), [summaries]);
 
+  const rows = useMemo(
+    () => buildFloorRows(scopedTowers.map(t => ({ id: t.id, name: t.name })), scopedFloors, planOfFloor, saved, known),
+    [scopedTowers, scopedFloors, planOfFloor, saved, known],
+  );
+  const newRows = rows.filter(r => r.isNew);
+
   const download = useCallback(async (floorIds: string[]) => {
     const keys = keysToDownload(floorIds, planOfFloor, getSavedKeys());
     if (!keys.length) return;
@@ -87,6 +97,9 @@ export default function OfflinePackCard({ projectId, projectName }: Props) {
         .slice(0, 2);
       setFailures(result.failed.length ? [`${result.failed.length} file${result.failed.length === 1 ? '' : 's'}: ${short.join('; ')}`] : []);
       setJustSaved(result.saved.length);
+      // Remember every plan that exists right now: whatever is added later is what "new" means. Floors the person
+      // chose not to download stay skipped (they are known, just not saved).
+      markKeysKnown(allPlanKeys(scopedFloors.map(f => f.id), planOfFloor));
       // Plans that were replaced since the last download no longer need their old copy.
       // "Needed" means needed by ANY floor the person can see, not just this project's: this card is scoped to one
       // project, and treating the other projects' saved plans as leftovers deleted them (downloading project B
@@ -101,7 +114,7 @@ export default function OfflinePackCard({ projectId, projectName }: Props) {
       setBusy(null);
       setSaved(getSavedKeys());
     }
-  }, [planOfFloor, floors, floorPlans, capturePins]);
+  }, [planOfFloor, scopedFloors, floors, floorPlans, capturePins]);
 
   if (!offlinePackSupported()) return null;
 
@@ -172,9 +185,124 @@ export default function OfflinePackCard({ projectId, projectName }: Props) {
               : { color: '#fff', background: colors.primaryGradient }),
           }}
         >
-          <CloudDownloadRounded sx={{ fontSize: 18 }} /> {busy ? 'Downloading…' : allSet ? 'Check again' : 'Download for Offline'}
+          <CloudDownloadRounded sx={{ fontSize: 18 }} /> {busy ? 'Downloading…' : allSet ? 'Check again' : 'Download all'}
         </Box>
+        {rows.length > 1 && (
+          <Box
+            role="button"
+            aria-label="Choose floors to download"
+            data-testid="choose-floors"
+            onClick={() => {
+              if (busy) return;
+              setChooserOpen(o => {
+                const next = !o;
+                if (next) setPicked(new Set(rows.filter(r => !r.saved).map(r => r.floorId)));
+                return next;
+              });
+            }}
+            sx={{
+              display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 2, py: 1, minHeight: 44, borderRadius: '12px',
+              fontSize: '0.8125rem', fontWeight: 600, userSelect: 'none', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1,
+              color: chooserOpen ? colors.primary : colors.textSecondary, border: `1.5px solid ${chooserOpen ? colors.primary : colors.border}`,
+              backgroundColor: chooserOpen ? colors.primarySoft : 'transparent',
+            }}
+          >
+            Choose floors
+          </Box>
+        )}
       </Box>
+
+      {newRows.length > 0 && !busy && (
+        <Box data-testid="new-plans-banner" sx={{ mt: 1.25, p: 1.25, borderRadius: '12px', backgroundColor: colors.primarySoft, border: `1px solid ${colors.primary}`, display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+          <CloudDownloadRounded sx={{ color: colors.primary, fontSize: 20 }} />
+          <Typography sx={{ flex: 1, minWidth: 160, fontSize: '0.8125rem', fontWeight: 700, color: colors.textStrong }}>
+            {newRows.length} new floor plan{newRows.length === 1 ? '' : 's'} added since your last download
+          </Typography>
+          <Box
+            role="button"
+            data-testid="download-new-plans"
+            onClick={() => { if (!busy) void download(newRows.map(r => r.floorId)); }}
+            sx={{ px: 1.75, py: 0.875, minHeight: 40, borderRadius: '10px', fontSize: '0.8125rem', fontWeight: 700, color: '#fff', background: colors.primaryGradient, cursor: 'pointer', userSelect: 'none' }}
+          >
+            Download new plans
+          </Box>
+        </Box>
+      )}
+
+      {chooserOpen && !busy && (
+        <Box data-testid="floor-chooser" sx={{ mt: 1.25, p: 1.25, borderRadius: '12px', border: `1px solid ${colors.border}`, backgroundColor: colors.bg }}>
+          <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: colors.textMuted, mb: 0.5 }}>
+            Tick the floors to save on this device
+          </Typography>
+          {[...new Set(rows.map(r => r.towerId))].map(tid => {
+            const towerRows = rows.filter(r => r.towerId === tid);
+            const allTicked = towerRows.every(r => picked.has(r.floorId));
+            return (
+              <Box key={tid} sx={{ mb: 0.75 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <Checkbox
+                    size="small"
+                    checked={allTicked}
+                    onChange={e => setPicked(prev => {
+                      const next = new Set(prev);
+                      towerRows.forEach(r => { if (e.target.checked) next.add(r.floorId); else next.delete(r.floorId); });
+                      return next;
+                    })}
+                    slotProps={{ input: { 'aria-label': `Select all floors of ${towerRows[0].towerName}` } }}
+                  />
+                  <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: colors.textStrong }}>{towerRows[0].towerName}</Typography>
+                </Box>
+                {towerRows.map(r => (
+                  <Box key={r.floorId} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, pl: 3.5 }}>
+                    <Checkbox
+                      size="small"
+                      checked={picked.has(r.floorId)}
+                      onChange={e => setPicked(prev => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(r.floorId); else next.delete(r.floorId);
+                        return next;
+                      })}
+                      slotProps={{ input: { 'aria-label': `Select ${towerRows[0].towerName} ${r.label}` } }}
+                    />
+                    <Typography sx={{ flex: 1, fontSize: '0.8125rem', color: colors.textStrong }}>{r.label}</Typography>
+                    {r.saved ? (
+                      <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: colors.success }}>Offline</Typography>
+                    ) : r.isNew ? (
+                      <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: colors.primary }}>New</Typography>
+                    ) : (
+                      <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.warning }}>Not downloaded</Typography>
+                    )}
+                  </Box>
+                ))}
+              </Box>
+            );
+          })}
+          <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end', mt: 0.5 }}>
+            <Box
+              onClick={() => setChooserOpen(false)}
+              sx={{ px: 1.5, py: 0.875, minHeight: 40, borderRadius: '10px', border: `1.5px solid ${colors.border}`, fontSize: '0.8125rem', fontWeight: 600, color: colors.textSecondary, cursor: 'pointer' }}
+            >
+              Close
+            </Box>
+            <Box
+              role="button"
+              data-testid="download-selected"
+              onClick={() => {
+                const ids = [...picked];
+                setChooserOpen(false);
+                void download(ids);
+              }}
+              sx={{
+                px: 1.75, py: 0.875, minHeight: 40, borderRadius: '10px', fontSize: '0.8125rem', fontWeight: 700, color: '#fff',
+                background: colors.primaryGradient, cursor: picked.size ? 'pointer' : 'not-allowed', opacity: picked.size ? 1 : 0.45,
+                pointerEvents: picked.size ? 'auto' : 'none',
+              }}
+            >
+              {picked.size ? `Download selected (${picked.size})` : 'Download selected'}
+            </Box>
+          </Box>
+        </Box>
+      )}
 
       {busy && (
         <Box data-testid="download-progress" sx={{ mt: 1.5, p: 1.5, borderRadius: '12px', backgroundColor: colors.primarySoft }}>
@@ -232,7 +360,7 @@ export default function OfflinePackCard({ projectId, projectName }: Props) {
           <CheckCircleRounded sx={{ color: colors.success, fontSize: 20, flexShrink: 0 }} />
           <Typography sx={{ fontSize: '0.8125rem', color: colors.success, fontWeight: 700 }}>
             {justSaved > 0
-              ? `Downloaded for offline use: ${justSaved} plan file${justSaved === 1 ? '' : 's'} saved on this device. You can open these floor plans without internet.`
+              ? `Downloaded for offline use: ${justSaved} plan file${justSaved === 1 ? '' : 's'} saved on this device. You can open these floor plans without internet, and they stay saved after app updates.`
               : 'Everything is already downloaded for offline use.'}
           </Typography>
         </Box>

@@ -55,6 +55,31 @@ function commit(next: Record<string, SavedFile>): void {
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(OFFLINE_PACK_CHANGED_EVENT));
 }
 
+// Plan addresses that existed the last time the person downloaded. A plan that is neither saved nor in this list was
+// added since, which is what "Download new plans" offers. Kept apart from the saved list so skipped floors stay skipped.
+const KNOWN_KEY = 'sitesurelabs-offline-known-v1';
+
+export function getKnownKeys(): Set<string> {
+  try {
+    const raw = localStorage.getItem(KNOWN_KEY);
+    const arr = raw ? (JSON.parse(raw) as unknown) : [];
+    return new Set(Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function markKeysKnown(keys: Iterable<string>): void {
+  try {
+    const next = getKnownKeys();
+    for (const k of keys) next.add(k);
+    localStorage.setItem(KNOWN_KEY, JSON.stringify([...next]));
+  } catch {
+    /* best effort */
+  }
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(OFFLINE_PACK_CHANGED_EVENT));
+}
+
 export function offlinePackSupported(): boolean {
   return Capacitor.isNativePlatform();
 }
