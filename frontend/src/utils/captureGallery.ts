@@ -13,6 +13,28 @@ export function getLatestPinCaptureIds(
   return ids;
 }
 
+/**
+ * Every capture to remove when a whole floor is deleted from Capture History: the cards shown for that floor plus the
+ * earlier visits of the same capture points. Without the earlier visits the next-latest visit of each point would
+ * simply appear as a new card, so the floor would never look empty. `ownIds` limits the earlier visits to the signed-in
+ * engineer's own captures (a pin timeline can also hold other people's visits, which they cannot delete).
+ */
+export function collectFloorCaptureIds(
+  cards: ReadonlyArray<{ id: string }>,
+  pins: ReadonlyArray<{ captureIds: readonly string[] }>,
+  ownIds?: ReadonlySet<string> | null,
+): { ids: string[]; shown: number; earlier: number } {
+  const ids = new Set<string>(cards.map(c => c.id));
+  for (const card of cards) {
+    const pin = pins.find(p => p.captureIds.includes(card.id));
+    if (!pin) continue;
+    for (const id of pin.captureIds) {
+      if (!ownIds || ownIds.has(id)) ids.add(id);
+    }
+  }
+  return { ids: [...ids], shown: cards.length, earlier: ids.size - cards.length };
+}
+
 /** Every capture id attached to any pin (including older visits). */
 export function getAllPinCaptureIds(
   pins: ReadonlyArray<{ captureIds: readonly string[] }>,

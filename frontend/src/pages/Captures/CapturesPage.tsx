@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Box, Typography, InputBase, Menu, MenuItem, Pagination, useMediaQuery, useTheme } from '@mui/material';
-import { CameraAltRounded, ViewInArRounded, SearchRounded, KeyboardArrowDownRounded, CheckRounded, ArrowBackRounded, LayersRounded, MapRounded, DeleteOutlineRounded, BusinessRounded, SortRounded, ArrowDownwardRounded, ArrowUpwardRounded } from '@mui/icons-material';
+import { CameraAltRounded, ViewInArRounded, SearchRounded, KeyboardArrowDownRounded, CheckRounded, ArrowBackRounded, LayersRounded, MapRounded, DeleteOutlineRounded, DeleteSweepRounded, BusinessRounded, SortRounded, ArrowDownwardRounded, ArrowUpwardRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { statusConfig, getRoomHistory, getPinForCapture } from '@store/workflowSelectors';
 import type { MockCapture } from '@/data/mockData';
@@ -14,6 +14,7 @@ import { resolveCaptureImageCandidates } from '@/utils/captureMedia';
 import { paginateGroups } from '@/utils/paginateGroups';
 import { formatPinLocationLabel, formatTowerLabel, enrichCaptureLocation } from '@/utils/pinLabels';
 import {
+  collectFloorCaptureIds,
   filterGalleryCaptures,
 } from '@/utils/captureGallery';
 import { filterOwnCaptures, ownCaptureIdSet, pinCaptureIdsForUser } from '@/utils/captureOwnership';
@@ -195,6 +196,11 @@ export default function CapturesPage() {
   const tours = useWorkflowStore(s => s.tours);
   const deleteCapture = useWorkflowStore(s => s.deleteCapture);
   const [deleteTarget, setDeleteTarget] = useState<MockCapture | null>(null);
+  // "Delete all" on a floor header (field engineer's Capture History): what is about to be removed, shown in the
+  // confirmation before anything is deleted.
+  const [deleteFloorTarget, setDeleteFloorTarget] = useState<
+    { label: string; ids: string[]; shown: number; earlier: number } | null
+  >(null);
 
   // Pull finished stitch panoramas onto any still-empty capture cards (common
   // after refresh when the server finished stitching while the UI was idle).
@@ -329,6 +335,29 @@ export default function CapturesPage() {
     }
     return map;
   }, [groupedByFloor]);
+
+  // Deleting a whole floor is offered to field engineers on Capture History (their own captures only).
+  const canDeleteWholeFloor = isEngineerView && can(user?.role, 'captures', 'delete');
+
+  const requestDeleteFloor = (group: { projectId: string; towerId: string; floorLabel: string; projectName: string; towerName: string }) => {
+    const key = `${group.projectId}::${group.towerId}::${group.floorLabel}`;
+    // The whole floor, not just the page slice that sits under this header.
+    const full = groupedByFloor.find(g => `${g.projectId}::${g.towerId}::${g.floorLabel}` === key);
+    if (!full) return;
+    const { ids, shown, earlier } = collectFloorCaptureIds(full.captures, allPins, ownCaptureIdSet(mockCaptures, user));
+    if (ids.length === 0) return;
+    const label = [showProjectName ? group.projectName : '', formatTowerLabel(group.towerName), group.floorLabel]
+      .filter(Boolean)
+      .join(' · ') || group.floorLabel;
+    setDeleteFloorTarget({ label, ids, shown, earlier });
+  };
+
+  const confirmDeleteFloor = () => {
+    const target = deleteFloorTarget;
+    setDeleteFloorTarget(null); // close first, so a second tap on "Delete" cannot run it twice
+    if (!target) return;
+    target.ids.forEach(id => deleteCapture(id)); // the same per-capture delete the card button uses
+  };
 
   const pageCapturesCount = paginatedGroupedByFloor.reduce((sum, g) => sum + g.captures.length, 0);
   const pageStart = filtered.length === 0 ? 0 :
@@ -706,6 +735,24 @@ export default function CapturesPage() {
                       <MapRounded sx={{ fontSize: 14 }} /> View on Floor Plan
                     </Box>
                   )}
+                  {canDeleteWholeFloor && (
+                    <Box
+                      component="button"
+                      type="button"
+                      onClick={() => requestDeleteFloor(group)}
+                      aria-label={`Delete all captures on ${group.floorLabel}`}
+                      title="Delete all captures on this floor"
+                      sx={{
+                        display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.25, py: 0.625, borderRadius: '8px',
+                        border: `1.5px solid ${P.border}`, backgroundColor: 'transparent', color: P.muted, fontFamily: 'inherit',
+                        fontSize: '0.75rem', fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0, cursor: 'pointer', transition: T,
+                        '&:hover': { borderColor: colors.danger, color: colors.danger, backgroundColor: colors.dangerBg },
+                      }}
+                    >
+                      <DeleteSweepRounded sx={{ fontSize: 15 }} />
+                      <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>Delete all</Box>
+                    </Box>
+                  )}
                 </Box>
                 <Box sx={GALLERY_GRID_SX}>
                   {group.captures.map(c => (
@@ -755,6 +802,22 @@ export default function CapturesPage() {
         destructive
         onConfirm={confirmDeleteCapture}
         onCancel={() => setDeleteTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={!!deleteFloorTarget}
+        title="Delete all captures on this floor?"
+        description={deleteFloorTarget
+          ? `This will permanently delete ${deleteFloorTarget.ids.length} capture${deleteFloorTarget.ids.length === 1 ? '' : 's'} on ${deleteFloorTarget.label}`
+            + (deleteFloorTarget.earlier > 0
+              ? ` (${deleteFloorTarget.shown} shown here plus ${deleteFloorTarget.earlier} earlier visit${deleteFloorTarget.earlier === 1 ? '' : 's'} of the same points)`
+              : '')
+            + '. Any progress results based on them are removed too. Capture points stay on the floor plan. This cannot be undone.'
+          : ''}
+        confirmLabel={deleteFloorTarget ? `Delete ${deleteFloorTarget.ids.length} capture${deleteFloorTarget.ids.length === 1 ? '' : 's'}` : 'Delete'}
+        destructive
+        onConfirm={confirmDeleteFloor}
+        onCancel={() => setDeleteFloorTarget(null)}
       />
     </Box>
   );
