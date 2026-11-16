@@ -42,6 +42,12 @@ class SecurityHeadersMiddleware:
                     headers.append("Vary", "Host")
                     if str(scope.get("path", "")).startswith("/api/"):
                         headers.setdefault("Cache-Control", "no-store")
+                # Media is cached by the browser for a day, but only responses to a request that carries an Origin
+                # get CORS headers. Without "Vary: Origin" a copy fetched by a plain <img> (gallery thumbnail, no
+                # Origin, so no Access-Control-Allow-Origin) is later reused for the panorama viewer's cross-origin
+                # fetch, which then fails with "blocked by CORS policy" and the tour shows "Could not load panorama".
+                if str(scope.get("path", "")).startswith("/media/"):
+                    headers.append("Vary", "Origin")
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 headers.setdefault("X-Frame-Options", "DENY")
                 headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")

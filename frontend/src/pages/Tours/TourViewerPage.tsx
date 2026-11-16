@@ -729,8 +729,26 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, pan
           } catch { /* plugin not ready */ }
         });
 
+        // One automatic retry that bypasses the browser's HTTP cache. A copy of this image cached earlier by a plain
+        // <img> (no Origin, so no CORS headers) is reused for this cross-origin fetch and fails as "blocked by CORS";
+        // forcing a network fetch gets the CORS-capable response (and replaces the bad cache entry).
+        let retriedFresh = false;
         viewer.addEventListener('error' as never, () => {
-          if (!destroyed) { setLoading(false); setError(true); }
+          if (destroyed) return;
+          if (retriedFresh || isDual) { setLoading(false); setError(true); return; }
+          retriedFresh = true;
+          void (async () => {
+            try {
+              const res = await fetch(panoramaUrl, { cache: 'reload', mode: 'cors' });
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              const blobUrl = URL.createObjectURL(await res.blob());
+              if (destroyed) { URL.revokeObjectURL(blobUrl); return; }
+              await viewer.setPanorama(blobUrl);
+              setLoading(false);
+            } catch {
+              if (!destroyed) { setLoading(false); setError(true); }
+            }
+          })();
         });
 
       } catch (e) {
