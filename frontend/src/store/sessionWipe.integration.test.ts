@@ -29,6 +29,8 @@ const h = vi.hoisted(() => {
     claimUnownedPhotos: vi.fn(async () => {}),
     queryClear: vi.fn(),
     lockedToOthers: 0,
+    files: new Map<string, unknown>(),
+    fileRefuse: { on: false },
     writeQueueRaw: '[{"id":"w1"}]',
   };
 });
@@ -47,6 +49,11 @@ vi.mock('./writeQueue', () => ({
   pendingWriteCount: () => h.pendingWrites,
   replaceWriteQueueFromRaw: h.replaceWriteQueueFromRaw,
 }));
+vi.mock('./parkedWorkFile', () => ({
+  parkWorkFile: async (id: string, work: object) => { if (h.fileRefuse.on) return false; h.files.set(id, { ...work, parkedAt: 1 }); return true; },
+  readParkedWorkFile: async (id: string) => (h.files.get(id) as object | undefined) ?? null,
+  dropParkedWorkFile: async (id: string) => { h.files.delete(id); },
+}));
 vi.mock('./fileUploadQueue', () => ({
   waitingPhotoCount: async () => h.waitingPhotos,
   photosLockedToOthers: async () => h.lockedToOthers,
@@ -61,6 +68,8 @@ import { LAST_USER_KEY, parkedKey } from './uploadOwnership';
 beforeEach(() => {
   h.ls.clear();
   h.refuse.writes = false;
+  h.files.clear();
+  h.fileRefuse.on = false;
   h.waitingPhotos = 0;
   h.pendingWrites = 0;
   h.lockedToOthers = 0;
@@ -151,7 +160,7 @@ describe('a different person logging in', () => {
   });
 
   it('REFUSES to go on if the first person\'s work cannot be copied safely (nothing is reset)', async () => {
-    h.refuse.writes = true; // e.g. storage full
+    h.refuse.writes = true; h.fileRefuse.on = true; // browser storage full and file storage unavailable
     const ok = await startClientSession('u2');
     expect(ok).toBe(false);
     expectNothingDeleted();
@@ -201,5 +210,37 @@ describe('one company never sees another company data on the same device', () =>
     h.ls.set('sitesurelabs-store-tenant-v1', 'myhome-org');
     await startClientSession('u1', 'myhome-org');
     expect(h.resetToSeed).not.toHaveBeenCalled();
+  });
+});
+
+describe('floor data too big for browser storage', () => {
+  beforeEach(() => {
+    h.waitingPhotos = 3;
+    h.ls.set(LAST_USER_KEY, 'u1');
+    h.ls.set(WORKFLOW_STORE_KEY, '{"state":{"pins":["pin-of-u1"]}}');
+  });
+
+  it('parks the copy in file storage instead of stopping the sign-in', async () => {
+    h.refuse.writes = true; // local storage is full
+    const ok = await startClientSession('u2');
+    expect(ok).toBe(true);
+    expect(JSON.stringify(h.files.get('u1'))).toContain('pin-of-u1');
+    expect(h.clearFileUploadQueue).not.toHaveBeenCalled();
+  });
+
+  it('still stops the sign-in when neither place can hold the copy, and deletes nothing', async () => {
+    h.refuse.writes = true;
+    h.fileRefuse.on = true;
+    expect(await startClientSession('u2')).toBe(false);
+    expect(h.resetToSeed).not.toHaveBeenCalled();
+    expect(h.clearFileUploadQueue).not.toHaveBeenCalled();
+  });
+
+  it('hands the file copy back when that person signs in again', async () => {
+    h.files.set('u2', { workflow: '{"state":{"pins":["back-again"]}}', writes: '[]', parkedAt: 1 });
+    h.ls.set(LAST_USER_KEY, 'u1');
+    expect(await startClientSession('u2')).toBe(true);
+    expect(h.ls.get(WORKFLOW_STORE_KEY)).toContain('back-again');
+    expect(h.files.has('u2')).toBe(false);
   });
 });

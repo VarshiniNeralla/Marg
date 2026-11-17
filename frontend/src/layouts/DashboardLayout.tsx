@@ -52,7 +52,6 @@ const ADMIN_NAV: NavSection[] = [
       { label: 'Floor Plans', path: '/floor-plans', icon: <MapRounded /> },
       { label: 'Captures',   path: '/captures',    icon: <CameraAltRounded /> },
       { label: 'Tours',       path: '/tours',       icon: <ViewInArRounded /> },
-      { label: 'Reviews',     path: '/reviews',     icon: <RateReviewRounded /> },
       { label: 'Construction Progress', path: '/construction-progress', icon: <InsightsRounded /> },
       { label: 'Drishti',     path: '/drishti',     icon: <ChatBubbleOutlineRounded /> },
       { label: 'Analytics',   path: '/analytics',   icon: <BarChartRounded /> },

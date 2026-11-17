@@ -10,6 +10,7 @@ import {
   UNATTRIBUTED_OWNER, dropParkedWork, parkWork, planSessionTransition, readLastUserId, readParkedWork,
   readStoreTenant, writeLastUserId, writeStoreTenant,
 } from './uploadOwnership';
+import { dropParkedWorkFile, parkWorkFile, readParkedWorkFile } from './parkedWorkFile';
 
 const SESSION_STORAGE_PREFIXES = [
   'captures_',
@@ -126,11 +127,17 @@ export async function startClientSession(newUserId: string, newTenant?: string |
     // Pin every older photo to its person first, so nothing is ever attributed to the wrong login.
     if (owner) await claimUnownedPhotos(owner);
     flushAllDebouncedStorage();
-    const ok = parkWork(localStorage, owner ?? UNATTRIBUTED_OWNER, {
-      workflow: localStorage.getItem(WORKFLOW_STORE_KEY),
-      writes: exportWriteQueueRaw(),
-    });
-    if (!ok) return false;
+    const parkOwner = owner ?? UNATTRIBUTED_OWNER;
+    const work = { workflow: localStorage.getItem(WORKFLOW_STORE_KEY), writes: exportWriteQueueRaw() };
+    // Local storage is tried first; it only holds ~5 MB, so large floor data falls back to the roomier file storage.
+    // Whichever copy is written, the other is removed so a stale older copy can never be handed back instead.
+    if (parkWork(localStorage, parkOwner, work)) {
+      await dropParkedWorkFile(parkOwner);
+    } else if (await parkWorkFile(parkOwner, work)) {
+      dropParkedWork(localStorage, parkOwner);
+    } else {
+      return false;
+    }
     useWorkflowStore.getState().resetToSeed();
     clearWriteQueue();
   } else if (plan.wipe) {
@@ -146,7 +153,7 @@ export async function startClientSession(newUserId: string, newTenant?: string |
   clearCachesAndSelections();
 
   if (plan.restoreForNewUser) {
-    const parked = readParkedWork(localStorage, newUserId);
+    const parked = readParkedWork(localStorage, newUserId) ?? await readParkedWorkFile(newUserId);
     if (parked) {
       flushAllDebouncedStorage();
       try {
@@ -155,6 +162,7 @@ export async function startClientSession(newUserId: string, newTenant?: string |
         replaceWriteQueueFromRaw(parked.writes);
         useWorkflowStore.getState().retryApiSnapshot();
         dropParkedWork(localStorage, newUserId);
+        await dropParkedWorkFile(newUserId);
       } catch {
         /* the parked copy is kept; nothing is lost if handing it back fails */
       }
