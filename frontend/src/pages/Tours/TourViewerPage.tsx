@@ -17,6 +17,11 @@ import {
 } from '@/data/mockData';
 import CaptureTimeline from '@shared/components/CaptureTimeline/CaptureTimeline';
 import DateViewControls from '@/features/tours/DateViewControls';
+import AnnotationLayer, { type LayerNote } from '@/features/reviewNotes/AnnotationLayer';
+import ReviewNotesPanel, { type DraftAnnotation } from '@/features/reviewNotes/ReviewNotesPanel';
+import { useReviewNotes, noteErrorMessage } from '@/features/reviewNotes/useReviewNotes';
+import { DEFAULT_ANNOTATION_COLOR, type Annotation } from '@/utils/annotationGeometry';
+import type { ReviewNote } from '@/services/reviewNoteService';
 import ComparePanoramas from '@/features/tours/ComparePanoramas';
 import { pickBeforeAfter, pickWithLatest, type CompareView } from '@/utils/tourCompare';
 import TourFloorPlanPanel from '@/pages/Tours/TourFloorPlanPanel';
@@ -508,6 +513,11 @@ interface PanoramaViewerProps {
   hotspots: Array<{ id: string; yaw: number; pitch: number; label: string; targetTourId?: string }>;
   onHotspotClick: (targetTourId: string) => void;
   panoOrientation?: GpanoOrientation;
+  /** Reports the sphere viewer (null while there is none) and how the photo is projected. */
+  onViewerChange?: (viewer: import('@photo-sphere-viewer/core').Viewer | null) => void;
+  onProjectionChange?: (projection: Projection | null) => void;
+  /** Drawn over the photo (review-note annotations). */
+  renderOverlay?: (info: { viewer: import('@photo-sphere-viewer/core').Viewer | null; space: 'sphere' | 'flat' }) => React.ReactNode;
 }
 
 type CaptureMediaAsset = {
@@ -596,8 +606,14 @@ function classifyProjection(img: HTMLImageElement): Projection {
   }
 }
 
-function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, panoOrientation = DEFAULT_GPANO_ORIENTATION }: PanoramaViewerProps) {
+function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, panoOrientation = DEFAULT_GPANO_ORIENTATION, onViewerChange, onProjectionChange, renderOverlay }: PanoramaViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [overlayViewer, setOverlayViewer] = useState<import('@photo-sphere-viewer/core').Viewer | null>(null);
+  const onViewerChangeRef = useRef(onViewerChange);
+  onViewerChangeRef.current = onViewerChange;
+  const flatImgRef = useRef<HTMLImageElement>(null);
+  const flatHostRef = useRef<HTMLDivElement>(null);
+  const [flatBox, setFlatBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const viewerRef = useRef<import('@photo-sphere-viewer/core').Viewer | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -633,6 +649,7 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, pan
   }, [panoramaUrl]);
 
   const is360 = projection === 'equirectangular' || projection === 'dualfisheye';
+  useEffect(() => { onProjectionChange?.(projection); }, [projection, onProjectionChange]);
 
   useEffect(() => {
     // Only mount the sphere viewer for genuine 360 panoramas.
@@ -718,6 +735,8 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, pan
 
         viewerRef.current = viewer;
         builtProjectionRef.current = currentProjection;
+        setOverlayViewer(viewer);
+        onViewerChangeRef.current?.(viewer);
 
         viewer.addEventListener('ready', () => {
           if (destroyed) return;
@@ -774,8 +793,28 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, pan
         viewerRef.current = null;
         builtProjectionRef.current = null;
       }
+      setOverlayViewer(null);
+      onViewerChangeRef.current?.(null);
     };
   }, [panoramaUrl, projection, is360, panoOrientation]);
+
+  // Flat photos: keep the drawing layer exactly over the visible image (it is centred with spare room around it).
+  useEffect(() => {
+    if (projection !== 'flat') { setFlatBox(null); return; }
+    const img = flatImgRef.current;
+    const host = flatHostRef.current;
+    if (!img || !host) return;
+    const measure = () => {
+      const i = img.getBoundingClientRect();
+      const h = host.getBoundingClientRect();
+      if (i.width > 0 && i.height > 0) setFlatBox({ left: i.left - h.left, top: i.top - h.top, width: i.width, height: i.height });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(host); ro.observe(img);
+    img.addEventListener('load', measure);
+    return () => { ro.disconnect(); img.removeEventListener('load', measure); };
+  }, [projection, panoramaUrl]);
 
   // Drive the official AutorotatePlugin from the toolbar button.
   // (Previous custom RAF + before-rotate pause fought itself: each programmatic
@@ -808,14 +847,20 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, pan
   // Flat photo: show the frame contained with no sphere projection.
   if (projection === 'flat') {
     return (
-      <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0f1929' }}>
+      <Box ref={flatHostRef} sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0f1929' }}>
         <Box
           component="img"
+          ref={flatImgRef}
           src={panoramaUrl}
           alt="Capture"
           onError={() => setError(true)}
           sx={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block' }}
         />
+        {renderOverlay && flatBox && (
+          <Box sx={{ position: 'absolute', left: flatBox.left, top: flatBox.top, width: flatBox.width, height: flatBox.height }}>
+            {renderOverlay({ viewer: null, space: 'flat' })}
+          </Box>
+        )}
         <Box sx={{ position: 'absolute', bottom: 12, right: 12, px: 1.25, py: 0.5, borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', gap: 0.625 }}>
           <CameraAltRounded sx={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }} />
           <Typography sx={{ fontSize: '0.6875rem', color: 'rgba(255,255,255,0.85)', fontWeight: 600 }}>Standard photo</Typography>
@@ -832,6 +877,7 @@ function PanoramaViewer({ panoramaUrl, autoRotate, hotspots, onHotspotClick, pan
           <CircularProgress size={36} sx={{ color: '#fff' }} />
         </Box>
       )}
+      {!loading && renderOverlay && overlayViewer && renderOverlay({ viewer: overlayViewer, space: 'sphere' })}
       {/* Hotspot overlay layer — rendered on top of PSV canvas.
           The wrapper is pointer-transparent (pointerEvents:'none') so a drag that
           starts on/near a marker passes THROUGH to the PSV canvas and rotates the
@@ -1161,6 +1207,53 @@ export default function TourViewerPage() {
   ];
 
   const effectiveSnapId = validActiveSnapId ?? (pinTimeline.length > 0 ? pinTimeline[pinTimeline.length - 1].id : '');
+
+  // ── Review notes: comments and drawings on the photo being viewed ───────────
+  const canWriteNotes = isManager(user);
+  const reviewNotes = useReviewNotes(tourId);
+  const noteCaptureId = effectiveSnapId || currentStep?.captureId || '';
+  const captureNotes = useMemo(() => reviewNotes.notes.filter(n => n.captureId === noteCaptureId), [reviewNotes.notes, noteCaptureId]);
+  const openNotesOnTour = useMemo(() => reviewNotes.notes.filter(n => !n.resolved).length, [reviewNotes.notes]);
+  const [panoViewer, setPanoViewer] = useState<import('@photo-sphere-viewer/core').Viewer | null>(null);
+  const [panoKind, setPanoKind] = useState<'flat' | 'dualfisheye' | 'equirectangular' | null>(null);
+  const [draft, setDraft] = useState<DraftAnnotation>({ active: false, tool: 'move', color: DEFAULT_ANNOTATION_COLOR, shapes: [] });
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [noteError, setNoteError] = useState('');
+  // A drawing belongs to one photo: moving to another photo or tour drops it, and clears any selection.
+  useEffect(() => {
+    setDraft({ active: false, tool: 'move', color: DEFAULT_ANNOTATION_COLOR, shapes: [] });
+    setSelectedNoteId(null);
+    setNoteError('');
+  }, [noteCaptureId, tourId]);
+  const noteSpace: 'sphere' | 'flat' | null = panoKind === 'flat' ? 'flat' : panoKind === 'equirectangular' ? 'sphere' : null;
+  const layerNotes = useMemo((): LayerNote[] => captureNotes
+    .map((n, i) => ({ id: n.id, index: i + 1, text: n.text, resolved: n.resolved, annotation: n.annotation as Annotation }))
+    .filter(n => n.annotation?.shapes?.length && n.annotation.space === noteSpace), [captureNotes, noteSpace]);
+  const saveNote = useCallback(async (text: string): Promise<boolean> => {
+    setNoteError('');
+    if (!noteCaptureId) { setNoteError('Open a photo first.'); return false; }
+    try {
+      let annotation: Annotation | null = null;
+      if (draft.shapes.length && noteSpace) {
+        // focus the middle of the first shape so "show on photo" lands on it
+        const pts = draft.shapes[0].points;
+        annotation = { space: noteSpace, focus: pts[Math.floor(pts.length / 2)] ?? pts[0], shapes: draft.shapes };
+      }
+      const note = await reviewNotes.create.mutateAsync({ captureId: noteCaptureId, text, annotation });
+      setDraft(d => ({ ...d, active: false, tool: 'move', shapes: [] }));
+      if (note.annotation) setSelectedNoteId(note.id);
+      return true;
+    } catch (err) {
+      setNoteError(noteErrorMessage(err));
+      return false;
+    }
+  }, [noteCaptureId, noteSpace, draft.shapes, reviewNotes.create]);
+  const showNoteOnPhoto = useCallback((note: ReviewNote) => {
+    setSelectedNoteId(note.id);
+    const focus = note.annotation?.focus;
+    if (!focus || note.annotation?.space !== 'sphere' || !panoViewer) return;
+    try { void panoViewer.animate({ yaw: (focus[0] * Math.PI) / 180, pitch: (focus[1] * Math.PI) / 180, speed: '30rpm' }); } catch { /* viewer is gone */ }
+  }, [panoViewer]);
 
   const resolvePanorama = useCallback((captureId: string): string | null => {
     const cap = captures.find(c => c.id === captureId) as (MockCapture & Record<string, unknown>) | undefined;
@@ -1535,6 +1628,18 @@ export default function TourViewerPage() {
           hotspots={hotspots}
           onHotspotClick={handleHotspotClick}
           panoOrientation={panoOrientation}
+          onViewerChange={setPanoViewer}
+          onProjectionChange={setPanoKind}
+          renderOverlay={({ viewer: v, space }) => (
+            <AnnotationLayer
+              space={space}
+              viewer={v}
+              notes={layerNotes}
+              selectedId={selectedNoteId}
+              onSelect={setSelectedNoteId}
+              draft={draft.active ? { tool: draft.tool, color: draft.color, shapes: draft.shapes, onShapes: (shapes) => setDraft(d => ({ ...d, shapes })) } : null}
+            />
+          )}
         />
       ) : (
         <Box sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1.25, px: 3, textAlign: 'center' }}>
@@ -1983,6 +2088,29 @@ export default function TourViewerPage() {
                 </Box>
               );
             })()}
+
+        {noteCaptureId && (
+          <Box sx={{ mt: 2, width: '100%' }}>
+            <ReviewNotesPanel
+              notes={captureNotes}
+              captureLabel={pinTimeline.find(s => s.id === noteCaptureId)?.dateLabel ?? ''}
+              openOnTour={openNotesOnTour}
+              loading={reviewNotes.isLoading}
+              canWrite={canWriteNotes}
+              canAnnotate={noteSpace !== null}
+              selectedId={selectedNoteId}
+              onSelect={setSelectedNoteId}
+              onShow={showNoteOnPhoto}
+              draft={draft}
+              onDraftChange={(patch) => setDraft(d => ({ ...d, ...patch }))}
+              saving={reviewNotes.create.isPending}
+              error={noteError}
+              onSave={saveNote}
+              onToggleResolved={(n) => reviewNotes.update.mutate({ id: n.id, resolved: !n.resolved }, { onError: (e) => setNoteError(noteErrorMessage(e)) })}
+              onDelete={(n) => reviewNotes.remove.mutate(n.id, { onError: (e) => setNoteError(noteErrorMessage(e)) })}
+            />
+          </Box>
+        )}
       </Box>
 
       <ProgressAnalysisDrawer

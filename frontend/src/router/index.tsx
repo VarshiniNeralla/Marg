@@ -184,7 +184,8 @@ const router = createBrowserRouter([
           // Managers see/edit field engineers only — the page and backend both scope this;
           // it's not moved to the Admin-only block below since Admins need the full view too.
           { path: '/users',                             element: <PageSuspense><UserManagementPage /></PageSuspense> },
-          { path: '/reviews',                           element: <PageSuspense><ReviewsPage /></PageSuspense> },
+          // Reviews belong to managers only; admins are sent back to their own landing page.
+          { path: '/reviews',                           element: <ManagerRoute><PageSuspense><ReviewsPage /></PageSuspense></ManagerRoute> },
           { path: '/floor-plans/:projectId/:towerId/:floorId/upload', element: <PageSuspense><FloorPlanUploadPage /></PageSuspense> },
         ],
       },

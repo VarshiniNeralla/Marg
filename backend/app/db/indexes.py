@@ -110,6 +110,12 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         name="pin_floor_predefined",
     )
 
+    # ── review_notes ──────────────────────────────────────────────────────────
+    await db.review_notes.create_index(
+        [("orgId", ASCENDING), ("tourId", ASCENDING), ("captureId", ASCENDING)],
+        name="review_note_tour_capture",
+    )
+
     # ── floor_plan_room_maps ──────────────────────────────────────────────────
     # Keyed by floor_plan_id (_id) — one cached AI room map per floor plan,
     # re-extracted only when the plan's image_url changes (see RoomMapService).
