@@ -27,6 +27,7 @@ import { useDeviceType, usesCameraCapture } from '@/hooks/useDeviceType';
 import { useDoubleTap } from '@/hooks/useDoubleTap';
 import CameraCaptureDialog from '@/features/capturePins/CameraCaptureDialog';
 import { Insta360Camera } from '@/plugins/insta360Camera';
+import FloorReadyPanel from '@/features/capturePins/FloorReadyPanel';
 import { ownCaptureIdSet, pinHasOwnCapture } from '@/utils/captureOwnership';
 import { resolveMediaUrl } from '@/config/env';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
@@ -357,6 +358,8 @@ interface RenderPin {
   x: number;
   y: number;
   hasCapture: boolean;
+  /** How many captures (visits) this point already has. Shown on the marker in recapture mode. */
+  visitCount?: number;
   /** Optimistic-upload state: set while this pin's capture is uploading or after it failed. */
   status?: PinUploadStatus;
   roomName?: string;
@@ -504,8 +507,11 @@ function WorkflowFloorPinMarkerImpl({
   highlighted,
   onPinClick,
   onPinActivate,
+  plainDots = false,
 }: {
   pin: RenderPin;
+  /** Recapture mode: every point is a plain dot, no numbers or badges. */
+  plainDots?: boolean;
   selected: boolean;
   /** True when the green target pin is sitting on this point — hide the
    *  marker so it doesn't fight the selection teardrop. */
@@ -539,7 +545,7 @@ function WorkflowFloorPinMarkerImpl({
 
   const isBusy = pin.status === 'processing' || pin.status === 'uploading' || pin.status === 'queued';
   const isFailed = pin.status === 'failed';
-  const showNumberedPin = (pin.hasCapture || isBusy) && !isFailed;
+  const showNumberedPin = !plainDots && (pin.hasCapture || isBusy) && !isFailed;
   const pinFill = isBusy ? '#f59e0b' : '#22c55e';
 
   const hit = 44;
@@ -637,8 +643,8 @@ function WorkflowFloorPinMarkerImpl({
 
         {!highlighted && !showNumberedPin && (
           <Box sx={{
-            width: 8,
-            height: 8,
+            width: plainDots ? 11 : 8,
+            height: plainDots ? 11 : 8,
             borderRadius: '50%',
             backgroundColor: isFailed ? '#dc2626' : '#2563eb',
             border: '1.5px solid #fff',
@@ -670,7 +676,10 @@ const WorkflowFloorPinMarker = React.memo(WorkflowFloorPinMarkerImpl);
 function FloorPlanWithPin({
   floorPlan, pin, pins, onPinPlace, onPinClick, onPinActivate, isCaptureModeUI, onLongPressCapture,
   pinsVisible = true, onTogglePinsVisible, selectedPinId = null, activeCapturePinId = null, pointsOnly = false,
+  plainDots = false,
 }: {
+  /** Recapture mode: every marker is a plain dot, no numbers or badges. */
+  plainDots?: boolean;
   floorPlan: Record<string, unknown> | null;
   pin: { x: number; y: number } | null;
   pins: RenderPin[];
@@ -1187,6 +1196,7 @@ function FloorPlanWithPin({
                   highlighted={highlightId === p.id || (pin != null && Math.hypot(p.x - pin.x, p.y - pin.y) < 0.01)}
                   onPinClick={onPinClick}
                   onPinActivate={onPinActivate}
+                  plainDots={plainDots}
                 />
               ))}
 
@@ -1296,6 +1306,8 @@ export default function CaptureWorkflowPage() {
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
   const [activeCapturePinId, setActiveCapturePinId] = useState<string | null>(null);
   const [isCaptureMode, setIsCaptureMode]           = useState(false);
+  // Recapture: a session that only adds NEW photos at the floor's existing capture points (nothing is replaced or removed).
+  const [recaptureMode, setRecaptureMode]            = useState(false);
 
   // Desktop upload state
   const [dragging, setDragging]       = useState(false);
@@ -1450,8 +1462,9 @@ export default function CaptureWorkflowPage() {
           });
         const uploadSeqById = new Map(numbered.map((p, i) => [p.id, i + 1]));
 
-        return mapped.map(({ captureIds: _ids, ...p }) => ({
+        return mapped.map(({ captureIds: ids, ...p }) => ({
           ...p,
+          visitCount: ids.length,
           uploadSequence: uploadSeqById.get(p.id),
         }));
       })()
@@ -1524,6 +1537,12 @@ export default function CaptureWorkflowPage() {
    */
   function handlePlanTap(x: number, y: number) {
     if (!floorPlan || !selectedFloor) return;
+    // Recapture only adds photos to points that already exist: a tap on empty space never creates a point.
+    if (recaptureMode) {
+      const near = findNearestFloorPin(x, y, 2.5);
+      if (near) { setSelectedPinId(near.id); setPendingPin(null); setActiveCapturePinId(null); }
+      return;
+    }
     // Predefined layout: ONLY the marked points are capturable. A tap on empty plan space does nothing (it used to
     // snap to the nearest point and open its capture panel, so a stray tap or a pan could start a capture for a
     // room the engineer never meant). Points are selected through their own marker, see handlePinClick.
@@ -1963,7 +1982,9 @@ export default function CaptureWorkflowPage() {
                     setFloor(f.id);
                     setStep('capture');
                     pruneAccidentalFreeplacePins(f.id);
-                    setIsCaptureMode(true);
+                    // Say where the person is first; capture mode (or recapture) starts from that screen.
+                    setRecaptureMode(false);
+                    setIsCaptureMode(false);
                   }} />
               ))}
             </Box>
@@ -1981,49 +2002,43 @@ export default function CaptureWorkflowPage() {
           ]} />
 
           {!isCaptureMode ? (
-            <Box sx={{ py: 8, textAlign: 'center', border: `1.5px solid ${P.border}`, borderRadius: '18px', backgroundColor: P.white, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <Box sx={{ width: 64, height: 64, borderRadius: '16px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, display: 'flex', alignItems: 'center', justifyContent: 'center', mb: 2, boxShadow: '0 8px 24px rgba(37,99,235,0.25)' }}>
-                <CameraAltRounded sx={{ fontSize: 32, color: P.white }} />
-              </Box>
-              <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: P.strong, mb: 1 }}>Ready to Capture</Typography>
-              <Typography sx={{ fontSize: '0.875rem', color: P.muted, mb: 3, maxWidth: 360 }}>
-                {(() => {
-                  const n = floorPins.filter(p => p.hasCapture || p.status === 'queued' || p.status === 'uploading' || p.status === 'processing').length;
-                  return n === 0
-                    ? 'No captures yet on this floor — tap a point and upload to start.'
-                    : `${n} capture${n !== 1 ? 's' : ''} on this floor.`;
-                })()}
-              </Typography>
-              <Box
-                onClick={() => {
-                  pruneAccidentalFreeplacePins();
-                  setIsCaptureMode(true);
-                }}
-                sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, px: 3, py: 1.25, borderRadius: '12px', background: `linear-gradient(135deg,${P.blue},${P.blueHover})`, color: '#fff', fontSize: '0.9375rem', fontWeight: 700, cursor: 'pointer', boxShadow: '0 4px 14px rgba(37,99,235,0.3)', transition: T, '&:hover': { transform: 'translateY(-2px)', boxShadow: '0 6px 20px rgba(37,99,235,0.4)' } }}
-              >
-                Go to Capture Mode
-              </Box>
-              <Box
-                component={Link}
-                to={`/floor-plans/${selectedProject}/${selectedTower}/${selectedFloor}?pinsOnly=1&returnTo=${encodeURIComponent('/capture-workflow')}`}
-                sx={{ mt: 2.5, display: 'inline-flex', alignItems: 'center', gap: 0.5, color: P.subtle, fontSize: '0.8125rem', fontWeight: 600, textDecoration: 'none', transition: T, '&:hover': { color: P.blue } }}
-              >
-                <HistoryRounded sx={{ fontSize: 14 }} /> View previous captures
-              </Box>
-            </Box>
+            <FloorReadyPanel
+              floorLabel={selectedFloorObj?.label ?? 'this floor'}
+              pointsWithCaptures={floorPins.filter(p => p.hasCapture).length}
+              onCapture={() => {
+                pruneAccidentalFreeplacePins();
+                setRecaptureMode(false);
+                setIsCaptureMode(true);
+              }}
+              onRecapture={() => {
+                setRecaptureMode(true);
+                setSelectedPinId(null);
+                setActiveCapturePinId(null);
+                setPendingPin(null);
+                setIsCaptureMode(true);
+              }}
+              historyHref={`/floor-plans/${selectedProject}/${selectedTower}/${selectedFloor}?pinsOnly=1&returnTo=${encodeURIComponent('/capture-workflow')}`}
+            />
           ) : (
             <Box sx={{ position: 'fixed', inset: 0, zIndex: 1400, backgroundColor: '#0f172a', display: 'flex', flexDirection: 'column' }}>
               {/* Header inside Capture Mode */}
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, px: 2, py: 1.5, background: 'rgba(15,23,42,0.95)', zIndex: 20 }}>
                 <Typography sx={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.7)', fontWeight: 500, minWidth: 0, flex: 1, lineHeight: 1.35 }}>
-                  {(() => {
-                    const n = floorPins.filter(p => p.hasCapture || p.status === 'queued' || p.status === 'uploading' || p.status === 'processing').length;
-                    return n === 0
-                      ? 'No captures yet · long-press a point to capture'
-                      : `${n} capture${n !== 1 ? 's' : ''} · long-press a point to capture`;
-                  })()}
+                  {recaptureMode
+                    ? (
+                      <>
+                        <Box component="span" data-testid="recapture-badge" sx={{ display: 'inline-block', px: 0.875, py: 0.125, mr: 1, borderRadius: '999px', backgroundColor: '#2563eb', color: '#fff', fontSize: '0.6875rem', fontWeight: 800 }}>RECAPTURE</Box>
+                        {selectedFloorObj?.label} · tap a point, then add new photos. Previous captures are kept.
+                      </>
+                    )
+                    : (() => {
+                      const n = floorPins.filter(p => p.hasCapture || p.status === 'queued' || p.status === 'uploading' || p.status === 'processing').length;
+                      return n === 0
+                        ? 'No captures yet · long-press a point to capture'
+                        : `${n} capture${n !== 1 ? 's' : ''} · long-press a point to capture`;
+                    })()}
                 </Typography>
-                <Box onClick={() => setIsCaptureMode(false)} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.5, py: 0.75, borderRadius: '8px', border: `1.5px solid rgba(255,255,255,0.2)`, color: 'rgba(255,255,255,0.9)', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', flexShrink: 0, transition: T, '&:hover': { backgroundColor: 'rgba(255,255,255,0.1)' } }}>
+                <Box onClick={() => { setIsCaptureMode(false); setRecaptureMode(false); }} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.5, py: 0.75, borderRadius: '8px', border: `1.5px solid rgba(255,255,255,0.2)`, color: 'rgba(255,255,255,0.9)', fontSize: '0.8125rem', fontWeight: 600, cursor: 'pointer', flexShrink: 0, transition: T, '&:hover': { backgroundColor: 'rgba(255,255,255,0.1)' } }}>
                   <CloseRounded sx={{ fontSize: 14 }} /> Exit
                 </Box>
               </Box>
@@ -2035,7 +2050,8 @@ export default function CaptureWorkflowPage() {
                     floorPlan={(floorPlan as unknown) as Record<string, unknown> | null}
                     pin={pinPos}
                     pins={floorPins}
-                    pinsVisible={pinsVisible}
+                    pinsVisible={recaptureMode ? true : pinsVisible}
+                    plainDots={recaptureMode}
                     selectedPinId={selectedPinId}
                     activeCapturePinId={activeCapturePinId}
                     onTogglePinsVisible={() => {
@@ -2052,7 +2068,7 @@ export default function CaptureWorkflowPage() {
                     onPinClick={handlePinClick}
                     onPinActivate={handlePinActivate}
                     isCaptureModeUI={true}
-                    pointsOnly={hasLabeledLayout}
+                    pointsOnly={hasLabeledLayout || recaptureMode}
                     // No hold-on-empty-space capture any more: the camera opens only from a marked point
                     // (tap the point, or hold / double-tap the point itself).
                   />
@@ -2164,7 +2180,9 @@ export default function CaptureWorkflowPage() {
                           : selStatus === 'failed'
                             ? failMessage
                             : selectedPinHasCapture
-                              ? `Uploaded · #${floorPins.find(p => p.id === selectedPinObj.id)?.uploadSequence ?? '—'}`
+                              ? (recaptureMode
+                                ? `${selectedPinMineIds.length} previous capture${selectedPinMineIds.length === 1 ? '' : 's'} kept · new photos are added to this point`
+                                : `Uploaded · #${floorPins.find(p => p.id === selectedPinObj.id)?.uploadSequence ?? '—'}`)
                               : 'No capture yet — tap Upload Capture'}
                   </Typography>
                 </Box>
@@ -2208,7 +2226,9 @@ export default function CaptureWorkflowPage() {
                   sx={{ ...btnPrimary, ...(primaryHasPartner ? {} : FULL_ROW) }}
                 >
                   {captureIcon}
-                  {selStatus === 'failed' || selectedPinHasCapture ? 'Capture Again' : (isMobile ? 'Take Picture' : 'Upload Capture')}
+                  {recaptureMode
+                    ? (isMobile ? 'Take New Photo' : 'Add New Photo')
+                    : selStatus === 'failed' || selectedPinHasCapture ? 'Capture Again' : (isMobile ? 'Take Picture' : 'Upload Capture')}
                 </Box>
 
                 {/* Failed uploads / stitches: recovery actions beside Capture Again. */}
@@ -2298,7 +2318,9 @@ export default function CaptureWorkflowPage() {
               <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 1, px: 2, py: 1, borderRadius: '999px', backgroundColor: 'rgba(15,23,42,0.85)', backdropFilter: 'blur(8px)' }}>
                 <AddLocationAltRounded sx={{ fontSize: 16, color: '#f59e0b', flexShrink: 0 }} />
                 <Typography sx={{ fontSize: '0.8125rem', color: 'rgba(255,255,255,0.95)', fontWeight: 500 }}>
-                  {cameraSource === 'insta360' ? 'Long-press a point (or the plan) to capture' : 'Long-press a point to capture'}
+                  {recaptureMode
+                    ? 'Tap a point, then add a new photo'
+                    : cameraSource === 'insta360' ? 'Long-press a point (or the plan) to capture' : 'Long-press a point to capture'}
                 </Typography>
               </Box>
             </Box>

@@ -16,6 +16,9 @@ import {
   type CaptureSnapshot,
 } from '@/data/mockData';
 import CaptureTimeline from '@shared/components/CaptureTimeline/CaptureTimeline';
+import DateViewControls from '@/features/tours/DateViewControls';
+import ComparePanoramas from '@/features/tours/ComparePanoramas';
+import { pickBeforeAfter, pickWithLatest, type CompareView } from '@/utils/tourCompare';
 import TourFloorPlanPanel from '@/pages/Tours/TourFloorPlanPanel';
 import ProgressAnalysisDrawer from '@/pages/Tours/ProgressAnalysisDrawer';
 import PreviousReportsPanel from '@/pages/Tours/PreviousReportsPanel';
@@ -924,6 +927,10 @@ export default function TourViewerPage() {
   const [panoramaOverride, setPanoramaOverride] = useState<string | null>(null);
   // Compare mode: two snapshot IDs to compare.
   const [compareIds, setCompareIds] = useState<[string | null, string | null]>([null, null]);
+  // Date-based viewing: one date, a date next to the latest, or any two dates (Before & After) with both panoramas.
+  const [compareView, setCompareView] = useState<CompareView>('single');
+  const [baBefore, setBaBefore] = useState<string>('');
+  const [baAfter, setBaAfter] = useState<string>('');
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisReport, setAnalysisReport] = useState<ProgressAnalysisReport | null>(null);
   const [analysisDrawerOpen, setAnalysisDrawerOpen] = useState(false);
@@ -937,6 +944,9 @@ export default function TourViewerPage() {
     setActiveSnapId(null);
     setPanoramaOverride(null);
     setCompareIds([null, null]);
+    setCompareView('single');
+    setBaBefore('');
+    setBaAfter('');
     setAnalysisLoading(false);
     setAnalysisDrawerOpen(false);
     setAnalysisReportId(null);
@@ -1197,6 +1207,19 @@ export default function TourViewerPage() {
     () => (activeCaptureId ? resolveGpanoOrientation(activeCaptureId) : DEFAULT_GPANO_ORIENTATION),
     [activeCaptureId, resolveGpanoOrientation],
   );
+
+  // The two captures shown side by side for the chosen view (null for "one date").
+  const sideBySide = useMemo(() => {
+    if (compareView === 'withLatest') {
+      const pair = pickWithLatest(pinTimeline, validActiveSnapId);
+      return pair ? { left: pair.left, right: pair.right, leftTag: 'Selected date', rightTag: 'Latest', leftColor: '#7c3aed', rightColor: '#16a34a' } : null;
+    }
+    if (compareView === 'beforeAfter') {
+      const pair = pickBeforeAfter(pinTimeline, baBefore || null, baAfter || null);
+      return pair ? { left: pair.before, right: pair.after, leftTag: 'Before', rightTag: 'After', leftColor: '#2563eb', rightColor: '#16a34a' } : null;
+    }
+    return null;
+  }, [compareView, pinTimeline, validActiveSnapId, baBefore, baAfter]);
 
   const handleSnapSelect = useCallback((snap: CaptureSnapshot) => {
     setCompareIds(prev => {
@@ -1827,6 +1850,45 @@ export default function TourViewerPage() {
                   </Box>
 
                   <Box sx={{ p: 1.5 }}>
+                    <DateViewControls
+                      timeline={pinTimeline}
+                      view={compareView}
+                      onViewChange={(v) => {
+                        setCompareView(v);
+                        if (v === 'beforeAfter') {
+                          const pair = pickBeforeAfter(pinTimeline, baBefore || null, baAfter || null);
+                          if (pair) { setBaBefore(pair.before.id); setBaAfter(pair.after.id); }
+                        }
+                      }}
+                      selectedId={effectiveSnapId}
+                      onSelect={(id) => { setActiveSnapId(id); setPanoramaOverride(resolvePanorama(id)); }}
+                      beforeId={sideBySide && compareView === 'beforeAfter' ? sideBySide.left.id : (baBefore || pinTimeline[0]?.id || '')}
+                      afterId={sideBySide && compareView === 'beforeAfter' ? sideBySide.right.id : (baAfter || pinTimeline[pinTimeline.length - 1]?.id || '')}
+                      onBeforeChange={setBaBefore}
+                      onAfterChange={setBaAfter}
+                    />
+
+                    {sideBySide && (
+                      <Box sx={{ mb: 1.5 }}>
+                        <ComparePanoramas
+                          left={{
+                            url: resolvePanorama(sideBySide.left.id),
+                            orientation: resolveGpanoOrientation(sideBySide.left.id),
+                            tag: sideBySide.leftTag,
+                            tagColor: sideBySide.leftColor,
+                            dateLabel: sideBySide.left.dateLabel,
+                          }}
+                          right={{
+                            url: resolvePanorama(sideBySide.right.id),
+                            orientation: resolveGpanoOrientation(sideBySide.right.id),
+                            tag: sideBySide.rightTag,
+                            tagColor: sideBySide.rightColor,
+                            dateLabel: sideBySide.right.dateLabel,
+                          }}
+                        />
+                      </Box>
+                    )}
+
                     <CaptureTimeline
                       series={pinTimeline}
                       activeId={effectiveSnapId}
