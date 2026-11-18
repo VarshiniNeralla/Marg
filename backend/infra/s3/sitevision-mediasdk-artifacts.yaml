@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Private, encrypted bucket that holds the proprietary Insta360 MediaSDK package so it can be copied onto the production host. Never public, read-only for the SiteVision EC2 role, not part of any container image.
+
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+
+Resources:
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: The Insta360 SDK is proprietary and about 4.5 GB, so it cannot live in git or the Docker image.
+        must: Keep it private and encrypted. Only the SiteVision EC2 role may read it. Do not add public or cross-account access.
+    Properties:
+      BucketName: !Sub sitevision-mediasdk-artifacts-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - Key: Project
+          Value: SiteVision
+        - Key: Environment
+          Value: prod
+
+  ArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt ArtifactsBucket.Arn
+              - !Sub ${ArtifactsBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: AllowHostRoleToReadTheSdk
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:role/SiteVisionEC2Role
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource: !Sub ${ArtifactsBucket.Arn}/mediasdk/*
+          - Sid: AllowHostRoleToListTheSdkPrefix
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:role/SiteVisionEC2Role
+            Action: s3:ListBucket
+            Resource: !GetAtt ArtifactsBucket.Arn
+            Condition:
+              StringLike:
+                s3:prefix: mediasdk/*
+
+Outputs:
+  BucketName:
+    Value: !Ref ArtifactsBucket
