@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
-import { Box, Checkbox, Dialog, LinearProgress, Typography } from '@mui/material';
+import { Box, Checkbox, Dialog, LinearProgress, Snackbar, Typography } from '@mui/material';
 import {
   CloudUploadRounded, CloseRounded, PauseRounded, PlayArrowRounded, CheckCircleRounded, WarningAmberRounded, RefreshRounded,
+  ExpandMoreRounded,
 } from '@mui/icons-material';
+import { getPendingCompletion, subscribePendingCompletion } from '@store/uploadCompletion';
 import { colors } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
 import {
@@ -64,6 +66,11 @@ export default function UploadNowPanel() {
   const [checking, setChecking] = useState(false);
   const [starting, setStarting] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // Upload runs in the background: the dialog closes on its own and progress lives in the bottom bar, which can be
+  // shrunk to a small pill so it never gets in the way of capturing or browsing.
+  const [minimized, setMinimized] = useState(false);
+  const [startedNote, setStartedNote] = useState(false);
+  const marker = useSyncExternalStore(subscribePendingCompletion, getPendingCompletion, getPendingCompletion);
   // Floors the person UNticked. Everything is ticked by default, including floors captured later.
   const [unticked, setUnticked] = useState<Set<string>>(new Set());
 
@@ -106,10 +113,18 @@ export default function UploadNowPanel() {
   const uploading = session.phase === 'uploading';
   const waiting = review?.totalPhotos ?? 0;
   const lastResult = getLastUploadNowResult();
+  // Everything is sent but the server is still stitching: keep showing that, so "sent" is never mistaken for "done".
+  const finishing = !uploading && status.stitching > 0;
   const showBanner =
-    (mode === 'manual' && (waiting > 0 || uploading || status.unconfirmed > 0 || status.writesPending > 0))
+    (mode === 'manual' && (waiting > 0 || uploading || finishing || status.unconfirmed > 0 || status.writesPending > 0))
     // Automatic mode: nothing needs a tap, but photos that are still waiting (no signal) or failed must stay visible.
-    || (mode === 'auto' && (waiting > 0 || uploading || status.failed.length > 0));
+    || (mode === 'auto' && (waiting > 0 || uploading || finishing || status.failed.length > 0));
+  const busy = uploading || finishing;
+  // End-to-end progress: photos fully ready (sent AND stitched) out of the batch, with the sent count as the lighter bar.
+  const batchTotal = uploading ? status.progress.total : Math.max(marker?.total ?? 0, status.stitching);
+  const sentCount = uploading ? status.progress.done : batchTotal;
+  const readyCount = Math.max(0, Math.min(sentCount, batchTotal) - status.stitching);
+  const pct = (n: number) => (batchTotal > 0 ? Math.min(100, Math.round((n / batchTotal) * 100)) : 0);
   // Everyone signed in can always reach the upload screen (mode, review, status), even when nothing is waiting.
   const showEntry = !showBanner && !open && !!role;
   const modeLabel = mode === 'manual' ? 'When I tap' : 'Automatic';
@@ -149,6 +164,10 @@ export default function UploadNowPanel() {
     try {
       // Everything when all floors are ticked, or when only leftover changes are being sent (no floors to pick from).
       await startUploadNow(allChosen || changesOnly ? null : chosenPins);
+      // Sending carries on in the background: hand the screen back right away instead of making the person watch.
+      setOpen(false);
+      setMinimized(false);
+      setStartedNote(true);
     } finally {
       setStarting(false);
       void refresh();
@@ -185,7 +204,7 @@ export default function UploadNowPanel() {
           </Box>
         </Box>
       )}
-      {showBanner && (
+      {showBanner && !(busy && minimized) && (
         <Box
           role="status"
           sx={{
@@ -201,7 +220,9 @@ export default function UploadNowPanel() {
               <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: colors.textStrong, lineHeight: 1.25 }}>
                 {uploading
                   ? `Uploading ${status.progress.done} of ${status.progress.total}`
-                  : waiting > 0
+                  : finishing
+                    ? `All sent. Finishing on the server (${readyCount} of ${batchTotal} ready)`
+                    : waiting > 0
                     ? `${waiting} photo${waiting === 1 ? '' : 's'} saved on this phone`
                     : status.unconfirmed > 0
                       ? `${status.unconfirmed} photo${status.unconfirmed === 1 ? '' : 's'} waiting for server confirmation`
@@ -209,8 +230,10 @@ export default function UploadNowPanel() {
               </Typography>
               <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.25 }}>
                 {uploading
-                  ? 'Keep the app open until this finishes.'
-                  : resumeLabel
+                  ? 'You can keep using the app. Keep it open until this finishes.'
+                  : finishing
+                    ? 'Nothing more to do here. You will get a message when everything is ready.'
+                    : resumeLabel
                     ? 'Trip in progress. Tap to review and upload when you are ready.'
                     : mode === 'auto'
                       ? 'Mode: Automatic. They upload on their own when there is signal. Tap Review to change.'
@@ -224,12 +247,46 @@ export default function UploadNowPanel() {
                 color: '#fff', background: colors.primaryGradient, '&:active': { transform: 'scale(0.97)' },
               }}
             >
-              {uploading ? 'Details' : resumeLabel ? 'Resume' : 'Review'}
+              {busy ? 'Details' : resumeLabel ? 'Resume' : 'Review'}
             </Box>
+            {busy && (
+              <Box
+                component="button" type="button" aria-label="Minimise upload progress" data-testid="upload-banner-minimise"
+                onClick={() => setMinimized(true)}
+                sx={{ width: 32, height: 32, p: 0, border: 'none', borderRadius: '50%', cursor: 'pointer', flexShrink: 0, backgroundColor: 'transparent', color: colors.textMuted, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', '&:hover': { backgroundColor: colors.bg } }}
+              >
+                <ExpandMoreRounded sx={{ fontSize: 22 }} />
+              </Box>
+            )}
           </Box>
-          {uploading && <LinearProgress variant="determinate" value={status.progress.percent} sx={{ height: 6, borderRadius: 3 }} />}
+          {busy && (
+            // Darker bar = photos that are sent AND stitched; lighter bar = sent so far.
+            <LinearProgress variant="buffer" value={pct(readyCount)} valueBuffer={pct(sentCount)} sx={{ height: 6, borderRadius: 3 }} />
+          )}
         </Box>
       )}
+      {/* Shrunk bar: a small pill, so uploading never blocks capturing or browsing. Tap to bring the bar back. */}
+      {showBanner && busy && minimized && (
+        <Box
+          component="button" type="button" data-testid="upload-banner-pill" aria-label="Show upload progress" onClick={() => setMinimized(false)}
+          sx={{
+            position: 'fixed', right: rightOffset, bottom: 12, zIndex: 1251, display: 'inline-flex', alignItems: 'center', gap: 0.75,
+            px: 1.5, py: 0.875, minHeight: 40, borderRadius: '999px', border: `1.5px solid ${colors.primary}`, backgroundColor: colors.card,
+            boxShadow: '0 8px 24px rgba(15,23,42,0.16)', color: colors.textStrong, fontFamily: 'inherit', fontSize: '0.8125rem', fontWeight: 700, cursor: 'pointer',
+          }}
+        >
+          <CloudUploadRounded sx={{ color: colors.primary, fontSize: 18 }} />
+          {uploading ? `Uploading ${status.progress.done}/${status.progress.total}` : `${readyCount}/${batchTotal} ready`}
+        </Box>
+      )}
+      <Snackbar
+        open={startedNote}
+        autoHideDuration={6000}
+        onClose={() => setStartedNote(false)}
+        message="Upload started. Keep working: progress is at the bottom, and you will get a message when it is all done."
+        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+        sx={{ zIndex: 1700 }}
+      />
 
       <Dialog
         open={open}
@@ -388,7 +445,7 @@ export default function UploadNowPanel() {
                   : describeProgress(status.progress)}
               </Typography>
               <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted, mt: 0.5 }}>
-                Keep the app open and the screen on. If the signal drops, this waits and carries on by itself.
+                You can close this window: uploading carries on in the background. Keep the app open and the screen on. If the signal drops, this waits and carries on by itself.
                 {status.stitching > 0 ? ` ${status.stitching} photo${status.stitching === 1 ? ' is' : 's are'} being processed on the server.` : ''}
               </Typography>
             </Box>

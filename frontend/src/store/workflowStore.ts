@@ -468,6 +468,8 @@ interface WorkflowState {
   updateDefect: (id: string, patch: Partial<MockDefect>) => void;
 
   // ── Notifications ──
+  /** One summary notification when a whole trip has finished uploading and processing (shown in the bell). */
+  notifyTripUploaded: (title: string, body: string, link: string) => void;
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
   deleteNotification: (id: string) => void;
@@ -2592,6 +2594,10 @@ export const useWorkflowStore = create<WorkflowState>()(
     }
   },
 
+  notifyTripUploaded(title, body, link) {
+    // Reuses the existing 'capture_uploaded' type, so the bell, its icon and the server list need no change.
+    pushNotif(set, 'capture_uploaded', title, body, link);
+  },
   markNotificationRead(id) {
     set(s => ({ notifications: s.notifications.map(n => n.id === id ? { ...n, read: true } : n) }));
     mirrorApi('markNotificationRead', [id]);

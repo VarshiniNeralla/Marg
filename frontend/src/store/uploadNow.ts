@@ -23,8 +23,10 @@ import {
 import {
   computeProgress, evaluatePreChecks, isDrained, isUnsent, type ConnectionKind, type PreCheckResult, type Progress,
 } from './uploadPlan';
+import { armTripCompletion, clearTripCompletion, completeTripIfDone, getPendingCompletion } from './uploadCompletion';
 
 const MONITOR_MS = 1500;
+const COMPLETION_MS = 3000;
 const HEALTH_TIMEOUT_MS = 6000;
 
 let monitorTimer: ReturnType<typeof setInterval> | null = null;
@@ -211,6 +213,9 @@ async function finish(failed: number): Promise<void> {
   finishing = true;
   try {
     stopMonitor();
+    // Everything has been SENT. The server may still be stitching: remember the batch so the person is told once
+    // when that is finished too (see uploadCompletion.ts). Read the size before endRelease() clears it.
+    armTripCompletion(getUploadSession().batchTotal, failed);
     // Final reconciliation: ask the server which of our fingerprints it holds, and only then free the phone copies.
     const release = await releaseVerifiedPhotos();
     lastResult = { release, failed, at: Date.now() };
@@ -228,6 +233,7 @@ export async function startUploadNow(pinIds: string[] | null = null): Promise<vo
   const infos = (await waitingPhotoInfos()).filter(p => !pinIds || pinIds.includes(p.pinId));
   const unsent = infos.filter(isUnsent).length;
   lastResult = null;
+  clearTripCompletion();
   setPhotosWaitForWrites(true);
   beginRelease(unsent, pinIds);
   await acquireWakeLock();
@@ -271,6 +277,14 @@ export function initUploadNow(): void {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && getUploadSession().phase === 'uploading') void acquireWakeLock();
   });
+  // After the last photo is sent the server keeps stitching. Watch quietly (only while a batch is waiting for that) and
+  // announce once when it is all done, so nobody has to sit and wait.
+  let checking = false;
+  setInterval(() => {
+    if (checking || !getPendingCompletion() || getUploadSession().phase === 'uploading') return;
+    checking = true;
+    void readUploadNowStatus().then(completeTripIfDone).catch(() => {}).finally(() => { checking = false; });
+  }, COMPLETION_MS);
   // Any time a photo finishes later (e.g. a stitch completes), try to free confirmed phone copies. Read-only check.
   let timer: ReturnType<typeof setTimeout> | null = null;
   window.addEventListener(FILE_UPLOAD_SUCCEEDED_EVENT, () => {
