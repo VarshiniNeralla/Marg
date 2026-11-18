@@ -42,6 +42,7 @@ Resources:
                 Resource:
                   - !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/sitevision-backend
                   - !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/sitevision-frontend
+                  - !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/sitevision-stitch-worker
               # StringLikeIfExists: a GetObject/HeadObject on a missing key carries no s3:prefix, and S3 only answers
               # "404 not found" (instead of "403 access denied") when the caller may list the bucket. Real list
               # requests always carry a prefix, so they stay limited to the tenant folders.

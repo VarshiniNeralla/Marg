@@ -28,6 +28,7 @@ jobs:
     outputs:
       backend: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.backend }}
       frontend: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.frontend }}
+      worker: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.worker }}
       tag: sha-${{ steps.sha.outputs.short }}
     steps:
       - uses: actions/checkout@v4
@@ -41,6 +42,13 @@ jobs:
               - 'backend/**'
             frontend:
               - 'frontend/**'
+            worker:
+              - 'backend/Dockerfile.stitch-worker'
+              - 'backend/requirements-worker.txt'
+              - 'backend/app/stitch_worker.py'
+              - 'backend/app/core/mediasdk_config.py'
+              - 'backend/app/services/mediasdk_*.py'
+              - 'backend/app/services/fisheye_stitch.py'
 
   backend:
     name: Push backend image
@@ -151,3 +159,44 @@ jobs:
         env:
           TAG: ${{ needs.changes.outputs.tag }}
           DIGEST: ${{ steps.build.outputs.digest }}
+
+  stitch-worker:
+    name: Push MediaSDK stitch worker image
+    needs: changes
+    # OFF by default: the ECR repository (backend/infra/ecr/sitevision-stitch-worker-ecr.yaml) and the deploy role's push
+    # permission must exist first. Enable with the repository variable STITCH_WORKER_ENABLED=true. The proprietary SDK is
+    # never part of this image.
+    if: needs.changes.outputs.worker == 'true' && vars.STITCH_WORKER_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - name: Skip if tag already exists (immutable tags)
+        id: exists
+        run: |
+          if aws ecr describe-images --repository-name sitevision-stitch-worker \
+               --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::sitevision-stitch-worker:$TAG already exists, skipping push"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          TAG: ${{ needs.changes.outputs.tag }}
+      - name: Build and push
+        if: steps.exists.outputs.exists != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile.stitch-worker
+          push: true
+          provenance: false
+          tags: ${{ vars.ECR_REGISTRY }}/sitevision-stitch-worker:${{ needs.changes.outputs.tag }}
+          cache-from: type=gha,scope=stitch-worker
+          cache-to: type=gha,scope=stitch-worker,mode=max

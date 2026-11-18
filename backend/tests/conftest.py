@@ -233,3 +233,7 @@ async def client(seeded_db) -> AsyncGenerator[AsyncClient, None]:
 
 def auth_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "real_runtime_check: run the real MediaSDK dependency check (no stub)")

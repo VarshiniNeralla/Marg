@@ -26,3 +26,9 @@ backend/debug_thumbnails
 backend/debug_*.jpg
 backend/debug_*.png
 backend/*_test.jpg
+
+# Insta360 SDK packages and extracted binaries/models (licensed, multi-GB): never commit
+/MediaSDK*/
+/mediasdk-*/
+/CameraSDK*/
+*.insp

@@ -108,6 +108,41 @@ services:
 
     logging: *default-logging
 
+  # ── Optional MediaSDK stitch worker (not started by default) ──────────────
+  #   docker compose --profile stitch-worker up -d --build stitch-worker
+  # The Insta360 SDK is NOT in the image. Extract the official .deb on the host
+  #   dpkg-deb -x MediaSDK-3.2.0-linux-amd64.deb /srv/mediasdk
+  # and set MEDIASDK_HOST_DIR=/srv/mediasdk/opt/MediaSDK-3.2.0-linux. Point the API at the worker with
+  #   MEDIASDK_WORKER_URL=http://stitch-worker:8010  and the same MEDIASDK_WORKER_TOKEN.
+  # Limits are the ones the isolated AWS CPU-only test ran under (2 CPUs / 4 GB / 128 pids / no GPU).
+  stitch-worker:
+    profiles: ["stitch-worker"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.stitch-worker
+    image: sitevision-stitch-worker:${IMAGE_TAG:-latest}
+    container_name: sitevision-stitch-worker
+    restart: unless-stopped
+    init: true
+    environment:
+      MEDIASDK_WORKER_TOKEN: ${MEDIASDK_WORKER_TOKEN:?set MEDIASDK_WORKER_TOKEN}
+      MEDIASDK_MAX_CONCURRENCY: ${MEDIASDK_MAX_CONCURRENCY:-1}
+      MEDIASDK_STITCH_TYPE: ${MEDIASDK_STITCH_TYPE:-optflow}
+    volumes:
+      - ${MEDIASDK_HOST_DIR:?set MEDIASDK_HOST_DIR to the extracted Linux MediaSDK}:/opt/MediaSDK-3.2.0-linux:ro
+    cpus: 2
+    mem_limit: 4g
+    memswap_limit: 4g
+    pids_limit: 128
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # No published ports: only services on this compose network (the API) can reach the worker.
+    logging: *default-logging
+
 # Both services join the default "sitevision_default" bridge network and reach
 # each other by service name (backend, frontend).
 #
