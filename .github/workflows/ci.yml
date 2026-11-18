@@ -23,6 +23,7 @@ jobs:
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      worker: ${{ steps.filter.outputs.worker }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -35,6 +36,14 @@ jobs:
             frontend:
               - 'frontend/**'
               - '.github/workflows/ci.yml'
+            worker:
+              - '.github/workflows/ci.yml'
+              - 'backend/Dockerfile.stitch-worker'
+              - 'backend/requirements-worker.txt'
+              - 'backend/app/stitch_worker.py'
+              - 'backend/app/core/mediasdk_config.py'
+              - 'backend/app/services/mediasdk_*.py'
+              - 'backend/app/services/fisheye_stitch.py'
 
   backend-tests:
     name: Backend tests
@@ -126,6 +135,41 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '0'
+
+  docker-stitch-worker:
+    name: Docker build and boot check (MediaSDK stitch worker)
+    needs: changes
+    if: needs.changes.outputs.worker == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (no push, no AWS access, SDK is NOT part of the image)
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile.stitch-worker
+          push: false
+          load: true
+          tags: sitevision-stitch-worker:ci
+          cache-from: type=gha,scope=stitch-worker
+          cache-to: type=gha,scope=stitch-worker,mode=max
+      - name: Boot check (no SDK exists in CI, so the worker must start and say so clearly)
+        run: |
+          docker run -d --name w --init --read-only --tmpfs /tmp --cap-drop ALL \
+            --security-opt no-new-privileges -e MEDIASDK_WORKER_TOKEN=ci-only \
+            -p 127.0.0.1:8010:8010 sitevision-stitch-worker:ci
+          for i in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:8010/health && break; sleep 2; done
+          code=$(curl -s -o /tmp/health.json -w '%{http_code}' http://127.0.0.1:8010/health)
+          cat /tmp/health.json; echo
+          test "$code" = 503                      # degraded: SDK missing
+          grep -q 'not found' /tmp/health.json    # and it says why
+          # the stitch endpoint must fail closed without the token
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8010/v1/stitch --data-binary x)" = 401
+      - name: Show logs on failure
+        if: failure()
+        run: docker logs w || true
 
   docker-frontend:
     name: Docker build and scan (frontend)

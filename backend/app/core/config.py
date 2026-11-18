@@ -4,6 +4,8 @@ from typing import List
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.mediasdk_config import MediaSdkSettings
+
 # Placeholder secret values shipped in .env.example — must never reach prod.
 _PLACEHOLDER_SECRETS = {
     "change_me_use_openssl_rand_hex_64",
@@ -12,7 +14,7 @@ _PLACEHOLDER_SECRETS = {
 }
 
 
-class Settings(BaseSettings):
+class Settings(MediaSdkSettings):  # stitching/MediaSDK fields live in MediaSdkSettings (shared with the worker)
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -115,16 +117,10 @@ class Settings(BaseSettings):
     # plan hard-caps at 10 MB/file, so we cap here and fail fast with a clear
     # message. Raise (via env) after upgrading the plan.
     MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
-    # Raw 360 files (.dng/.insp/.insv) are stitched server-side into a small
-    # equirectangular JPEG BEFORE reaching Cloudinary, so the raw INPUT gets a
-    # larger cap — a raw Insta360 .dng is ~35 MB. Only the stitched output must
-    # fit MAX_UPLOAD_BYTES.
-    MAX_RAW_UPLOAD_BYTES: int = 64 * 1024 * 1024
     # Stitched equirect output (2:1). 7680×3840 ≈ 8K — sharper zoom than the
     # previous 5760×2880 default; raise further only if CPU/RAM allow.
     STITCH_OUTPUT_WIDTH: int = 7680
     STITCH_OUTPUT_HEIGHT: int = 3840
-    STITCH_JPEG_QUALITY: int = 95
     # How many raw 360 captures may be stitched AT THE SAME TIME. Each stitch is CPU- and memory-heavy (8K
     # output); running several together on a 2 vCPU / 8 GiB server made the whole machine stop responding.
     # Extra jobs wait their turn as "pending". Raise only on a larger server.

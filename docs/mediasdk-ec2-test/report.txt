@@ -1,0 +1,159 @@
+===SVTEST-REPORT-BEGIN===
+--- sysinfo
+== date
+Wed Nov 18 06:13:47 UTC 2026
+== uname
+Linux ip-REDACTED.ap-south-1.compute.internal 6.1.189-236.399.amzn2023.x86_64 #1 SMP PREEMPT_DYNAMIC Mon Oct 19 18:50:18 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+== lscpu
+CPU(s):                                  4
+Model name:                              AMD EPYC 7R13 Processor
+BIOS Model name:                         AMD EPYC 7R13 Processor
+Thread(s) per core:                      2
+== memory
+               total        used        free      shared  buff/cache   available
+Mem:           15623         353        7103           0        8167       14949
+Swap:              0           0           0
+== disk
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p1   40G  9.4G   31G  24% /
+== docker
+Docker version 25.0.14, build 0bab007
+cgroup=2 driver=systemd runtimes=io.containerd.runc.v2 runc 
+== gpu
+ls: cannot access '/dev/nvidia*': No such file or directory
+no nvidia-smi: no GPU on this instance
+== instance-type
+m6a.xlarge
+--- guard
+no host guard tripped
+--- summary
+| case | model | in MB | exit | wall s | peak RSS MB | cgroup peak MB | avg cores | out dims | out MB | valid | SDK reported CPU |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| x3a_3840_aistitch | X3 | 11.8 | 0 | 3.6 | 1409.1 | 1245.8 | 1.43 | 3840x1920 | 3.38 | True | True |
+| x3a_3840_optflow | X3 | 11.8 | 0 | 3.45 | 1383.9 | 1223.4 | 1.4 | 3840x1920 | 3.37 | True | True |
+| x3a_7680_dynamicstitch | X3 | 11.8 | 0 | 5.19 | 1584.9 | 1425.0 | 1.57 | 7680x3840 | 11.67 | True | True |
+| x3a_7680_optflow | X3 | 11.8 | 0 | 5.31 | 1594.9 | 1434.6 | 1.56 | 7680x3840 | 11.67 | True | True |
+| x3a_7680_optflow_r2 | X3 | 11.8 | 0 | 5.31 | 1594.9 | 1434.9 | 1.55 | 7680x3840 | 11.67 | True | True |
+| x3a_7680_optflow_r3 | X3 | 11.8 | 0 | 5.34 | 1595.3 | 1434.9 | 1.57 | 7680x3840 | 11.67 | True | True |
+| x3a_7680_template | X3 | 11.8 | 0 | 4.94 | 1341.8 | 1180.6 | 1.55 | 7680x3840 | 11.66 | True | True |
+| x3b_7680_optflow | X3 | 14.1 | 0 | 5.33 | 1597.3 | 1437.2 | 1.56 | 7680x3840 | 12.45 | True | True |
+| x3c_7680_optflow | X3 | 11.9 | 0 | 5.1 | 1595.3 | 1434.4 | 1.54 | 7680x3840 | 11.12 | True | True |
+| x3c_jpgname_3840_optflow | X3 | 11.9 | 0 | 3.32 | 1384.2 | 1235.1 | 1.37 | 3840x1920 | 3.23 | True | True |
+| x5_3840_optflow | X5 | 16.0 | 0 | 3.39 | 1380.7 | 1219.9 | 1.4 | 3840x1920 | 2.33 | True | True |
+| x5_7680_optflow | X5 | 16.0 | 0 | 5.21 | 1591.9 | 1431.1 | 1.58 | 7680x3840 | 7.53 | True | True |
+| x5_7680_optflow_r2 | X5 | 16.0 | 0 | 5.21 | 1591.8 | 1431.4 | 1.58 | 7680x3840 | 7.53 | True | True |
+| x5_7680_optflow_r3 | X5 | 16.0 | 0 | 5.23 | 1591.8 | 1431.4 | 1.58 | 7680x3840 | 7.53 | True | True |
+| x5_7680_template | X5 | 16.0 | 0 | 4.85 | 1345.9 | 1183.3 | 1.55 | 7680x3840 | 7.5 | True | True |
+| x5_jpgname_3840_optflow | X5 | 16.0 | 0 | 3.44 | 1380.5 | 1235.7 | 1.4 | 3840x1920 | 2.33 | True | True |
+--- results.jsonl
+{"case": "x3a_3840_aistitch", "exit_code": "0", "oom_killed": "false", "wall_s": 3.6, "user_s": 4.23, "sys_s": 0.84, "max_rss_mb": 1409.1, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1245.8, "peak_pids": 34, "host_min_mem_available_mb": 13919, "host_min_disk_avail_gb": 30.4, "avg_cpu_cores": 1.43, "n_samples": 17, "input_name": "x3a.insp", "input_bytes": 12335560, "input_sha256": "f574f4d2fabbc9ee7f3f5386652870c0a7127e72a62fc56564fa9fe17202eb29", "camera_model": "X3", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 3542945, "output_dims": "3840x1920", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.11, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x3a_3840_optflow", "exit_code": "0", "oom_killed": "false", "wall_s": 3.45, "user_s": 3.99, "sys_s": 0.82, "max_rss_mb": 1383.9, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1223.4, "peak_pids": 31, "host_min_mem_available_mb": 13973, "host_min_disk_avail_gb": 30.6, "avg_cpu_cores": 1.4, "n_samples": 16, "input_name": "x3a.insp", "input_bytes": 12335560, "input_sha256": "f574f4d2fabbc9ee7f3f5386652870c0a7127e72a62fc56564fa9fe17202eb29", "camera_model": "X3", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 3534850, "output_dims": "3840x1920", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.111, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x3a_7680_dynamicstitch", "exit_code": "0", "oom_killed": "false", "wall_s": 5.19, "user_s": 7.19, "sys_s": 0.85, "max_rss_mb": 1584.9, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1425.0, "peak_pids": 27, "host_min_mem_available_mb": 13878, "host_min_disk_avail_gb": 30.4, "avg_cpu_cores": 1.57, "n_samples": 24, "input_name": "x3a.insp", "input_bytes": 12335560, "input_sha256": "f574f4d2fabbc9ee7f3f5386652870c0a7127e72a62fc56564fa9fe17202eb29", "camera_model": "X3", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 12239872, "output_dims": "7680x3840", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.11, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x3a_7680_optflow", "exit_code": "0", "oom_killed": "false", "wall_s": 5.31, "user_s": 7.19, "sys_s": 1.03, "max_rss_mb": 1594.9, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1434.6, "peak_pids": 31, "host_min_mem_available_mb": 13711, "host_min_disk_avail_gb": 30.5, "avg_cpu_cores": 1.56, "n_samples": 25, "input_name": "x3a.insp", "input_bytes": 12335560, "input_sha256": "f574f4d2fabbc9ee7f3f5386652870c0a7127e72a62fc56564fa9fe17202eb29", "camera_model": "X3", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 12233061, "output_dims": "7680x3840", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.111, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x3a_7680_optflow_r2", "exit_code": "0", "oom_killed": "false", "wall_s": 5.31, "user_s": 7.2, "sys_s": 1.01, "max_rss_mb": 1594.9, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1434.9, "peak_pids": 31, "host_min_mem_available_mb": 13724, "host_min_disk_avail_gb": 30.5, "avg_cpu_cores": 1.55, "n_samples": 25, "input_name": "x3a.insp", "input_bytes": 12335560, "input_sha256": "f574f4d2fabbc9ee7f3f5386652870c0a7127e72a62fc56564fa9fe17202eb29", "camera_model": "X3", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 12233061, "output_dims": "7680x3840", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.111, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x3a_7680_optflow_r3", "exit_code": "0", "oom_killed": "false", "wall_s": 5.34, "user_s": 7.29, "sys_s": 1.0, "max_rss_mb": 1595.3, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1434.9, "peak_pids": 31, "host_min_mem_available_mb": 13721, "host_min_disk_avail_gb": 30.5, "avg_cpu_cores": 1.57, "n_samples": 25, "input_name": "x3a.insp", "input_bytes": 12335560, "input_sha256": "f574f4d2fabbc9ee7f3f5386652870c0a7127e72a62fc56564fa9fe17202eb29", "camera_model": "X3", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 12233061, "output_dims": "7680x3840", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.111, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x3a_7680_template", "exit_code": "0", "oom_killed": "false", "wall_s": 4.94, "user_s": 6.95, "sys_s": 0.65, "max_rss_mb": 1341.8, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1180.6, "peak_pids": 27, "host_min_mem_available_mb": 13892, "host_min_disk_avail_gb": 30.4, "avg_cpu_cores": 1.55, "n_samples": 23, "input_name": "x3a.insp", "input_bytes": 12335560, "input_sha256": "f574f4d2fabbc9ee7f3f5386652870c0a7127e72a62fc56564fa9fe17202eb29", "camera_model": "X3", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "NV12_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 12226218, "output_dims": "7680x3840", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.111, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x3b_7680_optflow", "exit_code": "0", "oom_killed": "false", "wall_s": 5.33, "user_s": 7.35, "sys_s": 0.89, "max_rss_mb": 1597.3, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1437.2, "peak_pids": 31, "host_min_mem_available_mb": 13718, "host_min_disk_avail_gb": 30.5, "avg_cpu_cores": 1.56, "n_samples": 25, "input_name": "x3b.insp", "input_bytes": 14821351, "input_sha256": "2644ea9e3a3123dbffcc509041d6c4576c7aa952779a78f74866f91bc2c4be49", "camera_model": "X3", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 13051581, "output_dims": "7680x3840", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.063, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x3c_7680_optflow", "exit_code": "0", "oom_killed": "false", "wall_s": 5.1, "user_s": 6.76, "sys_s": 1.05, "max_rss_mb": 1595.3, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1434.4, "peak_pids": 31, "host_min_mem_available_mb": 13714, "host_min_disk_avail_gb": 30.5, "avg_cpu_cores": 1.54, "n_samples": 24, "input_name": "x3c.insp", "input_bytes": 12446040, "input_sha256": "3876eeb571370d9d623b50c034ec1d63195ef27c00de2d6b15c9d1d8d3caca6a", "camera_model": "X3", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 11661326, "output_dims": "7680x3840", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.153, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x3c_jpgname_3840_optflow", "exit_code": "0", "oom_killed": "false", "wall_s": 3.32, "user_s": 3.65, "sys_s": 0.87, "max_rss_mb": 1384.2, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1235.1, "peak_pids": 31, "host_min_mem_available_mb": 13929, "host_min_disk_avail_gb": 30.5, "avg_cpu_cores": 1.37, "n_samples": 16, "input_name": "x3c.jpg", "input_bytes": 12446040, "input_sha256": "3876eeb571370d9d623b50c034ec1d63195ef27c00de2d6b15c9d1d8d3caca6a", "camera_model": "X3", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 3383965, "output_dims": "3840x1920", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.152, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x5_3840_optflow", "exit_code": "0", "oom_killed": "false", "wall_s": 3.39, "user_s": 3.93, "sys_s": 0.76, "max_rss_mb": 1380.7, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1219.9, "peak_pids": 31, "host_min_mem_available_mb": 13938, "host_min_disk_avail_gb": 30.5, "avg_cpu_cores": 1.4, "n_samples": 16, "input_name": "x5.insp", "input_bytes": 16812176, "input_sha256": "4bbb67d587df855521cf98dc1532ecc003ca5163669bbc51e8dd040de1bdf643", "camera_model": "X5", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 2442106, "output_dims": "3840x1920", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.181, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x5_7680_optflow", "exit_code": "0", "oom_killed": "false", "wall_s": 5.21, "user_s": 7.17, "sys_s": 0.95, "max_rss_mb": 1591.9, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1431.1, "peak_pids": 31, "host_min_mem_available_mb": 13722, "host_min_disk_avail_gb": 30.5, "avg_cpu_cores": 1.58, "n_samples": 24, "input_name": "x5.insp", "input_bytes": 16812176, "input_sha256": "4bbb67d587df855521cf98dc1532ecc003ca5163669bbc51e8dd040de1bdf643", "camera_model": "X5", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 7895408, "output_dims": "7680x3840", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.182, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x5_7680_optflow_r2", "exit_code": "0", "oom_killed": "false", "wall_s": 5.21, "user_s": 7.15, "sys_s": 0.98, "max_rss_mb": 1591.8, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1431.4, "peak_pids": 31, "host_min_mem_available_mb": 13717, "host_min_disk_avail_gb": 30.5, "avg_cpu_cores": 1.58, "n_samples": 24, "input_name": "x5.insp", "input_bytes": 16812176, "input_sha256": "4bbb67d587df855521cf98dc1532ecc003ca5163669bbc51e8dd040de1bdf643", "camera_model": "X5", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 7895408, "output_dims": "7680x3840", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.182, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x5_7680_optflow_r3", "exit_code": "0", "oom_killed": "false", "wall_s": 5.23, "user_s": 7.27, "sys_s": 0.89, "max_rss_mb": 1591.8, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1431.4, "peak_pids": 31, "host_min_mem_available_mb": 13721, "host_min_disk_avail_gb": 30.5, "avg_cpu_cores": 1.58, "n_samples": 25, "input_name": "x5.insp", "input_bytes": 16812176, "input_sha256": "4bbb67d587df855521cf98dc1532ecc003ca5163669bbc51e8dd040de1bdf643", "camera_model": "X5", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 7895408, "output_dims": "7680x3840", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.182, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x5_7680_template", "exit_code": "0", "oom_killed": "false", "wall_s": 4.85, "user_s": 6.91, "sys_s": 0.6, "max_rss_mb": 1345.9, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1183.3, "peak_pids": 27, "host_min_mem_available_mb": 13798, "host_min_disk_avail_gb": 30.4, "avg_cpu_cores": 1.55, "n_samples": 23, "input_name": "x5.insp", "input_bytes": 16812176, "input_sha256": "4bbb67d587df855521cf98dc1532ecc003ca5163669bbc51e8dd040de1bdf643", "camera_model": "X5", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "NV12_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 7860192, "output_dims": "7680x3840", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.187, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+{"case": "x5_jpgname_3840_optflow", "exit_code": "0", "oom_killed": "false", "wall_s": 3.44, "user_s": 3.98, "sys_s": 0.76, "max_rss_mb": 1380.5, "exit_in_time": 0.0, "cgroup_peak_mem_mb": 1235.7, "peak_pids": 31, "host_min_mem_available_mb": 13788, "host_min_disk_avail_gb": 30.5, "avg_cpu_cores": 1.4, "n_samples": 16, "input_name": "x5.jpg", "input_bytes": 16812176, "input_sha256": "4bbb67d587df855521cf98dc1532ecc003ca5163669bbc51e8dd040de1bdf643", "camera_model": "X5", "sdk_version": "3.2.0", "gl_renderer": "llvmpipe (LLVM 15.0.7, 256 bits)", "vulkan_device": "llvmpipe (LLVM 15.0.7, 256 bits)", "blender": "BGR_CPU", "flow_compute": "VULKAN", "sdk_reported_cpu": true, "output_bytes": 2442106, "output_dims": "3840x1920", "flat_row_fraction": 0.0, "dominant_colour_fraction": 0.181, "wrap_seam_ratio": 0.0, "checks": {"exists": true, "decodes": true, "aspect_2to1": true, "not_flat": true, "wraps": true}, "output_valid": true}
+--- sample sdk log x3a_7680_optflow (first 45 lines)
+MediaSDKTest Insta360 MediaSDK Stitching Demo
+SDK version: 3.2.0
+[11-18 06:13:54.899]  7 7 W ImageAsset.cc:1098:  [warning] ParseExifManufacturerNotes failed!
+[eglDisplayMgr.cc:69] eglDisplayMgr::SetupDisplay() called!
+Failed to create /home/tester/.cache for shader cache (Read-only file system)---disabling.
+[eglDisplayMgr.cc:188] eglDisplayMgr: headless context=0x55ab1c610eb0 share_from=(nil) display=0x55ab1c5042d0 refs=1
+[glCaps.cc:145] has gl_multisampled_render_to_texture feature ? no
+[glCaps.cc:280] GL_VERSION: 4.5 (Core Profile) Mesa 23.2.1-1ubuntu3.1~22.04.4
+[glCaps.cc:280] GL_VENDOR: Mesa
+[glCaps.cc:280] GL_RENDERER: llvmpipe (LLVM 15.0.7, 256 bits)
+[glCaps.cc:280] GL_SHADING_LANGUAGE_VERSION: 4.50
+[glCaps.cc:294] GL_MAX_TEXTURE_SIZE: 16384
+[glCaps.cc:294] GL_MAX_CUBE_MAP_TEXTURE_SIZE: 16384
+[glCaps.cc:295] GL_MAX_VIEWPORT_DIMS: 16384 16384
+[glCaps.cc:294] GL_MAX_VERTEX_ATTRIBS: 16
+[glCaps.cc:294] GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS: 192
+[glCaps.cc:294] GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS: 32
+[glCaps.cc:294] GL_MAX_VERTEX_UNIFORM_COMPONENTS: 16384
+[glCaps.cc:294] GL_MAX_FRAGMENT_UNIFORM_COMPONENTS: 16384
+[glCaps.cc:294] GL_MAX_COLOR_ATTACHMENTS: 8
+[glCaps.cc:294] GL_MAX_3D_TEXTURE_SIZE: 2048
+[eglDisplayMgr.cc:362] eglDisplayMgr: actual framebuffer size w=1, h=1
+[11-18 06:13:54.937]  7 7 I OffscreenEnv.cc:0027:  [New_Env-Way1]: offscreen-env total count: 1, gfx-uuid = fcc03160-31fc-4669-a6fb-812a77633b05
+[11-18 06:13:54.937]  7 7 I SceneRenderWorker.cc:0311:  [ColorSetting] render initialize set colorspace: BT709, bitDepth: 8
+[11-18 06:13:54.937]  7 7 I OryolLogger.cc:0033:  [RenderPassPool.cc:67] [rpp-debug] FetchRenderPass bitDepth=8 override=39 -> pixFmt=0 size=7680x3840
+
+[11-18 06:13:55.008]  7 7 I OffscreenRender.cc:0153:   preferOryolTextureReader_ 0
+ enableAndroidTextureReader_: 0
+ renderToExternalAndroidSurface: 0
+[11-18 06:13:55.008]  7 7 I OffscreenRender.cc:0157:   preferOryolTextureReader_ 0
+[11-18 06:13:55.008]  7 7 I OryolTextureReader.cc:0095:  fmq: current transmode type is:0
+[11-18 06:13:55.054]  7 7 I ins_render_model.cc:0681:  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 0
+[11-18 06:13:55.054]  7 7 I ins_render_model.cc:0684:  dynamic stitching:0, image fusion: 0, drone flag: 0, video: 0, hwaccel type: 9
+[11-18 06:13:55.054]  7 7 I ins_video_metadata.cc:0393:  [offset] resolved version: 3, available: V6=N V3=Y V2=Y V1=Y
+[11-18 06:13:55.055]  7 7 I PrecomputeStabilization.cc:0219:  [SubStreamStab][Asset] Precompute load exposure cameraName=Insta360 X3 subStreamExpo(0x34,idx0)=no size=0 subStreamSecExpo(0x36,idx1)=no size=0
+[11-18 06:13:55.055]  7 7 E ExtraInfoAsset.cc:1756:  read frame info FrameTypeTimelapseQuat failed, data is empty
+[11-18 06:13:55.055]  7 7 I PrecomputeStabilization.cc:0895:  load gyro data size: 0.0360107MB
+[11-18 06:13:55.056]  7 7 I PrecomputeStabilization.cc:1039:  input Gyro Data count: 1888, total size: 1888, cost: 0.376ms
+[11-18 06:13:55.056]  7 7 I PrecomputeStabilization.cc:1107:  Second way success, already loaded from souce media file's extra-asset-info.
+[11-18 06:13:55.056]  7 7 I PrecomputeStabilization.cc:0805:  MainRotation xyzw:  0 0 0 1
+[11-18 06:13:55.056]  7 7 I PrecomputeStabilization.cc:1146:  Calculate gyro success!
+[11-18 06:13:55.056]  7 7 I PrecomputeStabilization.cc:1515:  [SubStreamStab][Precompute] NO 0x34, build subStream map via MAIN(0x04) frameRateMapping fallback, frames=1501
+[11-18 06:13:55.056]  7 7 W PrecomputeStabilization.cc:1645:  Not enough data to cal z direction!
+[11-18 06:13:55.056]  7 7 I PrecomputeStabilization.cc:1619:  timeRatio less than 1.0, durationS: 60, gyroStartS: 30.8993, gyroEndS: 32.7745, videoGyroStartS: 30.8993, videoGyroEndS: 32.7745
+[11-18 06:13:55.056]  7 7 I PrecomputeStabilization.cc:1684:  GetStreamData, config: 0
+--- sample sdk log x5_7680_optflow (first 45 lines)
+MediaSDKTest Insta360 MediaSDK Stitching Demo
+SDK version: 3.2.0
+[11-18 06:14:51.453]  7 7 W ImageAsset.cc:1098:  [warning] ParseExifManufacturerNotes failed!
+[eglDisplayMgr.cc:69] eglDisplayMgr::SetupDisplay() called!
+Failed to create /home/tester/.cache for shader cache (Read-only file system)---disabling.
+[eglDisplayMgr.cc:188] eglDisplayMgr: headless context=0x5574c3db84a0 share_from=(nil) display=0x5574c3dc8e90 refs=1
+[glCaps.cc:145] has gl_multisampled_render_to_texture feature ? no
+[glCaps.cc:280] GL_VERSION: 4.5 (Core Profile) Mesa 23.2.1-1ubuntu3.1~22.04.4
+[glCaps.cc:280] GL_VENDOR: Mesa
+[glCaps.cc:280] GL_RENDERER: llvmpipe (LLVM 15.0.7, 256 bits)
+[glCaps.cc:280] GL_SHADING_LANGUAGE_VERSION: 4.50
+[glCaps.cc:294] GL_MAX_TEXTURE_SIZE: 16384
+[glCaps.cc:294] GL_MAX_CUBE_MAP_TEXTURE_SIZE: 16384
+[glCaps.cc:295] GL_MAX_VIEWPORT_DIMS: 16384 16384
+[glCaps.cc:294] GL_MAX_VERTEX_ATTRIBS: 16
+[glCaps.cc:294] GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS: 192
+[glCaps.cc:294] GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS: 32
+[glCaps.cc:294] GL_MAX_VERTEX_UNIFORM_COMPONENTS: 16384
+[glCaps.cc:294] GL_MAX_FRAGMENT_UNIFORM_COMPONENTS: 16384
+[glCaps.cc:294] GL_MAX_COLOR_ATTACHMENTS: 8
+[glCaps.cc:294] GL_MAX_3D_TEXTURE_SIZE: 2048
+[eglDisplayMgr.cc:362] eglDisplayMgr: actual framebuffer size w=1, h=1
+[11-18 06:14:51.490]  7 7 I OffscreenEnv.cc:0027:  [New_Env-Way1]: offscreen-env total count: 1, gfx-uuid = 59a21827-8d6d-4abb-84e1-f4262662ee57
+[11-18 06:14:51.490]  7 7 I SceneRenderWorker.cc:0311:  [ColorSetting] render initialize set colorspace: BT709, bitDepth: 8
+[11-18 06:14:51.490]  7 7 I OryolLogger.cc:0033:  [RenderPassPool.cc:67] [rpp-debug] FetchRenderPass bitDepth=8 override=39 -> pixFmt=0 size=7680x3840
+
+[11-18 06:14:51.562]  7 7 I OffscreenRender.cc:0153:   preferOryolTextureReader_ 0
+ enableAndroidTextureReader_: 0
+ renderToExternalAndroidSurface: 0
+[11-18 06:14:51.562]  7 7 I OffscreenRender.cc:0157:   preferOryolTextureReader_ 0
+[11-18 06:14:51.562]  7 7 I OryolTextureReader.cc:0095:  fmq: current transmode type is:0
+[11-18 06:14:51.608]  7 7 I ins_video_metadata.cc:1081:  cooling shell state: AUTO
+[11-18 06:14:51.608]  7 7 I ins_render_model.cc:0681:  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 0
+[11-18 06:14:51.608]  7 7 I ins_render_model.cc:0684:  dynamic stitching:0, image fusion: 0, drone flag: 0, video: 0, hwaccel type: 9
+[11-18 06:14:51.608]  7 7 I ins_video_metadata.cc:0393:  [offset] resolved version: 6, available: V6=Y V3=Y V2=Y V1=Y
+[11-18 06:14:51.609]  7 7 I PrecomputeStabilization.cc:0219:  [SubStreamStab][Asset] Precompute load exposure cameraName=Insta360 X5 subStreamExpo(0x34,idx0)=no size=0 subStreamSecExpo(0x36,idx1)=no size=0
+[11-18 06:14:51.609]  7 7 E ExtraInfoAsset.cc:1756:  read frame info FrameTypeTimelapseQuat failed, data is empty
+[11-18 06:14:51.609]  7 7 I PrecomputeStabilization.cc:0895:  load gyro data size: 0.00190735MB
+[11-18 06:14:51.609]  7 7 I PrecomputeStabilization.cc:1039:  input Gyro Data count: 100, total size: 100, cost: 0.041ms
+[11-18 06:14:51.610]  7 7 I PrecomputeStabilization.cc:1107:  Second way success, already loaded from souce media file's extra-asset-info.
+[11-18 06:14:51.610]  7 7 I PrecomputeStabilization.cc:0805:  MainRotation xyzw:  0 0 0 1
+[11-18 06:14:51.610]  7 7 I PrecomputeStabilization.cc:1146:  Calculate gyro success!
+[11-18 06:14:51.610]  7 7 I PrecomputeStabilization.cc:1515:  [SubStreamStab][Precompute] NO 0x34, build subStream map via MAIN(0x04) frameRateMapping fallback, frames=1501
+[11-18 06:14:51.610]  7 7 W PrecomputeStabilization.cc:1645:  Not enough data to cal z direction!
+[11-18 06:14:51.610]  7 7 I PrecomputeStabilization.cc:1619:  timeRatio less than 1.0, durationS: 60, gyroStartS: 568.728, gyroEndS: 568.827, videoGyroStartS: 568.728, videoGyroEndS: 568.827
+--- disk after test
+/dev/nvme0n1p1   40G  9.5G   31G  24% /
+===SVTEST-REPORT-END===

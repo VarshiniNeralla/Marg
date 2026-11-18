@@ -26,13 +26,78 @@ from app.services.panorama_service import (
 from app.services.fisheye_stitch import StitchResult, stitch_equirectangular_with_recovery
 
 
+class StitchEnginesFailed(Exception):
+    """No engine produced a valid panorama. ``reasons`` is a user-safe, ordered list (no paths)."""
+
+    def __init__(self, reasons: list[str]):
+        self.reasons = reasons
+        super().__init__("; ".join(reasons))
+
+
+def _stitch_with_engine(raw: bytes, filename: str) -> StitchResult:
+    """Run the configured engine(s).
+
+    STITCH_ENGINE: 'mediasdk_fallback' (default) tries Insta360 MediaSDK first and falls back to the built-in
+    stitcher on ANY MediaSDK problem (rejected/unsupported input, crash, timeout, invalid output). MediaSDK output is
+    always validated; once MediaSDK has been tried, the fallback output is validated too and StitchEnginesFailed is
+    raised if neither engine gave a valid panorama. 'mediasdk' has no fallback. When MediaSDK is not in play
+    ('builtin', or the SDK is not installed) the legacy behaviour is preserved exactly: no validation, None allowed.
+    """
+    from loguru import logger
+
+    from app.services.mediasdk_stitch import (
+        MediaSdkNotApplicable,
+        MediaSdkStitchError,
+        mediasdk_available,
+        stitch_with_mediasdk,
+        validate_panorama_jpeg,
+    )
+
+    engine = (get_settings().STITCH_ENGINE or "builtin").lower()
+    reasons: list[str] = []
+    if engine in ("mediasdk", "mediasdk_fallback"):
+        if engine == "mediasdk_fallback" and not mediasdk_available():
+            logger.info(f"[capture-pipeline] MediaSDK not configured; using built-in stitcher file={filename}")
+        else:
+            try:
+                return stitch_with_mediasdk(raw, filename)
+            except MediaSdkNotApplicable as exc:
+                if engine == "mediasdk":
+                    raise StitchEnginesFailed([f"MediaSDK: {exc}"]) from exc
+                logger.info(f"[capture-pipeline] MediaSDK not applicable ({exc}); using built-in stitcher file={filename}")
+            except MediaSdkStitchError as exc:
+                logger.warning(f"[capture-pipeline] MediaSDK failed file={filename}: {exc}")
+                reasons.append(f"MediaSDK: {exc}")
+                if engine == "mediasdk":
+                    raise StitchEnginesFailed(reasons) from exc
+
+    result = stitch_equirectangular_with_recovery(raw, filename)
+    if not reasons:
+        # MediaSDK was not attempted (STITCH_ENGINE=builtin, or the SDK is not installed): behave EXACTLY as before this
+        # integration existed - same result, same None, no new validation that could reject captures accepted today.
+        if result is not None:
+            result.metadata = {**(result.metadata or {}), "engine": "builtin", "engine_fallback": False}
+        return result
+    if result is None:
+        reasons.append("built-in stitcher: produced no panorama")
+        raise StitchEnginesFailed(reasons)
+    try:
+        validate_panorama_jpeg(result.processed_image)
+    except MediaSdkStitchError as exc:
+        logger.error(f"[capture-pipeline] built-in output rejected file={filename}: {exc}")
+        reasons.append(f"built-in stitcher: {exc}")
+        raise StitchEnginesFailed(reasons) from exc
+    result.metadata = {**(result.metadata or {}), "engine": "builtin", "engine_fallback": True, "mediasdk_failure": reasons[0]}
+    return result
+
+
 def _stitch_raw_360(raw: bytes, filename: str) -> Optional[StitchResult]:
     """Thread-pool wrapper: stitch a raw dual-fisheye file to equirectangular."""
     from loguru import logger
 
     try:
         logger.info(f"[capture-pipeline] stitching started file={filename} bytes={len(raw)}")
-        result = stitch_equirectangular_with_recovery(raw, filename)
+        result = _stitch_with_engine(raw, filename)
         if result is None:
             logger.error(f"[capture-pipeline] stitching returned None for {filename}")
             return None
@@ -45,6 +110,8 @@ def _stitch_raw_360(raw: bytes, filename: str) -> Optional[StitchResult]:
             f"coverage={(result.metadata or {}).get('sphere_coverage')}"
         )
         return result
+    except StitchEnginesFailed:
+        raise
     except Exception as exc:
         logger.error(f"[capture-pipeline] stitching failed for {filename}: {exc!r}")
         return None
@@ -353,6 +420,21 @@ async def _persist_processed_bytes(
     )
 
 
+def _is_routed_jpeg_original(file_obj: BinaryIO, filename: str) -> bool:
+    """Opt-in (MEDIASDK_ROUTE_JPEG_ORIGINALS): a JPEG-named Insta360 original is stitched like an .insp."""
+    if Path(filename).suffix.lower() not in {".jpg", ".jpeg"} or not get_settings().MEDIASDK_ROUTE_JPEG_ORIGINALS:
+        return False
+    try:
+        pos = file_obj.tell()
+        data = file_obj.read()
+        file_obj.seek(pos)
+    except (OSError, ValueError):
+        return False
+    from app.services.mediasdk_stitch import is_unstitched_insta360_original
+
+    return is_unstitched_insta360_original(data)
+
+
 async def upload_media(
     *,
     file_obj: BinaryIO,
@@ -385,7 +467,7 @@ async def upload_media(
     # mismatched halves). Trusting the extension alone is what the OSC capture
     # pipeline actually needs; a manually-uploaded raw file with a wrong/generic
     # .jpg extension is a rare edge case not worth reintroducing that bug for.
-    is_raw = tag_if_panorama and is_raw_capture(filename)
+    is_raw = tag_if_panorama and (is_raw_capture(filename) or _is_routed_jpeg_original(file_obj, filename))
 
     if is_raw:
         from loguru import logger
@@ -396,7 +478,14 @@ async def upload_media(
             f"filename={filename} folder={folder}"
         )
         raw = file_obj.read()
-        result = await to_thread.run_sync(_stitch_raw_360, raw, filename)
+        try:
+            result = await to_thread.run_sync(_stitch_raw_360, raw, filename)
+        except StitchEnginesFailed as exc:
+            raise ValidationException(
+                f"Could not stitch {filename} with either stitching engine ({'; '.join(exc.reasons)}). "
+                f"The file may be corrupt or incomplete - re-capture it, or export an equirectangular JPEG "
+                f"from Insta360 Studio and upload that instead."
+            ) from exc
         if result is None:
             # NOTE: this used to fall back to _extract_insp_preview, which
             # classified the RAW (un-rectified) dual-fisheye bytes with the

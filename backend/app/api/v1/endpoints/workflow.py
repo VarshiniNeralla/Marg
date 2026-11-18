@@ -471,6 +471,10 @@ def _asset_payload(asset: dict[str, Any], *, kind: str, entity_id: Optional[str]
         "processingStatus": status,
         "projection": (asset.get("stitch") or {}).get("projection") if stitched else None,
         "cameraModel": (asset.get("stitch") or {}).get("cameraModel") if stitched else None,
+        # Which engine produced this panorama ("mediasdk" | "builtin") and, when MediaSDK was tried first and the
+        # custom stitcher took over, why. Additive fields so the fallback rate can be read from the database.
+        "stitchEngine": (asset.get("stitch") or {}).get("engine") if stitched else None,
+        "stitchFallbackReason": (asset.get("stitch") or {}).get("mediasdk_failure") if stitched else None,
         "capture_id": entity_id if kind == "captures" else None,
         "captureId": entity_id if kind == "captures" else None,
     }
@@ -996,6 +1000,18 @@ async def _upload_files(
                 )
                 uploaded.append({**_asset_payload(cached, kind=kind, entity_id=entity_id, ext=ext), "sha256": hash_of_key(dedup_key)})
                 continue
+
+        # Opt-in (MEDIASDK_ROUTE_JPEG_ORIGINALS, off by default): a JPEG-named file that is provably an unstitched
+        # Insta360 original takes the same background-job path as an .insp.
+        if (
+            kind == "captures" and not is_raw_360 and ext in {".jpg", ".jpeg"}
+            and get_settings().MEDIASDK_ROUTE_JPEG_ORIGINALS
+        ):
+            from app.services.mediasdk_stitch import is_unstitched_insta360_original
+
+            if is_unstitched_insta360_original(raw_bytes):
+                is_raw_360 = True
+                logger.info(f"[capture-upload] {file.filename}: JPEG-named Insta360 original routed to stitching")
 
         # Raw 360 files are the only ones that pay the ~23s stitch, so they are
         # the only ones moved off the request path. A plain .jpg capture just

@@ -97,6 +97,7 @@ Resources:
                 Resource:
                   - !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/sitevision-backend
                   - !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/sitevision-frontend
+                  - !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/sitevision-stitch-worker
               # SendCommand is authorized against both the target instance and the document.
               - Sid: RunDeployCommandOnSiteVisionInstance
                 Effect: Allow

@@ -1,0 +1,63 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: TEMPORARY separate m6a.xlarge for the isolated Insta360 MediaSDK CPU compatibility test. No IAM role, no inbound access. Delete after the test.
+Parameters:
+  ImageId:
+    Type: AWS::EC2::Image::Id
+    Description: Same Amazon Linux 2023 AMI as the production host
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  BootstrapUrl:
+    Type: String
+    NoEcho: true
+  ConfigUrl:
+    Type: String
+    NoEcho: true
+Resources:
+  TestSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: sv-mediasdk-test - no inbound rules, outbound only
+      VpcId: !Ref VpcId
+      Tags:
+        - { Key: Name, Value: sv-mediasdk-test-sg }
+        - { Key: Project, Value: sitevision-mediasdk-compat-test }
+        - { Key: Temporary, Value: 'true' }
+  TestInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: m6a.xlarge
+      ImageId: !Ref ImageId
+      InstanceInitiatedShutdownBehavior: terminate
+      Monitoring: true
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+        HttpEndpoint: enabled
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          SubnetId: !Ref SubnetId
+          AssociatePublicIpAddress: true
+          GroupSet:
+            - !Ref TestSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 40
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # hard safety stop: the instance powers off (and terminates) after 150 minutes no matter what
+          shutdown -h +150
+          curl -fsS "${BootstrapUrl}" -o /root/bootstrap.sh && curl -fsS "${ConfigUrl}" -o /root/config.env && bash /root/bootstrap.sh
+      Tags:
+        - { Key: Name, Value: sv-mediasdk-test-instance }
+        - { Key: Project, Value: sitevision-mediasdk-compat-test }
+        - { Key: Temporary, Value: 'true' }
+Outputs:
+  InstanceId:
+    Value: !Ref TestInstance
