@@ -285,7 +285,7 @@ def test_concurrency_cap_is_enforced_across_threads(tmp_path, monkeypatch):
         with lock:
             active += 1
             peak = max(peak, active)
-        time.sleep(0.15)
+        time.sleep(0.4)
         open(cmd[cmd.index("-output") + 1], "wb").write(_jpeg(3840, 1920))
         with lock:
             active -= 1
@@ -297,9 +297,12 @@ def test_concurrency_cap_is_enforced_across_threads(tmp_path, monkeypatch):
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert len(results) == 6 and peak == 2
-    # processing time excludes the wait for a slot; the wait is reported separately (2 slots, 6 jobs of ~0.15 s each)
-    assert all(r.metadata["processing_seconds"] < 0.6 for r in results)
-    assert max(r.metadata["queued_seconds"] for r in results) > 0.1
+    # Processing time excludes the wait for a slot; the wait is reported separately (2 slots, 6 jobs of ~0.4 s each, so
+    # the last jobs wait ~0.8 s). Relative checks, not absolute ones, so a slow CI runner cannot make this flaky: had the
+    # wait been counted as processing, the longest-waiting job would show processing >= queued + 0.4.
+    last = max(results, key=lambda r: r.metadata["queued_seconds"])
+    assert last.metadata["queued_seconds"] > 0.3
+    assert last.metadata["processing_seconds"] < last.metadata["queued_seconds"]
 
 
 # ── stitch worker service ────────────────────────────────────────────────────
@@ -421,7 +424,7 @@ async def test_background_job_path_runs_engine_off_the_event_loop(monkeypatch):
 
     def fake_stitch(raw, filename):
         seen_threads.add(threading.get_ident())
-        time.sleep(0.05)
+        time.sleep(0.3)
         return _ok_result()
 
     monkeypatch.setattr(cs, "_stitch_with_engine", fake_stitch)
