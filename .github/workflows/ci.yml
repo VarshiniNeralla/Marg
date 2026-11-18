@@ -157,7 +157,7 @@ jobs:
           cache-to: type=gha,scope=stitch-worker,mode=max
       - name: Boot check (no SDK exists in CI, so the worker must start and say so clearly)
         run: |
-          docker run -d --name w --init --read-only --tmpfs /tmp --cap-drop ALL \
+          docker run -d --name stitch-worker-ci --init --read-only --tmpfs /tmp --cap-drop ALL \
             --security-opt no-new-privileges -e MEDIASDK_WORKER_TOKEN=ci-only \
             -p 127.0.0.1:8010:8010 sitevision-stitch-worker:ci
           for i in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:8010/health && break; sleep 2; done
@@ -169,7 +169,7 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8010/v1/stitch --data-binary x)" = 401
       - name: Show logs on failure
         if: failure()
-        run: docker logs w || true
+        run: docker logs stitch-worker-ci || true
 
   docker-frontend:
     name: Docker build and scan (frontend)
