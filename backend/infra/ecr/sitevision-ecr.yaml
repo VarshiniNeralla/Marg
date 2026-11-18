@@ -1,6 +1,22 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: SiteVision ECR repositories, configured like the anviksha-backend and anviksha-frontend repositories
 
+Parameters:
+  # One lifecycle policy for both repositories, so they cannot drift apart. A rollback needs the SAME tag in BOTH
+  # repositories (the deploy workflow checks both), so both must expire the same builds.
+  #  1. Keep the newest 20 CI builds (sha- tags). Counted per image: a digest carrying several sha- tags counts once.
+  #  2. Keep the newest 8 manual builds (vNN tags, from publish_images.ps1). "latest" rides on the newest vNN image, so
+  #     it is protected while that image is kept. 8 leaves room for the known-good v37 even after several manual pushes.
+  #  3. Remove untagged images older than 7 days. The untagged rows next to a vNN image are its platform image and
+  #     attestation, referenced by the tagged index; ECR never expires those while the index exists (checked with the
+  #     lifecycle preview: this rule alone previewed zero expiries). It only collects the parts left behind once their
+  #     index has expired.
+  # Rules are evaluated by priority; expiry runs asynchronously, typically within a day of applying.
+  ImageLifecyclePolicy:
+    Type: String
+    Default: '{"rules":[{"rulePriority":1,"description":"Keep the newest 20 CI builds (sha- tags)","selection":{"tagStatus":"tagged","tagPrefixList":["sha-"],"countType":"imageCountMoreThan","countNumber":20},"action":{"type":"expire"}},{"rulePriority":2,"description":"Keep the newest 8 manual builds (vNN tags)","selection":{"tagStatus":"tagged","tagPrefixList":["v"],"countType":"imageCountMoreThan","countNumber":8},"action":{"type":"expire"}},{"rulePriority":3,"description":"Remove untagged images older than 7 days (parts of kept images are protected by ECR)","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":7},"action":{"type":"expire"}}]}'
+    Description: ECR lifecycle policy text applied to the SiteVision backend and frontend repositories
+
 Resources:
   BackendRepository:
     Type: AWS::ECR::Repository
@@ -16,6 +32,8 @@ Resources:
         ScanOnPush: true
       EncryptionConfiguration:
         EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: !Ref ImageLifecyclePolicy
       Tags:
         - Key: Project
           Value: SiteVision
@@ -36,6 +54,8 @@ Resources:
         ScanOnPush: true
       EncryptionConfiguration:
         EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: !Ref ImageLifecyclePolicy
       Tags:
         - Key: Project
           Value: SiteVision
