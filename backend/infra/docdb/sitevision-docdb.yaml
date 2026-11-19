@@ -60,7 +60,9 @@ Resources:
         - !Ref DocDbSecurityGroup
       DBClusterParameterGroupName: !Ref DocDbClusterParameterGroup
       StorageEncrypted: true
-      BackupRetentionPeriod: 7
+      # Point-in-time recovery window in days (DocumentDB allows 1 to 35). Raised from 7 to 35 on 2026-11-18. The database
+      # is under 1 GiB, so the extra backup storage is far below one dollar a month. Can be lowered again at any time.
+      BackupRetentionPeriod: 35
       DeletionProtection: true
       EnableCloudwatchLogsExports:
         - audit
