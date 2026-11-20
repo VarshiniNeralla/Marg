@@ -32,6 +32,9 @@ class ActivityCorrectionIn(BaseModel):
     verdict: str  # "correct" | "wrong"
     correctPercentage: float | None = None
     note: str | None = None
+    # Optional short tag for WHY the AI was wrong (e.g. ai_misread, not_enough_photos, wrong_room, not_visible, other);
+    # lets the reviews be grouped by kind of mistake.
+    reasonCode: str | None = Field(default=None, max_length=40, pattern=r"^[a-z_]*$")
 
 
 class PinRoomVerdictIn(BaseModel):
@@ -335,6 +338,28 @@ async def list_progress_reviews(
     service = ConstructionProgressReviewService(db)
     reviews = await service.list_reviews(org_id=ctx.org_id, floor_id=floor_id, snapshot_id=snapshot_id)
     return success_response(data=reviews)
+
+
+@router.get("/reviews/export", summary="Every reviewed activity as one row: AI value, human value, reason, evidence")
+async def export_progress_reviews(
+    ctx: CallerContext,
+    db: DB,
+    _manager_or_admin: ManagerOrAdminUser,
+    floor_id: str | None = Query(None, alias="floorId"),
+    format: str = Query("json", pattern="^(json|csv)$"),
+):
+    """The labelled data set behind the reviews, for improving the prompts, criteria and evaluations."""
+    from fastapi.responses import Response
+
+    from app.services.construction_progress_review_service import rows_to_csv
+
+    rows = await ConstructionProgressReviewService(db).export_rows(org_id=ctx.org_id, floor_id=floor_id)
+    if format == "csv":
+        return Response(
+            content=rows_to_csv(rows), media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="progress-reviews.csv"'},
+        )
+    return success_response(data=rows)
 
 
 @router.get("/reviews/summary", summary="Accuracy summary grouped by prompt/rig version")
