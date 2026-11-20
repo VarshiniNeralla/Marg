@@ -5,7 +5,7 @@ import { colors, motion } from '@theme/tokens';
 import type { EvidenceDetail, RoomActivityAssessment } from '@/services/constructionProgressService';
 import { formatDateTime } from '@/utils/dateFormat';
 import {
-  UNABLE_TO_DETERMINE, aiEstimate, assessmentColor, inferredTooltip, resolveAssessmentStatus, safePct, showsPercent,
+  UNABLE_TO_DETERMINE, aiEstimate, assessmentColor, inferredTooltip, needsManagerReview, resolveAssessmentStatus, safePct, showsPercent,
 } from '@/utils/progressDisplay';
 import { AssessmentChip, DetectionChip, ReviewChip } from './ProgressChips';
 
@@ -65,7 +65,7 @@ export default function RoomActivityRow({
             type={a.detectionType}
             inferredTooltip={inferredTooltip(a.inferredFrom, siblings)}
           />
-          {a.reviewRequired && <ReviewChip reason={a.reviewReason} />}
+          {needsManagerReview(a) && <ReviewChip reason={a.reviewReason} />}
         </Box>
       </Box>
 
@@ -93,7 +93,7 @@ export default function RoomActivityRow({
           )}
         </Box>
       ) : (
-        <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>{UNABLE_TO_DETERMINE}</Typography>
+        !(a.explanation || a.evidence) && <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>{UNABLE_TO_DETERMINE}</Typography>
       )}
 
       {a.explanation ? (
@@ -110,10 +110,6 @@ export default function RoomActivityRow({
           <IndicatorList title="Seen" items={found} />
           <IndicatorList title="Missing" items={missing} />
         </Box>
-      )}
-
-      {a.reviewRequired && a.reviewReason && (
-        <Typography sx={{ fontSize: '0.75rem', color: colors.danger }}>{a.reviewReason}</Typography>
       )}
 
       {isManual && (

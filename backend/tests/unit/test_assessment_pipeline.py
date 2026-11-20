@@ -94,7 +94,7 @@ def test_unknown_readings_are_not_zero_and_not_in_the_floor_average():
     r = run(per, [cap("a", "Living")])
     acts = room_acts(r, "Living")
     assert acts["flat.putty_1st_coat_25"].assessment_status == "unable_to_determine"
-    assert acts["flat.putty_1st_coat_25"].review_required is True
+    assert acts["flat.putty_1st_coat_25"].review_required is False
     assert acts["flat.putty_1st_coat_25"].evidence_capture_ids == []
     floor = {a.activity.activity_id: a for a in r.activities}
     assert floor["flat.putty_1st_coat_25"].completion_pct == 0.0
@@ -131,11 +131,11 @@ def test_inferred_completion_is_labelled_and_points_at_the_driving_photo():
     assert "flat.core_service_lines" not in acts
 
 
-def test_conflicting_captures_in_one_room_are_flagged():
+def test_conflicting_captures_in_one_room_use_the_lower_reading_without_a_flag():
     per = {"a": {"flat.wall_punning_4": item(10.0, 90.0)}, "b": {"flat.wall_punning_4": item(95.0, 90.0)}}
     r = run(per, [cap("a", "Living"), cap("b", "Living")])
     a = room_acts(r, "Living")["flat.core_punning"]
-    assert a.review_required is True
+    assert a.review_required is False and a.review_reason == ""
     assert a.completion_pct == 10.0
 
 

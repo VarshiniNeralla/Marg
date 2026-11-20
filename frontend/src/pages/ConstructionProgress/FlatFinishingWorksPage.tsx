@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Box, Typography, CircularProgress, Tooltip } from '@mui/material';
-import { ArrowBackRounded, InfoOutlined as InfoOutlinedIcon, WarningAmberRounded } from '@mui/icons-material';
+import { Box, Collapse, Typography, CircularProgress, Tooltip } from '@mui/material';
+import { ArrowBackRounded, ExpandMoreRounded, InfoOutlined as InfoOutlinedIcon } from '@mui/icons-material';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { colors, motion } from '@theme/tokens';
@@ -13,22 +13,22 @@ import {
   type RoomProgress,
 } from '@/services/constructionProgressService';
 import { useAuthStore, isManagerOrAdmin } from '@store/authStore';
-import ProgressRing from '@/components/ConstructionProgress/ProgressRing';
 import EvidenceLightbox from '@/components/ConstructionProgress/EvidenceLightbox';
 import { PROGRESS_EXPLAINER } from '@/components/ConstructionProgress/FinishingOverview';
 import FlatSelector from '@/components/ConstructionProgress/FlatSelector';
-import RoomProgressCard from '@/components/ConstructionProgress/RoomProgressCard';
+import RoomRow from '@/components/ConstructionProgress/RoomRow';
 import ActivityReviewDialog from '@/components/ConstructionProgress/ActivityReviewDialog';
 import { ScopeChip } from '@/components/ConstructionProgress/ProgressChips';
 import { formatDate } from '@/utils/dateFormat';
 import {
-  SCOPE_LABELS, countNeedingReview, formatPct, resolveScopeStatus, reviewBannerText, safePct,
+  countNeedingReview, resolveScopeStatus, reviewBannerText, safePct, scopeColor,
 } from '@/utils/progressDisplay';
 import type { ScopeStatus } from '@/services/constructionProgressService';
 
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#ffffff' };
 
-const SECTION_ORDER: ScopeStatus[] = ['in_progress', 'awaiting_evidence', 'completed', 'not_started', 'no_photos'];
+// Rooms that have photos are listed in this order; rooms with no photos go in their own folded-away group.
+const PHOTOGRAPHED_ORDER: ScopeStatus[] = ['in_progress', 'awaiting_evidence', 'completed', 'not_started'];
 
 function isCommonArea(f: FlatProgress): boolean {
   return f.flatName === 'Common Area';
@@ -37,11 +37,31 @@ function isCommonArea(f: FlatProgress): boolean {
 interface EvidenceState { activityName: string; captureIds: string[]; details: EvidenceDetail[] }
 interface ReviewState { room: RoomProgress; activity: RoomActivityAssessment }
 
-function Metric({ label, value }: { label: string; value: string }) {
+/** The one quiet line of facts under the flat's percentage. */
+export function flatSummaryLine(flat: FlatProgress, isCommon: boolean): string {
+  const unit = isCommon ? 'regions' : 'rooms';
+  const parts: string[] = [];
+  parts.push(typeof flat.roomsPhotographed === 'number' && typeof flat.roomsRequired === 'number'
+    ? `${flat.roomsPhotographed} of ${flat.roomsRequired} ${unit} photographed`
+    : `${flat.roomsTotal} ${unit}`);
+  parts.push(`${flat.roomsComplete} of ${flat.roomsTotal} complete`);
+  if (flat.lastInspection) parts.push(`last inspection ${formatDate(flat.lastInspection)}`);
+  return parts.join(' · ');
+}
+
+function RoomList({
+  rooms, canReview, onReview, onOpenEvidence,
+}: {
+  rooms: RoomProgress[];
+  canReview: boolean;
+  onReview: (room: RoomProgress, activity: RoomActivityAssessment) => void;
+  onOpenEvidence: (activityName: string, captureIds: string[], details: EvidenceDetail[]) => void;
+}) {
   return (
-    <Box>
-      <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: P.muted }}>{label}</Typography>
-      <Typography sx={{ fontSize: '1.125rem', fontWeight: 800, color: P.strong }}>{value}</Typography>
+    <Box sx={{ borderRadius: '14px', backgroundColor: P.white, border: `1.5px solid ${P.border}`, overflow: 'hidden' }}>
+      {rooms.map((room, i) => (
+        <RoomRow key={`${room.roomName}-${i}`} room={room} canReview={canReview} onReview={onReview} onOpenEvidence={onOpenEvidence} />
+      ))}
     </Box>
   );
 }
@@ -60,76 +80,63 @@ function FlatDetail({
   const verified = safePct(flat.completionPct, completed);
   const needReview = countNeedingReview(flat.rooms.flatMap(r => r.activities));
   const unit = isCommon ? 'regions' : 'rooms';
+  const [showEmpty, setShowEmpty] = useState(false);
 
-  const sections = SECTION_ORDER
-    .map(status => ({ status, rooms: flat.rooms.filter(r => resolveScopeStatus(r) === status) }))
-    .filter(s => s.rooms.length > 0);
+  const photographed = PHOTOGRAPHED_ORDER.flatMap(status => flat.rooms.filter(r => resolveScopeStatus(r) === status));
+  const withoutPhotos = flat.rooms.filter(r => resolveScopeStatus(r) === 'no_photos');
 
   return (
     <Box>
-      <Box sx={{
-        display: 'flex', gap: 3, alignItems: 'center', flexWrap: 'wrap',
-        p: { xs: 2, sm: 3 }, borderRadius: '16px', backgroundColor: P.white, border: `1.5px solid ${P.border}`, mb: 2,
-      }}
-      >
-        <ProgressRing percentage={verified} label="Verified" />
-        <Box sx={{ flex: 1, minWidth: 240 }}>
-          {/* The percentage is shown once, in the ring. Everything beside it is plain facts. */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-            <Typography sx={{ fontSize: '1.375rem', fontWeight: 800, color: P.strong, lineHeight: 1.2 }}>{flat.flatName}</Typography>
+      {/* One slim header: the percentage appears once, with a single line of facts under it. */}
+      <Box sx={{ p: { xs: 2, sm: 2.5 }, borderRadius: '16px', backgroundColor: P.white, border: `1.5px solid ${P.border}`, mb: 3 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0, flexWrap: 'wrap' }}>
+            <Typography sx={{ fontSize: '1.25rem', fontWeight: 800, color: P.strong, lineHeight: 1.2 }}>{flat.flatName}</Typography>
             <ScopeChip status={scope} />
             <Tooltip title={PROGRESS_EXPLAINER} arrow enterTouchDelay={0}>
               <InfoOutlinedIcon tabIndex={0} aria-label="How progress is measured" sx={{ fontSize: 18, color: P.muted, cursor: 'help' }} />
             </Tooltip>
           </Box>
-          <Box sx={{ display: 'flex', gap: { xs: 2, sm: 3 }, flexWrap: 'wrap', mt: 1.5 }}>
-            <Metric
-              label={`${isCommon ? 'Regions' : 'Rooms'} photographed`}
-              value={typeof flat.roomsPhotographed === 'number' && typeof flat.roomsRequired === 'number'
-                ? `${flat.roomsPhotographed} of ${flat.roomsRequired}`
-                : `${flat.roomsTotal}`}
-            />
-            <Metric label={`${isCommon ? 'Regions' : 'Rooms'} complete`} value={`${flat.roomsComplete} of ${flat.roomsTotal}`} />
-            {flat.lastInspection && <Metric label="Last inspection" value={formatDate(flat.lastInspection)} />}
-          </Box>
+          <Typography data-testid="flat-percentage" sx={{ fontSize: '2rem', fontWeight: 800, color: P.strong, lineHeight: 1 }}>{verified}%</Typography>
         </Box>
+        <Box sx={{ height: 8, borderRadius: '999px', backgroundColor: colors.borderLight, overflow: 'hidden', mt: 1.75 }}>
+          <Box sx={{ height: '100%', width: `${verified}%`, backgroundColor: scopeColor(scope).fg, borderRadius: '999px', transition: `width ${motion.durationSlow} ${motion.easeOut}` }} />
+        </Box>
+        <Typography sx={{ fontSize: '0.8125rem', color: P.muted, mt: 1.25 }}>{flatSummaryLine(flat, isCommon)}</Typography>
+        {needReview > 0 && (
+          <Typography role="status" sx={{ fontSize: '0.8125rem', fontWeight: 600, color: colors.danger, mt: 0.5 }}>{reviewBannerText(needReview)}</Typography>
+        )}
       </Box>
 
-      {needReview > 0 && (
-        <Box
-          role="status"
-          sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.25, mb: 2, borderRadius: '12px', backgroundColor: colors.dangerBg }}
-        >
-          <WarningAmberRounded sx={{ fontSize: 18, color: colors.danger }} />
-          <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: colors.danger }}>{reviewBannerText(needReview)}</Typography>
-        </Box>
+      <Typography component="h2" sx={{ fontSize: '0.8125rem', fontWeight: 700, color: P.muted, textTransform: 'uppercase', letterSpacing: '0.05em', mb: 1 }}>
+        {isCommon ? 'Regions' : 'Rooms'} · {photographed.length}
+      </Typography>
+      {photographed.length > 0 ? (
+        <RoomList rooms={photographed} canReview={canReview} onReview={onReview} onOpenEvidence={onOpenEvidence} />
+      ) : (
+        <Typography sx={{ fontSize: '0.875rem', color: P.muted, py: 2 }}>No {unit} have been photographed yet.</Typography>
       )}
 
-      <Typography sx={{ fontSize: '1rem', fontWeight: 800, color: P.strong, mb: 0.5 }}>
-        {isCommon ? 'Region-by-Region Status' : 'Room-by-Room Status'}
-      </Typography>
-      <Typography sx={{ fontSize: '0.8125rem', color: P.muted, mb: 2 }}>
-        Showing all {flat.rooms.length} {unit} in {flat.flatName}
-      </Typography>
-
-      {sections.map((section, idx) => (
-        <Box key={section.status} sx={{ mt: idx === 0 ? 0 : 3 }}>
-          <Typography sx={{ fontSize: '0.75rem', fontWeight: 800, color: P.strong, textTransform: 'uppercase', letterSpacing: '0.06em', mb: 1.25 }}>
-            {SCOPE_LABELS[section.status]} <Box component="span" sx={{ color: P.muted }}>{section.rooms.length}</Box>
-          </Typography>
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', md: 'repeat(3, 1fr)' }, gap: { xs: 1, sm: 1.25 }, alignItems: 'stretch' }}>
-            {section.rooms.map((room, i) => (
-              <RoomProgressCard
-                key={`${room.roomName}-${i}`}
-                room={room}
-                canReview={canReview}
-                onReview={onReview}
-                onOpenEvidence={onOpenEvidence}
-              />
-            ))}
+      {withoutPhotos.length > 0 && (
+        <Box sx={{ mt: 2.5 }}>
+          <Box
+            component="button" type="button" aria-expanded={showEmpty} onClick={() => setShowEmpty(v => !v)}
+            sx={{
+              display: 'flex', alignItems: 'center', gap: 0.5, minHeight: 44, px: 0.5, border: 0, backgroundColor: 'transparent',
+              cursor: 'pointer', fontFamily: 'inherit', color: P.muted, fontSize: '0.8125rem', fontWeight: 600,
+              '&:hover': { color: P.strong },
+            }}
+          >
+            {withoutPhotos.length} {withoutPhotos.length === 1 ? unit.replace(/s$/, '') : unit} without photos
+            <ExpandMoreRounded sx={{ fontSize: 18, transform: showEmpty ? 'rotate(180deg)' : 'none', transition: `transform ${motion.durationFast} ${motion.easeOut}` }} />
           </Box>
+          <Collapse in={showEmpty} timeout={200} unmountOnExit>
+            <Box sx={{ mt: 1 }}>
+              <RoomList rooms={withoutPhotos} canReview={canReview} onReview={onReview} onOpenEvidence={onOpenEvidence} />
+            </Box>
+          </Collapse>
         </Box>
-      ))}
+      )}
     </Box>
   );
 }
