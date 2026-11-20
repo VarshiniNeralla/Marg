@@ -29,6 +29,7 @@ from app.services.cloudinary_service import (
     delete_media_assets,
 )
 from app.services.room_map_service import RoomMapService, schedule_room_map_extraction
+from app.services import recycle_bin
 from app.services.ai_progress_service import AIProgressService
 from app.services.construction_progress_service import ConstructionProgressService
 from app.services.predefined_pins_service import PredefinedPinsService
@@ -1219,6 +1220,21 @@ async def _patch(
     return _serialise(result)
 
 
+async def _archive_captures(
+    db: AsyncIOMotorDatabase, ctx: CallerContext, captures: list[dict[str, Any]], pin_ids: Optional[list[str]] = None
+) -> None:
+    """Copy captures into the recycle bin before they are deleted (see app/services/recycle_bin.py). Raises if a copy
+    cannot be stored, so the delete is not carried out."""
+    if not captures:
+        return
+    actor_name = await _resolve_user_display_name(db, ctx.user_id)
+    for cap in captures:
+        await recycle_bin.archive(
+            db, kind=recycle_bin.KIND_CAPTURE, doc=cap, org_id=ctx.org_id, actor_id=ctx.user_id,
+            actor_name=actor_name, pin_ids=list(pin_ids or []),
+        )
+
+
 async def _delete(db: AsyncIOMotorDatabase, collection: str, id: str, ctx: CallerContext) -> None:
     result = await db[collection].delete_one({"_id": _id_filter(id), "orgId": ctx.org_id})
     if result.deleted_count == 0:
@@ -1441,6 +1457,7 @@ async def delete_room(room_id: str, ctx: CallerContext, db: DB, _=Depends(requir
         [str(cap.get("_id") or cap.get("id") or "") for cap in room_captures if str(cap.get("_id") or cap.get("id") or "").strip()],
         engineer_name,
     )
+    await _archive_captures(db, ctx, room_captures)  # recycle bin: copy before the bulk delete
     await db["captures"].delete_many({"orgId": ctx.org_id, "roomId": room_id})
     for cap in room_captures:
         await _release_capture_assets(db, ctx, cap.get("mediaAssets") or cap.get("media_assets") or [])
@@ -1587,6 +1604,14 @@ async def delete_capture(capture_id: str, ctx: CallerContext, db: DB, _=Depends(
     if capture:
         name = await _resolve_user_display_name(db, ctx.user_id) if _is_field_engineer(ctx) else ""
         _assert_can_access_capture(ctx, capture, name)
+        # Recycle bin: keep a full copy (and the pins it was on) BEFORE deleting, so it can always be restored. If the
+        # copy cannot be stored the delete does not happen (the client retries later).
+        linked_pins = await db["capture_pins"].find({"orgId": ctx.org_id, "captureIds": capture_id}, {"_id": 1, "id": 1}).to_list(length=50)
+        await recycle_bin.archive(
+            db, kind=recycle_bin.KIND_CAPTURE, doc=capture, org_id=ctx.org_id, actor_id=ctx.user_id,
+            actor_name=await _resolve_user_display_name(db, ctx.user_id),
+            pin_ids=[str(p.get("id") or p["_id"]) for p in linked_pins],
+        )
     await _delete(db, "captures", capture_id, ctx)
     # Keep pin timelines clean even if the client never follows up with
     # updateCapturePin — dangling ids made copy-from treat pins as "has captures".
@@ -1815,6 +1840,13 @@ async def delete_tour(tour_id: str, ctx: CallerContext, db: DB, _=Depends(requir
         if doc:
             name = await _resolve_user_display_name(db, ctx.user_id)
             _assert_can_access_tour(ctx, doc, name)
+    # Recycle bin: keep a full copy before deleting (see app/services/recycle_bin.py).
+    existing = await db["tours"].find_one({"_id": _id_filter(tour_id), "orgId": ctx.org_id})
+    if existing:
+        await recycle_bin.archive(
+            db, kind=recycle_bin.KIND_TOUR, doc=existing, org_id=ctx.org_id, actor_id=ctx.user_id,
+            actor_name=await _resolve_user_display_name(db, ctx.user_id),
+        )
     # Idempotent: client reconcile often re-DELETEs after a successful first
     # delete (hydrate still briefly contains the id). Treat missing as success.
     result = await db["tours"].delete_one({"_id": _id_filter(tour_id), "orgId": ctx.org_id})
@@ -2314,6 +2346,8 @@ async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(
         )
     for cid in capture_ids:
         cap = await db["captures"].find_one({"_id": _id_filter(cid), "orgId": ctx.org_id})
+        if cap:
+            await _archive_captures(db, ctx, [cap], pin_ids=[str(pin_id)])  # recycle bin: copy before delete
         await db["captures"].delete_one({"_id": _id_filter(cid), "orgId": ctx.org_id})
         if cap:
             await _release_capture_assets(db, ctx, cap.get("mediaAssets") or cap.get("media_assets") or [])
@@ -2331,6 +2365,7 @@ async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(
             logger.exception("Failed to purge progress snapshots for capture {} during pin delete {}", cid, pin_id)
     if room_id:
         room_captures = await db["captures"].find({"orgId": ctx.org_id, "roomId": str(room_id)}).to_list(length=None)
+        await _archive_captures(db, ctx, room_captures, pin_ids=[str(pin_id)])  # recycle bin: copy before the bulk delete
         await db["captures"].delete_many({"orgId": ctx.org_id, "roomId": str(room_id)})
         for cap in room_captures:
             await _release_capture_assets(db, ctx, cap.get("mediaAssets") or cap.get("media_assets") or [])
