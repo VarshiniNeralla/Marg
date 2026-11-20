@@ -10,12 +10,23 @@ export interface ReviewTarget {
   activityId: string;
 }
 
+/** What went wrong, when the reviewer changes the AI's value. Optional; stored so mistakes can be grouped by kind. */
+export const REASON_CODES: { value: string; label: string }[] = [
+  { value: 'ai_misread', label: 'AI misread the work' },
+  { value: 'not_enough_photos', label: 'Not enough photos' },
+  { value: 'not_visible', label: 'Work not visible' },
+  { value: 'wrong_room', label: 'Wrong room' },
+  { value: 'other', label: 'Other' },
+];
+
 export interface ReviewInput {
   mode: ReviewMode;
   /** Percentage text/number for in_progress (1-99) and correct (0-100); ignored otherwise. */
   pct?: number | string | null;
   reason: string;
   note?: string;
+  /** One of REASON_CODES (ignored for "accept", where nothing was wrong). */
+  reasonCode?: string;
 }
 
 export type ReviewPayloadResult =
@@ -74,7 +85,10 @@ export function buildReviewPayload(target: ReviewTarget, input: ReviewInput): Re
       ...base,
       progressVerdict: 'wrong',
       activityCorrections: [
-        { activityId: target.activityId, verdict: 'wrong', correctPercentage: pct, note: reason },
+        {
+          activityId: target.activityId, verdict: 'wrong', correctPercentage: pct, note: reason,
+          ...(input.reasonCode && REASON_CODES.some(r => r.value === input.reasonCode) ? { reasonCode: input.reasonCode } : {}),
+        },
       ],
     },
   };

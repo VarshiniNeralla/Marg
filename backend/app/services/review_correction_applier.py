@@ -361,6 +361,18 @@ class ReviewCorrectionApplier:
             pct = corr.get("correctPercentage")
             if pct is None:
                 pct = corr.get("correct_percentage")
+            verdict = str(corr.get("verdict") or "")
+            # "Accept AI assessment" carries no percentage: the reviewer is saying the AI's value is right. Record
+            # that exact value as verified. The value the reviewer SAW is stored on the review (acceptedPct); fall
+            # back to the activity's current value only for a review that has none. Without this, accepting was
+            # saved but never shown, and was not re-applied after a re-analysis.
+            accepted = False
+            if pct is None and verdict == "correct":
+                pct = corr.get("acceptedPct")
+                if pct is None:
+                    seen = by_id.get(aid)
+                    pct = seen.get("completionPct") if seen else None
+                accepted = pct is not None
             if pct is None:
                 continue
             try:
@@ -368,7 +380,6 @@ class ReviewCorrectionApplier:
             except (TypeError, ValueError):
                 continue
             pct_f = max(0.0, min(100.0, pct_f))
-            verdict = str(corr.get("verdict") or "")
             note = str(corr.get("note") or corr.get("reason") or "")
             if pct_f >= 100.0:
                 status = "completed"
@@ -423,6 +434,8 @@ class ReviewCorrectionApplier:
                 "by": reviewed_by,
                 "at": reviewed_at or _utcnow(),
                 "aiPct": act.get("aiCompletionPct"),
+                "accepted": accepted,
+                "reasonCode": corr.get("reasonCode") or "",
             }
             act["detectionType"] = "manual"
             act["assessmentStatus"] = status_for_pct(pct_f)

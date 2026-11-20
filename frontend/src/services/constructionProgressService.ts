@@ -261,6 +261,8 @@ export interface ActivityCorrection {
   correctPercentage?: number;
   /** Why the reviewer marked this activity correct/wrong. */
   note?: string;
+  /** Optional short tag for what went wrong (see REASON_CODES in utils/reviewPayload). */
+  reasonCode?: string;
 }
 
 /** Per-pin room-mapping judgment when multiple pins fall in one room. */

@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, Radio, RadioGroup,
+  Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, Radio, RadioGroup,
   TextField, Typography,
 } from '@mui/material';
 import { toast } from 'react-toastify';
 import { colors } from '@theme/tokens';
 import { constructionProgressService } from '@/services/constructionProgressService';
-import { buildReviewPayload, type ReviewMode, type ReviewTarget } from '@/utils/reviewPayload';
+import { buildReviewPayload, REASON_CODES, type ReviewMode, type ReviewTarget } from '@/utils/reviewPayload';
 
 const MODES: { value: ReviewMode; label: string; help: string }[] = [
   { value: 'accept', label: 'Accept AI assessment', help: 'The AI value is right. It is recorded as verified.' },
@@ -29,18 +29,19 @@ export default function ActivityReviewDialog({
   const [pct, setPct] = useState('');
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
+  const [reasonCode, setReasonCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (open) { setMode('accept'); setPct(''); setReason(''); setNote(''); setError(null); setSaving(false); }
+    if (open) { setMode('accept'); setPct(''); setReason(''); setNote(''); setReasonCode(''); setError(null); setSaving(false); }
   }, [open, target?.activityId, target?.roomName]);
 
   const needsPct = mode === 'in_progress' || mode === 'correct';
 
   const submit = async () => {
     if (!target) return;
-    const built = buildReviewPayload(target, { mode, pct, reason, note });
+    const built = buildReviewPayload(target, { mode, pct, reason, note, reasonCode });
     if (!built.ok) { setError(built.error); return; }
     setError(null);
     setSaving(true);
@@ -95,6 +96,29 @@ export default function ActivityReviewDialog({
             sx={{ mt: 1.5 }}
             slotProps={{ htmlInput: { min: mode === 'in_progress' ? 1 : 0, max: mode === 'in_progress' ? 99 : 100, step: 1 } }}
           />
+        )}
+        {mode !== 'accept' && (
+          <Box sx={{ mt: 1.5 }}>
+            <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: colors.textMuted, mb: 0.75 }}>
+              What went wrong? (optional, helps improve the AI)
+            </Typography>
+            <Box role="radiogroup" aria-label="What went wrong" sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+              {REASON_CODES.map(r => (
+                <Chip
+                  key={r.value}
+                  role="radio"
+                  aria-checked={reasonCode === r.value}
+                  label={r.label}
+                  size="small"
+                  clickable
+                  color={reasonCode === r.value ? 'primary' : 'default'}
+                  variant={reasonCode === r.value ? 'filled' : 'outlined'}
+                  onClick={() => setReasonCode(prev => (prev === r.value ? '' : r.value))}
+                  sx={{ minHeight: 32 }}
+                />
+              ))}
+            </Box>
+          </Box>
         )}
         <TextField
           label="Reason (required)"

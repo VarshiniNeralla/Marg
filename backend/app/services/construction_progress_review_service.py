@@ -172,6 +172,123 @@ def _serialize_review(doc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _find_activity(snap: dict[str, Any], flat_name: str, room_name: str, activity_id: str) -> dict[str, Any] | None:
+    """The activity as the reviewer saw it on the snapshot (flat + room + activity)."""
+    from app.services.review_correction_applier import _rooms_match
+    from app.services.room_map_service import _canonical_flat_label
+
+    want = _canonical_flat_label(flat_name)
+    for fp in snap.get("flatProgress") or []:
+        if _canonical_flat_label(str(fp.get("flatName") or "")) != want:
+            continue
+        for room in fp.get("rooms") or []:
+            if not _rooms_match(str(room.get("roomName") or ""), room_name):
+                continue
+            for act in room.get("activities") or []:
+                if str(act.get("activityId") or "") == activity_id:
+                    return act
+    return None
+
+
+def _num(v: Any) -> float | None:
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def enrich_corrections(
+    snap: dict[str, Any], flat_name: str, room_name: str, corrections: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Attach to every correction what the AI had said and which photos it used, at the moment of the review.
+
+    This is what turns a review into a usable data point: AI value, human value, the size of the miss, the reason and the
+    evidence. "Accept" carries no percentage from the client, so the value the reviewer saw is recorded as ``acceptedPct``
+    (and is what is re-applied after a later analysis). Corrections for activities not found on the snapshot are kept
+    unchanged.
+    """
+    out: list[dict[str, Any]] = []
+    for raw in corrections:
+        c = dict(raw)
+        act = _find_activity(snap, flat_name, room_name, str(c.get("activityId") or ""))
+        if act is not None:
+            ai_pct = _num(act.get("aiCompletionPct") if act.get("aiCompletionPct") is not None else act.get("completionPct"))
+            human_corrected = bool(act.get("humanCorrected"))
+            c["aiPct"] = ai_pct
+            c["aiStatus"] = act.get("aiAssessmentStatus") or act.get("assessmentStatus") or act.get("status") or ""
+            c["aiConfidencePct"] = _num(act.get("confidencePct"))
+            c["aiDetectionType"] = act.get("aiDetectionType") or act.get("detectionType") or ""
+            c["evidenceCaptureIds"] = [str(x) for x in (act.get("evidenceCaptureIds") or [])][:20]
+            rationale = act.get("rationale") or ("" if human_corrected else act.get("evidence")) or ""
+            c["aiRationale"] = str(rationale)[:600]
+            if c.get("correctPercentage") is None and c.get("verdict") == "correct" and ai_pct is not None:
+                c["acceptedPct"] = ai_pct
+            human_pct = _num(c.get("correctPercentage"))
+            if human_pct is None:
+                human_pct = _num(c.get("acceptedPct"))
+            c["humanPct"] = human_pct
+            c["errorPts"] = round(human_pct - ai_pct, 1) if human_pct is not None and ai_pct is not None else None
+        out.append(c)
+    return out
+
+
+EXPORT_COLUMNS = [
+    "reviewedAt", "reviewId", "floorId", "flatName", "roomName", "activityId", "activityName", "verdict",
+    "aiPct", "humanPct", "errorPts", "aiStatus", "aiConfidencePct", "reasonCode", "reason", "aiRationale",
+    "evidenceCaptureIds", "model", "promptVersion", "rigVersion", "reviewedBy",
+]
+
+
+def review_export_rows(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One flat row per reviewed activity: the labelled data set for improving prompts, criteria and evaluations."""
+    names = _activity_name_lookup()
+    rows: list[dict[str, Any]] = []
+    for d in docs:
+        for c in d.get("activityCorrections") or d.get("activity_corrections") or []:
+            if not isinstance(c, dict):
+                continue
+            aid = str(c.get("activityId") or c.get("activity_id") or "")
+            human = c.get("humanPct")
+            if human is None:
+                human = c.get("correctPercentage") if c.get("correctPercentage") is not None else c.get("correct_percentage")
+            rows.append({
+                "reviewedAt": _iso(d.get("createdAt") or d.get("created_at")),
+                "reviewId": str(d.get("_id") or d.get("id") or ""),
+                "floorId": d.get("floorId") or d.get("floor_id") or "",
+                "flatName": d.get("flatName") or d.get("flat_name") or "",
+                "roomName": d.get("roomName") or d.get("room_name") or "",
+                "activityId": aid,
+                "activityName": names.get(aid) or aid,
+                "verdict": c.get("verdict") or "",
+                "aiPct": c.get("aiPct"),
+                "humanPct": human,
+                "errorPts": c.get("errorPts"),
+                "aiStatus": c.get("aiStatus") or "",
+                "aiConfidencePct": c.get("aiConfidencePct"),
+                "reasonCode": c.get("reasonCode") or "",
+                "reason": c.get("note") or c.get("reason") or "",
+                "aiRationale": c.get("aiRationale") or "",
+                "evidenceCaptureIds": ";".join(str(x) for x in (c.get("evidenceCaptureIds") or [])),
+                "model": d.get("model") or "",
+                "promptVersion": d.get("promptVersion") or d.get("prompt_version") or "",
+                "rigVersion": d.get("rigVersion") if d.get("rigVersion") is not None else d.get("rig_version"),
+                "reviewedBy": d.get("reviewedBy") or d.get("reviewed_by") or "",
+            })
+    return rows
+
+
+def rows_to_csv(rows: list[dict[str, Any]]) -> str:
+    import csv
+    import io
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=EXPORT_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for r in rows:
+        writer.writerow(r)
+    return buf.getvalue()
+
+
 class ConstructionProgressReviewService:
     def __init__(self, db: AsyncIOMotorDatabase):
         self._db = db
@@ -236,7 +353,11 @@ class ConstructionProgressReviewService:
             "actualRoom": payload.get("actualRoom"),
             "pinRoomVerdicts": list(payload.get("pinRoomVerdicts") or []),
             "progressVerdict": payload.get("progressVerdict"),
-            "activityCorrections": list(payload.get("activityCorrections") or []),
+            # Each correction also records what the AI said and the photos it used (see enrich_corrections).
+            "activityCorrections": enrich_corrections(
+                snap, str(payload.get("flatName") or ""), str(payload.get("roomName") or ""),
+                list(payload.get("activityCorrections") or []),
+            ),
             "note": str(payload.get("note") or ""),
             "reviewedBy": reviewed_by,
             # Provenance — prefer values frozen on the snapshot; fall back to
@@ -284,6 +405,13 @@ class ConstructionProgressReviewService:
         cursor = self._db[_COLLECTION].find(query).sort("createdAt", -1)
         docs = await cursor.to_list(length=5_000)
         return [_serialize_review(d) for d in docs]
+
+    async def export_rows(self, *, org_id: str, floor_id: str | None = None) -> list[dict[str, Any]]:
+        query: dict[str, Any] = {"orgId": org_id}
+        if floor_id:
+            query["floorId"] = floor_id
+        docs = await self._db[_COLLECTION].find(query).sort("createdAt", 1).to_list(length=20_000)
+        return review_export_rows(docs)
 
     async def summary(
         self,
@@ -337,12 +465,37 @@ class ConstructionProgressReviewService:
                     verdicts[v] += 1
             progress_total = sum(verdicts.values())
             activity_wrong: dict[str, int] = {}
+            acc: dict[str, dict[str, float]] = {}
             for r in items:
                 for corr in r.get("activityCorrections") or r.get("activity_corrections") or []:
-                    if (corr.get("verdict") or "") == "wrong":
-                        aid = str(corr.get("activityId") or corr.get("activity_id") or "")
-                        if aid:
-                            activity_wrong[aid] = activity_wrong.get(aid, 0) + 1
+                    aid = str(corr.get("activityId") or corr.get("activity_id") or "")
+                    if (corr.get("verdict") or "") == "wrong" and aid:
+                        activity_wrong[aid] = activity_wrong.get(aid, 0) + 1
+                    # Size of the miss, only where the AI value was recorded with the review.
+                    err = corr.get("errorPts")
+                    if aid and isinstance(err, (int, float)):
+                        a = acc.setdefault(aid, {"n": 0, "accepted": 0, "corrected": 0, "abs": 0.0, "signed": 0.0})
+                        a["n"] += 1
+                        a["accepted" if (corr.get("verdict") or "") == "correct" else "corrected"] += 1
+                        a["abs"] += abs(err)
+                        a["signed"] += err
+            names = _activity_name_lookup()
+            activity_accuracy = sorted(
+                (
+                    {
+                        "activityId": aid,
+                        "activityName": names.get(aid) or aid,
+                        "reviews": int(a["n"]),
+                        "accepted": int(a["accepted"]),
+                        "corrected": int(a["corrected"]),
+                        "meanAbsErrorPts": round(a["abs"] / a["n"], 1),
+                        # negative = the AI tends to over-estimate; positive = it tends to under-estimate
+                        "biasPts": round(a["signed"] / a["n"], 1),
+                    }
+                    for aid, a in acc.items()
+                ),
+                key=lambda x: (-x["reviews"], x["activityId"]),
+            )
             by_version.append({
                 "promptVersion": prompt_version,
                 "rigVersion": rig_version,
@@ -358,6 +511,7 @@ class ConstructionProgressReviewService:
                     ) if progress_total else None,
                 },
                 "activityWrongCounts": activity_wrong,
+                "activityAccuracy": activity_accuracy,
             })
 
         return {
