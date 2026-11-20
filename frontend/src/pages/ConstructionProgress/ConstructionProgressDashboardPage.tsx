@@ -11,8 +11,7 @@ import {
   type FloorProgressSnapshot,
 } from '@/services/constructionProgressService';
 import FloorActionToolbar from '@/components/ConstructionProgress/FloorActionToolbar';
-import ProgressRing from '@/components/ConstructionProgress/ProgressRing';
-import SummaryCardsRow from '@/components/ConstructionProgress/SummaryCardsRow';
+import FloorOverviewHero from '@/components/ConstructionProgress/FloorOverviewHero';
 import ExecutiveSummaryPanel from '@/components/ConstructionProgress/ExecutiveSummaryPanel';
 import ActivitySection from '@/components/ConstructionProgress/ActivitySection';
 import FloorPlanHeatmapOverlay from '@/components/ConstructionProgress/FloorPlanHeatmapOverlay';
@@ -417,75 +416,12 @@ export default function ConstructionProgressDashboardPage() {
             />
           </Box>
 
-          <Box
-            sx={{
-              display: 'flex', gap: 3, alignItems: 'center', flexWrap: 'wrap',
-              p: 3, borderRadius: '16px', backgroundColor: P.white, border: `1.5px solid ${P.border}`, mb: 3,
-            }}
-          >
-            <ProgressRing percentage={snapshot.overallProgressPct} label="Complete" />
-            <Box sx={{ flex: 1, minWidth: 240 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5, flexWrap: 'wrap' }}>
-                <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: P.muted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                  Overall Floor Progress
-                </Typography>
-                <Box
-                  sx={{
-                    px: 1, py: 0.125, borderRadius: '6px',
-                    backgroundColor: snapshot.overallStatus === 'completed' ? colors.successBg : colors.warningBg,
-                  }}
-                >
-                  <Typography sx={{
-                    fontSize: '0.6875rem', fontWeight: 700,
-                    color: snapshot.overallStatus === 'completed' ? colors.success : colors.warning,
-                  }}>
-                    {snapshot.overallStatus === 'completed' ? 'Completed' : 'Work in Progress'}
-                  </Typography>
-                </Box>
-              </Box>
-              <Typography sx={{ fontSize: '1.75rem', fontWeight: 800, color: P.strong, lineHeight: 1.1 }}>
-                {Math.round(snapshot.overallProgressPct)}%
-              </Typography>
-              <Typography sx={{ fontSize: '0.8125rem', color: P.muted, mt: 1 }}>
-                {snapshot.imagesAnalyzedCount} image{snapshot.imagesAnalyzedCount === 1 ? '' : 's'} analyzed
-              </Typography>
-              {[
-                { label: 'Flat finishing', unit: 'flats', s: snapshot.flatFinishing },
-                { label: 'Common area', unit: 'regions', s: snapshot.commonFinishing },
-              ].filter(x => (x.s?.total ?? 0) > 0).length > 0 && (
-                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' }, gap: 1, mt: 1.5 }}>
-                  {[
-                    { label: 'Flat finishing', unit: 'flats', s: snapshot.flatFinishing },
-                    { label: 'Common area', unit: 'regions', s: snapshot.commonFinishing },
-                  ].filter(x => (x.s?.total ?? 0) > 0).map(x => (
-                    <Box key={x.label} sx={{ px: 1.5, py: 1, borderRadius: '10px', backgroundColor: P.bg, border: `1px solid ${P.border}` }}>
-                      <Typography sx={{ fontSize: '0.6875rem', fontWeight: 700, color: P.muted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                        {x.label}
-                      </Typography>
-                      <Typography sx={{ fontSize: '1.125rem', fontWeight: 800, color: P.strong, lineHeight: 1.2 }}>
-                        {Math.round(x.s?.progressPct ?? 0)}%
-                        <Typography component="span" sx={{ fontSize: '0.75rem', fontWeight: 600, color: P.muted }}>
-                          {' '}verified · {Math.round(x.s?.coveragePct ?? 0)}% coverage
-                        </Typography>
-                      </Typography>
-                      <Typography sx={{ fontSize: '0.75rem', color: P.muted }}>
-                        {x.s?.completed ?? 0} of {x.s?.total} {x.unit} complete
-                        {(x.s?.awaitingEvidence ?? 0) > 0 ? ` · ${x.s?.awaitingEvidence} awaiting evidence` : ''}
-                      </Typography>
-                    </Box>
-                  ))}
-                </Box>
-              )}
-            </Box>
-          </Box>
-
-          <Box sx={{ mb: 3 }}>
-            <SummaryCardsRow
-              cards={snapshot.summaryCards}
-              overallProgressPct={snapshot.overallProgressPct}
-              analysedAt={snapshot.snapshotDate}
-            />
-          </Box>
+          <FloorOverviewHero
+            overallProgressPct={snapshot.overallProgressPct}
+            overallStatus={snapshot.overallStatus}
+            cards={snapshot.summaryCards}
+            analysedAt={snapshot.snapshotDate}
+          />
 
           <Box sx={{ mb: 3 }}>
             <ExecutiveSummaryPanel summary={snapshot.executiveSummary} />

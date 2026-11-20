@@ -8,6 +8,9 @@ const flat = (over: Partial<FlatProgress>): FlatProgress => ({
   scopeStatus: 'in_progress', ...over,
 });
 
+// React's server renderer splits text with invisible markers; compare what a person would actually read.
+const visible = (html: string) => html.replace(/<style[\s\S]*?<\/style>/g, '').replace(/<!-- -->/g, '');
+
 describe('FlatSelector', () => {
   it('shows name, verified %, coverage and status wording', () => {
     const html = renderToString(
@@ -24,6 +27,26 @@ describe('FlatSelector', () => {
     expect(html).toContain('Awaiting evidence');
     expect(html).toContain('Review needed');
     expect(html).toContain('aria-selected="true"');
+  });
+
+  it('is clearly a picker: heading, instruction, flat count and the chosen flat marked as viewed', () => {
+    const html = renderToString(
+      <FlatSelector flats={[flat({ flatName: 'Flat 01' }), flat({ flatName: 'Flat 02' }), flat({ flatName: 'Flat 03' })]} selected="Flat 02" onSelect={() => {}} />,
+    );
+    expect(html).toContain('Choose a flat');
+    expect(visible(html)).toContain('3 flats on this floor');
+    expect(visible(html)).toContain('tap one to see its progress');
+    expect(html.split('Viewing').length - 1).toBe(1);               // only the chosen flat says "Viewing"
+    expect(html.split('aria-selected="true"').length - 1).toBe(1);
+    expect(html.split('role="option"').length - 1).toBe(3);         // every configured flat is selectable
+  });
+
+  it('lists every flat it is given, even ones with no photos yet', () => {
+    const html = renderToString(
+      <FlatSelector flats={[flat({ flatName: 'Flat 07', completionPct: 0, scopeStatus: 'no_photos' })]} selected="" onSelect={() => {}} />,
+    );
+    expect(html).toContain('Flat 07');
+    expect(visible(html)).toContain('1 flat on this floor');
   });
 
   it('never shows 100% unless completed', () => {

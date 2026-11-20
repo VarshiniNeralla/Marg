@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, Typography, CircularProgress, Tooltip } from '@mui/material';
-import { ArrowBackRounded, WarningAmberRounded } from '@mui/icons-material';
+import { ArrowBackRounded, InfoOutlined as InfoOutlinedIcon, WarningAmberRounded } from '@mui/icons-material';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { colors, motion } from '@theme/tokens';
@@ -15,7 +15,7 @@ import {
 import { useAuthStore, isManagerOrAdmin } from '@store/authStore';
 import ProgressRing from '@/components/ConstructionProgress/ProgressRing';
 import EvidenceLightbox from '@/components/ConstructionProgress/EvidenceLightbox';
-import FinishingOverview, { PROGRESS_EXPLAINER } from '@/components/ConstructionProgress/FinishingOverview';
+import { PROGRESS_EXPLAINER } from '@/components/ConstructionProgress/FinishingOverview';
 import FlatSelector from '@/components/ConstructionProgress/FlatSelector';
 import RoomProgressCard from '@/components/ConstructionProgress/RoomProgressCard';
 import ActivityReviewDialog from '@/components/ConstructionProgress/ActivityReviewDialog';
@@ -74,24 +74,22 @@ function FlatDetail({
       >
         <ProgressRing percentage={verified} label="Verified" />
         <Box sx={{ flex: 1, minWidth: 240 }}>
-          <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: P.muted, textTransform: 'uppercase', letterSpacing: '0.04em', mb: 0.5 }}>
-            {flat.flatName}
-          </Typography>
-          <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
-            <Tooltip title={PROGRESS_EXPLAINER} arrow enterTouchDelay={0}>
-              <Typography tabIndex={0} sx={{ fontSize: '0.8125rem', fontWeight: 700, color: P.muted, cursor: 'help' }}>
-                Verified progress
-              </Typography>
-            </Tooltip>
-            <Typography sx={{ fontSize: '1.75rem', fontWeight: 800, color: P.strong, lineHeight: 1.1 }}>{verified}%</Typography>
+          {/* The percentage is shown once, in the ring. Everything beside it is plain facts. */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+            <Typography sx={{ fontSize: '1.375rem', fontWeight: 800, color: P.strong, lineHeight: 1.2 }}>{flat.flatName}</Typography>
             <ScopeChip status={scope} />
+            <Tooltip title={PROGRESS_EXPLAINER} arrow enterTouchDelay={0}>
+              <InfoOutlinedIcon tabIndex={0} aria-label="How progress is measured" sx={{ fontSize: 18, color: P.muted, cursor: 'help' }} />
+            </Tooltip>
           </Box>
-          <Box sx={{ display: 'flex', gap: { xs: 2, sm: 3 }, flexWrap: 'wrap', mt: 1.25 }}>
-            {typeof flat.estimatePct === 'number' && <Metric label="Estimate on observed work" value={formatPct(flat.estimatePct)} />}
-            {typeof flat.coveragePct === 'number' && <Metric label="Coverage" value={formatPct(flat.coveragePct)} />}
+          <Box sx={{ display: 'flex', gap: { xs: 2, sm: 3 }, flexWrap: 'wrap', mt: 1.5 }}>
+            <Metric
+              label={`${isCommon ? 'Regions' : 'Rooms'} photographed`}
+              value={typeof flat.roomsPhotographed === 'number' && typeof flat.roomsRequired === 'number'
+                ? `${flat.roomsPhotographed} of ${flat.roomsRequired}`
+                : `${flat.roomsTotal}`}
+            />
             <Metric label={`${isCommon ? 'Regions' : 'Rooms'} complete`} value={`${flat.roomsComplete} of ${flat.roomsTotal}`} />
-            {typeof flat.roomsPhotographed === 'number' && <Metric label="Photographed" value={String(flat.roomsPhotographed)} />}
-            {typeof flat.roomsRequired === 'number' && <Metric label="Required" value={String(flat.roomsRequired)} />}
             {flat.lastInspection && <Metric label="Last inspection" value={formatDate(flat.lastInspection)} />}
           </Box>
         </Box>
@@ -195,7 +193,6 @@ export default function FlatFinishingWorksPage() {
   }, [load]);
 
   const flat = scopedProgress.find(f => f.flatName === selectedFlat) ?? null;
-  const summary = isCommon ? snapshot?.commonFinishing : snapshot?.flatFinishing;
   const pageTitle = isCommon ? 'Common Area Finishing Works' : 'Flat Finishing Works';
   const pageSubtitle = snapshot
     ? isCommon
@@ -240,8 +237,6 @@ export default function FlatFinishingWorksPage() {
         </Box>
       ) : (
         <>
-          <FinishingOverview summary={summary} isCommon={isCommon} />
-
           {!isCommon && (
             <FlatSelector flats={scopedProgress} selected={selectedFlat} onSelect={setSelectedFlat} />
           )}
