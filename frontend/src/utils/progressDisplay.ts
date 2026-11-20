@@ -86,7 +86,8 @@ export const SCOPE_LABELS: Record<ScopeStatus, string> = {
   completed: 'Completed',
   in_progress: 'Work in progress',
   not_started: 'Not started',
-  awaiting_evidence: 'Awaiting evidence',
+  // Too few activities seen yet to be sure: still work in progress for the reader; the room card says how many were seen.
+  awaiting_evidence: 'Work in progress',
   no_photos: 'No photos',
 };
 
@@ -97,8 +98,8 @@ export function scopeLabel(status: ScopeStatus | undefined): string {
 export function scopeColor(status: ScopeStatus | undefined): { fg: string; bg: string } {
   switch (status) {
     case 'completed': return { fg: colors.success, bg: colors.successBg };
-    case 'in_progress': return { fg: colors.warning, bg: colors.warningBg };
-    case 'awaiting_evidence': return { fg: colors.info, bg: colors.infoBg };
+    case 'in_progress':
+    case 'awaiting_evidence': return { fg: colors.warning, bg: colors.warningBg };
     default: return { fg: colors.textSubdued, bg: colors.bgDeep };
   }
 }
@@ -173,8 +174,21 @@ export function roomCoverageText(pct: number | undefined | null): string | null 
 // Review
 // ---------------------------------------------------------------------------------------------------------
 
-export function countNeedingReview(activities: ReadonlyArray<{ reviewRequired?: boolean }>): number {
-  return activities.reduce((n, a) => n + (a.reviewRequired ? 1 : 0), 0);
+/**
+ * Automatic notes the engine used to attach ("captures disagree", "state could not be established") are not
+ * something a manager can act on and read as errors, so they never count as "needs review". Older stored
+ * snapshots still carry them, hence the check here as well as in the engine.
+ */
+const AUTOMATIC_REVIEW_NOTES = ['Captures of this room disagree', 'The area was photographed but'];
+
+export function needsManagerReview(a: { reviewRequired?: boolean; reviewReason?: string }): boolean {
+  if (!a.reviewRequired) return false;
+  const reason = a.reviewReason ?? '';
+  return !AUTOMATIC_REVIEW_NOTES.some(note => reason.startsWith(note));
+}
+
+export function countNeedingReview(activities: ReadonlyArray<{ reviewRequired?: boolean; reviewReason?: string }>): number {
+  return activities.reduce((n, a) => n + (needsManagerReview(a) ? 1 : 0), 0);
 }
 
 export function reviewBannerText(count: number): string {

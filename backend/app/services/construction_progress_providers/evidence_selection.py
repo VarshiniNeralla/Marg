@@ -37,7 +37,6 @@ from app.services.construction_progress_providers.progress_aggregation import (
 MIN_USABLE_CONFIDENCE = 30.0
 RELIABLE_CONFIDENCE = 50.0
 STALE_AFTER_DAYS = 7
-CONFLICT_SPREAD_PCT = 40.0
 MAX_EVIDENCE = 3
 MAX_INDICATORS = 6
 
@@ -96,8 +95,9 @@ def resolve_observations(observations: Sequence[Observation]) -> dict[str, Any]:
             "indicators_missing": _uniq([i for o in obs for i in o.indicators_missing]),
             "explanation": best.explanation or best.evidence,
             "views": list(best.views),
-            "review_required": True,
-            "review_reason": "The area was photographed but the state of this activity could not be established.",
+            # Shown to the reader as "Unable to determine" with the model's own explanation; not a review flag.
+            "review_required": False,
+            "review_reason": "",
             "last_captured_at": max((_naive(o.captured_at) for o in obs if o.captured_at), default=None),
             "n_captures": len(obs),
         }
@@ -117,15 +117,10 @@ def resolve_observations(observations: Sequence[Observation]) -> dict[str, Any]:
     lowest = min(fresh, key=lambda o: (o.pct, -o.conf))
     pct = float(lowest.pct or 0.0)
 
+    # Captures that disagree are resolved silently (the lower reading is kept). This is not shown to the reader
+    # as a review flag: it only confused people and gave a manager nothing to act on.
     review_required = False
     review_reason = ""
-    spread_values = [float(o.pct) for o in fresh if o.conf >= RELIABLE_CONFIDENCE]
-    if len(spread_values) >= 2 and max(spread_values) - min(spread_values) >= CONFLICT_SPREAD_PCT:
-        review_required = True
-        review_reason = (
-            f"Captures of this room disagree ({min(spread_values):.0f}% to {max(spread_values):.0f}%); "
-            "the lower reading is used until a manager confirms."
-        )
 
     supporting = [
         o for o in fresh

@@ -19,7 +19,7 @@ def test_unable_to_determine_stays_unknown_and_has_no_evidence_images():
     r = resolve_observations([obs("c1", None, 60.0), obs("c2", None, 60.0)])
     assert r["pct"] is None and r["status"] == "unable_to_determine"
     assert r["evidence_ids"] == []
-    assert r["review_required"] is True
+    assert r["review_required"] is False
 
 
 def test_low_confidence_readings_cannot_set_a_value():
@@ -61,10 +61,10 @@ def test_older_capture_is_still_used_when_it_is_the_only_reliable_one():
     assert r["pct"] == 70.0 and r["evidence_ids"] == ["old"]
 
 
-def test_conflicting_current_captures_are_flagged_for_review():
+def test_conflicting_current_captures_use_the_lower_reading_without_a_review_flag():
     r = resolve_observations([obs("a", 10.0), obs("b", 90.0)])
     assert r["pct"] == 10.0
-    assert r["review_required"] is True and "disagree" in r["review_reason"]
+    assert r["review_required"] is False and r["review_reason"] == ""
 
 
 def test_agreeing_captures_are_not_flagged():

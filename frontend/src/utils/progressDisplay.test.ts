@@ -54,7 +54,7 @@ describe('scope status', () => {
     expect(scopeLabel('completed')).toBe('Completed');
     expect(scopeLabel('in_progress')).toBe('Work in progress');
     expect(scopeLabel('not_started')).toBe('Not started');
-    expect(scopeLabel('awaiting_evidence')).toBe('Awaiting evidence');
+    expect(scopeLabel('awaiting_evidence')).toBe('Work in progress');
     expect(scopeLabel('no_photos')).toBe('No photos');
   });
 
@@ -97,6 +97,10 @@ describe('coverage and review helpers', () => {
 
   it('counts and words the review banner', () => {
     expect(countNeedingReview([{ reviewRequired: true }, {}, { reviewRequired: true }])).toBe(2);
+    expect(countNeedingReview([
+      { reviewRequired: true, reviewReason: "Captures of this room disagree (0% to 100%); the lower reading is used until a manager confirms." },
+      { reviewRequired: true, reviewReason: "The area was photographed but the state of this activity could not be established." },
+    ])).toBe(0);
     expect(reviewBannerText(1)).toBe('1 activity needs review');
     expect(reviewBannerText(3)).toBe('3 activities need review');
   });
