@@ -35,6 +35,18 @@ describe('FloorActionToolbar', () => {
     }
   });
 
+  it('report buttons keep an accessible name even when shown as compact desktop icons', () => {
+    const html = render();
+    expect(html).toContain('aria-label="PDF Report"');
+    expect(html).toContain('aria-label="Excel Report"');
+  });
+
+  it('separates the groups with decorative dividers that screen readers skip', () => {
+    const html = render();
+    expect(html.split('aria-hidden="true"').length - 1).toBeGreaterThanOrEqual(2);
+    expect(html.match(/<section/g)?.length).toBe(3);   // View, Analysis, Reports stay as labelled sections
+  });
+
   it('links to the flats and common pages of the floor', () => {
     const html = render();
     expect(html).toContain('href="/construction-progress/f1/flats"');
