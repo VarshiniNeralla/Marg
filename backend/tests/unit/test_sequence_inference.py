@@ -3,9 +3,8 @@ from app.services.construction_progress_providers.sequence_inference import appl
 
 WP = "flat.wall_punning_4"
 CP = "flat.ceiling_punning_2"
-P1 = "flat.putty_1st_coat_25"
-P2 = "flat.putty_2nd_coat_26"
-PR = "flat.primer_1st_coat_paint_27"
+PU = "flat.putty_39"
+PR = "flat.paint_40"
 SCREED = "flat.floor_screed_1"
 WPF = "flat.waterproofing_8"
 TF = "flat.toilet_utility_balcony_flooring_14"
@@ -29,7 +28,7 @@ def e(pct, conf=90.0, cap="c1", **kw):
 def test_primer_proves_putty_and_punning_as_inferred_not_direct():
     unit = {PR: e(80.0, cap="p")}
     inferred = apply_sequence_inference(unit)
-    for aid in (P2, P1, WP):
+    for aid in (PU, WP):
         assert unit[aid]["pct"] == 80.0
         assert unit[aid]["detection"] == "inferred"
         assert unit[aid]["evidence_ids"] == ["p"]           # the driver's photo, labelled inferred
@@ -38,9 +37,9 @@ def test_primer_proves_putty_and_punning_as_inferred_not_direct():
 
 
 def test_inference_never_invents_a_later_stage():
-    unit = {P1: e(100.0)}
+    unit = {PU: e(100.0)}
     apply_sequence_inference(unit)
-    assert P2 not in unit and PR not in unit
+    assert PR not in unit
     assert WP in unit                                          # earlier one is allowed
 
 
@@ -72,9 +71,9 @@ def test_hidden_earlier_stage_with_a_low_direct_reading_is_raised_and_the_direct
 
 
 def test_a_higher_direct_reading_is_never_lowered_by_inference():
-    unit = {PR: e(40.0), P1: e(100.0, cap="x")}
+    unit = {PR: e(40.0), PU: e(100.0, cap="x")}
     apply_sequence_inference(unit)
-    assert unit[P1]["pct"] == 100.0 and unit[P1]["detection"] == "direct"
+    assert unit[PU]["pct"] == 100.0 and unit[PU]["detection"] == "direct"
 
 
 def test_visible_earlier_stage_that_contradicts_the_later_one_is_flagged_not_overridden():
@@ -88,17 +87,17 @@ def test_visible_earlier_stage_that_contradicts_the_later_one_is_flagged_not_ove
 def test_unreliable_drivers_do_not_infer():
     unit = {PR: e(100.0, conf=30.0)}
     apply_sequence_inference(unit)
-    assert P2 not in unit
+    assert PU not in unit
 
 
 def test_zero_or_unknown_drivers_do_not_infer():
-    unit = {PR: e(0.0), P2: e(None, 60.0)}
+    unit = {PR: e(0.0), PU: e(None, 60.0)}
     apply_sequence_inference(unit)
-    assert P1 not in unit and WP not in unit
+    assert WP not in unit and unit[PU]["pct"] is None
 
 
 def test_common_area_chain_uses_its_own_ids():
-    unit = {"common.primer_1st_coat_paint_6": e(70.0, cap="z")}
+    unit = {"common.paint_11": e(70.0, cap="z")}
     apply_sequence_inference(unit)
-    assert unit["common.putty_2nd_coat_5"]["pct"] == 70.0
+    assert unit["common.putty_10"]["pct"] == 70.0
     assert unit["common.wall_punning_works_1"]["detection"] == "inferred"

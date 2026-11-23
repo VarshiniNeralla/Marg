@@ -14,7 +14,7 @@ The graph is deliberately NOT a rigid chain: activities overlap across rooms.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,9 @@ class ActivityRule:
     unable_to_determine_when: tuple[str, ...]
     scope_note: str
     concealed_when_finished: bool
+    # Lowercase substrings. A reading with pct > 0 is kept only if at least one (non-negated)
+    # indicators_found entry contains one of them (see vllm_provider.passes_proof_gate).
+    proof_indicators: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -518,103 +521,171 @@ FLAT_RULES: dict[str, ActivityRule] = {
         scope_note="100% = routed rough-in conduits, boxes and wires present across the observed walls and ceiling.",
         concealed_when_finished=True,
     ),
-    "flat.putty_1st_coat_25": ActivityRule(
-        activity_id="flat.putty_1st_coat_25",
-        label="Putty 1st Coat",
+    "flat.gypsum_41": ActivityRule(
+        activity_id="flat.gypsum_41",
+        label="Gypsum Works (walls)",
         objects_to_find=(
-            "white or off-white wall putty skim layer on plastered walls",
-            "transition between grey rough plaster and puttied surface",
-            "trowel and blade marks, ridges and patches",
-            "sanding dust or powder on floor near walls",
+            "gypsum board sheets screwed on wall framing or gypsum plaster applied on walls",
+            "board joints, screw heads, jointing tape and compound on walls",
+            "smooth even gypsum finish with straight reveals and corners",
+            "GI wall channels or studs waiting for boards",
         ),
         started_indicators=(
-            "white putty patches on grey plaster",
+            "first boards screwed on a wall frame",
+            "first gypsum plaster patches on a wall",
+        ),
+        partial_indicators=(
+            "boards or gypsum plaster on some walls, other walls still bare masonry or framing",
+            "% = gypsum-finished wall area / wall area in view that gets gypsum",
+        ),
+        complete_indicators=(
+            "all walls in view lined with boards or gypsum plaster, joints taped and filled",
+            "straight corners and reveals, no bare masonry or framing left",
+        ),
+        insufficient_evidence=(
+            "ceiling boards (that is False Ceiling Boxing, not gypsum walls)",
+            "smooth white wall alone (putty, paint and punning look alike)",
+            "boards or gypsum bags stacked or leaning against a wall",
+            "GI framing alone with no boards",
+        ),
+        unable_to_determine_when=(
+            "cannot tell gypsum from punning, putty or paint",
+            "walls are not in view or covered by material",
+        ),
+        scope_note="100% = every wall in view that gets gypsum is lined or plastered; walls only, never ceilings.",
+        concealed_when_finished=False,
+    ),
+    "flat.windows_43": ActivityRule(
+        activity_id="flat.windows_43",
+        label="Windows",
+        objects_to_find=(
+            "window frames, sliding or casement windows fixed in wall openings",
+            "glazing or glass panes in the frame, ventilator frames",
+            "frame holdfasts, sealant or foam around the frame",
+            "empty window openings",
+        ),
+        started_indicators=(
+            "frame set in the opening with props or wedges",
+            "frame fixed but no glass yet",
+        ),
+        partial_indicators=(
+            "some openings fitted, others empty",
+            "% = fixed windows / window openings in view",
+        ),
+        complete_indicators=(
+            "frames fixed plumb in all openings in view, glazing fitted",
+            "gaps to the wall sealed or packed",
+        ),
+        insufficient_evidence=(
+            "frames or glass stacked, leaning or lying on the floor",
+            "an empty opening (that is 0)",
+            "door frames or lift doors",
+            "wrapped or crated windows not fixed",
+        ),
+        unable_to_determine_when=(
+            "openings are not in view or hidden by scaffolding or sheets",
+            "cannot tell fixed from leaning",
+        ),
+        scope_note="100% = every window opening in view holds a fixed frame; frame stacked or leaning is 0.",
+        concealed_when_finished=False,
+    ),
+    "flat.railing_42": ActivityRule(
+        activity_id="flat.railing_42",
+        label="Railing (balcony, sit-out, utility)",
+        objects_to_find=(
+            "MS or glass railing fixed along the balcony, sit-out or utility edge",
+            "posts, base plates, handrail and glass panels fixed to the slab or parapet",
+            "open slab edge with no railing",
+            "railing material lying nearby",
+        ),
+        started_indicators=(
+            "posts or base plates fixed along the edge",
+            "first railing section fixed",
+        ),
+        partial_indicators=(
+            "railing fixed on part of the edge, rest open",
+            "% = fixed railing length / required edge length in view",
+        ),
+        complete_indicators=(
+            "railing fixed along the whole visible open edge",
+            "posts plumb, handrail or glass panels in place",
+        ),
+        insufficient_evidence=(
+            "posts, rails or glass lying on the floor or leaning on a wall",
+            "a plain parapet wall with no railing",
+            "window grills or internal fixtures",
+        ),
+        unable_to_determine_when=(
+            "the balcony or utility edge is not in view",
+            "cannot tell fixed from leaning",
+        ),
+        scope_note="100% = the whole visible open edge carries a fixed railing; balcony, sit-out and utility only.",
+        concealed_when_finished=False,
+    ),
+    "flat.putty_39": ActivityRule(
+        activity_id="flat.putty_39",
+        label="Putty (any coat)",
+        objects_to_find=(
+            "white or off-white putty skim over grey plaster on walls and ceilings",
+            "boundary between grey plaster and puttied surface",
+            "trowel and blade marks, ridges, patches",
+            "sanding dust or powder on the floor near walls",
+        ),
+        started_indicators=(
+            "putty patches on grey plaster",
             "putty applied in bands or around corners",
         ),
         partial_indicators=(
-            "patchy, translucent coat with grey plaster showing through",
-            "% = puttied wall area / total visible wall area",
+            "patchy or translucent putty with grey plaster showing through",
+            "% = puttied visible wall and ceiling area / visible wall and ceiling area",
         ),
         complete_indicators=(
-            "whole wall covered with one thin putty skim, grey no longer showing",
-            "visible trowel marks and slight unevenness still present",
+            "all visible walls and ceilings covered with putty, no grey plaster showing",
+            "sanded smooth surface, still unpainted",
         ),
         insufficient_evidence=(
-            "any white wall alone (white paint, primer, POP and gypsum board are look-alikes)",
+            "any white wall alone (white paint, primer, POP and gypsum look alike)",
             "putty bags or buckets present",
-            "smooth finished look without stage evidence",
+            "smooth finished look without putty marks, patches or sanding",
         ),
         unable_to_determine_when=(
-            "cannot tell first from second coat or putty from primer",
+            "cannot tell putty from primer, paint or POP",
             "surface is white and smooth with no texture cues",
         ),
-        scope_note="100% = every visible plastered wall has the first putty coat; unsure stage means unable_to_determine, not 0 or 100.",
+        scope_note="100% = every visible wall and ceiling carries putty (any coat); coat number is not judged; unsure means unable_to_determine.",
         concealed_when_finished=False,
     ),
-    "flat.putty_2nd_coat_26": ActivityRule(
-        activity_id="flat.putty_2nd_coat_26",
-        label="Putty 2nd Coat",
+    "flat.paint_40": ActivityRule(
+        activity_id="flat.paint_40",
+        label="Paint (primer or any coat)",
         objects_to_find=(
-            "denser, smoother and more opaque white putty surface",
-            "sanded flat wall with no plaster grey showing",
-            "fine sanding dust after rubbing down",
-            "unpainted white or off-white surface",
-        ),
-        started_indicators=(
-            "second skim applied over a first coat in patches",
-            "fresh wet putty over dry first coat",
-        ),
-        partial_indicators=(
-            "part of the wall smooth and opaque, rest still thin and trowel-marked",
-            "% = second-coat area / visible wall area",
-        ),
-        complete_indicators=(
-            "very smooth, uniform, fully opaque putty, still unpainted",
-            "no trowel ridges, pinholes or patches",
-        ),
-        insufficient_evidence=(
-            "smooth white or uniform wall alone",
-            "primer or paint (flatter or coloured, no sanding marks)",
-            "first putty coat that is still translucent or patchy",
-        ),
-        unable_to_determine_when=(
-            "cannot distinguish first versus second coat",
-            "wall may be primer or paint rather than putty",
-        ),
-        scope_note="100% = all visible wall area shows a second dense putty coat before primer; unsure means unable_to_determine.",
-        concealed_when_finished=False,
-    ),
-    "flat.primer_1st_coat_paint_27": ActivityRule(
-        activity_id="flat.primer_1st_coat_paint_27",
-        label="Primer / 1st Coat Paint",
-        objects_to_find=(
-            "uniform cream, white or pale roller-applied coat on walls and ceilings",
+            "roller-applied primer or paint on walls and ceilings",
             "roller texture and cut-in lines at corners and edges",
-            "masked edges, switch boxes or door frames with paint splashes",
-            "flatter finish than putty with no sanding marks",
+            "masked edges, switch boxes or frames with paint splashes",
+            "colour or flatter finish different from bare putty",
         ),
         started_indicators=(
-            "primer on part of a wall with putty still visible beside it",
+            "paint or primer on part of a wall with bare putty beside it",
             "cut-in lines at ceiling corners",
         ),
         partial_indicators=(
-            "some walls primed, others bare putty; missed corners or sheen variation",
-            "% = primed wall area / visible wall area",
+            "some walls painted, others bare putty; missed corners",
+            "% = painted visible wall and ceiling area / visible wall and ceiling area",
         ),
         complete_indicators=(
-            "uniform even primer across all visible walls",
-            "no putty patches or sanding marks showing through",
+            "uniform paint or primer across all visible walls and ceilings",
+            "no bare putty patches or sanding marks showing through",
         ),
         insufficient_evidence=(
             "any white wall alone (putty and gypsum look similar)",
-            "final coloured top coat (that is a later activity)",
-            "paint cans or rollers stored in the room",
+            "paint cans, brushes or rollers stored in the room",
+            "a smooth white surface with no roller marks, cut-in lines or masking",
         ),
         unable_to_determine_when=(
-            "cannot tell primer from putty or white paint",
+            "cannot tell paint or primer from putty",
             "poor lighting hides texture and sheen",
         ),
-        scope_note="100% = all visible wall surfaces carry uniform primer or first paint.",
+        scope_note="100% = every visible wall and ceiling carries primer or paint (any coat); unsure means unable_to_determine.",
         concealed_when_finished=False,
     ),
 }
@@ -719,103 +790,119 @@ COMMON_RULES: dict[str, ActivityRule] = {
         scope_note="100% = false-ceiling scope in view fully framed and boarded; no grid means 0.",
         concealed_when_finished=False,
     ),
-    "common.putty_1st_coat_4": ActivityRule(
-        activity_id="common.putty_1st_coat_4",
-        label="Common Area Putty 1st Coat",
+    "common.putty_10": ActivityRule(
+        activity_id="common.putty_10",
+        label="Common Area Putty (any coat)",
         objects_to_find=(
-            "white or off-white putty skim on corridor walls and ceilings",
-            "transition from grey plaster to puttied surface",
+            "white or off-white putty skim on corridor, lobby and stair walls and ceilings",
+            "boundary between grey plaster and puttied surface",
             "trowel marks, patches and sanding dust",
         ),
         started_indicators=(
-            "white putty patches on grey plaster",
+            "putty patches on grey plaster",
             "putty applied in bands near corners",
         ),
         partial_indicators=(
-            "patchy and translucent coat with grey showing through",
-            "% = puttied area / visible common wall area",
+            "patchy or translucent putty with grey showing through",
+            "% = puttied area / visible common wall and ceiling area",
         ),
         complete_indicators=(
-            "all visible surfaces covered with one thin skim",
-            "trowel marks still visible, unpainted",
+            "all visible common surfaces covered with putty, still unpainted",
+            "sanded smooth with no grey plaster showing",
         ),
         insufficient_evidence=(
             "any white wall alone (paint, primer, POP, gypsum look-alikes)",
             "putty buckets or bags present",
         ),
         unable_to_determine_when=(
-            "cannot tell first from second coat or putty from primer",
+            "cannot tell putty from primer or paint",
             "smooth white wall with no texture cues",
         ),
-        scope_note="100% = all visible common surfaces carry first putty; unsure stage means unable_to_determine.",
+        scope_note="100% = all visible common surfaces carry putty (any coat); unsure means unable_to_determine.",
         concealed_when_finished=False,
     ),
-    "common.putty_2nd_coat_5": ActivityRule(
-        activity_id="common.putty_2nd_coat_5",
-        label="Common Area Putty 2nd Coat",
+    "common.paint_11": ActivityRule(
+        activity_id="common.paint_11",
+        label="Common Area Paint (primer or any coat)",
         objects_to_find=(
-            "denser, smoother, more opaque putty on corridor walls",
-            "sanded flat surfaces with no grey showing",
-            "sanding dust, unpainted white surface",
-        ),
-        started_indicators=(
-            "second skim in patches over first coat",
-            "wet fresh putty over dry coat",
-        ),
-        partial_indicators=(
-            "part smooth and opaque, rest thin and marked",
-            "% = second-coat area / visible common wall area",
-        ),
-        complete_indicators=(
-            "very smooth uniform opaque putty, still unpainted",
-            "no trowel ridges or pinholes",
-        ),
-        insufficient_evidence=(
-            "smooth white wall alone",
-            "primer or paint (flatter, no sanding marks)",
-            "thin translucent first coat",
-        ),
-        unable_to_determine_when=(
-            "cannot distinguish first versus second coat",
-            "surface may be primer or paint",
-        ),
-        scope_note="100% = all visible common surfaces show second putty coat before primer; unsure means unable_to_determine.",
-        concealed_when_finished=False,
-    ),
-    "common.primer_1st_coat_paint_6": ActivityRule(
-        activity_id="common.primer_1st_coat_paint_6",
-        label="Common Area Primer / 1st Coat Paint",
-        objects_to_find=(
-            "uniform cream, white or pale roller coat on corridor walls and ceilings",
+            "roller primer or paint on corridor, lobby and stair walls and ceilings",
             "roller texture and cut-in lines",
-            "flatter finish than putty, no sanding marks",
+            "masked edges and paint splashes on frames or boxes",
         ),
         started_indicators=(
-            "primer on part of a wall beside bare putty",
+            "paint or primer on part of a wall beside bare putty",
             "cut-in lines at corners",
         ),
         partial_indicators=(
-            "some walls primed, others bare; missed corners or sheen variation",
-            "% = primed area / visible common surface area",
+            "some walls painted, others bare; missed corners",
+            "% = painted area / visible common surface area",
         ),
         complete_indicators=(
-            "uniform primer across all visible common surfaces",
+            "uniform paint or primer across all visible common surfaces",
             "no putty patches or sanding marks showing",
         ),
         insufficient_evidence=(
             "any white wall alone",
-            "final coloured top coat (later activity)",
-            "paint cans or rollers stored nearby",
+            "paint cans, brushes or rollers stored nearby",
+            "a smooth white surface with no roller marks or cut-in lines",
         ),
         unable_to_determine_when=(
-            "cannot tell primer from putty or white paint",
+            "cannot tell paint or primer from putty",
             "poor lighting hides texture",
         ),
-        scope_note="100% = all visible common surfaces carry uniform primer or first paint.",
+        scope_note="100% = all visible common surfaces carry primer or paint (any coat); unsure means unable_to_determine.",
         concealed_when_finished=False,
     ),
 }
 
+# --------------------------------------------------------------------- proof indicators
+# Lowercase substrings that must appear in a (non-negated) indicators_found entry before a
+# reading above 0 is kept. Look-alike-prone activities are strict: "smooth", "white" or "flat"
+# alone is never proof. Kept as one table so a site engineer can review them in one place.
+
+_PIPE_PROOF = ("pipe", "clamp", "hanger", "sprinkler", "sleeve", "stub", "duct", "drain")
+_PLASTER_PROOF = ("plaster", "punn", "pop finish", "gauge strip", "cement", "screed line", "grey")
+_PUTTY_PROOF = ("putty", "skim", "trowel", "blade", "sanding", "sanded", "patch", "coat")
+_PAINT_PROOF = ("paint", "primer", "coat", "roller", "cut-in", "cut in", "masked", "masking", "splash", "brush")
+_FALSE_CEILING_PROOF = (
+    "board joint", "joint", "grid", "channel", "access panel", "cove", "cut-out", "cutout",
+    "gypsum board", "bulkhead", "screw head", "jointing", "boxing",
+)
+
+PROOF_INDICATORS: dict[str, tuple[str, ...]] = {
+    "flat.floor_screed_1": ("screed", "levelled", "leveled", "cement-sand", "sand-cement", "sand cement", "rail", "level peg", "trowel"),
+    "flat.mep_ceiling_services_plumbing_fire_gas_3": _PIPE_PROOF + ("gas line",),
+    "flat.plumbing_pvc_waterline_7": ("pipe", "stub", "elbow", "chase", "cpvc", "pvc", "tee", "floor trap"),
+    "flat.ceiling_punning_2": _PLASTER_PROOF,
+    "flat.wall_punning_4": _PLASTER_PROOF,
+    "flat.waterproofing_8": ("waterproof", "coating", "membrane", "slurry", "upturn", "bund", "ponding", "brush"),
+    "flat.toilet_utility_balcony_flooring_14": ("tile", "joint", "spacer", "adhesive", "bedding"),
+    "flat.toilet_utility_dado_15": ("tile", "joint", "spacer", "adhesive", "dado"),
+    "flat.vitrified_flooring_16": ("tile", "vitrified", "porcelain", "joint", "spacer", "skirting"),
+    "flat.internal_door_frames_18": ("frame", "jamb", "shim", "wedge", "holdfast"),
+    "flat.main_door_shutter_fixing_temporary_21": ("shutter", "leaf", "hinge", "hung", "bolt", "lock"),
+    "flat.internal_door_shutter_fixing_with_hardware_22": ("shutter", "leaf", "hinge", "hung", "latch", "handle", "bolt"),
+    "flat.false_ceiling_boxing_24": _FALSE_CEILING_PROOF,
+    "flat.electrical_wiring_23": ("conduit", "box", "wire", "cable", "fan hook", "mcb", "chase"),
+    "flat.gypsum_41": ("gypsum", "board joint", "screw head", "jointing", "tape", "joint compound"),
+    "flat.windows_43": ("window", "glazing", "glass", "ventilator", "sash"),
+    "flat.railing_42": ("railing", "handrail", "post", "baluster", "balustrade", "glass panel", "rail"),
+    "flat.putty_39": _PUTTY_PROOF,
+    "flat.paint_40": _PAINT_PROOF,
+    "common.mep_works_fire_fighting_electrical_0": ("pipe", "tray", "conduit", "sprinkler", "clamp", "hanger", "sleeve", "cable", "riser"),
+    "common.wall_punning_works_1": _PLASTER_PROOF,
+    "common.false_ceiling_works_2": _FALSE_CEILING_PROOF,
+    "common.putty_10": _PUTTY_PROOF,
+    "common.paint_11": _PAINT_PROOF,
+}
+
+
+def _with_proof(rules: dict[str, ActivityRule]) -> dict[str, ActivityRule]:
+    return {k: replace(r, proof_indicators=PROOF_INDICATORS.get(k, r.proof_indicators)) for k, r in rules.items()}
+
+
+FLAT_RULES = _with_proof(FLAT_RULES)
+COMMON_RULES = _with_proof(COMMON_RULES)
 RULES: dict[str, ActivityRule] = {**FLAT_RULES, **COMMON_RULES}
 
 # ------------------------------------------------------------------- dependencies
@@ -833,9 +920,11 @@ _IDF = "flat.internal_door_frames_18"
 _IDS = "flat.internal_door_shutter_fixing_with_hardware_22"
 _FCB = "flat.false_ceiling_boxing_24"
 _EW = "flat.electrical_wiring_23"
-_P1 = "flat.putty_1st_coat_25"
-_P2 = "flat.putty_2nd_coat_26"
-_PR = "flat.primer_1st_coat_paint_27"
+_PU = "flat.putty_39"
+_PA = "flat.paint_40"
+_GY = "flat.gypsum_41"
+_C_PU = "common.putty_10"
+_C_PA = "common.paint_11"
 
 DEPENDENCIES: tuple[Dependency, ...] = (
     # Service lines come first; their quality is concealed, never inferred from finishes.
@@ -854,27 +943,25 @@ DEPENDENCIES: tuple[Dependency, ...] = (
     Dependency(_TF, _TD, "none", "Floor and dado overlap in toilets; ordering only."),
     Dependency(_WP, _TD, "none", "Wall plaster precedes dado; ordering only."),
     # Punning and paint chain.
-    Dependency(_WP, _P1, "full", "Putty goes on punned walls; confirmed putty proves punning."),
-    Dependency(_CP, _P1, "cap", "Ceilings are puttied after punning; capped, ceilings may be left out."),
-    Dependency(_P1, _P2, "full", "Second putty coat proves the first coat is at least as complete."),
-    Dependency(_P2, _PR, "full", "Primer over putty proves second putty coat is at least as complete."),
+    Dependency(_WP, _PU, "full", "Putty goes on punned walls; confirmed putty proves punning."),
+    Dependency(_CP, _PU, "cap", "Ceilings are puttied after punning; capped, ceilings may be left out."),
+    Dependency(_PU, _PA, "full", "Paint over putty proves the putty is at least as complete."),
+    # Gypsum is an alternative wall substrate: ordering only, never inferred either way.
+    Dependency(_GY, _PU, "none", "Gypsum walls are puttied afterwards; ordering only."),
     # Electrical, ceilings, doors (ordering mostly).
     Dependency(_WP, _EW, "none", "Wiring chases follow or overlap punning; ordering only."),
-    Dependency(_EW, _P1, "none", "Rough-in wiring precedes putty; ordering only."),
+    Dependency(_EW, _PU, "none", "Rough-in wiring precedes putty; ordering only."),
     Dependency(_EW, _FCB, "none", "Wiring precedes boxing; ordering only."),
-    Dependency(_FCB, _P1, "none", "Boxing precedes putty on ceilings; ordering only."),
+    Dependency(_FCB, _PU, "none", "Boxing precedes putty on ceilings; ordering only."),
     Dependency(_IDF, _IDS, "full", "A hung shutter proves its frame is fixed."),
     Dependency(_WP, _IDF, "none", "Frames usually fixed around punning; ordering only."),
     # Common areas follow the same wall-finish order.
     Dependency("common.mep_works_fire_fighting_electrical_0", "common.wall_punning_works_1", "none",
                "Common MEP precedes wall punning; hidden quality never inferred."),
-    Dependency("common.wall_punning_works_1", "common.putty_1st_coat_4", "full",
+    Dependency("common.wall_punning_works_1", _C_PU, "full",
                "Putty goes on punned common walls; confirmed putty proves punning."),
-    Dependency("common.putty_1st_coat_4", "common.putty_2nd_coat_5", "full",
-               "Second putty coat proves the first coat is at least as complete."),
-    Dependency("common.putty_2nd_coat_5", "common.primer_1st_coat_paint_6", "full",
-               "Primer over putty proves second putty coat is at least as complete."),
-    Dependency("common.false_ceiling_works_2", "common.putty_1st_coat_4", "none",
+    Dependency(_C_PU, _C_PA, "full", "Paint over putty proves the putty is at least as complete."),
+    Dependency("common.false_ceiling_works_2", _C_PU, "none",
                "Boxing precedes putty on ceilings; ordering only."),
 )
 
@@ -901,15 +988,15 @@ def rule_for(activity_id: str) -> ActivityRule | None:
 
 # ----------------------------------------------------------------------- rendering
 
-_MAX_BLOCK_CHARS = 1100
+_MAX_BLOCK_CHARS = 1250
 
 
 def _join(items: tuple[str, ...], n: int) -> str:
     return "; ".join(items[:n])
 
 
-def _build_block(rule: ActivityRule, counts: tuple[int, int, int, int, int, int]) -> str:
-    look, st, part, comp, notp, unable = counts
+def _build_block(rule: ActivityRule, counts: tuple[int, ...]) -> str:
+    look, st, part, comp, notp, unable, proof = counts
     lines = [
         f"- {rule.activity_id} - {rule.label}",
         f"  Look for: {_join(rule.objects_to_find, look)}",
@@ -920,6 +1007,11 @@ def _build_block(rule: ActivityRule, counts: tuple[int, int, int, int, int, int]
         f"  Unable to determine when: {_join(rule.unable_to_determine_when, unable)}",
         f"  Scope: {rule.scope_note}",
     ]
+    if rule.proof_indicators:
+        lines.append(
+            "  Proof needed: name at least one of these in indicators_found, else unable_to_determine: "
+            + ", ".join(rule.proof_indicators[:proof])
+        )
     if rule.concealed_when_finished:
         lines.append("  Concealed once finished: never claim direct verification when covered.")
     pre = prerequisites_of(rule.activity_id)
@@ -934,13 +1026,13 @@ def render_rule_block(activity_id: str) -> str:
     rule = RULES.get(activity_id)
     if rule is None:
         return f"- {activity_id} - {activity_id}"
-    counts = [4, 3, 2, 3, 4, 2]
-    block = _build_block(rule, tuple(counts))  # type: ignore[arg-type]
+    counts = [4, 3, 2, 3, 4, 2, 6]
+    block = _build_block(rule, tuple(counts))
     # Trim the longest lists one bullet at a time until the block fits the budget.
     while len(block) > _MAX_BLOCK_CHARS and any(c > 1 for c in counts):
-        i = max(range(6), key=lambda k: counts[k])
+        i = max(range(7), key=lambda k: counts[k])
         counts[i] -= 1
-        block = _build_block(rule, tuple(counts))  # type: ignore[arg-type]
+        block = _build_block(rule, tuple(counts))
     return block
 
 
@@ -961,17 +1053,18 @@ _REQUIRED_FLAT = (
     "flat.internal_door_shutter_fixing_with_hardware_22",
     "flat.false_ceiling_boxing_24",
     "flat.electrical_wiring_23",
-    "flat.putty_1st_coat_25",
-    "flat.putty_2nd_coat_26",
-    "flat.primer_1st_coat_paint_27",
+    "flat.gypsum_41",
+    "flat.windows_43",
+    "flat.railing_42",
+    "flat.putty_39",
+    "flat.paint_40",
 )
 _REQUIRED_COMMON = (
     "common.mep_works_fire_fighting_electrical_0",
     "common.wall_punning_works_1",
     "common.false_ceiling_works_2",
-    "common.putty_1st_coat_4",
-    "common.putty_2nd_coat_5",
-    "common.primer_1st_coat_paint_6",
+    "common.putty_10",
+    "common.paint_11",
 )
 REQUIRED_IDS: tuple[str, ...] = _REQUIRED_FLAT + _REQUIRED_COMMON
 
@@ -1029,6 +1122,10 @@ def validate_rules() -> list[str]:
         for f in _TUPLE_FIELDS:
             if not getattr(rule, f):
                 problems.append(f"empty {f}: {key}")
+        if not rule.proof_indicators:
+            problems.append(f"empty proof_indicators: {key}")
+        elif any(p != p.lower() or not p.strip() for p in rule.proof_indicators):
+            problems.append(f"proof_indicators must be non-empty lowercase: {key}")
     for d in DEPENDENCIES:
         if d.infer not in ("full", "cap", "none"):
             problems.append(f"bad infer mode {d.infer!r}: {d.earlier} -> {d.later}")

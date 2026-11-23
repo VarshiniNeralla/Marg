@@ -6,7 +6,7 @@ vi.mock('@mui/icons-material', () => {
   const Icon = () => null;
   return {
     ApartmentRounded: Icon, MeetingRoomRounded: Icon, RefreshRounded: Icon,
-    NotificationsActiveRounded: Icon, PictureAsPdfRounded: Icon, TableChartRounded: Icon,
+    NotificationsActiveRounded: Icon, PictureAsPdfRounded: Icon, TableChartRounded: Icon, TuneRounded: Icon,
   };
 });
 
@@ -67,5 +67,11 @@ describe('FloorActionToolbar', () => {
     const html = render({ backgroundRunning: true });
     expect(html).toContain('Running in background…');
     expect(html.match(/disabled=""/g)?.length).toBe(2);
+  });
+
+  it('shows Choose activities only when a handler is given, and flags a changed list', () => {
+    expect(render()).not.toContain('Choose activities');
+    expect(render({ onChooseActivities: noop })).toContain('Choose activities');
+    expect(render({ onChooseActivities: noop, scopeChanged: true })).toContain('Choose activities (changed)');
   });
 });

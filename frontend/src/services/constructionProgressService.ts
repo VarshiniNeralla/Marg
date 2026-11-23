@@ -177,6 +177,8 @@ export interface FinishingSummary {
   completed?: number;
   inProgress?: number;
   awaitingEvidence?: number;
+  /** Floors with photos but no analysis yet. */
+  notAnalysed?: number;
   notStarted?: number;
 }
 
@@ -223,6 +225,10 @@ export interface FloorProgressSnapshot {
   executiveSummary: string;
   model: string;
   createdAt: string;
+  /** Activity ids the AI was asked about. Missing on old snapshots = every core activity. */
+  activityScope?: string[];
+  /** True when the floor's activity list was edited after this analysis ran. */
+  scopeChangedSinceAnalysis?: boolean;
 }
 
 export interface FloorSummary {
@@ -343,6 +349,128 @@ export interface BackgroundAnalysisJob extends AnalyzeJob {
   startedByName?: string | null;
 }
 
+// ── Activity scope (which core activities the AI assesses on a floor) ────────
+
+export type ScopeApplyTo = 'floor' | 'tower' | 'project';
+
+export interface ScopeCatalogItem {
+  activityId: string;
+  name: string;
+  section: ActivitySection;
+  description?: string;
+  applicableRooms?: string[];
+  core?: boolean;
+}
+
+export interface FloorScope {
+  floorId: string;
+  activityIds: string[];
+  /** True when nobody has edited the list (everything is ticked). */
+  isDefault: boolean;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
+  catalog: ScopeCatalogItem[];
+}
+
+// ── Project-wide analysis ────────────────────────────────────────────────────
+
+export type ProjectRunState = 'queued' | 'running' | 'completed' | 'failed' | 'partial';
+
+export interface ProjectRunStatus {
+  jobId?: string;
+  state: ProjectRunState;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  floorsTotal: number;
+  /** Floors this job analyses (the rest had no photos). Progress is measured against this. */
+  floorsQueued?: number;
+  floorsSkippedNoPhotos?: number;
+  floorsDone: number;
+  floorsFailed: number;
+  current?: { floorId: string; floorName: string } | null;
+  errors?: { floorId: string; message: string }[];
+}
+
+export interface ProjectAnalyzeStart {
+  jobId: string;
+  floorsTotal: number;
+  floorsQueued: number;
+  floorsSkippedNoPhotos: number;
+}
+
+export type ProjectFloorStatus =
+  | 'completed' | 'in_progress' | 'not_started' | 'no_photos' | 'not_analysed';
+
+export interface ProjectOverviewTotals {
+  floors: number;
+  analysed: number;
+  completed: number;
+  inProgress: number;
+  notStarted: number;
+  noPhotos: number;
+  awaitingEvidence?: number;
+  /** Floors with photos but no analysis yet. */
+  notAnalysed?: number;
+  progressPct: number;
+  estimatePct?: number | null;
+  coveragePct?: number;
+  roomsTotal?: number;
+  roomsPhotographed?: number;
+  activitiesAssessed?: number;
+  needsReview?: number;
+}
+
+export interface ProjectTowerRow {
+  towerId: string;
+  towerName: string;
+  floors: number;
+  progressPct: number;
+  completed: number;
+  inProgress: number;
+  notStarted: number;
+  noPhotos: number;
+}
+
+export interface ProjectFloorRow {
+  floorId: string;
+  floorName: string;
+  towerId: string;
+  towerName: string;
+  status: ProjectFloorStatus;
+  progressPct: number | null;
+  estimatePct?: number | null;
+  coveragePct?: number | null;
+  flatsTotal?: number;
+  flatsCompleted?: number;
+  roomsTotal?: number;
+  roomsPhotographed?: number;
+  capturesCount?: number;
+  lastAnalysedAt?: string | null;
+  lastInspection?: string | null;
+  scopeSize?: number;
+  needsReview?: boolean;
+}
+
+export interface ProjectActivityRow {
+  activityId: string;
+  name: string;
+  progressPct: number | null;
+  coveragePct?: number;
+  floorsObserved: number;
+}
+
+export interface ProjectOverview {
+  projectId: string;
+  projectName: string;
+  generatedAt?: string;
+  lastRun: ProjectRunStatus | null;
+  totals: ProjectOverviewTotals;
+  towers: ProjectTowerRow[];
+  floors: ProjectFloorRow[];
+  activities: ProjectActivityRow[];
+  timeline: { date: string; progressPct: number }[];
+}
+
 async function unwrap<T>(promise: Promise<{ data: ApiResponse<T> }>): Promise<T> {
   const { data } = await promise;
   return data.data as T;
@@ -395,6 +523,27 @@ export const constructionProgressService = {
     return unwrap(
       apiClient.get(`/construction-progress/floors/${floorId}/analyze/active`),
     );
+  },
+
+  getFloorScope(floorId: string): Promise<FloorScope> {
+    return unwrap(apiClient.get(`/construction-progress/floors/${floorId}/scope`));
+  },
+
+  saveFloorScope(floorId: string, activityIds: string[], applyTo: ScopeApplyTo = 'floor'): Promise<FloorScope> {
+    return unwrap(apiClient.put(`/construction-progress/floors/${floorId}/scope`, { activityIds, applyTo }));
+  },
+
+  analyzeProject(projectId: string): Promise<ProjectAnalyzeStart> {
+    return unwrap(apiClient.post(`/construction-progress/projects/${projectId}/analyze`, undefined, { timeout: 60_000 }));
+  },
+
+  getProjectAnalyzeStatus(projectId: string, jobId?: string): Promise<ProjectRunStatus | null> {
+    const tail = jobId ? `/${jobId}` : '';
+    return unwrap(apiClient.get(`/construction-progress/projects/${projectId}/analyze/status${tail}`));
+  },
+
+  getProjectOverview(projectId: string): Promise<ProjectOverview> {
+    return unwrap(apiClient.get(`/construction-progress/projects/${projectId}/overview`));
   },
 
   getTimeline(floorId: string): Promise<TimelinePoint[]> {

@@ -51,9 +51,8 @@ _FIXTURE_DIR = _BACKEND / "tests" / "fixtures" / "progress_metrics"
 # to activities.py so M2 matches the live taxonomy.
 _WALL_FINISH_CHAIN: tuple[str, ...] = (
     "flat.wall_punning_4",
-    "flat.putty_1st_coat_25",
-    "flat.putty_2nd_coat_26",
-    "flat.primer_1st_coat_paint_27",
+    "flat.putty_39",
+    "flat.paint_40",
     "flat.final_coat_paint_37",
 )
 

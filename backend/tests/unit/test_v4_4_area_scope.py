@@ -24,7 +24,7 @@ def _by_id(aid: str) -> ActivityDef:
 
 
 def test_prompt_version_is_v4_4():
-    assert PROMPT_VERSION == "v4.6-activity-rules"
+    assert PROMPT_VERSION == "v5.0-scope-proof"
     assert ENABLE_FILL_FORWARD is False
     assert ENABLE_PAINT_IMPLIES_PUTTY is True
 
@@ -184,5 +184,5 @@ def test_flat_fully_complete_requires_all_required_rooms_and_every_applicable_ac
     assert partial.completion_pct < 100.0
 
 
-def test_common_activities_count_unchanged():
-    assert len(COMMON_AREA_ACTIVITIES) == 10
+def test_common_activities_count_grew_by_putty_and_paint_only():
+    assert len(COMMON_AREA_ACTIVITIES) == 12

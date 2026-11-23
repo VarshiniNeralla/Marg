@@ -23,8 +23,8 @@ from app.services.drishti_service import DrishtiService
 from app.services.drishti_view import activity_basis, compact_activity, prepare_payload_for_llm
 from tests.unit.test_drishti_service import _FakeConversationCollection, _make_db
 
-PUTTY, PAINT, FLOOR = "flat.putty_1st_coat_25", "flat.primer_1st_coat_paint_27", "flat.vitrified_flooring_16"
-PUTTY2 = "flat.putty_2nd_coat_26"
+PUTTY, PAINT, FLOOR = "flat.putty_39", "flat.paint_40", "flat.vitrified_flooring_16"
+PUTTY2 = "flat.gypsum_41"
 
 
 def _activity(aid, name, pct, assessment, status, **extra):
@@ -236,13 +236,13 @@ async def test_batched_read_leaves_stored_document_untouched():
 async def test_common_area_category_mean_skips_unknown_and_says_what_it_means(monkeypatch):
     snapshot = {"flatProgress": [{"flatName": "Common Area", "rooms": [{
         "roomName": "Lobby", "capturesCount": 2, "activities": [
-            _activity("common.putty_1st_coat_4", "Putty 1", 40.0, "in_progress", "in_progress"),
-            _activity("common.putty_2nd_coat_5", "Putty 2", 0.0, "unable_to_determine", "not_assessed"),
+            _activity("common.putty_10", "Putty 1", 40.0, "in_progress", "in_progress"),
+            _activity("common.paint_11", "Putty 2", 0.0, "unable_to_determine", "not_assessed"),
         ]}]}]}
     service = DrishtiContextService(MagicMock())
     monkeypatch.setattr(service, "get_floor_context", AsyncMock(return_value=snapshot))
     result = await service.get_common_area_category_status(
-        "org1", "f1", ["common.putty_1st_coat_4", "common.putty_2nd_coat_5"])
+        "org1", "f1", ["common.putty_10", "common.paint_11"])
     assert result["overallCompletionPct"] == 40.0          # unknown is not averaged in as 0
     assert result["observedActivities"] == 1 and result["unknownActivities"] == 1
     assert "not counted as 0" in result["overallMeaning"].lower()

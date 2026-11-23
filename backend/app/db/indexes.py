@@ -316,6 +316,23 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         name="cp_analyze_job_heartbeat",
     )
 
+    # ── construction_progress_scope (activity selection per floor) ──────────
+    await db.construction_progress_scope.create_index(
+        [("orgId", ASCENDING), ("floorId", ASCENDING)],
+        name="cp_scope_floor",
+        unique=True,
+    )
+
+    # ── construction_progress_project_jobs (whole-project analysis) ──────────
+    await db.construction_progress_project_jobs.create_index(
+        [("orgId", ASCENDING), ("projectId", ASCENDING), ("state", ASCENDING), ("createdAt", DESCENDING)],
+        name="cp_project_job_project_state",
+    )
+    await db.construction_progress_project_jobs.create_index(
+        [("state", ASCENDING), ("heartbeatAt", ASCENDING)],
+        name="cp_project_job_heartbeat",
+    )
+
     # ── capture_derived_views (equirect→perspective cache — T4) ─────────────
     await db.capture_derived_views.create_index(
         [("orgId", ASCENDING), ("captureId", ASCENDING), ("rigVersion", ASCENDING)],

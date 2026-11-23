@@ -27,6 +27,23 @@ async def _assert_floor_access(ctx: CallerContext, db: DB, service: Construction
         raise ForbiddenException("You do not have access to this floor's project")
 
 
+async def _assert_project_access(ctx: CallerContext, db: DB, project_id: str) -> None:
+    """Project-level RBAC boundary (same rule as the floor routes and Drishti): a project-scoped
+    manager / field engineer only reaches projects they are assigned to; archived projects do not exist."""
+    from app.services.construction_progress_project_service import ConstructionProgressProjectService
+
+    accessible = await RBACService(db).get_accessible_project_ids(ctx.user_id, ctx.org_id, ctx.role)
+    if accessible is not None and project_id not in accessible:
+        raise ForbiddenException("You do not have access to this project")
+    if await ConstructionProgressProjectService(db).get_project(ctx.org_id, project_id) is None:
+        raise NotFoundException("Project", project_id)
+
+
+class ScopeIn(BaseModel):
+    activityIds: list[str]
+    applyTo: str = "floor"  # "floor" | "tower" | "project"
+
+
 class ActivityCorrectionIn(BaseModel):
     activityId: str
     verdict: str  # "correct" | "wrong"
@@ -224,6 +241,108 @@ async def get_active_analyze_job(
         org_id=ctx.org_id, floor_id=floor_id,
     )
     return success_response(data=job)
+
+
+@router.get(
+    "/floors/{floor_id}/scope",
+    summary="Which core activities the AI assesses on this floor",
+)
+async def get_floor_scope(floor_id: str, ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
+    from app.services.construction_progress_scope_service import ConstructionProgressScopeService
+
+    await _assert_floor_access(ctx, db, ConstructionProgressService(db), floor_id)
+    return success_response(data=await ConstructionProgressScopeService(db).get_scope_view(ctx.org_id, floor_id))
+
+
+@router.put(
+    "/floors/{floor_id}/scope",
+    summary="Choose which core activities the AI assesses (floor, whole tower or whole project)",
+)
+async def put_floor_scope(
+    floor_id: str,
+    body: ScopeIn,
+    ctx: CallerContext,
+    db: DB,
+    _manager_or_admin: ManagerOrAdminUser,
+):
+    """Saves the selection only: it does not re-run the AI. The newest snapshot of every affected floor is
+    flagged `scopeChangedSinceAnalysis`. Same role as starting an analysis (manager or admin)."""
+    from app.services.construction_progress_scope_service import ConstructionProgressScopeService
+
+    await _assert_floor_access(ctx, db, ConstructionProgressService(db), floor_id)
+    view = await ConstructionProgressScopeService(db).set_scope(
+        ctx.org_id,
+        floor_id,
+        body.activityIds,
+        updated_by=ctx.user_id,
+        apply_to=body.applyTo,
+    )
+    return success_response(data=view, message="Activity selection saved")
+
+
+@router.post(
+    "/projects/{project_id}/analyze",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start ONE background analysis of every floor of a project that has photos",
+)
+async def analyze_project(project_id: str, ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
+    from app.services.construction_progress_project_job_service import ConstructionProgressProjectJobService
+
+    await _assert_project_access(ctx, db, project_id)
+    job = await ConstructionProgressProjectJobService(db).start(
+        org_id=ctx.org_id, project_id=project_id, analyzed_by=ctx.user_id,
+    )
+    return success_response(data=job, message="Project analysis started")
+
+
+@router.get(
+    "/projects/{project_id}/analyze/status",
+    summary="Status of the running (else latest) whole-project analysis",
+)
+async def get_project_analyze_status(
+    project_id: str, ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser,
+):
+    from app.services.construction_progress_project_job_service import ConstructionProgressProjectJobService
+
+    await _assert_project_access(ctx, db, project_id)
+    job = await ConstructionProgressProjectJobService(db).get_status(org_id=ctx.org_id, project_id=project_id)
+    return success_response(data=job)
+
+
+@router.get(
+    "/projects/{project_id}/analyze/status/{job_id}",
+    summary="Status of one whole-project analysis job",
+)
+async def get_project_analyze_job_status(
+    project_id: str, job_id: str, ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser,
+):
+    from app.services.construction_progress_project_job_service import ConstructionProgressProjectJobService
+
+    await _assert_project_access(ctx, db, project_id)
+    job = await ConstructionProgressProjectJobService(db).get_status(
+        org_id=ctx.org_id, project_id=project_id, job_id=job_id,
+    )
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis job not found")
+    return success_response(data=job)
+
+
+@router.get(
+    "/projects/{project_id}/overview",
+    summary="Everything the Project Analysis page needs, in one read-only call",
+)
+async def get_project_overview(project_id: str, ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
+    from app.services.construction_progress_project_job_service import ConstructionProgressProjectJobService
+    from app.services.construction_progress_project_service import ConstructionProgressProjectService
+
+    await _assert_project_access(ctx, db, project_id)
+    last_run = await ConstructionProgressProjectJobService(db).get_status(org_id=ctx.org_id, project_id=project_id)
+    overview = await ConstructionProgressProjectService(db).get_overview(
+        ctx.org_id, project_id, last_run=last_run,
+    )
+    if overview is None:
+        raise NotFoundException("Project", project_id)
+    return success_response(data=overview)
 
 
 @router.get("/floors/{floor_id}/timeline", summary="Progress trend over time for a floor")

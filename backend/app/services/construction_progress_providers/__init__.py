@@ -5,6 +5,7 @@ from app.services.construction_progress_providers.activities import (
     FLAT_ACTIVITIES,
     ActivityDef,
     activities_as_dicts,
+    scope_filtered_core,
 )
 from app.services.construction_progress_providers.base import (
     ActivityAssessment,
@@ -24,6 +25,7 @@ __all__ = [
     "FLAT_ACTIVITIES",
     "ActivityDef",
     "activities_as_dicts",
+    "scope_filtered_core",
     "ActivityAssessment",
     "CaptureRef",
     "COMPLETE_THRESHOLD",

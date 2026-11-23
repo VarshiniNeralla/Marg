@@ -10,6 +10,8 @@ import {
   constructionProgressService,
   type FloorProgressSnapshot,
 } from '@/services/constructionProgressService';
+import ChooseActivitiesDialog from '@/components/ConstructionProgress/ChooseActivitiesDialog';
+import { useAuthStore, isManagerOrAdmin } from '@store/authStore';
 import FloorActionToolbar from '@/components/ConstructionProgress/FloorActionToolbar';
 import FloorOverviewHero from '@/components/ConstructionProgress/FloorOverviewHero';
 import ExecutiveSummaryPanel from '@/components/ConstructionProgress/ExecutiveSummaryPanel';
@@ -32,6 +34,8 @@ export default function ConstructionProgressDashboardPage() {
   const [confirmReanalyzeOpen, setConfirmReanalyzeOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<FloorProgressSnapshot | null>(null);
   const [notAnalyzed, setNotAnalyzed] = useState(false);
+  const [chooseOpen, setChooseOpen] = useState(false);
+  const canEditScope = useAuthStore(s => isManagerOrAdmin(s.user));
   const analyzingRef = useRef(false);
   const pollGenerationRef = useRef(0);
   // "Run in background": the analysis runs on the server and the user is notified when it is done.
@@ -393,6 +397,12 @@ export default function ConstructionProgressDashboardPage() {
               {backgroundRunning ? 'Running in background…' : 'Run in Background'}
             </Button>
           </Box>
+          <Button
+            onClick={() => setChooseOpen(true)}
+            sx={{ mt: 2, textTransform: 'none', fontWeight: 600, color: colors.primary }}
+          >
+            Choose activities
+          </Button>
         </Box>
       ) : (
         <>
@@ -413,7 +423,14 @@ export default function ConstructionProgressDashboardPage() {
               onExcel={handleExportExcel}
               onReanalyze={() => { setReanalyzeInBackground(false); setConfirmReanalyzeOpen(true); }}
               onRunInBackground={() => { setReanalyzeInBackground(true); setConfirmReanalyzeOpen(true); }}
+              onChooseActivities={() => setChooseOpen(true)}
+              scopeChanged={!!snapshot.scopeChangedSinceAnalysis}
             />
+            {snapshot.scopeChangedSinceAnalysis && (
+              <Alert severity="info" sx={{ mt: 1.5 }} data-testid="scope-changed-banner">
+                The activity list changed since this analysis. Run analysis again to apply.
+              </Alert>
+            )}
           </Box>
 
           <FloorOverviewHero
@@ -461,6 +478,15 @@ export default function ConstructionProgressDashboardPage() {
           else void handleAnalyze();
         }}
         onCancel={() => setConfirmReanalyzeOpen(false)}
+      />
+
+      <ChooseActivitiesDialog
+        open={chooseOpen}
+        onClose={() => setChooseOpen(false)}
+        floorId={floorId}
+        canEdit={canEditScope}
+        analysedScope={snapshot?.activityScope}
+        scopeChangedSinceAnalysis={snapshot?.scopeChangedSinceAnalysis}
       />
 
       <Snackbar

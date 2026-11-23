@@ -75,9 +75,13 @@ class ConstructionProgressAnalyzeJobService:
         floor_id: str,
         analyzed_by: str | None,
         background: bool = False,
+        dispatch: bool = True,
     ) -> dict[str, Any]:
         """Queue (or join) an analysis. With ``background=True`` the requester and
-        the organisation's admins get an in-app notification when it finishes."""
+        the organisation's admins get an in-app notification when it finishes.
+
+        ``dispatch=False`` only creates the job: the caller runs it itself with ``run_job`` (the
+        project-wide analysis does this so floors go one after another)."""
         await self._fail_stale_jobs(org_id=org_id, floor_id=floor_id)
 
         existing = await self._db[COLLECTION_JOBS].find_one(
@@ -129,7 +133,8 @@ class ConstructionProgressAnalyzeJobService:
             }
         )
         logger.info("[cp-analyze-job] queued job={} floor={} background={}", job_id, floor_id, background)
-        self._dispatch(job_id)
+        if dispatch:
+            self._dispatch(job_id)
         return _serialize_job(
             {
                 "_id": job_id,
@@ -276,6 +281,11 @@ class ConstructionProgressAnalyzeJobService:
             sort=[("createdAt", -1)],
         )
         return _serialize_job(doc) if doc else None
+
+    async def run_job(self, job_id: str) -> None:
+        """Run a job created with ``dispatch=False`` to completion in the caller's task (no-op if it is
+        already claimed by another runner)."""
+        await self._run_job(job_id)
 
     def _dispatch(self, job_id: str) -> None:
         asyncio.create_task(self._run_job(job_id))

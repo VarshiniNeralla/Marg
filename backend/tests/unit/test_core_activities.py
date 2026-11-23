@@ -1,4 +1,4 @@
-"""The 14 core activities: catalog shape, component merge, room scoping, floor chains."""
+"""The 16 flat + 5 common core activities: catalog shape, component merge, room scoping, floor chains."""
 from app.services.construction_progress_providers.activities import (
     ALL_ACTIVITIES,
     CORE_ACTIVITIES,
@@ -15,10 +15,10 @@ from app.services.construction_progress_providers.vllm_provider import (
 )
 
 EXPECTED_FLAT = [
-    "Screed Works", "Service Lines", "Punning Works", "Waterproofing Works",
+    "Screed Works", "Service Lines", "Punning Works", "Gypsum Works", "Waterproofing Works",
     "Toilet Flooring Works", "Toilet Dado Works", "Vitrified Flooring Works",
-    "Internal Door Frames", "Door Shutters (Temporary)", "False Ceiling Boxing",
-    "Electrical Wiring", "1st Coat Putty", "2nd Coat Putty", "Primer & 1st Coat Paint",
+    "Internal Door Frames", "Door Shutters", "Windows", "Railing", "False Ceiling Boxing",
+    "Electrical Wiring", "Putty", "Paint",
 ]
 
 
@@ -26,15 +26,14 @@ def _by_name(name):
     return next(a for a in CORE_FLAT_ACTIVITIES if a.name == name)
 
 
-def test_core_flat_catalog_is_exactly_the_fourteen_in_site_order():
+def test_core_flat_catalog_is_exactly_the_sixteen_in_site_order():
     assert [a.name for a in CORE_FLAT_ACTIVITIES] == EXPECTED_FLAT
-    assert [a.sequence_index for a in CORE_FLAT_ACTIVITIES] == list(range(14))
+    assert [a.sequence_index for a in CORE_FLAT_ACTIVITIES] == list(range(16))
 
 
 def test_core_common_catalog():
     assert [a.name for a in CORE_COMMON_ACTIVITIES] == [
-        "Service Lines", "Punning Works", "False Ceiling Boxing",
-        "1st Coat Putty", "2nd Coat Putty", "Primer & 1st Coat Paint",
+        "Service Lines", "Punning Works", "False Ceiling Boxing", "Putty", "Paint",
     ]
 
 
@@ -97,14 +96,14 @@ def test_merge_averages_visible_components_and_drops_everything_else():
         "flat.ceiling_punning_2": _entry(100.0, 90.0, "c1"),
         "flat.wall_punning_4": _entry(50.0, 60.0, "c2"),
         "flat.final_coat_paint_37": _entry(0.0),
-        "flat.putty_1st_coat_25": _entry(20.0),
+        "flat.putty_39": _entry(20.0),
     }}
     _merge_components_per_unit(best, CORE_FLAT_ACTIVITIES)
     m = best[unit]
     assert m["flat.core_punning"]["pct"] == 75.0
     assert m["flat.core_punning"]["conf"] == 60.0            # weakest component
     assert m["flat.core_punning"]["capture_id"] == "c1"      # strongest evidence
-    assert set(m) == {"flat.core_punning", "flat.putty_1st_coat_25"}   # components + non-core removed
+    assert set(m) == {"flat.core_punning", "flat.putty_39"}   # components + non-core removed
 
 
 def test_merge_treats_an_unseen_component_as_unknown_not_zero():
@@ -116,7 +115,7 @@ def test_merge_treats_an_unseen_component_as_unknown_not_zero():
 
 def test_merge_leaves_a_unit_without_any_component_alone():
     unit = ("Flat 1", "Kitchen")
-    best = {unit: {"flat.putty_2nd_coat_26": _entry(10.0)}}
+    best = {unit: {"flat.paint_40": _entry(10.0)}}
     _merge_components_per_unit(best, CORE_FLAT_ACTIVITIES)
     assert "flat.core_punning" not in best[unit]
 
@@ -145,6 +144,6 @@ def test_screed_alone_never_invents_tiles():
 def test_dicts_list_core_first_then_legacy_flagged():
     rows = activities_as_dicts()
     core_rows = [r for r in rows if r["core"]]
-    assert len(core_rows) == len(CORE_ACTIVITIES) == 20
+    assert len(core_rows) == len(CORE_ACTIVITIES) == 21
     assert rows[: len(core_rows)] == core_rows
     assert all(not r["core"] for r in rows[len(core_rows):])
