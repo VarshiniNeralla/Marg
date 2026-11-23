@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable
 
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -165,8 +165,14 @@ def heal_flat_progress_coverage(
     return changed
 
 
-def _core_applicable_ids(flat_name: str, room_name: str) -> list[str]:
-    """Applicable core activity ids for one room (Common Area regions use the common catalogue)."""
+def _core_applicable_ids(
+    flat_name: str, room_name: str, scope_ids: Iterable[str] | None = None,
+) -> list[str]:
+    """Applicable core activity ids for one room (Common Area regions use the common catalogue).
+
+    ``scope_ids`` is the floor's selected activity list: an unselected activity is never
+    applicable, so it never sits in a denominator. ``None`` means every core activity.
+    """
     from app.services.construction_progress_providers.activities import (
         CORE_COMMON_ACTIVITIES,
         CORE_FLAT_ACTIVITIES,
@@ -174,7 +180,11 @@ def _core_applicable_ids(flat_name: str, room_name: str) -> list[str]:
     from app.services.construction_progress_providers.vllm_provider import _activity_applies_to_room
 
     catalogue = CORE_COMMON_ACTIVITIES if flat_name == _COMMON_AREA_FLAT else CORE_FLAT_ACTIVITIES
-    return [a.activity_id for a in catalogue if _activity_applies_to_room(a, room_name)]
+    selected = None if scope_ids is None else set(scope_ids)
+    return [
+        a.activity_id for a in catalogue
+        if (selected is None or a.activity_id in selected) and _activity_applies_to_room(a, room_name)
+    ]
 
 
 def _is_legacy_activity_set(flat_progress: list[dict[str, Any]]) -> bool:
@@ -189,15 +199,26 @@ def _is_legacy_activity_set(flat_progress: list[dict[str, Any]]) -> bool:
     return False
 
 
-def recompute_flat_finishing_pcts(flat_progress: list[dict[str, Any]]) -> bool:
+def recompute_flat_finishing_pcts(
+    flat_progress: list[dict[str, Any]], scope_ids: Iterable[str] | None = None,
+) -> bool:
     """Recalculate every room / flat number in place via progress_aggregation (the one calculation).
+
+    ``scope_ids`` is the snapshot's ``activityScope`` (None = every core activity). Older snapshots that
+    contain non-core activities keep their observed-only denominators regardless of scope.
 
     Counted progress treats work nobody could verify as not yet counted (never as proof of no work), and
     coverage is reported next to it. See progress_aggregation's module docstring for the methodology.
     """
     from app.services.construction_progress_providers.progress_aggregation import recompute_flat_progress
 
-    applicable = None if _is_legacy_activity_set(flat_progress) else _core_applicable_ids
+    if _is_legacy_activity_set(flat_progress):
+        return recompute_flat_progress(flat_progress, None)
+    scope = None if scope_ids is None else list(scope_ids)
+
+    def applicable(flat_name: str, room_name: str) -> list[str]:
+        return _core_applicable_ids(flat_name, room_name, scope)
+
     return recompute_flat_progress(flat_progress, applicable)
 
 
@@ -225,7 +246,7 @@ def present_snapshot_doc(doc: dict[str, Any]) -> dict[str, Any]:
     out = copy.deepcopy(doc)
     flats = list(out.get("flatProgress") or [])
     heal_flat_progress_coverage(flats, list(out.get("heatmapPins") or []))
-    recompute_flat_finishing_pcts(flats)
+    recompute_flat_finishing_pcts(flats, out.get("activityScope"))
     flat_summary, common_summary, overall = finishing_summaries(flats)
     out["flatProgress"] = flats
     out["flatFinishing"] = flat_summary
@@ -882,6 +903,15 @@ class ConstructionProgressService:
                 "[construction-progress] restored {} orphan pin(s) before analyze floor={}",
                 restored, floor_id,
             )
+        # Which core activities this floor is assessed for (default: all of them).
+        from app.services.construction_progress_scope_service import (
+            ConstructionProgressScopeService,
+            scope_filtered_core,
+        )
+
+        scope_ids = await ConstructionProgressScopeService(self._db).get_effective_ids(org_id, floor_id)
+        scoped_activities = scope_filtered_core(scope_ids)
+        scope_set = {a.activity_id for a in scoped_activities}
         captures = await self._get_capture_refs(org_id, floor_id, floor_plan_id)
         # Defence-in-depth: never leave A/B/C on capture refs even if a stale
         # map briefly resolved them that way.
@@ -990,7 +1020,7 @@ class ConstructionProgressService:
             try:
                 result = await self._provider.assess_floor_progress(
                     floor_id=floor_id,
-                    activities=CORE_ACTIVITIES,
+                    activities=scoped_activities,
                     captures=captures,
                     as_of=as_of,
                     flat_units=flat_units or None,
@@ -1026,6 +1056,8 @@ class ConstructionProgressService:
 
         activity_docs = []
         for a in result.activities:
+            if a.activity.activity_id not in scope_set:
+                continue  # never trust the model with an activity nobody selected
             activity_docs.append({
                 "activityId": a.activity.activity_id,
                 "name": a.activity.name,
@@ -1156,6 +1188,16 @@ class ConstructionProgressService:
             }
             for fp in result.flat_progress
         ]
+
+        # Server-side gate: an assessment for an unselected or room-inapplicable activity is dropped
+        # even if the model returned it, so it can never reach a number.
+        for _fp in flat_progress_docs:
+            _fname = _canonical_flat_label(str(_fp["flatName"]))
+            for _room in _fp["rooms"]:
+                _allowed = set(_core_applicable_ids(_fname, str(_room["roomName"]), scope_ids))
+                _room["activities"] = [
+                    a for a in _room["activities"] if str(a.get("activityId") or "") in _allowed
+                ]
 
         # Guarantee every flat's full room-map roster is present in Flat
         # Finishing Works (provider may omit empty rooms on some paths).
@@ -1288,7 +1330,7 @@ class ConstructionProgressService:
 
         # Coverage + full-roster % (uncaptured rooms = 0%).
         heal_flat_progress_coverage(flat_progress_docs, heatmap_pins)
-        recompute_flat_finishing_pcts(flat_progress_docs)
+        recompute_flat_finishing_pcts(flat_progress_docs, scope_ids)
 
         flat_summary, common_summary, overall_finishing_pct = finishing_summaries(flat_progress_docs)
         # The floor is only "Completed" when every flat AND every common region is - not when a few
@@ -1336,6 +1378,9 @@ class ConstructionProgressService:
             "flatProgress": flat_progress_docs,
             "flatFinishing": flat_summary,
             "commonFinishing": common_summary,
+            "activityScope": list(scope_ids),
+            "analysedActivityScope": list(scope_ids),
+            "scopeChangedSinceAnalysis": False,
             "summaryCards": {
                 "roomsCompleted": rooms_completed,
                 "roomsInProgress": rooms_in_progress,
@@ -1397,7 +1442,7 @@ class ConstructionProgressService:
         flats = list(doc.get("flatProgress") or [])
         pins = list(doc.get("heatmapPins") or [])
         healed = heal_flat_progress_coverage(flats, pins)
-        recomputed = recompute_flat_finishing_pcts(flats)
+        recomputed = recompute_flat_finishing_pcts(flats, doc.get("activityScope"))
         flat_summary, common_summary, overall = finishing_summaries(flats)
         doc["flatProgress"] = flats
         doc["flatFinishing"] = flat_summary
@@ -1584,7 +1629,7 @@ class ConstructionProgressService:
             if latest and latest.get("flatProgress"):
                 # Same single calculation as the floor dashboard, so the list and the detail never disagree.
                 _flats = list(latest.get("flatProgress") or [])
-                recompute_flat_finishing_pcts(_flats)
+                recompute_flat_finishing_pcts(_flats, latest.get("activityScope"))
                 overall_for_list = finishing_summaries(_flats)[2]
             summaries.append({
                 "floorId": floor_id,
@@ -1676,6 +1721,8 @@ def _serialize_snapshot(doc: dict[str, Any] | None) -> dict[str, Any] | None:
         "flatFinishing": doc.get("flatFinishing") or {},
         "commonFinishing": doc.get("commonFinishing") or {},
         "summaryCards": doc.get("summaryCards", {}),
+        "activityScope": doc.get("activityScope"),
+        "scopeChangedSinceAnalysis": bool(doc.get("scopeChangedSinceAnalysis")),
         "executiveSummary": doc.get("executiveSummary", ""),
         "model": doc.get("model", ""),
         "analyzedBy": doc.get("analyzedBy") or doc.get("analyzed_by"),

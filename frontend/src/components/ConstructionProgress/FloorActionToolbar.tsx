@@ -2,7 +2,7 @@ import React from 'react';
 import { Box, Button, CircularProgress, Tooltip, Typography } from '@mui/material';
 import {
   ApartmentRounded, MeetingRoomRounded, RefreshRounded, NotificationsActiveRounded,
-  PictureAsPdfRounded, TableChartRounded,
+  PictureAsPdfRounded, TableChartRounded, TuneRounded,
 } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, shadows } from '@theme/tokens';
@@ -111,10 +111,14 @@ export interface FloorActionToolbarProps {
   onExcel: () => void;
   onReanalyze: () => void;
   onRunInBackground: () => void;
+  /** Opens the "Choose activities" dialog. The button is hidden when not given. */
+  onChooseActivities?: () => void;
+  /** Show a small dot when the list changed since the last analysis. */
+  scopeChanged?: boolean;
 }
 
 export default function FloorActionToolbar({
-  floorId, analyzing, backgroundRunning, onPdf, onExcel, onReanalyze, onRunInBackground,
+  floorId, analyzing, backgroundRunning, onPdf, onExcel, onReanalyze, onRunInBackground, onChooseActivities, scopeChanged,
 }: FloorActionToolbarProps) {
   const busy = analyzing || backgroundRunning;
   return (
@@ -166,6 +170,15 @@ export default function FloorActionToolbar({
         >
           {backgroundRunning ? 'Running in background…' : 'Run in Background'}
         </Button>
+        {onChooseActivities && (
+          <Button
+            onClick={onChooseActivities}
+            startIcon={<TuneRounded sx={{ fontSize: 20, color: colors.primary }} />}
+            sx={OUTLINED}
+          >
+            {scopeChanged ? 'Choose activities (changed)' : 'Choose activities'}
+          </Button>
+        )}
       </Group>
 
       <Divider />

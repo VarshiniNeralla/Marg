@@ -95,6 +95,11 @@ async def lifespan(app: FastAPI):
 
         async def _recover_progress_analysis(db):
             await ConstructionProgressAnalyzeJobService(db).recover_orphaned_jobs()
+            from app.services.construction_progress_project_job_service import (
+                ConstructionProgressProjectJobService,
+            )
+
+            await ConstructionProgressProjectJobService(db).recover_orphaned_jobs()
 
         await _for_each_database(_recover_progress_analysis, "Progress analysis recovery")
     except Exception as exc:

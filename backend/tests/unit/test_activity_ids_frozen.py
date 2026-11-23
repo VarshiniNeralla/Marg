@@ -12,11 +12,11 @@ from app.services.construction_progress_providers.activities import (
 )
 
 
-def test_all_activities_count_is_49():
-    assert len(ALL_ACTIVITIES) == 49
-    assert len(FROZEN_FLAT_IDS) == 39
-    assert len(FROZEN_COMMON_IDS) == 10
-    assert len(FROZEN_ALL_IDS) == 49
+def test_all_activities_count_is_56():
+    assert len(ALL_ACTIVITIES) == 56
+    assert len(FROZEN_FLAT_IDS) == 44
+    assert len(FROZEN_COMMON_IDS) == 12
+    assert len(FROZEN_ALL_IDS) == 56
 
 
 def test_activity_id_set_matches_frozen_all_ids():
@@ -34,6 +34,12 @@ def test_ids_come_from_frozen_tuples_not_enumerate_slug():
     assert FROZEN_FLAT_IDS[25] == "flat.putty_1st_coat_25"
     assert FROZEN_FLAT_IDS[37] == "flat.final_coat_paint_37"
     assert FROZEN_COMMON_IDS[9] == "common.painting_2nd_coat_9"
+    # Appended in the scope/proof release, never renumbering what was there.
+    assert FROZEN_FLAT_IDS[38] == "flat.deep_cleaning_38"
+    assert FROZEN_FLAT_IDS[39:] == (
+        "flat.putty_39", "flat.paint_40", "flat.gypsum_41", "flat.railing_42", "flat.windows_43",
+    )
+    assert FROZEN_COMMON_IDS[10:] == ("common.putty_10", "common.paint_11")
 
     # Simulate appending a new activity: existing frozen IDs are unchanged.
     extended_ids = FROZEN_FLAT_IDS + ("flat.new_activity_99",)
@@ -46,7 +52,7 @@ def test_ids_come_from_frozen_tuples_not_enumerate_slug():
 
 def test_activities_as_dicts_keeps_core_keys():
     rows = activities_as_dicts()
-    assert len(rows) == 52  # 49 legacy + 3 merged core activities
+    assert len(rows) == 59  # 56 catalogue ids + 3 merged core activities
     for row in rows:
         assert "activityId" in row
         assert "name" in row

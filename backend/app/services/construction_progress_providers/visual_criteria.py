@@ -15,7 +15,7 @@ do not ship without a site-engineer pass (see VISUAL_CRITERIA_REVIEW.md).
 """
 from __future__ import annotations
 
-# Keys MUST match FROZEN_FLAT_IDS ∪ FROZEN_COMMON_IDS exactly (49 entries).
+# Keys MUST match FROZEN_FLAT_IDS ∪ FROZEN_COMMON_IDS exactly (56 entries).
 VISUAL_CRITERIA: dict[str, str] = {
     # ── Flat (0–38) ──────────────────────────────────────────────────────────
     "flat.corecutting_for_services_0": (
@@ -242,6 +242,39 @@ VISUAL_CRITERIA: dict[str, str] = {
         "Complete: handover-level clean — glass, floors, fixtures free of construction "
         "film. Look at glass, CP fixtures, and floor shine versus ordinary cleaning."
     ),
+    # ── Flat, appended (scope/proof release) - DRAFT, site engineer to confirm ──
+    "flat.putty_39": (
+        "DRAFT (v5.0). Putty = any putty layer (1st or 2nd coat) on walls/ceilings, judged as "
+        "'putty work done', coat-agnostic. % = puttied visible wall/ceiling area / visible "
+        "wall/ceiling area. Credit ONLY with direct putty evidence (skim patches over grey "
+        "plaster, trowel/blade marks, sanding dust, putty ridges). A white or smooth wall alone "
+        "is NOT putty (paint, primer, POP and gypsum are look-alikes): unable_to_determine."
+    ),
+    "flat.paint_40": (
+        "DRAFT (v5.0). Paint = primer or any paint coat on walls/ceilings, coat-agnostic. % = "
+        "painted visible wall/ceiling area / visible wall/ceiling area. Credit ONLY with direct "
+        "paint evidence (roller texture, cut-in lines, masked edges, paint splashes, a colour "
+        "or sheen different from bare putty). Bare white putty alone is NOT paint. Paint cans or "
+        "rollers stored in the room are material only (0)."
+    ),
+    "flat.gypsum_41": (
+        "DRAFT (v5.0). Gypsum Works = gypsum plaster or gypsum board lining on WALLS. Not "
+        "ceilings (ceiling boards are False Ceiling Boxing) and not putty. % = gypsum-finished "
+        "visible wall area / visible wall area. Needs board joints, screw heads, jointing tape "
+        "or a visible gypsum plaster finish. Boards stacked or leaning = 0. Smooth white wall "
+        "alone is NOT proof."
+    ),
+    "flat.railing_42": (
+        "DRAFT (v5.0). Railing = MS or glass railing fixed at the balcony / sit-out / utility "
+        "edge. % = fixed railing length / required edge length in view. Posts, glass panels "
+        "or rails lying on the floor or leaning = 0. Parapet wall without a railing is not "
+        "railing."
+    ),
+    "flat.windows_43": (
+        "DRAFT (v5.0). Windows = window frames, glazing, window shutters or ventilator frames "
+        "fixed in the wall opening, any room. % = fixed windows / visible window openings. A "
+        "frame or glass stacked, leaning, on the floor or wrapped = 0. An empty opening = 0."
+    ),
     # ── Common area (0–9) ────────────────────────────────────────────────────
     "common.mep_works_fire_fighting_electrical_0": (
         "DRAFT. In progress: corridor/shaft MEP with open trays, fire pipes, loose "
@@ -290,5 +323,16 @@ VISUAL_CRITERIA: dict[str, str] = {
         "DRAFT. In progress: second/final common-area paint incomplete, patchy sheen. "
         "Complete: finished second coat with even colour on corridor walls/ceilings. "
         "Look at common painted fields versus primer-only surfaces."
+    ),
+    # ── Common area, appended (scope/proof release) ──────────────────────────
+    "common.putty_10": (
+        "DRAFT (v5.0). Common-area Putty = any putty layer on corridor/lobby walls and "
+        "ceilings, coat-agnostic. Credit only with direct putty evidence (skim patches, "
+        "trowel marks, sanding dust). A white or smooth wall alone is NOT putty."
+    ),
+    "common.paint_11": (
+        "DRAFT (v5.0). Common-area Paint = primer or any paint coat on corridor/lobby walls "
+        "and ceilings. Credit only with direct paint evidence (roller texture, cut-in lines, "
+        "masked edges, splashes). Bare putty is NOT paint; stored cans are material only."
     ),
 }

@@ -76,9 +76,10 @@ def test_string_lists_are_cleaned_and_capped():
 
 
 def test_prompt_checklist_carries_the_activity_specific_rules():
-    punning = next(a for a in CORE_ACTIVITIES if a.activity_id == "flat.putty_1st_coat_25")
+    punning = next(a for a in CORE_ACTIVITIES if a.activity_id == "flat.putty_39")
     text = _activities_checklist_text([punning], surface_group="walls")
-    assert "flat.putty_1st_coat_25" in text
+    assert "flat.putty_39" in text
+    assert "Proof needed" in text
     assert "NOT proof" in text or "Not proof" in text or "not proof" in text.lower()
 
 
@@ -86,24 +87,24 @@ def test_prompt_checklist_carries_the_activity_specific_rules():
 
 def test_unknown_readings_are_not_zero_and_not_in_the_floor_average():
     per = {"a": {
-        "flat.putty_1st_coat_25": item(None, 60.0),
+        "flat.putty_39": item(None, 60.0),
         "flat.core_punning": None,
         "flat.wall_punning_4": item(100.0, 90.0),
     }}
     per["a"].pop("flat.core_punning")
     r = run(per, [cap("a", "Living")])
     acts = room_acts(r, "Living")
-    assert acts["flat.putty_1st_coat_25"].assessment_status == "unable_to_determine"
-    assert acts["flat.putty_1st_coat_25"].review_required is False
-    assert acts["flat.putty_1st_coat_25"].evidence_capture_ids == []
+    assert acts["flat.putty_39"].assessment_status == "unable_to_determine"
+    assert acts["flat.putty_39"].review_required is False
+    assert acts["flat.putty_39"].evidence_capture_ids == []
     floor = {a.activity.activity_id: a for a in r.activities}
-    assert floor["flat.putty_1st_coat_25"].completion_pct == 0.0
-    assert floor["flat.putty_1st_coat_25"].coverage_pct == 0.0          # nobody could establish it
+    assert floor["flat.putty_39"].completion_pct == 0.0
+    assert floor["flat.putty_39"].coverage_pct == 0.0          # nobody could establish it
 
 
 def test_evidence_images_belong_to_the_activity_and_room():
     per = {
-        "a": {"flat.wall_punning_4": item(80.0, 90.0), "flat.putty_1st_coat_25": item(0.0, 90.0)},
+        "a": {"flat.wall_punning_4": item(80.0, 90.0), "flat.putty_39": item(0.0, 90.0)},
         "b": {"flat.wall_punning_4": item(80.0, 90.0)},
     }
     r = run(per, [cap("a", "Living"), cap("b", "Kitchen")])
@@ -111,7 +112,7 @@ def test_evidence_images_belong_to_the_activity_and_room():
     kitchen = room_acts(r, "Kitchen")
     assert living["flat.core_punning"].evidence_capture_ids == ["a"]
     assert kitchen["flat.core_punning"].evidence_capture_ids == ["b"]     # never the other room's photo
-    assert living["flat.putty_1st_coat_25"].evidence_capture_ids == []    # 0 % -> no photo attached
+    assert living["flat.putty_39"].evidence_capture_ids == []    # 0 % -> no photo attached
     for room_name, acts in (("Living", living), ("Kitchen", kitchen)):
         for a in acts.values():
             for d in a.evidence_details:
@@ -119,14 +120,14 @@ def test_evidence_images_belong_to_the_activity_and_room():
 
 
 def test_inferred_completion_is_labelled_and_points_at_the_driving_photo():
-    per = {"a": {"flat.primer_1st_coat_paint_27": item(90.0, 90.0)}}
+    per = {"a": {"flat.paint_40": item(90.0, 90.0)}}
     r = run(per, [cap("a", "Living")])
     acts = room_acts(r, "Living")
-    assert acts["flat.primer_1st_coat_paint_27"].detection_type == "direct"
-    assert acts["flat.putty_2nd_coat_26"].detection_type == "inferred"
-    assert acts["flat.putty_2nd_coat_26"].inferred_from == "flat.primer_1st_coat_paint_27"
-    assert acts["flat.putty_2nd_coat_26"].evidence_capture_ids == ["a"]
-    assert acts["flat.putty_2nd_coat_26"].evidence_details[0]["role"] == "inferred"
+    assert acts["flat.paint_40"].detection_type == "direct"
+    assert acts["flat.putty_39"].detection_type == "inferred"
+    assert acts["flat.putty_39"].inferred_from == "flat.paint_40"
+    assert acts["flat.putty_39"].evidence_capture_ids == ["a"]
+    assert acts["flat.putty_39"].evidence_details[0]["role"] == "inferred"
     # Service lines are never inferred from a finished surface.
     assert "flat.core_service_lines" not in acts
 

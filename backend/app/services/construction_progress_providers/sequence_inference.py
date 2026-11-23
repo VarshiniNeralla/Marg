@@ -35,8 +35,8 @@ _INFERRING = tuple(d for d in DEPENDENCIES if d.infer in ("full", "cap"))
 # Each wall-finish coat is physically covered by the next one, so once the next coat is directly seen a
 # low direct reading of the covered coat is not trustworthy (same reasoning as concealed_when_finished).
 COVERED_BY_NEXT_COAT = frozenset({
-    "flat.ceiling_punning_2", "flat.wall_punning_4", "flat.putty_1st_coat_25", "flat.putty_2nd_coat_26",
-    "common.wall_punning_works_1", "common.putty_1st_coat_4", "common.putty_2nd_coat_5",
+    "flat.ceiling_punning_2", "flat.wall_punning_4", "flat.putty_39",
+    "common.wall_punning_works_1", "common.putty_10",
 })
 
 

@@ -11,7 +11,7 @@ import {
   LogoutRounded, PersonRounded, MenuRounded,
   CloudUploadRounded, StorageRounded, RateReviewRounded,
   PhotoCameraRounded, ChevronLeftRounded, ChevronRightRounded, HistoryRounded,
-  AutoAwesomeRounded, InsightsRounded, ChatBubbleOutlineRounded,
+  AutoAwesomeRounded, InsightsRounded, ChatBubbleOutlineRounded, AssessmentRounded,
 } from '@mui/icons-material';
 import { useTheme } from '@mui/material/styles';
 import { colors, motion, zIndex } from '@theme/tokens';
@@ -54,6 +54,7 @@ const ADMIN_NAV: NavSection[] = [
       { label: 'Captures',   path: '/captures',    icon: <CameraAltRounded /> },
       { label: 'Tours',       path: '/tours',       icon: <ViewInArRounded /> },
       { label: 'Construction Progress', path: '/construction-progress', icon: <InsightsRounded /> },
+      { label: 'Project Analysis', path: '/construction-progress/project-analysis', icon: <AssessmentRounded /> },
       { label: 'Drishti',     path: '/drishti',     icon: <ChatBubbleOutlineRounded /> },
       { label: 'Analytics',   path: '/analytics',   icon: <BarChartRounded /> },
     ],
@@ -83,6 +84,7 @@ const MANAGER_NAV: NavSection[] = [
       { label: 'Captures',   path: '/captures',  icon: <CameraAltRounded /> },
       { label: 'Virtual Tours', path: '/tours',  icon: <ViewInArRounded /> },
       { label: 'Construction Progress', path: '/construction-progress', icon: <InsightsRounded /> },
+      { label: 'Project Analysis', path: '/construction-progress/project-analysis', icon: <AssessmentRounded /> },
       { label: 'Drishti',     path: '/drishti',     icon: <ChatBubbleOutlineRounded /> },
     ],
   },
@@ -220,6 +222,8 @@ export default function DashboardLayout() {
     if (path.endsWith('/admin') || path.endsWith('/manager') || path.endsWith('/engineer')) {
       return location.pathname === path;
     }
+    // Project Analysis lives under /construction-progress but has its own menu entry.
+    if (path === '/construction-progress' && location.pathname.startsWith('/construction-progress/project-analysis')) return false;
     return location.pathname === path || location.pathname.startsWith(path + '/');
   }
 

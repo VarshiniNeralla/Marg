@@ -18,6 +18,7 @@ existing one, or stored snapshots orphan.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
 from app.services.construction_progress_providers.visual_criteria import VISUAL_CRITERIA
 
@@ -85,6 +86,13 @@ FROZEN_FLAT_IDS: tuple[str, ...] = (
     "flat.main_door_internal_door_polishing_36",
     "flat.final_coat_paint_37",
     "flat.deep_cleaning_38",
+    # Appended (scope/proof release): single coat-agnostic putty and paint, plus gypsum,
+    # railing and windows. Never renumber the ids above.
+    "flat.putty_39",
+    "flat.paint_40",
+    "flat.gypsum_41",
+    "flat.railing_42",
+    "flat.windows_43",
 )
 
 FROZEN_COMMON_IDS: tuple[str, ...] = (
@@ -98,6 +106,8 @@ FROZEN_COMMON_IDS: tuple[str, ...] = (
     "common.fire_doors_shaft_doors_7",
     "common.staircase_flooring_8",
     "common.painting_2nd_coat_9",
+    "common.putty_10",
+    "common.paint_11",
 )
 
 FROZEN_ALL_IDS: frozenset[str] = frozenset(FROZEN_FLAT_IDS) | frozenset(FROZEN_COMMON_IDS)
@@ -142,6 +152,11 @@ _FLAT_ACTIVITY_NAMES = [
     "Main Door & Internal Door Polishing",
     "Final Coat Paint",
     "Deep Cleaning",
+    "Putty",
+    "Paint",
+    "Gypsum Works",
+    "Railing",
+    "Windows",
 ]
 
 _COMMON_AREA_ACTIVITY_NAMES = [
@@ -155,6 +170,8 @@ _COMMON_AREA_ACTIVITY_NAMES = [
     "Fire Doors & Shaft Doors",
     "Staircase Flooring",
     "Painting 2nd Coat",
+    "Putty",
+    "Paint",
 ]
 
 # Proposed observability — site engineer must confirm before shipping (T5).
@@ -206,6 +223,11 @@ _SURFACE_BY_ID: dict[str, str] = {
     "flat.main_door_internal_door_polishing_36": "openings",
     "flat.final_coat_paint_37": "walls",
     "flat.deep_cleaning_38": "cleanliness",
+    "flat.putty_39": "walls",
+    "flat.paint_40": "walls",
+    "flat.gypsum_41": "walls",
+    "flat.railing_42": "fixtures",
+    "flat.windows_43": "openings",
     "common.mep_works_fire_fighting_electrical_0": "ceiling",
     "common.wall_punning_works_1": "walls",
     "common.false_ceiling_works_2": "ceiling",
@@ -216,6 +238,8 @@ _SURFACE_BY_ID: dict[str, str] = {
     "common.fire_doors_shaft_doors_7": "openings",
     "common.staircase_flooring_8": "floor",
     "common.painting_2nd_coat_9": "walls",
+    "common.putty_10": "walls",
+    "common.paint_11": "walls",
 }
 
 # Room-type tokens derived from flat_finishing_rosters layouts.
@@ -255,6 +279,8 @@ _APPLICABLE_BY_ID: dict[str, frozenset[str]] = {
     "flat.ventilator_fixing_11": _ROOMS_TOILET,
     "flat.toilet_sitout_balcony_copings_17": _ROOMS_WET,
     "flat.false_ceiling_in_toilets_sitouts_utilities_28": _ROOMS_WET,
+    # Railing sits on open edges only (draft - site engineer to confirm the room list).
+    "flat.railing_42": _ROOMS_BALCONY | _ROOMS_UTILITY,
     "common.corridor_flooring_3": _ROOMS_CORRIDOR,
     "common.staircase_flooring_8": _ROOMS_STAIRCASE,
     "common.fire_doors_shaft_doors_7": _ROOMS_LOBBY_SHAFT,
@@ -270,6 +296,11 @@ _CONFUSABLE: dict[str, tuple[str, ...]] = {
     "flat.putty_2nd_coat_26": ("flat.putty_1st_coat_25",),
     "flat.primer_1st_coat_paint_27": ("flat.final_coat_paint_37",),
     "flat.final_coat_paint_37": ("flat.primer_1st_coat_paint_27",),
+    "flat.putty_39": ("flat.paint_40", "flat.gypsum_41"),
+    "flat.paint_40": ("flat.putty_39",),
+    "flat.gypsum_41": ("flat.putty_39", "flat.false_ceiling_boxing_24"),
+    "flat.windows_43": ("flat.internal_door_frames_18",),
+    "flat.railing_42": ("flat.balcony_glass_railing_35", "flat.ms_railing_for_utility_13"),
     "flat.normal_cleaning_29": ("flat.deep_cleaning_38",),
     "flat.deep_cleaning_38": ("flat.normal_cleaning_29",),
 }
@@ -305,7 +336,7 @@ _ALL_BY_ID: dict[str, ActivityDef] = {a.activity_id: a for a in ALL_ACTIVITIES}
 
 
 # ── Core catalog: the activities the product actually tracks ────────────────
-# The 14 headline activities (site order). An id that already exists in the frozen
+# The headline activities (16 flat + 5 common, site order). An id that already exists in the frozen
 # tables is reused (so history lines up); a headline activity that merges several
 # legacy ones gets a new id and is computed from its `components`.
 
@@ -322,12 +353,14 @@ _CORE_SERVICE_LINES_CRITERIA = (
     "or unfixed material does not."
 )
 _CORE_DOOR_SHUTTERS_CRITERIA = (
-    "Door Shutters (Temporary) = the main-entrance shutter and internal door shutters "
+    "Door Shutters = the main-entrance shutter and internal door shutters "
     "hung in their frames (temporary leaves acceptable). A shutter leaning against a "
     "wall, lying on the floor or still wrapped is NOT fixed (0%)."
 )
 
-# (activity_id, display name, component ids - empty = scored under its own id)
+# (activity_id, display name, component ids - empty = scored directly under its own id)
+# 16 flat activities in site order. Putty and Paint are single coat-agnostic activities that
+# replaced 1st/2nd coat putty and Primer & 1st Coat Paint (those ids stay in the legacy catalogue).
 _CORE_FLAT_SPEC: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("flat.floor_screed_1", "Screed Works", ()),
     (
@@ -338,33 +371,34 @@ _CORE_FLAT_SPEC: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ),
     ),
     ("flat.core_punning", "Punning Works", ("flat.ceiling_punning_2", "flat.wall_punning_4")),
+    ("flat.gypsum_41", "Gypsum Works", ()),
     ("flat.waterproofing_8", "Waterproofing Works", ()),
     ("flat.toilet_utility_balcony_flooring_14", "Toilet Flooring Works", ()),
     ("flat.toilet_utility_dado_15", "Toilet Dado Works", ()),
     ("flat.vitrified_flooring_16", "Vitrified Flooring Works", ()),
     ("flat.internal_door_frames_18", "Internal Door Frames", ()),
     (
-        "flat.core_door_shutters_temporary", "Door Shutters (Temporary)",
+        "flat.core_door_shutters_temporary", "Door Shutters",
         (
             "flat.main_door_shutter_fixing_temporary_21",
             "flat.internal_door_shutter_fixing_with_hardware_22",
         ),
     ),
+    ("flat.windows_43", "Windows", ()),
+    ("flat.railing_42", "Railing", ()),
     ("flat.false_ceiling_boxing_24", "False Ceiling Boxing", ()),
     ("flat.electrical_wiring_23", "Electrical Wiring", ()),
-    ("flat.putty_1st_coat_25", "1st Coat Putty", ()),
-    ("flat.putty_2nd_coat_26", "2nd Coat Putty", ()),
-    ("flat.primer_1st_coat_paint_27", "Primer & 1st Coat Paint", ()),
+    ("flat.putty_39", "Putty", ()),
+    ("flat.paint_40", "Paint", ()),
 )
 
-# Common areas only have the activities that exist in a corridor / lobby.
+# Common areas only have the activities that exist in a corridor / lobby (5).
 _CORE_COMMON_SPEC: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("common.mep_works_fire_fighting_electrical_0", "Service Lines", ()),
     ("common.wall_punning_works_1", "Punning Works", ()),
     ("common.false_ceiling_works_2", "False Ceiling Boxing", ()),
-    ("common.putty_1st_coat_4", "1st Coat Putty", ()),
-    ("common.putty_2nd_coat_5", "2nd Coat Putty", ()),
-    ("common.primer_1st_coat_paint_6", "Primer & 1st Coat Paint", ()),
+    ("common.putty_10", "Putty", ()),
+    ("common.paint_11", "Paint", ()),
 )
 
 _CORE_MERGED_CRITERIA: dict[str, str] = {
@@ -413,6 +447,18 @@ CORE_ACTIVITIES: list[ActivityDef] = CORE_FLAT_ACTIVITIES + CORE_COMMON_ACTIVITI
 CORE_IDS: frozenset[str] = frozenset(a.activity_id for a in CORE_ACTIVITIES)
 FROZEN_CORE_FLAT_IDS: tuple[str, ...] = tuple(s[0] for s in _CORE_FLAT_SPEC)
 FROZEN_CORE_COMMON_IDS: tuple[str, ...] = tuple(s[0] for s in _CORE_COMMON_SPEC)
+
+
+def scope_filtered_core(ids: Iterable[str] | None) -> list[ActivityDef]:
+    """CORE activities for a set of selected ids, in core order. ``None`` = all core activities.
+
+    Ids that are not core activities (legacy ids, typos) are ignored, never raised on: a stored
+    scope may predate a catalogue change.
+    """
+    if ids is None:
+        return list(CORE_ACTIVITIES)
+    wanted = {str(i) for i in ids}
+    return [a for a in CORE_ACTIVITIES if a.activity_id in wanted]
 
 
 def _scoring_set() -> list[ActivityDef]:

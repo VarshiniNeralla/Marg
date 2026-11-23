@@ -64,7 +64,7 @@ from app.services.construction_progress_providers.precedence import (
     WALL_FINISH_CHAIN,
     apply_precedence,
 )
-from app.services.construction_progress_providers.activity_rules import render_rule_block
+from app.services.construction_progress_providers.activity_rules import RULES, render_rule_block
 from app.services.construction_progress_providers.evidence_selection import (
     Observation,
     resolve_observations,
@@ -100,7 +100,9 @@ COMPLETE_THRESHOLD = 92.0
 # v4.1: strict false-ceiling identification (smooth/white/punned slab ≠ FC).
 # v4.2: stage-aware walls/putty/wiring; evidence↔score consistency; scope language.
 # v4.3: visual-scope — evidence_class; activity≠room-looks-finished; putty/wiring hard stops.
-PROMPT_VERSION = "v4.6-activity-rules"
+# v5.0: scope + proof - present-first field, structured proof gate, no free-text number rewriting,
+# INSUFFICIENT_STAGE_EVIDENCE is unknown (not 0), core list with Putty / Paint / Gypsum / Railing / Windows.
+PROMPT_VERSION = "v5.0-scope-proof"
 
 # Scoring-level (legacy-catalog) definitions, used to score a merged core activity's components.
 _SCORING_BY_ID: dict[str, ActivityDef] = {a.activity_id: a for a in ALL_ACTIVITIES}
@@ -198,185 +200,90 @@ def pct_from_assessment(state: str, item: dict[str, Any]) -> tuple[float | None,
     return None, False
 
 
-# When the model's own evidence admits insufficiency, never keep a high %.
-_INSUFFICIENT_EVIDENCE_MARKERS: tuple[str, ...] = (
-    "cannot be confirmed",
-    "cannot confirm",
-    "insufficient evidence",
-    "insufficient",
-    "cannot distinguish",
-    "does not prove",
-    "does not establish",
-    "cannot establish",
-    "not enough evidence",
-    "not sufficient",
-    "cannot determine",
-    "cannot verify",
-    "unclear whether",
-    "unable to confirm",
-    "unable to distinguish",
-)
-
-_NO_BOARD_MARKERS: tuple[str, ...] = (
-    "no gypsum",
-    "no boards",
-    "no board",
-    "boards are absent",
-    "boards absent",
-    "no boxing",
-    "no installed board",
-    "without boards",
-    "without gypsum",
-)
-
-# Appearance-only language that must NOT justify putty-stage scores (v4.3).
-_PUTTY_APPEARANCE_ONLY_MARKERS: tuple[str, ...] = (
-    "white and smooth",
-    "smooth white",
-    "white wall",
-    "walls are white",
-    "walls look white",
-    "uniform white",
-    "putty-like",
-    "looks finished",
-    "finished appearance",
-    "finished-looking",
-    "smooth pale",
-    "mostly white",
-)
-
-_PUTTY_STAGE_PROOF_MARKERS: tuple[str, ...] = (
-    "first putty",
-    "1st putty",
-    "putty 1st",
-    "first-coat putty",
-    "first coat putty",
-    "putty layer",
-    "putty patches",
-    "second putty",
-    "2nd putty",
-    "putty 2nd",
-    "second-coat",
-    "second coat putty",
-)
-
+# evidence_class values that mean "this is not progress on the activity" (structured field only).
 _EVIDENCE_CLASS_ZERO: frozenset[str] = frozenset({
     "material_present_only",
     "related_infrastructure_only",
     "not_observable",
 })
+# The model could not tell the stage apart: that is UNKNOWN, never 0 (cannot tell != no progress).
+_EVIDENCE_CLASS_UNKNOWN: frozenset[str] = frozenset({"insufficient_stage_evidence"})
 
 # Activity status "completed" requires essentially full scope (v4.3).
 # Precedence / near-done gates keep COMPLETE_THRESHOLD separately.
 COMPLETED_STATUS_PCT = 100.0
 
 
-def apply_evidence_class(activity_id: str, pct: float, evidence_class: str | None) -> float:
-    """Map internal evidence_class → completion (v4.3). Does not invent %.
+def apply_evidence_class(activity_id: str, pct: float, evidence_class: str | None) -> float | None:
+    """Map the STRUCTURED evidence_class to a completion. Does not invent a number.
 
-    CONFIRMED_INSTALLED / PARTIALLY_INSTALLED → leave pct (scope-based).
-    MATERIAL_PRESENT_ONLY / RELATED_INFRASTRUCTURE_ONLY / NOT_OBSERVABLE → 0.
-    INSUFFICIENT_STAGE_EVIDENCE → 0 for putty stages; otherwise leave (caller
-    may still cap via reconcile).
+    CONFIRMED_INSTALLED / PARTIALLY_INSTALLED / unknown class -> pct unchanged.
+    MATERIAL_PRESENT_ONLY / RELATED_INFRASTRUCTURE_ONLY / NOT_OBSERVABLE -> 0.
+    INSUFFICIENT_STAGE_EVIDENCE -> None (unknown), for every activity.
     """
     try:
         value = max(0.0, min(100.0, float(pct)))
     except (TypeError, ValueError):
         return 0.0
     cls = (evidence_class or "").strip().lower().replace("-", "_").replace(" ", "_")
-    if not cls:
-        return value
     if cls in _EVIDENCE_CLASS_ZERO:
         return 0.0
-    if cls == "insufficient_stage_evidence":
-        aid = (activity_id or "").lower()
-        if "putty" in aid or "primer" in aid or "paint" in aid:
-            return 0.0
-        return value
-    # confirmed_installed / partially_installed / unknown → keep
+    if cls in _EVIDENCE_CLASS_UNKNOWN:
+        return None
     return value
 
 
 def reconcile_pct_with_evidence(
     activity_id: str,
     pct: float,
-    evidence: str,
+    evidence: str = "",
     evidence_class: str | None = None,
-) -> float:
-    """Cap/zero scores that contradict evidence class or evidence text (v4.3)."""
-    value = apply_evidence_class(activity_id, pct, evidence_class)
-    text = (evidence or "").lower()
-    if not text:
-        return value
+) -> float | None:
+    """Apply the structured evidence_class only. ``evidence`` (free text) is accepted for
+    backwards compatibility and is NEVER used to change a number: keyword matching on the
+    model's prose rewrote correct readings (e.g. any sentence containing "insufficient").
+    """
+    return apply_evidence_class(activity_id, pct, evidence_class)
 
-    aid = (activity_id or "").lower()
-    if "false_ceiling_boxing" in aid or aid.endswith("boxing_24"):
-        if any(m in text for m in _NO_BOARD_MARKERS):
-            return 0.0
 
-    # Putty: white/smooth/finished appearance alone is NEVER enough.
-    if "putty_1st" in aid or "putty_2nd" in aid:
-        appearance = any(m in text for m in _PUTTY_APPEARANCE_ONLY_MARKERS) or (
-            "white" in text and "smooth" in text
-        )
-        stage_proof = any(m in text for m in _PUTTY_STAGE_PROOF_MARKERS)
-        if appearance and not stage_proof and value > 0:
-            return 0.0
-        if "putty_2nd" in aid and any(
-            m in text
-            for m in (
-                "cannot distinguish",
-                "unable to distinguish",
-                "does not prove",
-                "does not establish",
-                "cannot establish",
-                "cannot confirm",
-                "insufficient",
-            )
-        ):
-            return 0.0
+_NEGATION_STARTS = ("no ", "not ", "without ", "absence of", "lack of", "missing", "none", "n/a")
+_NEGATION_ANYWHERE = ("no visible", "not visible", "not present", "not seen", "not installed", "absent")
 
-    if any(m in text for m in _INSUFFICIENT_EVIDENCE_MARKERS):
-        # Stage-specific putty already handled; other activities stay low.
-        if "putty" in aid:
-            return 0.0
-        value = min(value, 25.0)
 
-    # Electrical: "all boxes have wires" / boxes+loose wires alone ≠ mid/high %.
-    if "electrical_wiring" in aid:
-        boxes_wires = (
-            ("box" in text or "boxes" in text)
-            and ("wire" in text or "conductor" in text)
-        )
-        if boxes_wires and value > 40.0:
-            if any(m in text for m in _INSUFFICIENT_EVIDENCE_MARKERS) or (
-                "all visible" in text and "box" in text
-            ):
-                value = min(value, 25.0)
-            elif "routed" not in text and "scope" not in text and "%" not in text:
-                value = min(value, 25.0)
+def _indicator_is_negated(text: str) -> bool:
+    t = text.strip().lower()
+    return t.startswith(_NEGATION_STARTS) or any(m in t for m in _NEGATION_ANYWHERE)
 
-    # Shutter: leaning/present without fixing → 0.
-    if "door_shutter" in aid or "shutter_fixing" in aid:
-        if any(
-            m in text
-            for m in ("leaning", "propped", "on the floor", "stacked", "not fixed", "not hung")
-        ):
-            return 0.0
-        if "present" in text and "hardware" not in text and "hung" not in text and "fixed" not in text:
-            if value > 0 and "install" not in text:
-                return 0.0
 
-    # Window on floor / leaning → 0 for window activity claims that admit it.
-    if "window" in aid or "sld" in aid:
-        if any(m in text for m in ("on the floor", "leaning", "stacked nearby", "propped")):
-            # If evidence only describes the loose component, zero; if mixed,
-            # prefer_lower elsewhere handles multi-component — here force 0 when
-            # no "installed"/"fixed in opening" counter-claim.
-            if "installed" not in text and "fixed in" not in text:
-                return 0.0
+def passes_proof_gate(activity_id: str, pct: float | None, indicators_found: list[str] | tuple[str, ...]) -> bool:
+    """Proof gate: a reading above 0 needs at least one proof substring in a NON-negated indicators_found
+    entry. Readings of 0 / unknown pass (nothing is being claimed). An activity with no rule has no gate."""
+    if pct is None or pct <= 0:
+        return True
+    rule = RULES.get(activity_id)
+    if rule is None or not rule.proof_indicators:
+        return True
+    for entry in indicators_found or ():
+        low = str(entry or "").strip().lower()
+        if not low or _indicator_is_negated(low):
+            continue
+        if any(p in low for p in rule.proof_indicators):
+            return True
+    return False
 
-    return value
+
+def normalize_present(value: Any) -> str | None:
+    """'yes' | 'no' | 'unclear' | None (field absent)."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    v = str(value).strip().lower()
+    if v in ("yes", "y", "true", "present"):
+        return "yes"
+    if v in ("no", "n", "false", "absent"):
+        return "no"
+    return "unclear"
 
 
 def prefer_lower_unit_evidence(
@@ -527,6 +434,13 @@ SCOPE BAND - only for in_progress / mostly_complete: the share of the observable
 scope that is visibly done: "1-25", "26-50", "51-75" or "76-99". The server converts state +
 band into numbers and does ALL aggregation. Do NOT output a percentage.
 
+PRESENT FIRST (every item)
+  present  "yes" only if you can SEE and NAME the element this activity is about (for example the
+           gypsum boards, the railing, the window frame, the putty skim, the paint roller marks) in
+           the photos. "no" if it is not there, "unclear" if you cannot tell. If present is not "yes"
+           you get NO progress number for the item. A smooth, white or flat surface is not an element.
+  seen     the named element, a few words (for example "board joints", "roller cut-in line"); "" if none.
+
 RULES
 1. Direct visual evidence only. No "likely / expected / probably / because the next stage
    exists". The server infers earlier stages from later ones; you must not.
@@ -536,14 +450,17 @@ RULES
 4. If you cannot tell stages apart, answer unable_to_determine. Never default to
    not_started or completed.
 5. Activities that do not belong to this room type are out of scope: omit them.
-6. indicators_found: 0-4 short phrases for what you actually saw. indicators_missing: 0-4 short
+6. indicators_found: 0-4 short phrases for what you actually saw, each naming a real element (never a
+   negation such as "no grid"). A reading above 0 is only kept when indicators_found names the
+   activity's own proof (see "Proof needed" in its rules); otherwise it is discarded as unknown.
+   indicators_missing: indicators_missing: 0-4 short
    phrases for what would normally be visible if the work were further along.
 7. explanation: ONE factual sentence naming what you saw. No review commentary, no hedging
    phrases such as "I would keep" or "this is reasonable".
 8. evidence_views: the names of the views (as labelled before each image) where the evidence is visible.
 9. Confidence is about how sure you are of the STATE, not how complete the work is.
 
-evidence_class (consistency check, set on every item):
+evidence_class (consistency check, set on every item; INSUFFICIENT_STAGE_EVIDENCE means unknown, not zero):
   CONFIRMED_INSTALLED | PARTIALLY_INSTALLED | MATERIAL_PRESENT_ONLY |
   RELATED_INFRASTRUCTURE_ONLY | INSUFFICIENT_STAGE_EVIDENCE | NOT_OBSERVABLE
 
@@ -552,6 +469,8 @@ Return ONLY this JSON:
   "assessments": [
     {
       "activity_id": "<verbatim checklist id>",
+      "present": "yes | no | unclear",
+      "seen": "<named element or empty>",
       "state": "not_started | in_progress | mostly_complete | completed | unable_to_determine | not_visible",
       "scope_done_band": "1-25 | 26-50 | 51-75 | 76-99 | null",
       "confidence": "low | medium | high",
@@ -913,7 +832,8 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                         ),
                         None,
                     )
-                if activity is None:
+                if activity is None or activity.activity_id not in scoring_by_id:
+                    # Not part of the scope this analysis was given: dropped even if the model returned it.
                     continue
                 activity_id = activity.activity_id
                 conf = float(entry["confidence_pct"])
@@ -1110,6 +1030,9 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
                 )
             )
 
+        # Defence in depth: never report an activity that was not handed in.
+        assessments = [a for a in assessments if a.activity.activity_id in activities_by_id]
+
         flat_progress = _build_flat_progress(
             activities_by_id=activities_by_id,
             per_activity_unit_pct=per_activity_room_pct,
@@ -1301,9 +1224,10 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
             f"Return continuous completion_pct = (completed observable scope / "
             f"total observable relevant scope) × 100. Prefer \"not_visible\" "
             f"(completion_pct 0) when the activity's surface is not shown. "
-            f"Classify evidence_class first; score only this activity's observable "
+            f"For each activity answer present (yes/no/unclear) and name the element you see first; "
+            f"classify evidence_class; score only this activity's observable "
             f"completed scope (not how finished the room looks). "
-            f"Identify the actual finishing stage before scoring putty/paint. "
+            f"Never score from a smooth or white surface alone. "
             f"Do not infer, fill-forward, or use material presence as install. "
             f"Evidence sentence must be factual production scope — no review commentary. "
             f"Follow the JSON schema in the system message exactly."
@@ -1340,65 +1264,11 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
             usage_out=usage_out,
         )
 
-        valid_ids = {a.activity_id for a in activities}
-        view_names = {spec.name for spec, _ in views}
-        out: dict[str, dict[str, Any]] = {}
-        for item in raw.get("assessments") or []:
-            if not isinstance(item, dict):
-                continue
-            activity_id = str(
-                item.get("activity_id") or item.get("id") or item.get("activity") or item.get("name") or ""
-            ).strip()
-            if not activity_id or activity_id not in valid_ids:
-                continue
-            state = str(item.get("state") or item.get("status") or "").strip().lower().replace(" ", "_")
-            evidence_class = str(
-                item.get("evidence_class") or item.get("evidenceClass") or ""
-            ).strip()
-            if state in ("not_visible", "not_applicable") or evidence_class.upper() == "NOT_OBSERVABLE":
-                continue
-
-            confidence = str(item.get("confidence") or "").strip().lower()
-            conf_pct = _CONFIDENCE_TO_PCT.get(confidence, _CONFIDENCE_TO_PCT["low"])
-            explanation = str(item.get("explanation") or "").strip()[:600]
-            evidence_text = str(item.get("evidence") or explanation or "").strip()[:400]
-
-            pct, unable = pct_from_assessment(state, item)
-            if pct is None and not unable:
-                # Scored without anything we can turn into a number - cannot invent one.
-                continue
-            if pct is not None:
-                pct = reconcile_pct_with_evidence(
-                    activity_id, pct, evidence_text, evidence_class=evidence_class,
-                )
-
-            result_item = {
-                "completion_pct": pct,
-                "confidence_pct": conf_pct,
-                "evidence": evidence_text,
-                "explanation": explanation or evidence_text,
-                "indicators_found": clean_str_list(item.get("indicators_found")),
-                "indicators_missing": clean_str_list(item.get("indicators_missing")),
-                "views": [v for v in clean_str_list(item.get("evidence_views")) if v in view_names],
-                "evidence_class": evidence_class,
-                "state": state,
-            }
-            prev = out.get(activity_id)
-            # Within one surface-group response, incompleteness wins (lower %); a number beats "unknown".
-            if (
-                prev is None
-                or (prev["completion_pct"] is None and pct is not None)
-                or (
-                    pct is not None
-                    and prev["completion_pct"] is not None
-                    and (
-                        pct < prev["completion_pct"]
-                        or (pct == prev["completion_pct"] and conf_pct > prev["confidence_pct"])
-                    )
-                )
-            ):
-                out[activity_id] = result_item
-        return out
+        return parse_assessment_items(
+            raw,
+            valid_ids={a.activity_id for a in activities},
+            view_names={spec.name for spec, _ in views},
+        )
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -1501,6 +1371,98 @@ class VllmConstructionProgressProvider(ConstructionProgressProvider):
 
 
 # ── Free-function helpers ───────────────────────────────────────────────────
+
+def parse_assessment_items(
+    raw: dict[str, Any],
+    *,
+    valid_ids: set[str] | frozenset[str],
+    view_names: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, dict[str, Any]]:
+    """Turn one model response (already JSON-decoded) into per-activity results. Pure (no I/O).
+
+    Order of checks for an item that claims progress (pct > 0):
+      1. structured evidence_class (MATERIAL_PRESENT_ONLY etc -> 0; INSUFFICIENT_STAGE_EVIDENCE -> unknown)
+      2. present-first: present must be "yes" (absent field = legacy output, not gated)
+      3. proof gate: indicators_found must name the activity's own proof
+    Anything that fails 2 or 3 becomes UNKNOWN (pct None), never 0 and never kept as progress.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for item in raw.get("assessments") or []:
+        if not isinstance(item, dict):
+            continue
+        activity_id = str(
+            item.get("activity_id") or item.get("id") or item.get("activity") or item.get("name") or ""
+        ).strip()
+        if not activity_id or activity_id not in valid_ids:
+            continue
+        state = str(item.get("state") or item.get("status") or "").strip().lower().replace(" ", "_")
+        evidence_class = str(
+            item.get("evidence_class") or item.get("evidenceClass") or ""
+        ).strip()
+        if state in ("not_visible", "not_applicable") or evidence_class.upper() == "NOT_OBSERVABLE":
+            continue
+
+        confidence = str(item.get("confidence") or "").strip().lower()
+        conf_pct = _CONFIDENCE_TO_PCT.get(confidence, _CONFIDENCE_TO_PCT["low"])
+        explanation = str(item.get("explanation") or "").strip()[:600]
+        evidence_text = str(item.get("evidence") or explanation or "").strip()[:400]
+        found_all = clean_str_list(item.get("indicators_found"), limit=12)
+        present = normalize_present(item.get("present"))
+        rule = RULES.get(activity_id)
+        label = rule.label if rule else activity_id
+
+        pct, unable = pct_from_assessment(state, item)
+        if pct is None and not unable:
+            # Scored without anything we can turn into a number - cannot invent one.
+            continue
+        gate = ""
+        if pct is not None:
+            pct = reconcile_pct_with_evidence(activity_id, pct, evidence_text, evidence_class=evidence_class)
+            if pct is None:
+                gate = "stage"
+            elif pct > 0 and present is not None and present != "yes":
+                pct, gate = None, "present"
+                explanation = evidence_text = f"{label} is not clearly visible in the photos."
+            elif pct == 0 and present is not None and present != "no" and present != "yes":
+                pct, gate = None, "present"
+                explanation = evidence_text = f"{label} is not clearly visible in the photos."
+            elif not passes_proof_gate(activity_id, pct, found_all):
+                pct, gate = None, "proof"
+                explanation = evidence_text = f"Not enough visible proof of {label}"
+        if pct is None:
+            unable = True
+            state = "unable_to_determine"
+
+        result_item = {
+            "completion_pct": pct,
+            "confidence_pct": conf_pct,
+            "evidence": evidence_text,
+            "explanation": explanation or evidence_text,
+            "indicators_found": found_all[:4],
+            "indicators_missing": clean_str_list(item.get("indicators_missing")),
+            "views": [v for v in clean_str_list(item.get("evidence_views")) if v in view_names],
+            "evidence_class": evidence_class,
+            "state": state,
+            "present": present or "",
+            "gate": gate,
+        }
+        prev = out.get(activity_id)
+        # Within one surface-group response, incompleteness wins (lower %); a number beats "unknown".
+        if (
+            prev is None
+            or (prev["completion_pct"] is None and pct is not None)
+            or (
+                pct is not None
+                and prev["completion_pct"] is not None
+                and (
+                    pct < prev["completion_pct"]
+                    or (pct == prev["completion_pct"] and conf_pct > prev["confidence_pct"])
+                )
+            )
+        ):
+            out[activity_id] = result_item
+    return out
+
 
 def _dedupe_latest_per_pin(
     captures: list[CaptureRef],

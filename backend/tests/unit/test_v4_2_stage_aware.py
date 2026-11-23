@@ -1,4 +1,4 @@
-"""v4.2 stage-aware evidence engine — aggregation + evidence↔score consistency."""
+"""v4.2 aggregation + (v5.0) structured-only evidence reconciliation — aggregation + evidence↔score consistency."""
 from __future__ import annotations
 
 from app.services.construction_progress_providers.precedence import ENABLE_FILL_FORWARD
@@ -11,8 +11,8 @@ from app.services.construction_progress_providers.vllm_provider import (
 from app.services.construction_progress_providers.visual_criteria import VISUAL_CRITERIA
 
 
-def test_prompt_version_is_v4_family():
-    assert PROMPT_VERSION.startswith("v4.")
+def test_prompt_version_is_v5_family():
+    assert PROMPT_VERSION.startswith("v5.")
 
 
 def test_fill_forward_still_disabled():
@@ -88,44 +88,40 @@ def test_c_combined_window_one_of_three_is_proportional():
     assert "COMBINED" in criteria or "combined" in criteria.lower() or "separate" in criteria.lower()
 
 
-def test_d_gi_framing_without_boards_boxing_zero():
-    """D: evidence says no boards → boxing forced to 0 even if model returned 50%."""
+def test_d_free_text_never_rewrites_a_number():
+    """D (v5.0): "no boards" in the prose no longer forces 0. Only structured fields may change a number."""
     out = reconcile_pct_with_evidence(
         "flat.false_ceiling_boxing_24",
         50.0,
         "GI framing visible but no gypsum boards are visible in the open section.",
     )
-    assert out == 0.0
+    assert out == 50.0
 
 
-def test_e_insufficient_putty_1st_evidence_capped():
-    """E: white wall + cannot distinguish stage → putty 1st must be 0 (v4.3)."""
+def test_e_insufficient_stage_evidence_class_is_unknown_not_zero():
+    """E (v5.0): the model could not tell the stage -> unknown (None), never 0."""
+    assert reconcile_pct_with_evidence(
+        "flat.putty_39", 90.0, "cannot distinguish punning from putty",
+        evidence_class="INSUFFICIENT_STAGE_EVIDENCE",
+    ) is None
+    assert reconcile_pct_with_evidence(
+        "flat.electrical_wiring_23", 90.0, "", evidence_class="insufficient_stage_evidence",
+    ) is None
+
+
+def test_f_putty_prose_admitting_doubt_is_not_used():
     out = reconcile_pct_with_evidence(
-        "flat.putty_1st_coat_25",
-        90.0,
-        "Walls are white and smooth but cannot distinguish punning from first putty.",
+        "flat.putty_39", 70.0, "Smooth white walls; cannot distinguish second coat from first coat.",
     )
-    assert out == 0.0
+    assert out == 70.0
 
 
-def test_f_putty_2nd_stage_uncertainty_is_zero():
-    """F: cannot distinguish 2nd from 1st → Putty 2nd = 0%."""
+def test_g_wiring_prose_admitting_doubt_is_not_used():
     out = reconcile_pct_with_evidence(
-        "flat.putty_2nd_coat_26",
-        70.0,
-        "Smooth white walls; cannot distinguish second coat from first coat.",
-    )
-    assert out == 0.0
-
-
-def test_g_wiring_insufficient_admission_capped():
-    """G: model admits wiring completion cannot be confirmed → not keep 40%+ high."""
-    out = reconcile_pct_with_evidence(
-        "flat.electrical_wiring_23",
-        100.0,
+        "flat.electrical_wiring_23", 100.0,
         "All visible boxes have wires but actual wiring completion cannot be confirmed.",
     )
-    assert out <= 25.0
+    assert out == 100.0
 
 
 def test_h_door_frame_criteria_rejects_lookalikes():

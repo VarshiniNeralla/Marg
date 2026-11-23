@@ -120,19 +120,22 @@ _ACTIVITY_KEYWORD_ALIASES: dict[str, list[str]] = {
         "common.corridor_flooring_3", "common.staircase_flooring_8",
     ],
     "painting": [
-        "flat.putty_1st_coat_25", "flat.putty_2nd_coat_26",
-        "flat.primer_1st_coat_paint_27", "flat.final_coat_paint_37",
-        "common.putty_1st_coat_4", "common.putty_2nd_coat_5",
-        "common.primer_1st_coat_paint_6", "common.painting_2nd_coat_9",
+        "flat.putty_39", "flat.paint_40", "flat.final_coat_paint_37",
+        "common.putty_10", "common.paint_11", "common.painting_2nd_coat_9",
+        # older snapshots
+        "flat.putty_1st_coat_25", "flat.putty_2nd_coat_26", "flat.primer_1st_coat_paint_27",
+        "common.putty_1st_coat_4", "common.putty_2nd_coat_5", "common.primer_1st_coat_paint_6",
     ],
     "paint": [
-        "flat.putty_1st_coat_25", "flat.putty_2nd_coat_26",
-        "flat.primer_1st_coat_paint_27", "flat.final_coat_paint_37",
-        "common.putty_1st_coat_4", "common.putty_2nd_coat_5",
-        "common.primer_1st_coat_paint_6", "common.painting_2nd_coat_9",
+        "flat.putty_39", "flat.paint_40", "flat.final_coat_paint_37",
+        "common.putty_10", "common.paint_11", "common.painting_2nd_coat_9",
+        # older snapshots
+        "flat.putty_1st_coat_25", "flat.putty_2nd_coat_26", "flat.primer_1st_coat_paint_27",
+        "common.putty_1st_coat_4", "common.putty_2nd_coat_5", "common.primer_1st_coat_paint_6",
     ],
     "punning": ["flat.ceiling_punning_2", "flat.wall_punning_4", "common.wall_punning_works_1"],
     "putty": [
+        "flat.putty_39", "common.putty_10",
         "flat.putty_1st_coat_25", "flat.putty_2nd_coat_26",
         "common.putty_1st_coat_4", "common.putty_2nd_coat_5",
     ],
