@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React from 'react';
+import { Link, useParams } from 'react-router-dom';
 import { Box, Typography } from '@mui/material';
 import { PhotoLibraryRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
@@ -7,7 +8,7 @@ import {
   type ActivityAssessment,
   type ActivityStatus,
 } from '@/services/constructionProgressService';
-import EvidenceLightbox from './EvidenceLightbox';
+import { evidencePath } from '@/utils/evidenceImages';
 import { AssessmentChip, DetectionChip, ReviewChip } from './ProgressChips';
 import { UNABLE_TO_DETERMINE, assessmentColor, roomCoverageText, safePct, showsPercent } from '@/utils/progressDisplay';
 
@@ -29,7 +30,7 @@ function statusBg(status: ActivityStatus): string {
 }
 
 export default function ActivityCard({ activity }: { activity: ActivityAssessment }) {
-  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const { floorId } = useParams<{ floorId: string }>();
   const details = activity.evidenceDetails ?? [];
   const evidenceCount = details.length > 0 ? details.length : (activity.evidenceCaptureIds?.length ?? 0);
   const hasEvidence = evidenceCount > 0;
@@ -141,29 +142,22 @@ export default function ActivityCard({ activity }: { activity: ActivityAssessmen
           </Box>
         )}
 
-        {hasEvidence && (
+        {hasEvidence && floorId && (
+          // Opens the Evidence images page: every supporting capture of this activity as a draggable 360 panorama.
           <Box
-            onClick={() => setLightboxOpen(true)}
+            component={Link}
+            to={evidencePath(floorId, activity.activityId)}
             sx={{
-              display: 'inline-flex', alignItems: 'center', gap: 0.5, cursor: 'pointer',
+              display: 'inline-flex', alignItems: 'center', gap: 0.5, cursor: 'pointer', textDecoration: 'none',
               fontSize: '0.75rem', fontWeight: 600, color: colors.primary,
               '&:hover': { textDecoration: 'underline' },
             }}
           >
             <PhotoLibraryRounded sx={{ fontSize: 14 }} />
-            {evidenceCount} evidence image{evidenceCount === 1 ? '' : 's'}
+            View evidence images
           </Box>
         )}
       </Box>
-
-      {lightboxOpen && (
-        <EvidenceLightbox
-          activityName={activity.name}
-          captureIds={activity.evidenceCaptureIds ?? []}
-          details={details.length > 0 ? details : undefined}
-          onClose={() => setLightboxOpen(false)}
-        />
-      )}
     </>
   );
 }

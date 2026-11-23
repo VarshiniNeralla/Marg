@@ -364,6 +364,9 @@ export interface ScopeCatalogItem {
 
 export interface FloorScope {
   floorId: string;
+  /** The floor's tower and project, so a tower or project analysis can start right after saving. */
+  towerId?: string;
+  projectId?: string;
   activityIds: string[];
   /** True when nobody has edited the list (everything is ticked). */
   isDefault: boolean;
@@ -378,6 +381,9 @@ export type ProjectRunState = 'queued' | 'running' | 'completed' | 'failed' | 'p
 
 export interface ProjectRunStatus {
   jobId?: string;
+  /** Set when the run covers one tower only. */
+  towerId?: string;
+  towerName?: string;
   state: ProjectRunState;
   startedAt?: string | null;
   finishedAt?: string | null;
@@ -533,8 +539,12 @@ export const constructionProgressService = {
     return unwrap(apiClient.put(`/construction-progress/floors/${floorId}/scope`, { activityIds, applyTo }));
   },
 
-  analyzeProject(projectId: string): Promise<ProjectAnalyzeStart> {
-    return unwrap(apiClient.post(`/construction-progress/projects/${projectId}/analyze`, undefined, { timeout: 60_000 }));
+  /** Whole project, or only one tower's floors when `towerId` is given. */
+  analyzeProject(projectId: string, opts: { towerId?: string } = {}): Promise<ProjectAnalyzeStart> {
+    return unwrap(apiClient.post(`/construction-progress/projects/${projectId}/analyze`, undefined, {
+      timeout: 60_000,
+      params: opts.towerId ? { towerId: opts.towerId } : undefined,
+    }));
   },
 
   getProjectAnalyzeStatus(projectId: string, jobId?: string): Promise<ProjectRunStatus | null> {

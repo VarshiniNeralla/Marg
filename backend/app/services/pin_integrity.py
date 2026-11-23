@@ -79,3 +79,57 @@ def is_covered_by_captured_pin(
         except (KeyError, TypeError, ValueError):
             continue
     return False
+
+
+def names_to_fill_from_layout(
+    pin: dict[str, Any],
+    layout_pins: Iterable[dict[str, Any]],
+    *,
+    max_distance_pct: float = 3.0,
+) -> dict[str, str]:
+    """Names a photographed point is missing, taken from the nearest point of the imported layout.
+
+    'Import annotations' keeps every point that has photos untouched, so a kept point that never had a flat/room name
+    stayed blank ("Capture point", "Point 28") even though the layout being imported names the spot. This only ever
+    FILLS blanks: a name the point already has is never replaced, and nothing about its photos is looked at or changed.
+    Returns {} when there is nothing to fill or no named layout point is close enough.
+    """
+    def _s(p: dict[str, Any], *keys: str) -> str:
+        for k in keys:
+            v = str(p.get(k) or "").strip()
+            if v:
+                return v
+        return ""
+
+    have_flat = _s(pin, "flatName", "flat_name")
+    have_room = _s(pin, "roomName", "room_name")
+    have_label = _s(pin, "label")
+    if have_flat and have_room and have_label:
+        return {}
+    try:
+        px, py = float(pin["x"]), float(pin["y"])
+    except (KeyError, TypeError, ValueError):
+        return {}
+
+    best: dict[str, Any] | None = None
+    best_d = float("inf")
+    for cand in layout_pins:
+        if not _s(cand, "flatName", "flat_name") or not _s(cand, "roomName", "room_name"):
+            continue
+        try:
+            d = pin_distance_pct(px, py, float(cand["x"]), float(cand["y"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if d <= max_distance_pct and d < best_d:
+            best, best_d = cand, d
+    if best is None:
+        return {}
+
+    out: dict[str, str] = {}
+    if not have_flat:
+        out["flatName"] = _s(best, "flatName", "flat_name")
+    if not have_room:
+        out["roomName"] = _s(best, "roomName", "room_name")
+    if not have_label:
+        out["label"] = _s(best, "label") or out.get("roomName") or have_room
+    return out

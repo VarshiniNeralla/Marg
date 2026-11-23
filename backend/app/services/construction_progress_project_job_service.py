@@ -54,6 +54,9 @@ def serialize_project_job(doc: dict[str, Any]) -> dict[str, Any]:
     return {
         "jobId": str(doc["_id"]),
         "projectId": doc.get("projectId", ""),
+        # Set when the run covers one tower only; "" for a whole-project run.
+        "towerId": doc.get("towerId", "") or "",
+        "towerName": doc.get("towerName", "") or "",
         "state": doc.get("state", STATE_QUEUED),
         "createdAt": iso_utc(doc.get("createdAt")),
         "startedAt": iso_utc(doc.get("startedAt")),
@@ -78,7 +81,14 @@ class ConstructionProgressProjectJobService:
 
     # ── Start / read ──────────────────────────────────────────────────────
 
-    async def start(self, *, org_id: str, project_id: str, analyzed_by: str | None) -> dict[str, Any]:
+    async def start(
+        self, *, org_id: str, project_id: str, analyzed_by: str | None, tower_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Start one background job over the project's floors that have photos.
+
+        ``tower_id`` narrows it to the floors of that one tower (the "all floors in this tower" choice).
+        There is still only ONE active job per project, tower run or not.
+        """
         project = await self._projects.get_project(org_id, project_id)
         if project is None:
             raise NotFoundException("Project", project_id)
@@ -94,8 +104,19 @@ class ConstructionProgressProjectJobService:
             )
 
         with_photos, without_photos = await self._projects.floors_with_photos(org_id, project_id)
+        tower_name = ""
+        if tower_id:
+            in_tower = [f for f in with_photos + without_photos if f.get("towerId") == tower_id]
+            if not in_tower:
+                raise BadRequestException("That tower does not belong to this project")
+            tower_name = str(in_tower[0].get("towerName") or "")
+            with_photos = [f for f in with_photos if f.get("towerId") == tower_id]
+            without_photos = [f for f in without_photos if f.get("towerId") == tower_id]
         if not with_photos:
-            raise BadRequestException("This project has no floors with photos to analyse")
+            raise BadRequestException(
+                "This tower has no floors with photos to analyse" if tower_id
+                else "This project has no floors with photos to analyse"
+            )
 
         job_id = str(uuid.uuid4())
         now = _utcnow()
@@ -104,6 +125,8 @@ class ConstructionProgressProjectJobService:
             "orgId": org_id,
             "projectId": project_id,
             "projectName": str(project.get("name") or ""),
+            "towerId": tower_id or "",
+            "towerName": tower_name,
             "analyzedBy": analyzed_by,
             "state": STATE_QUEUED,
             "createdAt": now,
@@ -329,16 +352,21 @@ class ConstructionProgressProjectJobService:
             org_id = job["orgId"]
             project_id = job["projectId"]
             label = job.get("projectName") or "the project"
+            tower_name = str(job.get("towerName") or "")
+            # A tower run only covers one tower; say so instead of calling it whole-project.
+            kind = "tower" if job.get("towerId") else "whole-project"
+            if job.get("towerId"):
+                label = f"{tower_name or 'the tower'} in {label}"
             done, failed = int(job.get("floorsDone") or 0), int(job.get("floorsFailed") or 0)
             if job["state"] == STATE_COMPLETED:
                 ntype, title = NOTIF_COMPLETE, "Project analysis ready for review"
-                body = f"The whole-project progress analysis for {label} is complete ({done} floor(s) analysed)."
+                body = f"The {kind} progress analysis for {label} is complete ({done} floor(s) analysed)."
             elif job["state"] == STATE_PARTIAL:
                 ntype, title = NOTIF_COMPLETE, "Project analysis finished with some failures"
                 body = f"The progress analysis for {label} finished: {done} floor(s) analysed, {failed} failed."
             else:
                 ntype, title = NOTIF_FAILED, "Project analysis failed"
-                body = f"The whole-project progress analysis for {label} could not be completed."
+                body = f"The {kind} progress analysis for {label} could not be completed."
             recipients = await self._floor_jobs._recipient_ids(org_id, job.get("analyzedBy"))
             now = _utcnow()
             docs = []

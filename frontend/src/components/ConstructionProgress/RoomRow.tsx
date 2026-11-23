@@ -2,12 +2,12 @@ import React, { useState } from 'react';
 import { Box, Collapse, Typography } from '@mui/material';
 import { ExpandMoreRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
-import type { EvidenceDetail, RoomActivityAssessment, RoomProgress } from '@/services/constructionProgressService';
+import type { RoomActivityAssessment, RoomProgress } from '@/services/constructionProgressService';
 import { formatDate } from '@/utils/dateFormat';
 import {
   countNeedingReview, notObservedCount, observedText, resolveScopeStatus, reviewBannerText, safePct, scopeColor, scopeLabel,
 } from '@/utils/progressDisplay';
-import RoomActivityRow from './RoomActivityRow';
+import RoomActivityRow, { type OpenEvidence } from './RoomActivityRow';
 
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#ffffff', hover: '#f9fafb' };
 
@@ -35,7 +35,7 @@ export default function RoomRow({
   room: RoomProgress;
   canReview?: boolean;
   onReview?: (room: RoomProgress, activity: RoomActivityAssessment) => void;
-  onOpenEvidence: (activityName: string, captureIds: string[], details: EvidenceDetail[]) => void;
+  onOpenEvidence: OpenEvidence;
   defaultExpanded?: boolean;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
@@ -109,7 +109,7 @@ export default function RoomRow({
               siblings={room.activities}
               canReview={canReview}
               onReview={act => onReview?.(room, act)}
-              onOpenEvidence={onOpenEvidence}
+              onOpenEvidence={(name, ids, details, activity) => onOpenEvidence(name, ids, details, activity, room.roomName)}
             />
           ))}
         </Box>

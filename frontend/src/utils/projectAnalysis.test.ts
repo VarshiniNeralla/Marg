@@ -88,4 +88,12 @@ describe('run helpers', () => {
     expect(runLabel({ state: 'partial', floorsTotal: 4, floorsDone: 3, floorsFailed: 1 })).toBe('3 floors analysed, 1 failed');
     expect(runLabel(null)).toBe('');
   });
+  it('names the tower when the run covers one tower only', () => {
+    expect(runLabel({ state: 'running', floorsTotal: 3, floorsDone: 1, floorsFailed: 0, towerId: 'tA', towerName: 'Tower A' }))
+      .toBe('Tower A: 1 of 3 floors done');
+    expect(runLabel({ state: 'completed', floorsTotal: 3, floorsQueued: 2, floorsDone: 2, floorsFailed: 0, towerName: 'Tower A' }))
+      .toBe('Tower A: All 2 floors analysed');
+    // A whole-project run has no tower and reads as before.
+    expect(runLabel({ state: 'completed', floorsTotal: 3, floorsDone: 3, floorsFailed: 0, towerName: '' })).toBe('All 3 floors analysed');
+  });
 });

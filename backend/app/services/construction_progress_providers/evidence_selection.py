@@ -37,7 +37,10 @@ from app.services.construction_progress_providers.progress_aggregation import (
 MIN_USABLE_CONFIDENCE = 30.0
 RELIABLE_CONFIDENCE = 50.0
 STALE_AFTER_DAYS = 7
-MAX_EVIDENCE = 3
+# Upper bound on evidence captures kept per activity per room. It used to be 3, which hid every other
+# photo that supports the finding. The Evidence images page shows all of them as 360 panoramas; the
+# bound only protects the stored report from growing without limit.
+MAX_EVIDENCE = 12
 MAX_INDICATORS = 6
 
 

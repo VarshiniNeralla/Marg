@@ -14,7 +14,7 @@ from bson import ObjectId
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.services.pin_integrity import is_covered_by_captured_pin
+from app.services.pin_integrity import is_covered_by_captured_pin, names_to_fill_from_layout
 
 
 def _utcnow() -> datetime:
@@ -613,6 +613,27 @@ class PredefinedPinsService:
                 pin.get("flatName") and pin.get("roomName") and not caps
             ):
                 await self._db["capture_pins"].delete_one({"_id": pin["_id"], "orgId": org_id})
+
+        # A point that already has photos is never moved, re-created or emptied. But if it has no flat/room name,
+        # fill ONLY the blank names from the nearest named point of the layout being imported, so it no longer
+        # shows as a bare "Capture point". Its photos and capture list are not touched.
+        for pin in preserved:
+            fill = names_to_fill_from_layout(pin, source_pins)
+            if not fill:
+                continue
+            try:
+                await self._db["capture_pins"].update_one(
+                    {"_id": pin["_id"], "orgId": org_id},
+                    {"$set": {**fill, "labelsFilledFromImport": True, "updatedAt": _utcnow()}},
+                )
+            except Exception as exc:
+                logger.warning("could not name captured point {}: {}", pin.get("_id"), exc)
+                continue
+            pin.update(fill)
+            flat_n = str(pin.get("flatName") or "").strip()
+            room_n = str(pin.get("roomName") or "").strip()
+            if flat_n and room_n:
+                preserved_fr_keys.add(f"{flat_n}|{room_n}")
 
         created: list[dict[str, Any]] = []
         errors = 0

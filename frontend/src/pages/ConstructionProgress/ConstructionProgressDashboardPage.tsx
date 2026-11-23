@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Typography, CircularProgress, Button, LinearProgress, Snackbar, Alert } from '@mui/material';
 import { ArrowBackRounded, RefreshRounded, AutoAwesomeRounded, NotificationsActiveRounded } from '@mui/icons-material';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { colors, shadows } from '@theme/tokens';
 import { useBackgroundAnalysisStore } from '@store/backgroundAnalysis';
@@ -9,8 +9,12 @@ import { analysisStageLabel, formatElapsed, softProgressPct } from '@/utils/anal
 import {
   constructionProgressService,
   type FloorProgressSnapshot,
+  type FloorScope,
+  type ScopeApplyTo,
 } from '@/services/constructionProgressService';
 import ChooseActivitiesDialog from '@/components/ConstructionProgress/ChooseActivitiesDialog';
+import { useFloorScope } from '@/hooks/useActivityScope';
+import { scopeSummaryText } from '@/utils/scopeApply';
 import { useAuthStore, isManagerOrAdmin } from '@store/authStore';
 import FloorActionToolbar from '@/components/ConstructionProgress/FloorActionToolbar';
 import FloorOverviewHero from '@/components/ConstructionProgress/FloorOverviewHero';
@@ -27,6 +31,7 @@ const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', white: '#fff
 
 export default function ConstructionProgressDashboardPage() {
   const { floorId } = useParams<{ floorId: string }>();
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeElapsedSec, setAnalyzeElapsedSec] = useState(0);
@@ -36,6 +41,8 @@ export default function ConstructionProgressDashboardPage() {
   const [notAnalyzed, setNotAnalyzed] = useState(false);
   const [chooseOpen, setChooseOpen] = useState(false);
   const canEditScope = useAuthStore(s => isManagerOrAdmin(s.user));
+  // Only managers and admins may read the activity list, so only they ask for it (it feeds the summary line).
+  const { data: floorScope } = useFloorScope(canEditScope ? floorId : undefined);
   const analyzingRef = useRef(false);
   const pollGenerationRef = useRef(0);
   // "Run in background": the analysis runs on the server and the user is notified when it is done.
@@ -254,6 +261,43 @@ export default function ConstructionProgressDashboardPage() {
     void pollAnalyzeJob(floorId, jobId, isReanalysis, { silent: true });
   };
 
+  /**
+   * "Save and analyse" in the Choose activities dialog. The list is already saved. This floor is analysed here
+   * (with the usual progress overlay); a tower or the whole project becomes ONE background job, and the user
+   * is taken to the Project Analysis page to watch it.
+   */
+  const handleAnalyseAfterScope = async ({ applyTo, scope }: { applyTo: ScopeApplyTo; scope: FloorScope }) => {
+    if (applyTo === 'floor') {
+      await handleAnalyze();
+      return;
+    }
+    const projectId = scope.projectId;
+    if (!projectId || (applyTo === 'tower' && !scope.towerId)) {
+      toast.error('Could not tell which project this floor belongs to, so nothing was analysed.');
+      return;
+    }
+    const goToProject = () => navigate(`/construction-progress/project-analysis?project=${encodeURIComponent(projectId)}`);
+    try {
+      const res = await constructionProgressService.analyzeProject(
+        projectId, applyTo === 'tower' ? { towerId: scope.towerId } : {},
+      );
+      toast.success(
+        `Analysis started for ${res.floorsQueued} floor${res.floorsQueued === 1 ? '' : 's'}`
+        + (res.floorsSkippedNoPhotos ? ` (${res.floorsSkippedNoPhotos} without photos skipped).` : '.'),
+      );
+      goToProject();
+    } catch (err: unknown) {
+      const e = err as { status?: number; response?: { status?: number; data?: { message?: string } }; message?: string };
+      const status = e?.status ?? e?.response?.status;
+      if (status === 409) {
+        toast.info('An analysis is already running for this project. Showing its progress.');
+        goToProject();
+        return;
+      }
+      toast.error(e?.response?.data?.message || e?.message || 'Could not start the analysis.');
+    }
+  };
+
   const handleExportPdf = async () => {
     if (!snapshot) return;
     try {
@@ -366,8 +410,32 @@ export default function ConstructionProgressDashboardPage() {
             This floor hasn't been analyzed yet
           </Typography>
           <Typography sx={{ fontSize: '0.9375rem', color: P.muted, mb: 3 }}>
-            Run the AI progress assessment against every uploaded capture for this floor.
+            {canEditScope
+              ? 'Choose which activities to view progress for, then run the AI progress assessment against every uploaded 360 capture for this floor.'
+              : 'Run the AI progress assessment against every uploaded capture for this floor.'}
           </Typography>
+          {canEditScope && (
+            <Box sx={{ mb: 3 }}>
+              <Button
+                onClick={() => setChooseOpen(true)}
+                data-testid="choose-activities-primary"
+                sx={{
+                  background: colors.primaryGradient, color: '#fff', px: 3.5, minHeight: 44, borderRadius: '10px',
+                  fontWeight: 700, textTransform: 'none', boxShadow: shadows.btn, '&:hover': { opacity: 0.92 },
+                }}
+              >
+                Choose activities
+              </Button>
+              {floorScope && (
+                <Typography sx={{ mt: 1, fontSize: '0.8125rem', color: P.muted }} data-testid="scope-summary">
+                  {scopeSummaryText(floorScope.activityIds.length, floorScope.catalog.length)}
+                </Typography>
+              )}
+              <Typography sx={{ mt: 2, fontSize: '0.8125rem', color: P.muted }}>
+                Or analyse this floor now with the activities above:
+              </Typography>
+            </Box>
+          )}
           <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center', flexDirection: { xs: 'column', sm: 'row' }, alignItems: 'stretch', maxWidth: 520, mx: 'auto' }}>
             <Button
               onClick={handleAnalyze}
@@ -397,12 +465,6 @@ export default function ConstructionProgressDashboardPage() {
               {backgroundRunning ? 'Running in background…' : 'Run in Background'}
             </Button>
           </Box>
-          <Button
-            onClick={() => setChooseOpen(true)}
-            sx={{ mt: 2, textTransform: 'none', fontWeight: 600, color: colors.primary }}
-          >
-            Choose activities
-          </Button>
         </Box>
       ) : (
         <>
@@ -487,6 +549,8 @@ export default function ConstructionProgressDashboardPage() {
         canEdit={canEditScope}
         analysedScope={snapshot?.activityScope}
         scopeChangedSinceAnalysis={snapshot?.scopeChangedSinceAnalysis}
+        hasAnalysis={!!snapshot}
+        onAnalyse={handleAnalyseAfterScope}
       />
 
       <Snackbar
