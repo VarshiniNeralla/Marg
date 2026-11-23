@@ -66,6 +66,7 @@ from app.services.construction_progress_providers.precedence import (
 )
 from app.services.construction_progress_providers.activity_rules import RULES, render_rule_block
 from app.services.construction_progress_providers.evidence_selection import (
+    MAX_EVIDENCE,
     Observation,
     resolve_observations,
 )
@@ -563,7 +564,7 @@ def _merge_components_per_unit(
                 "conf": min(float(e["conf"]) for e in known),
                 "capture_id": evidence_ids[0] if evidence_ids else "",
                 "evidence": " | ".join(str(e.get("evidence")) for e in ranked if e.get("evidence"))[:400],
-                "evidence_ids": evidence_ids[:3],
+                "evidence_ids": evidence_ids[:MAX_EVIDENCE],
                 "status": status_for_pct(pct),
                 "detection": "direct" if "direct" in detections else DETECTION_INFERRED,
                 "inferred_from": next((e.get("inferred_from") for e in known if e.get("inferred_from")), ""),

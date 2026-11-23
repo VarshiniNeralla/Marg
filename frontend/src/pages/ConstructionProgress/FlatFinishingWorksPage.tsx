@@ -1,19 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, Collapse, Typography, CircularProgress, Tooltip } from '@mui/material';
 import { ArrowBackRounded, ExpandMoreRounded, InfoOutlined as InfoOutlinedIcon } from '@mui/icons-material';
-import { Link, useLocation, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { colors, motion } from '@theme/tokens';
 import {
   constructionProgressService,
-  type EvidenceDetail,
   type FloorProgressSnapshot,
   type FlatProgress,
   type RoomActivityAssessment,
   type RoomProgress,
 } from '@/services/constructionProgressService';
 import { useAuthStore, isManagerOrAdmin } from '@store/authStore';
-import EvidenceLightbox from '@/components/ConstructionProgress/EvidenceLightbox';
+import { type OpenEvidence } from '@/components/ConstructionProgress/RoomActivityRow';
+import { evidencePath } from '@/utils/evidenceImages';
 import { PROGRESS_EXPLAINER } from '@/components/ConstructionProgress/FinishingOverview';
 import FlatSelector from '@/components/ConstructionProgress/FlatSelector';
 import RoomRow from '@/components/ConstructionProgress/RoomRow';
@@ -34,7 +34,6 @@ function isCommonArea(f: FlatProgress): boolean {
   return f.flatName === 'Common Area';
 }
 
-interface EvidenceState { activityName: string; captureIds: string[]; details: EvidenceDetail[] }
 interface ReviewState { room: RoomProgress; activity: RoomActivityAssessment }
 
 /** The one quiet line of facts under the flat's percentage. */
@@ -55,7 +54,7 @@ function RoomList({
   rooms: RoomProgress[];
   canReview: boolean;
   onReview: (room: RoomProgress, activity: RoomActivityAssessment) => void;
-  onOpenEvidence: (activityName: string, captureIds: string[], details: EvidenceDetail[]) => void;
+  onOpenEvidence: OpenEvidence;
 }) {
   return (
     <Box sx={{ borderRadius: '14px', backgroundColor: P.white, border: `1.5px solid ${P.border}`, overflow: 'hidden' }}>
@@ -73,7 +72,7 @@ function FlatDetail({
   isCommon: boolean;
   canReview: boolean;
   onReview: (room: RoomProgress, activity: RoomActivityAssessment) => void;
-  onOpenEvidence: (activityName: string, captureIds: string[], details: EvidenceDetail[]) => void;
+  onOpenEvidence: OpenEvidence;
 }) {
   const scope = resolveScopeStatus(flat);
   const completed = scope === 'completed' || !!flat.isFullyComplete;
@@ -150,7 +149,7 @@ export default function FlatFinishingWorksPage() {
   const [loading, setLoading] = useState(true);
   const [snapshot, setSnapshot] = useState<FloorProgressSnapshot | null>(null);
   const [selectedFlat, setSelectedFlat] = useState<string>('');
-  const [evidence, setEvidence] = useState<EvidenceState | null>(null);
+  const navigate = useNavigate();
   const [review, setReview] = useState<ReviewState | null>(null);
 
   const scopedProgress = useMemo(() => {
@@ -200,6 +199,11 @@ export default function FlatFinishingWorksPage() {
   }, [load]);
 
   const flat = scopedProgress.find(f => f.flatName === selectedFlat) ?? null;
+  /** Evidence opens on its own page: every supporting capture of this activity in this room, as 360 panoramas. */
+  const openEvidence: OpenEvidence = (_name, _ids, _details, activity, roomName) => {
+    if (!floorId || !activity) return;
+    navigate(evidencePath(floorId, activity.activityId, { flat: flat?.flatName, room: roomName }));
+  };
   const pageTitle = isCommon ? 'Common Area Finishing Works' : 'Flat Finishing Works';
   const pageSubtitle = snapshot
     ? isCommon
@@ -254,19 +258,10 @@ export default function FlatFinishingWorksPage() {
               isCommon={isCommon}
               canReview={canReview}
               onReview={(room, activity) => setReview({ room, activity })}
-              onOpenEvidence={(activityName, captureIds, details) => setEvidence({ activityName, captureIds, details })}
+              onOpenEvidence={openEvidence}
             />
           )}
         </>
-      )}
-
-      {evidence && (
-        <EvidenceLightbox
-          activityName={evidence.activityName}
-          captureIds={evidence.captureIds}
-          details={evidence.details.length > 0 ? evidence.details : undefined}
-          onClose={() => setEvidence(null)}
-        />
       )}
 
       <ActivityReviewDialog

@@ -119,12 +119,31 @@ class ConstructionProgressScopeService:
             out[str(doc.get("floorId"))] = sanitize_stored_ids(doc.get("activityIds"))
         return out
 
+    async def floor_location(self, org_id: str, floor_id: str) -> dict[str, str]:
+        """{towerId, projectId} of a floor ("" when it cannot be resolved). Lets the UI start a tower or
+        project analysis right after saving the activity list, even on a floor with no snapshot yet."""
+        try:
+            floor = await self._db["floors"].find_one({"_id": floor_id, "orgId": org_id}) \
+                or await self._db["floors"].find_one({"id": floor_id, "orgId": org_id})
+            tower_id = str((floor or {}).get("towerId") or "")
+            if not tower_id:
+                return {"towerId": "", "projectId": ""}
+            tower = await self._db["towers"].find_one({"_id": tower_id, "orgId": org_id}) \
+                or await self._db["towers"].find_one({"id": tower_id, "orgId": org_id})
+            return {"towerId": tower_id, "projectId": str((tower or {}).get("projectId") or "")}
+        except Exception as exc:  # a lookup problem must never break the activity list
+            logger.warning("[cp-scope] could not resolve floor location floor={}: {!r}", floor_id, exc)
+            return {"towerId": "", "projectId": ""}
+
     async def get_scope_view(self, org_id: str, floor_id: str) -> dict[str, Any]:
         doc = await self._db[COLLECTION_SCOPE].find_one({"orgId": org_id, "floorId": floor_id}) or {}
         stored = sanitize_stored_ids(doc.get("activityIds"))
         ids = stored or all_core_ids()
+        location = await self.floor_location(org_id, floor_id)
         return {
             "floorId": floor_id,
+            "towerId": location["towerId"],
+            "projectId": location["projectId"],
             "activityIds": ids,
             "isDefault": set(ids) == set(all_core_ids()),
             "updatedAt": _iso(doc.get("updatedAt")) if stored else None,

@@ -17,8 +17,18 @@ export interface RoomActivityRowProps {
   siblings: ReadonlyArray<RoomActivityAssessment>;
   canReview?: boolean;
   onReview?: (activity: RoomActivityAssessment) => void;
-  onOpenEvidence?: (activityName: string, captureIds: string[], details: EvidenceDetail[]) => void;
+  /** Opens the Evidence images page. The activity (and, from RoomRow, the room name) say which evidence to show. */
+  onOpenEvidence?: OpenEvidence;
 }
+
+/** `activity` and `roomName` are extra; callers that only need the first three arguments keep working. */
+export type OpenEvidence = (
+  activityName: string,
+  captureIds: string[],
+  details: EvidenceDetail[],
+  activity?: RoomActivityAssessment,
+  roomName?: string,
+) => void;
 
 function IndicatorList({ title, items }: { title: string; items: string[] }) {
   if (items.length === 0) return null;
@@ -129,7 +139,7 @@ export default function RoomActivityRow({
             <Box
               component="button"
               type="button"
-              onClick={() => onOpenEvidence(a.activityName, evidenceIds, details)}
+              onClick={() => onOpenEvidence(a.activityName, evidenceIds, details, a)}
               sx={{
                 display: 'inline-flex', alignItems: 'center', gap: 0.75, minHeight: 44, px: 1.25, cursor: 'pointer',
                 border: `1px solid ${P.border}`, borderRadius: '10px', backgroundColor: '#fff', color: colors.primary,

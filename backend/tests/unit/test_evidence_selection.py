@@ -43,7 +43,7 @@ def test_zero_percent_has_no_evidence_images():
 
 
 def test_duplicates_removed_and_capped():
-    many = [obs(f"c{i}", 50.0 + i, 90.0 - i) for i in range(6)] + [obs("c0", 51.0, 70.0)]
+    many = [obs(f"c{i}", 50.0 + i, 90.0 - i) for i in range(MAX_EVIDENCE + 3)] + [obs("c0", 51.0, 70.0)]
     r = resolve_observations(many)
     assert len(r["evidence_ids"]) == MAX_EVIDENCE
     assert len(set(r["evidence_ids"])) == len(r["evidence_ids"])

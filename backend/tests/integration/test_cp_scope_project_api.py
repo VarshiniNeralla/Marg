@@ -145,6 +145,30 @@ async def test_start_project_analysis_returns_202_with_counts(client, world, adm
 
 
 @pytest.mark.asyncio
+async def test_tower_run_through_the_route_covers_only_that_tower(client, world, admin_token):
+    h = auth_headers(admin_token)
+    resp = await client.post(f"{BASE}/projects/p1/analyze", params={"towerId": "tA"}, headers=h)
+    assert resp.status_code == 202
+    data = resp.json()["data"]
+    assert data["towerId"] == "tA" and data["towerName"] == "Tower A"
+    assert (data["floorsTotal"], data["floorsQueued"], data["floorsSkippedNoPhotos"]) == (2, 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_tower_of_another_project_is_a_400_and_starts_nothing(client, world, admin_token):
+    h = auth_headers(admin_token)
+    resp = await client.post(f"{BASE}/projects/p1/analyze", params={"towerId": "tX"}, headers=h)
+    assert resp.status_code == 400
+    assert await world.construction_progress_project_jobs.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
+async def test_scope_view_tells_the_ui_which_tower_and_project_the_floor_is_in(client, world, admin_token):
+    data = (await client.get(f"{BASE}/floors/f1/scope", headers=auth_headers(admin_token))).json()["data"]
+    assert data["towerId"] == "tA" and data["projectId"] == "p1"
+
+
+@pytest.mark.asyncio
 async def test_second_start_while_running_is_409_with_the_running_job(client, world, admin_token):
     h = auth_headers(admin_token)
     first = (await client.post(f"{BASE}/projects/p1/analyze", headers=h)).json()["data"]

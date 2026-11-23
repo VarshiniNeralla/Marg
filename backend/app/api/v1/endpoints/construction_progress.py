@@ -285,12 +285,18 @@ async def put_floor_scope(
     status_code=status.HTTP_202_ACCEPTED,
     summary="Start ONE background analysis of every floor of a project that has photos",
 )
-async def analyze_project(project_id: str, ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
+async def analyze_project(
+    project_id: str,
+    ctx: CallerContext,
+    db: DB,
+    _manager_or_admin: ManagerOrAdminUser,
+    tower_id: str | None = Query(default=None, alias="towerId", description="Only analyse the floors of this tower"),
+):
     from app.services.construction_progress_project_job_service import ConstructionProgressProjectJobService
 
     await _assert_project_access(ctx, db, project_id)
     job = await ConstructionProgressProjectJobService(db).start(
-        org_id=ctx.org_id, project_id=project_id, analyzed_by=ctx.user_id,
+        org_id=ctx.org_id, project_id=project_id, analyzed_by=ctx.user_id, tower_id=tower_id or None,
     )
     return success_response(data=job, message="Project analysis started")
 

@@ -74,6 +74,7 @@ const ConstructionProgressOverviewPage = lazy(() => import('@/pages/Construction
 const ConstructionProgressDashboardPage = lazy(() => import('@/pages/ConstructionProgress/ConstructionProgressDashboardPage'));
 const FlatFinishingWorksPage = lazy(() => import('@/pages/ConstructionProgress/FlatFinishingWorksPage'));
 const ProjectAnalysisPage = lazy(() => import('@/pages/ConstructionProgress/ProjectAnalysisPage'));
+const EvidenceImagesPage = lazy(() => import('@/pages/ConstructionProgress/EvidenceImagesPage'));
 const DrishtiProjectSelectionPage = lazy(() => import('@/pages/Drishti/DrishtiProjectSelectionPage'));
 const DrishtiChatPage = lazy(() => import('@/pages/Drishti/DrishtiChatPage'));
 const DrishtiPdfPreviewPage = lazy(() => import('@/pages/Drishti/DrishtiPdfPreviewPage'));
@@ -171,6 +172,7 @@ const router = createBrowserRouter([
           { path: '/construction-progress',           element: <PageSuspense><ConstructionProgressOverviewPage /></PageSuspense> },
           { path: '/construction-progress/project-analysis', element: <PageSuspense><ProjectAnalysisPage /></PageSuspense> },
           { path: '/construction-progress/:floorId',  element: <PageSuspense><ConstructionProgressDashboardPage /></PageSuspense> },
+          { path: '/construction-progress/:floorId/evidence', element: <PageSuspense><EvidenceImagesPage /></PageSuspense> },
           { path: '/construction-progress/:floorId/flats', element: <PageSuspense><FlatFinishingWorksPage /></PageSuspense> },
           { path: '/construction-progress/:floorId/common', element: <PageSuspense><FlatFinishingWorksPage /></PageSuspense> },
           { path: '/drishti',              element: <PageSuspense><DrishtiProjectSelectionPage /></PageSuspense> },

@@ -128,6 +128,12 @@ export function runPct(run: ProjectRunStatus | null | undefined): number {
 }
 
 export function runLabel(run: ProjectRunStatus | null | undefined): string {
+  const text = runLabelText(run);
+  // A tower run covers one tower only; say so. Whole-project runs read as before.
+  return text && run?.towerName ? `${run.towerName}: ${text}` : text;
+}
+
+function runLabelText(run: ProjectRunStatus | null | undefined): string {
   if (!run) return '';
   const done = (run.floorsDone ?? 0) + (run.floorsFailed ?? 0);
   const total = run.floorsQueued ?? run.floorsTotal;

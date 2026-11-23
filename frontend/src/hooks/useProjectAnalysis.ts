@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { constructionProgressService } from '@/services/constructionProgressService';
+import { constructionProgressService, type ProjectAnalyzeStart } from '@/services/constructionProgressService';
 import { isRunActive } from '@/utils/projectAnalysis';
 
 export const POLL_MS = 4000;
@@ -36,8 +36,10 @@ export function useProjectAnalyzeStatus(projectId: string | undefined) {
 
 export function useAnalyzeProject(projectId: string | undefined) {
   const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () => constructionProgressService.analyzeProject(projectId!),
+  // `void` in the variables type keeps `mutate()` / `mutateAsync()` callable with no argument (whole project).
+  return useMutation<ProjectAnalyzeStart, Error, { towerId?: string } | void>({
+    mutationFn: (vars) =>
+      constructionProgressService.analyzeProject(projectId!, { towerId: (vars as { towerId?: string } | undefined)?.towerId }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: statusKey(projectId ?? '') });
     },
