@@ -8,6 +8,7 @@ import {
   CenterFocusStrongRounded, FullscreenRounded, FullscreenExitRounded,
   AddAPhotoRounded, HistoryRounded, CloseRounded,
   CameraAltRounded, VisibilityRounded, VisibilityOffRounded,
+  AddCircleOutlineRounded, RemoveCircleOutlineRounded,
 } from '@mui/icons-material';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore, isFieldEngineer } from '@store/authStore';
@@ -33,6 +34,9 @@ import { resolveMediaUrl } from '@/config/env';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { captureAwaitingPanorama } from '@/utils/captureMedia';
 import { formatPinLocationLabel, formatCaptureDateTime } from '@/utils/pinLabels';
+import {
+  canGrowPoints, canShrinkPoints, loadPointScale, pointScaleLabel, savePointScale, stepPointScale,
+} from '@/utils/pointScale';
 
 /** Best full-size image for one capture (panorama first, then original, then thumbnail). */
 function captureViewUrl(c: unknown): string | null {
@@ -443,8 +447,8 @@ function GreenTargetPin({
       <Box
         sx={{
           // --inv-scale is set once on the zoomed wrapper (1 / zoom), so zooming never
-          // generates a new CSS class per scale value.
-          transform: 'scale(var(--inv-scale, 1))',
+          // generates a new CSS class per scale value. --pin-scale is the size the field engineer chose.
+          transform: 'scale(calc(var(--inv-scale, 1) * var(--pin-scale, 1)))',
           transformOrigin: 'bottom center',
           display: 'flex',
           flexDirection: 'column',
@@ -616,6 +620,21 @@ function WorkflowFloorPinMarkerImpl({
           userSelect: 'none',
         }}
       >
+        {/* Only what is DRAWN is scaled by the chosen point size. The 44px tap area above is not, so a bigger
+            dot never steals taps from its neighbours on a dense plan. Scales about the same anchor the marker
+            is positioned by (tip for a numbered pin, centre for a dot), so it stays on its spot. */}
+        <Box
+          data-testid="pin-visual"
+          sx={{
+            position: 'absolute', inset: 0,
+            display: 'flex',
+            alignItems: showNumberedPin && !highlighted ? 'flex-end' : 'center',
+            justifyContent: 'center',
+            transform: 'scale(var(--pin-scale, 1))',
+            transformOrigin: showNumberedPin && !highlighted ? 'bottom center' : 'center center',
+            pointerEvents: 'none',
+          }}
+        >
         {!highlighted && showNumberedPin && seqLabel && (
           <NumberedMapPinSvg fill={pinFill} label={seqLabel} size={28} />
         )}
@@ -663,6 +682,7 @@ function WorkflowFloorPinMarkerImpl({
             <Typography sx={{ fontSize: '0.5rem', fontWeight: 900, color: '#fff', lineHeight: 1 }}>!</Typography>
           </Box>
         )}
+        </Box>
       </Box>
     </Box>
   );
@@ -708,6 +728,15 @@ function FloorPlanWithPin({
   // Animate ONLY discrete jumps (zoom buttons, double-tap, fit-to-screen). While a finger/mouse/wheel is
   // driving the view the transform must follow it 1:1; a transition there is what made panning feel jagged.
   const [smooth, setSmooth] = useState(false);
+  // Capture-point size the field engineer picked (separate from zooming the plan). Remembered on this device.
+  const [pointScale, setPointScale] = useState<number>(() => loadPointScale());
+  const changePointScale = (dir: 1 | -1) => {
+    setPointScale(prev => {
+      const next = stepPointScale(prev, dir);
+      savePointScale(next);
+      return next;
+    });
+  };
   // Source of truth for the current view, read by every gesture handler so none of them works from a stale
   // render's closure.
   const viewRef = useRef({ scale: 1, x: 0, y: 0 });
@@ -1046,6 +1075,19 @@ function FloorPlanWithPin({
         { icon: <ZoomInRounded sx={{ fontSize: 15 }} />, fn: () => zoom(1), title: 'Zoom in' },
         { icon: <ZoomOutRounded sx={{ fontSize: 15 }} />, fn: () => zoom(-1), title: 'Zoom out' },
         { icon: <CenterFocusStrongRounded sx={{ fontSize: 15 }} />, fn: resetView, title: 'Fit to screen' },
+        // Make the capture points themselves bigger or smaller (the plan's zoom is not touched).
+        {
+          icon: <AddCircleOutlineRounded sx={{ fontSize: 15 }} />,
+          fn: () => changePointScale(1),
+          title: 'Bigger capture points',
+          disabled: !canGrowPoints(pointScale),
+        },
+        {
+          icon: <RemoveCircleOutlineRounded sx={{ fontSize: 15 }} />,
+          fn: () => changePointScale(-1),
+          title: 'Smaller capture points',
+          disabled: !canShrinkPoints(pointScale),
+        },
         ...(onTogglePinsVisible
           ? [{
               icon: pinsVisible
@@ -1062,20 +1104,37 @@ function FloorPlanWithPin({
               fn: () => setFullscreen(f => !f),
               title: fullscreen ? 'Exit fullscreen' : 'Fullscreen',
             }]),
-      ] as { icon: React.ReactNode; fn: () => void; title: string }[]).map((b, i) => (
+      ] as { icon: React.ReactNode; fn: () => void; title: string; disabled?: boolean }[]).map((b, i) => (
         <Box
           key={i}
+          role="button"
           title={b.title}
           aria-label={b.title}
+          aria-disabled={b.disabled || undefined}
           data-no-pan
           onPointerDown={(e) => e.stopPropagation()}
           onPointerUp={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); b.fn(); }}
-          sx={{ width: 28, height: 28, borderRadius: '7px', backgroundColor: 'rgba(255,255,255,0.1)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#fff', touchAction: 'manipulation', transition: T, '&:hover': { backgroundColor: 'rgba(37,99,235,0.7)' } }}
+          onClick={(e) => { e.stopPropagation(); if (!b.disabled) b.fn(); }}
+          sx={{
+            width: 28, height: 28, borderRadius: '7px', backgroundColor: 'rgba(255,255,255,0.1)', backdropFilter: 'blur(8px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', touchAction: 'manipulation', transition: T,
+            cursor: b.disabled ? 'default' : 'pointer', opacity: b.disabled ? 0.35 : 1,
+            '&:hover': { backgroundColor: b.disabled ? 'rgba(255,255,255,0.1)' : 'rgba(37,99,235,0.7)' },
+          }}
         >
           {b.icon}
         </Box>
       ))}
+      {pointScale !== 1 && (
+        // Shows the chosen size while it is not the normal one, so nobody wonders why the points look different.
+        <Box
+          data-no-pan
+          data-testid="point-scale-badge"
+          sx={{ px: 0.75, height: 28, borderRadius: '7px', display: 'flex', alignItems: 'center', backgroundColor: 'rgba(37,99,235,0.55)', color: '#fff', fontSize: '0.6875rem', fontWeight: 700, userSelect: 'none' }}
+        >
+          {pointScaleLabel(pointScale)}
+        </Box>
+      )}
     </Box>
   );
 
@@ -1154,6 +1213,8 @@ function FloorPlanWithPin({
             transition: smooth ? 'transform 0.16s ease-out' : 'none',
             // Markers read this to stay a constant on-screen size whatever the zoom.
             ['--inv-scale' as string]: String(1 / scale),
+            // The capture-point size the field engineer chose; markers multiply it into their drawn size.
+            ['--pin-scale' as string]: String(pointScale),
           }}
           sx={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
