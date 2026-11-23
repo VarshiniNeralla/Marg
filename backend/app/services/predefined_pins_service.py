@@ -594,6 +594,10 @@ class PredefinedPinsService:
             ).to_list(length=500)
 
         preserved: list[dict[str, Any]] = []
+        # Points with NO photos and NO flat/room name (a placeholder someone tapped, or what an older import left
+        # behind). They used to be ignored: not deleted, not named, so the import added a NAMED copy beside each one
+        # and the floor ended up with every point twice (e.g. 154 + 154 = 308), the old ones still reading "Point N".
+        unnamed_empty: list[dict[str, Any]] = []
         preserved_coord_keys: set[str] = set()
         preserved_fr_keys: set[str] = set()
         for pin in existing:
@@ -613,11 +617,15 @@ class PredefinedPinsService:
                 pin.get("flatName") and pin.get("roomName") and not caps
             ):
                 await self._db["capture_pins"].delete_one({"_id": pin["_id"], "orgId": org_id})
+                continue
+            unnamed_empty.append(pin)
 
         # A point that already has photos is never moved, re-created or emptied. But if it has no flat/room name,
         # fill ONLY the blank names from the nearest named point of the layout being imported, so it no longer
-        # shows as a bare "Capture point". Its photos and capture list are not touched.
-        for pin in preserved:
+        # shows as a bare "Capture point". Its photos and capture list are not touched. The same naming is applied
+        # to photo-less unnamed points (they are kept, not deleted: one may be waiting for an upload).
+        named_extra: list[dict[str, Any]] = []
+        for pin in [*preserved, *unnamed_empty]:
             fill = names_to_fill_from_layout(pin, source_pins)
             if not fill:
                 continue
@@ -630,6 +638,8 @@ class PredefinedPinsService:
                 logger.warning("could not name captured point {}: {}", pin.get("_id"), exc)
                 continue
             pin.update(fill)
+            if pin in unnamed_empty:
+                named_extra.append(pin)  # returned to the client so its copy gets the names too
             flat_n = str(pin.get("flatName") or "").strip()
             room_n = str(pin.get("roomName") or "").strip()
             if flat_n and room_n:
@@ -679,7 +689,7 @@ class PredefinedPinsService:
             out.pop("_id", None)
             return out
 
-        result_pins = created + [_pin_out(p) for p in preserved]
+        result_pins = created + [_pin_out(p) for p in preserved] + [_pin_out(p) for p in named_extra]
         if not result_pins:
             raise ValueError(
                 f"failed to copy pins from source floor ({len(source_pins)} found, {errors} errors)"
