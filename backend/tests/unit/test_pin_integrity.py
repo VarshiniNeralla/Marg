@@ -103,3 +103,36 @@ def test_fully_named_point_and_far_away_point_get_nothing():
 def test_filling_names_does_not_depend_on_or_return_photos():
     out = names_to_fill_from_layout({"x": 80.0, "y": 40.0, "captureIds": ["c1"]}, _layout())
     assert "captureIds" not in out and out["roomName"] == "Master Bedroom"
+
+
+def test_a_point_tapped_by_hand_a_few_percent_off_still_gets_its_room():
+    # 5% to the right of "Flat 01 Kitchen"; the next different room is 25% away.
+    out = names_to_fill_from_layout({"x": 55.0, "y": 40.0, "captureIds": ["c1"]}, _layout())
+    assert out["flatName"] == "Flat 01" and out["roomName"] == "Kitchen"
+
+
+def test_a_point_roughly_between_two_rooms_is_left_for_a_person_to_name():
+    layout = [
+        {"x": 40.0, "y": 40.0, "flatName": "Flat 01", "roomName": "Kitchen", "label": "Kitchen"},
+        {"x": 50.0, "y": 40.0, "flatName": "Flat 01", "roomName": "Hall", "label": "Hall"},
+    ]
+    # 4.5 from Kitchen and 5.5 from Hall: too close to call, so no guess.
+    assert names_to_fill_from_layout({"x": 44.5, "y": 40.0, "captureIds": ["c1"]}, layout) == {}
+
+
+def test_a_point_sitting_on_a_layout_point_is_trusted_even_with_a_neighbour_close_by():
+    layout = [
+        {"x": 40.0, "y": 40.0, "flatName": "Flat 01", "roomName": "Kitchen", "label": "Kitchen"},
+        {"x": 43.0, "y": 40.0, "flatName": "Flat 01", "roomName": "Hall", "label": "Hall"},
+    ]
+    assert names_to_fill_from_layout({"x": 40.4, "y": 40.0}, layout)["roomName"] == "Kitchen"
+
+
+def test_nothing_is_filled_beyond_the_distance_limit():
+    assert names_to_fill_from_layout({"x": 59.0, "y": 40.0}, _layout()) == {}  # 9 away from the nearest room
+
+
+def test_two_points_in_the_same_room_both_get_that_room():
+    a = names_to_fill_from_layout({"x": 50.5, "y": 40.0}, _layout())
+    b = names_to_fill_from_layout({"x": 52.0, "y": 41.0}, _layout())
+    assert a["roomName"] == b["roomName"] == "Kitchen"

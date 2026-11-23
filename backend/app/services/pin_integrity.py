@@ -85,14 +85,21 @@ def names_to_fill_from_layout(
     pin: dict[str, Any],
     layout_pins: Iterable[dict[str, Any]],
     *,
-    max_distance_pct: float = 3.0,
+    max_distance_pct: float = 8.0,
+    trust_distance_pct: float = 1.5,
+    ambiguity_ratio: float = 1.5,
 ) -> dict[str, str]:
     """Names a photographed point is missing, taken from the nearest point of the imported layout.
 
     'Import annotations' keeps every point that has photos untouched, so a kept point that never had a flat/room name
     stayed blank ("Capture point", "Point 28") even though the layout being imported names the spot. This only ever
     FILLS blanks: a name the point already has is never replaced, and nothing about its photos is looked at or changed.
-    Returns {} when there is nothing to fill or no named layout point is close enough.
+
+    Points tapped by hand never sit exactly on the layout's coordinates, so the nearest named layout point within
+    ``max_distance_pct`` is used. To avoid putting a point in the wrong room, a point that is not practically ON a
+    layout point (``trust_distance_pct``) is only named when the nearest room is clearly closer than the next different
+    room (``ambiguity_ratio``); otherwise it is left for a person to name. Returns {} when there is nothing to fill or
+    no confident match.
     """
     def _s(p: dict[str, Any], *keys: str) -> str:
         for k in keys:
@@ -111,8 +118,7 @@ def names_to_fill_from_layout(
     except (KeyError, TypeError, ValueError):
         return {}
 
-    best: dict[str, Any] | None = None
-    best_d = float("inf")
+    ranked: list[tuple[float, dict[str, Any]]] = []
     for cand in layout_pins:
         if not _s(cand, "flatName", "flat_name") or not _s(cand, "roomName", "room_name"):
             continue
@@ -120,10 +126,20 @@ def names_to_fill_from_layout(
             d = pin_distance_pct(px, py, float(cand["x"]), float(cand["y"]))
         except (KeyError, TypeError, ValueError):
             continue
-        if d <= max_distance_pct and d < best_d:
-            best, best_d = cand, d
-    if best is None:
+        ranked.append((d, cand))
+    ranked.sort(key=lambda t: t[0])
+    if not ranked or ranked[0][0] > max_distance_pct:
         return {}
+    best_d, best = ranked[0]
+    if best_d > trust_distance_pct:
+        key = (_s(best, "flatName", "flat_name"), _s(best, "roomName", "room_name"))
+        rival = next(
+            (d for d, c in ranked[1:]
+             if (_s(c, "flatName", "flat_name"), _s(c, "roomName", "room_name")) != key),
+            None,
+        )
+        if rival is not None and rival < best_d * ambiguity_ratio:
+            return {}  # about as close to another room: do not guess
 
     out: dict[str, str] = {}
     if not have_flat:
