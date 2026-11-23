@@ -309,7 +309,7 @@ async def test_lifecycle_completed_runs_each_photographed_floor_in_order_and_not
 
     notes = await db["notifications"].find({}).to_list(length=20)
     assert {n["recipientUserId"] for n in notes} == {REQUESTER, admin}
-    assert all(n["type"] == floor_job_mod.NOTIF_COMPLETE and n["link"].endswith("/p1") for n in notes)
+    assert all(n["type"] == floor_job_mod.NOTIF_COMPLETE and n["link"].endswith("project-analysis?project=p1") for n in notes)
     # latest-status read (no job id) returns the finished run, and a new run may start now
     assert (await jobs.get_status(org_id=ORG, project_id="p1"))["jobId"] == job["jobId"]
     again = await jobs.start(org_id=ORG, project_id="p1", analyzed_by=REQUESTER)
