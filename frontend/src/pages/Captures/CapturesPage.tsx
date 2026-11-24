@@ -10,7 +10,8 @@ import { useAuthStore, getRoleLandingPath } from '@store/authStore';
 import { can } from '@/utils/permissions';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { buildFloorOptions, floorSelectionLabel, locationFilterMenuPaperSx, locationFilterToolbarSx, type FloorOption } from '@/utils/locationFilters';
-import { resolveCaptureImageCandidates } from '@/utils/captureMedia';
+import { panoramaSourceOf, type RawCapture } from '@/utils/panoramaSource';
+import { PanoramaView, useNearViewport } from '@/components/ConstructionProgress/EvidencePanoramaCard';
 import { paginateGroups } from '@/utils/paginateGroups';
 import { formatPinLocationLabel, formatTowerLabel, enrichCaptureLocation } from '@/utils/pinLabels';
 import {
@@ -37,14 +38,10 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
   const st = statusConfig.capture[capture.status];
   const history = getRoomHistory(capture);
   const dot = STATUS_DOT[capture.status] ?? colors.textSubdued;
-  const thumbCandidates = useMemo(
-    () => resolveCaptureImageCandidates(capture as MockCapture & Record<string, unknown>),
-    [capture],
-  );
-  const [thumbIdx, setThumbIdx] = useState(0);
-  React.useEffect(() => { setThumbIdx(0); }, [capture.id]);
-  const thumbUrl = thumbIdx >= 0 ? (thumbCandidates[thumbIdx] ?? null) : null;
-  const thumbsExhausted = thumbIdx < 0 && thumbCandidates.length > 0;
+  // The 360 image itself, so the card can be dragged to look around (same viewer as Evidence images).
+  const source = useMemo(() => panoramaSourceOf(capture as unknown as RawCapture), [capture]);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const near = useNearViewport(hostRef);
   const projectShort = capture.projectName.replace(/^My Home\s+/i, '');
   // Prefer live Flat · Room from the pin — capture.roomName is frozen at create
   // time and may still say "Pin N" for older uploads.
@@ -60,22 +57,19 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
 
   return (
     <Box
-      component={Link}
-      to={`/captures/${capture.id}`}
       sx={{
-        display: 'block', textDecoration: 'none',
-        minWidth: 0, width: '100%', overflow: 'hidden',
-        transition: `transform ${motion.durationNormal} ${motion.easeOut}`,
+        display: 'block', minWidth: 0, width: '100%', overflow: 'hidden',
         '@media (hover: hover)': {
-          '&:hover': { transform: 'translateY(-3px)' },
           '&:hover .cap-thumb': { boxShadow: '0 12px 32px rgba(15,23,42,0.14)' },
-          '&:hover .cap-open': { opacity: 1 },
         },
       }}
     >
-      {/* Thumbnail — soft, single subtle tint */}
+      {/* The picture is a draggable 360 view, so it is not a link (a drag must not open the capture).
+          The name below and the Open button open it. */}
       <Box
+        ref={hostRef}
         className="cap-thumb"
+        data-testid="capture-panorama-tile"
         sx={{
           position: 'relative', width: '100%', aspectRatio: '4 / 3', borderRadius: { xs: '10px', sm: '14px' }, overflow: 'hidden',
           background: capture.gradient,
@@ -83,38 +77,35 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
           transition: `box-shadow ${motion.durationNormal} ${motion.easeOut}`,
         }}
       >
-        {thumbUrl ? (
-          <Box
-            component="img"
-            src={thumbUrl}
-            alt=""
-            loading="lazy"
-            onError={() => {
-              // Prefer next candidate (e.g. full image when a stale *_thumb.jpg 404s).
-              setThumbIdx(i => (i + 1 < thumbCandidates.length ? i + 1 : -1));
-            }}
-            sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-          />
+        {source.url ? (
+          <PanoramaView source={source} mounted={near} showHint={false} />
         ) : (
-          // No image yet — either still stitching, or every candidate URL 404'd
-          // (stale local path after delete / before stitch reconcile).
+          // No image yet: still stitching.
           <Box sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 0.75 }}>
             <ViewInArRounded sx={{ color: 'rgba(255,255,255,0.55)', fontSize: 26 }} />
-            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: 'rgba(255,255,255,0.75)' }}>
-              {thumbsExhausted ? 'Image unavailable' : 'Processing 360°…'}
-            </Typography>
+            <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: 'rgba(255,255,255,0.75)' }}>Processing 360°…</Typography>
           </Box>
         )}
 
-        {/* hover: single open hint */}
-        <Box className="cap-open" sx={{ position: 'absolute', bottom: 8, left: 8, display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1, py: 0.5, borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)', opacity: 0, transition: `opacity ${motion.durationFast}` }}>
-          <ViewInArRounded sx={{ color: '#fff', fontSize: 13 }} />
-          <Typography sx={{ fontSize: '0.6875rem', color: '#fff', fontWeight: 600 }}>{hasTour ? 'View image' : 'Open'}</Typography>
+        {/* Open the capture */}
+        <Box
+          component={Link}
+          to={`/captures/${capture.id}`}
+          aria-label={`Open ${displayName}`}
+          sx={{
+            position: 'absolute', bottom: 8, right: 8, zIndex: 3, display: 'inline-flex', alignItems: 'center', gap: 0.5,
+            px: 1, py: 0.5, borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(8px)',
+            color: '#fff', textDecoration: 'none', fontSize: '0.6875rem', fontWeight: 600,
+            '&:hover': { backgroundColor: 'rgba(0,0,0,0.75)' },
+          }}
+        >
+          <ViewInArRounded sx={{ fontSize: 13 }} />
+          <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>{hasTour ? 'View image' : 'Open'}</Box>
         </Box>
 
-        {/* tour marker — one quiet glyph */}
+        {/* tour marker, left of the full screen button */}
         {hasTour && (
-          <Box sx={{ position: 'absolute', top: { xs: 4, sm: 8 }, right: { xs: 4, sm: 8 }, width: { xs: 18, sm: 22 }, height: { xs: 18, sm: 22 }, borderRadius: { xs: '5px', sm: '7px' }, backgroundColor: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Box sx={{ position: 'absolute', top: { xs: 4, sm: 8 }, right: { xs: 40, sm: 48 }, zIndex: 3, width: { xs: 18, sm: 22 }, height: { xs: 18, sm: 22 }, borderRadius: { xs: '5px', sm: '7px' }, backgroundColor: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
             <ViewInArRounded sx={{ fontSize: { xs: 10, sm: 12 }, color: '#fff' }} />
           </Box>
         )}
@@ -142,7 +133,7 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
       </Box>
 
       {/* Metadata — name + status dot */}
-      <Box sx={{ pt: { xs: 0.5, sm: 1.25 }, px: 0, minWidth: 0 }}>
+      <Box component={Link} to={`/captures/${capture.id}`} sx={{ display: 'block', textDecoration: 'none', pt: { xs: 0.5, sm: 1.25 }, px: 0, minWidth: 0 }}>
         <Typography noWrap sx={{ fontSize: { xs: '0.6875rem', sm: '0.875rem' }, fontWeight: 600, color: colors.textStrong, letterSpacing: '-0.01em', minWidth: 0 }}>
           {displayName}
         </Typography>
@@ -157,7 +148,8 @@ function CaptureCard({ capture, hasTour, onDelete, showProjectName, compact }: {
   );
 }
 
-const CAPTURES_PAGE_SIZE_MOBILE = 9;   // 3 columns × 3 rows
+// Every card is now a live 360 view, so pages stay small and a phone gets 2 wider columns (a 360 needs room to drag).
+const CAPTURES_PAGE_SIZE_MOBILE = 8;   // 2 columns × 4 rows
 const CAPTURES_PAGE_SIZE_TABLET = 9;   // 3 columns × 3 rows
 const CAPTURES_PAGE_SIZE_DESKTOP = 12; // 4 columns × 3 rows
 
@@ -166,7 +158,7 @@ const GALLERY_GRID_SX = {
   width: '100%',
   minWidth: 0,
   gridTemplateColumns: {
-    xs: 'repeat(3, minmax(0, 1fr))',
+    xs: 'repeat(2, minmax(0, 1fr))',
     sm: 'repeat(3, minmax(0, 1fr))',
     md: 'repeat(4, minmax(0, 1fr))',
   },
