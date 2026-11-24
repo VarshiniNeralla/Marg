@@ -7,23 +7,40 @@ import {
 import { Capacitor } from '@capacitor/core';
 import { Insta360Camera, INSTA360_NOT_CONNECTED } from '@/plugins/insta360Camera';
 import { friendlyCameraMessage } from '@/utils/friendlyErrors';
+import { BLACK_PHOTO_MESSAGE, isNearlyBlack, lumaFromRgba } from '@/utils/blackFrame';
 import { INSTA360_SSID_PATTERNS, getInsta360Password, saveInsta360Password } from './insta360Config';
 
-/** Downscaled copy of a (possibly huge) photo for on-screen preview; falls back to the original if it cannot. */
-async function makePreviewUrl(blob: Blob, maxWidth = 1600): Promise<string> {
+/**
+ * Downscaled copy of a (possibly huge) photo for on-screen preview; falls back to the original if it cannot.
+ * `black` is true when the picture is almost entirely black, so the engineer can be told to retake it on the spot.
+ */
+async function makePreview(blob: Blob, maxWidth = 1600): Promise<{ url: string; black: boolean }> {
   try {
     const bitmap = await createImageBitmap(blob, { resizeWidth: maxWidth, resizeQuality: 'medium' });
     const canvas = document.createElement('canvas');
     canvas.width = bitmap.width;
     canvas.height = bitmap.height;
-    canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
+    const ctx = canvas.getContext('2d');
+    ctx?.drawImage(bitmap, 0, 0);
     bitmap.close?.();
+    let black = false;
+    try {
+      // A tiny copy is plenty to tell a black frame from a real one.
+      const probe = document.createElement('canvas');
+      probe.width = 64;
+      probe.height = 32;
+      const pctx = probe.getContext('2d');
+      pctx?.drawImage(canvas, 0, 0, 64, 32);
+      if (pctx) black = isNearlyBlack(lumaFromRgba(pctx.getImageData(0, 0, 64, 32).data));
+    } catch {
+      /* cannot measure: treat as not black rather than block a good photo */
+    }
     const small = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
-    if (small) return URL.createObjectURL(small);
+    if (small) return { url: URL.createObjectURL(small), black };
   } catch {
     /* fall through to the original */
   }
-  return URL.createObjectURL(blob);
+  return { url: URL.createObjectURL(blob), black: false };
 }
 
 type Phase = 'starting' | 'live' | 'captured' | 'uploading' | 'error'
@@ -56,7 +73,7 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
   const [phase, setPhase] = useState<Phase>('starting');
   const [error, setError] = useState('');
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
-  const [shot, setShot] = useState<{ url: string; file: File } | null>(null);
+  const [shot, setShot] = useState<{ url: string; file: File; black?: boolean } | null>(null);
 
   const stopStream = useCallback(() => {
     streamRef.current?.getTracks().forEach(t => t.stop());
@@ -117,7 +134,9 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
       // Show a small copy: a 72-megapixel frame takes the WebView many seconds to decode just to display.
       // The full-size file is what gets uploaded.
       const t0 = performance.now();
-      setShot({ url: await makePreviewUrl(blob), file });
+      const preview = await makePreview(blob);
+      setShot({ url: preview.url, file, black: preview.black });
+      if (preview.black) console.warn('[insta360] the frame that came back is black');
       console.info(`[insta360] preview ready in ${Math.round(performance.now() - t0)} ms (${Math.round(blob.size / 1048576)} MB frame)`);
       setPhase('captured');
     } catch (e) {
@@ -236,10 +255,20 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
         {shot ? (
           <>
             <Box component="img" src={shot.url} alt="Captured" sx={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
-            {insta360 && (
+            {insta360 && !shot.black && (
               <Typography sx={{ position: 'absolute', top: 64, left: 0, right: 0, textAlign: 'center', px: 3, color: 'rgba(255,255,255,0.85)', fontSize: '0.75rem', textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}>
                 Raw camera frame (two fisheye views). The stitched 360° panorama is created after you confirm.
               </Typography>
+            )}
+            {shot.black && (
+              <Box
+                role="alert"
+                data-testid="black-photo-warning"
+                sx={{ position: 'absolute', top: 64, left: 16, right: 16, mx: 'auto', maxWidth: 520, px: 2, py: 1.25, borderRadius: '12px', backgroundColor: '#f59e0b', color: '#1f1300', display: 'flex', alignItems: 'center', gap: 1, boxShadow: '0 6px 20px rgba(0,0,0,0.45)' }}
+              >
+                <ErrorOutlineRounded sx={{ fontSize: 24, flexShrink: 0 }} />
+                <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, lineHeight: 1.35 }}>{BLACK_PHOTO_MESSAGE}</Typography>
+              </Box>
             )}
           </>
         ) : insta360 ? (
@@ -321,7 +350,7 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
         {phase === 'captured' && (
           <>
             <Box onClick={retake} sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5, cursor: 'pointer', color: '#fff' }}>
-              <Box sx={{ width: 56, height: 56, borderRadius: '50%', backgroundColor: 'rgba(255,255,255,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', '&:hover': { backgroundColor: 'rgba(255,255,255,0.22)' } }}>
+              <Box sx={{ width: 56, height: 56, borderRadius: '50%', backgroundColor: shot?.black ? '#f59e0b' : 'rgba(255,255,255,0.14)', color: shot?.black ? '#1f1300' : 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', '&:hover': { backgroundColor: shot?.black ? '#fbbf24' : 'rgba(255,255,255,0.22)' } }}>
                 <ReplayRounded sx={{ fontSize: 26 }} />
               </Box>
               <Typography sx={{ fontSize: '0.75rem', fontWeight: 600 }}>Retake</Typography>
@@ -330,7 +359,7 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
               <Box sx={{ width: 64, height: 64, borderRadius: '50%', backgroundColor: '#16a34a', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 16px rgba(22,163,74,0.5)', '&:hover': { backgroundColor: '#15803d' } }}>
                 <CheckRounded sx={{ fontSize: 30 }} />
               </Box>
-              <Typography sx={{ fontSize: '0.75rem', fontWeight: 600 }}>Use Photo</Typography>
+              <Typography sx={{ fontSize: '0.75rem', fontWeight: 600 }}>{shot?.black ? 'Use anyway' : 'Use Photo'}</Typography>
             </Box>
           </>
         )}

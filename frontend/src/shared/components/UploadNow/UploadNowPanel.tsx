@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useState, useSyncExternalStore } from 'r
 import { Box, Checkbox, Dialog, LinearProgress, Snackbar, Typography } from '@mui/material';
 import {
   CloudUploadRounded, CloseRounded, PauseRounded, PlayArrowRounded, CheckCircleRounded, WarningAmberRounded, RefreshRounded,
-  ExpandMoreRounded,
+  ExpandMoreRounded, DeleteOutlineRounded,
 } from '@mui/icons-material';
+import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { getPendingCompletion, subscribePendingCompletion } from '@store/uploadCompletion';
 import { colors } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
@@ -17,7 +18,9 @@ import {
   type UploadNowStatus,
 } from '@store/uploadNow';
 import { registerPinOfCaptureResolver } from '@store/writeQueue';
-import { FILE_QUEUE_CHANGED_EVENT, resendUnconfirmedPhotos, retryFileUpload, waitingPhotoInfos } from '@store/fileUploadQueue';
+import {
+  FILE_QUEUE_CHANGED_EVENT, discardFailedPhoto, resendUnconfirmedPhotos, retryFileUpload, waitingPhotoInfos,
+} from '@store/fileUploadQueue';
 import { buildReview, describeProgress, isUnsent, type PinFloor, type PreCheckResult, type ReviewSummary } from '@store/uploadPlan';
 import { checkStorageRoom, describeStorage, formatBytes, type StorageRoom } from '@store/storageCheck';
 
@@ -66,6 +69,8 @@ export default function UploadNowPanel() {
   const [checking, setChecking] = useState(false);
   const [starting, setStarting] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // The point whose failed photo the engineer is about to discard (asks first: it cannot be undone).
+  const [discardPinId, setDiscardPinId] = useState<string | null>(null);
   // Upload runs in the background: the dialog closes on its own and progress lives in the bottom bar, which can be
   // shrunk to a small pill so it never gets in the way of capturing or browsing.
   const [minimized, setMinimized] = useState(false);
@@ -469,11 +474,19 @@ export default function UploadNowPanel() {
                         <RefreshRounded sx={{ fontSize: 15 }} /> Retry
                       </Box>
                     )}
+                    <Box
+                      role="button"
+                      aria-label={`Discard the photo for ${pinName(f.pinId)}`}
+                      onClick={() => setDiscardPinId(f.pinId)}
+                      sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1.25, py: 0.5, borderRadius: '8px', border: `1.5px solid ${colors.border}`, fontSize: '0.75rem', fontWeight: 600, color: colors.textSecondary, cursor: 'pointer', '&:hover': { borderColor: colors.danger, color: colors.danger } }}
+                    >
+                      <DeleteOutlineRounded sx={{ fontSize: 15 }} /> Discard
+                    </Box>
                   </Box>
                 ))}
               </Box>
               <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted, mt: 0.5 }}>
-                Damaged photos cannot be sent. Open the point on the floor plan and tap Capture Again.
+                A damaged photo cannot be sent. Discard it, then capture that point again from the floor plan.
               </Typography>
             </Box>
           )}
@@ -536,6 +549,25 @@ export default function UploadNowPanel() {
           </Box>
         </Box>
       </Dialog>
+
+      <ConfirmDialog
+        open={discardPinId !== null}
+        title="Discard this photo?"
+        description={`The failed photo for ${discardPinId ? pinName(discardPinId) : 'this point'} will be removed from this tablet. The point stays on the plan, so you can capture it again.`}
+        confirmLabel="Discard"
+        cancelLabel="Keep it"
+        destructive
+        onCancel={() => setDiscardPinId(null)}
+        onConfirm={() => {
+          const id = discardPinId;
+          setDiscardPinId(null);
+          if (!id) return;
+          void discardFailedPhoto(id)
+            .then(() => { setNote('Photo discarded. You can capture that point again.'); })
+            .catch(() => { setNote('Could not discard the photo. Please try again.'); })
+            .finally(() => { void refresh(); });
+        }}
+      />
     </>
   );
 }
