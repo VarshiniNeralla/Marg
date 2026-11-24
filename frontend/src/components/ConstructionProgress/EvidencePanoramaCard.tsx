@@ -19,7 +19,25 @@ const MOUNT_MARGIN = '300px';
 
 type ViewStatus = 'idle' | 'loading' | 'ready' | 'error';
 
-function PanoramaView({ source, mounted }: { source: PanoramaSource; mounted: boolean }) {
+/** True while the element is on (or just about to be on) screen. Lets a page keep a live WebGL viewer on only a few cards. */
+export function useNearViewport(hostRef: React.RefObject<HTMLElement | null>): boolean {
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === 'undefined') { setNear(true); return; }
+    const io = new IntersectionObserver(
+      entries => { for (const e of entries) setNear(e.isIntersecting); },
+      { rootMargin: MOUNT_MARGIN },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hostRef]);
+  return near;
+}
+
+/** A draggable 360 view that fills its (position: relative) parent. Shared by Evidence images and Capture History. */
+export function PanoramaView({ source, mounted, showHint = true }: { source: PanoramaSource; mounted: boolean; showHint?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<PsvViewer | null>(null);
   // A stitched panorama is known to be 360. A raw upload is probed first (it may be a plain photo).
@@ -164,9 +182,11 @@ function PanoramaView({ source, mounted }: { source: PanoramaSource; mounted: bo
           >
             <FullscreenRounded sx={{ fontSize: 20 }} />
           </IconButton>
-          <Box sx={{ position: 'absolute', left: 10, bottom: 10, px: 1, py: 0.25, borderRadius: '6px', backgroundColor: 'rgba(15,23,42,0.7)', color: '#fff', fontSize: '0.6875rem', fontWeight: 600, pointerEvents: 'none', zIndex: 3 }}>
-            Drag to look around · scroll or pinch to zoom
-          </Box>
+          {showHint && (
+            <Box sx={{ position: 'absolute', left: 10, bottom: 10, px: 1, py: 0.25, borderRadius: '6px', backgroundColor: 'rgba(15,23,42,0.7)', color: '#fff', fontSize: '0.6875rem', fontWeight: 600, pointerEvents: 'none', zIndex: 3 }}>
+              Drag to look around · scroll or pinch to zoom
+            </Box>
+          )}
         </>
       )}
     </>
@@ -198,19 +218,7 @@ export default function EvidencePanoramaCard({
   source: PanoramaSource | null;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const [near, setNear] = useState(false);
-
-  useEffect(() => {
-    const el = hostRef.current;
-    if (!el) return;
-    if (typeof IntersectionObserver === 'undefined') { setNear(true); return; }
-    const io = new IntersectionObserver(
-      entries => { for (const e of entries) setNear(e.isIntersecting); },
-      { rootMargin: MOUNT_MARGIN },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, []);
+  const near = useNearViewport(hostRef);
 
   const date = formatDateTime(item.capturedAt);
   const role = ROLE_LABEL[item.role] ?? 'Evidence';

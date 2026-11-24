@@ -119,6 +119,44 @@ export function roomsOf(items: EvidenceItem[]): { key: string; label: string; co
   return [...map.values()];
 }
 
+/** Label for evidence that belongs to no flat (common areas). */
+export const NO_FLAT_LABEL = 'Common areas';
+
+/** The flats that have evidence, in natural order (Flat 2 before Flat 10), with their image counts. */
+export function flatsOf(items: EvidenceItem[]): { key: string; label: string; count: number }[] {
+  const map = new Map<string, { key: string; label: string; count: number }>();
+  for (const it of items) {
+    const key = it.flatName || '';
+    const row = map.get(key) ?? { key, label: key || NO_FLAT_LABEL, count: 0 };
+    row.count += 1;
+    map.set(key, row);
+  }
+  return [...map.values()].sort((a, b) => {
+    if (!a.key !== !b.key) return a.key ? -1 : 1; // common areas last
+    return a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' });
+  });
+}
+
+/** The rooms of one flat that have evidence, in natural order, with their image counts. */
+export function roomsInFlat(items: EvidenceItem[], flatName: string): { key: string; label: string; count: number }[] {
+  const map = new Map<string, { key: string; label: string; count: number }>();
+  for (const it of items) {
+    if ((it.flatName || '') !== flatName) continue;
+    const key = it.roomName || '';
+    const row = map.get(key) ?? { key, label: key || 'Room', count: 0 };
+    row.count += 1;
+    map.set(key, row);
+  }
+  return [...map.values()].sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }));
+}
+
+/** One page of a list (1-based page, clamped to a valid page). */
+export function pageSlice<T>(list: T[], page: number, pageSize: number): { rows: T[]; page: number; pages: number } {
+  const pages = Math.max(1, Math.ceil(list.length / pageSize));
+  const p = Math.min(Math.max(1, page), pages);
+  return { rows: list.slice((p - 1) * pageSize, p * pageSize), page: p, pages };
+}
+
 export function roomKey(item: Pick<EvidenceItem, 'flatName' | 'roomName'>): string {
   return `${item.flatName}\u0000${item.roomName}`;
 }
