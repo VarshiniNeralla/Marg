@@ -365,6 +365,9 @@ interface RenderPin {
   hasCapture: boolean;
   /** How many captures (visits) this point already has. Shown on the marker in recapture mode. */
   visitCount?: number;
+  /** Recapture mode: this point was photographed in the current session, so it is drawn as the orange (sending)
+   *  / green (done) pin on the point itself instead of a plain dot. */
+  recapturedNow?: boolean;
   /** Optimistic-upload state: set while this pin's capture is uploading or after it failed. */
   status?: PinUploadStatus;
   roomName?: string;
@@ -550,7 +553,9 @@ function WorkflowFloorPinMarkerImpl({
 
   const isBusy = pin.status === 'processing' || pin.status === 'uploading' || pin.status === 'queued';
   const isFailed = pin.status === 'failed';
-  const showNumberedPin = !plainDots && (pin.hasCapture || isBusy) && !isFailed;
+  // Recapture draws idle points as plain dots, but a point photographed in this session gets the same orange
+  // (sending) then green (done) teardrop as the normal capture, sitting on its own spot.
+  const showNumberedPin = (!plainDots || !!pin.recapturedNow) && (pin.hasCapture || isBusy) && !isFailed;
   const pinFill = isBusy ? '#f59e0b' : '#22c55e';
 
   const hit = 44;
@@ -641,7 +646,7 @@ function WorkflowFloorPinMarkerImpl({
         )}
 
         {/* Blue spinner on orange pin while upload / stitch is in progress */}
-        {!highlighted && isBusy && (
+        {!highlighted && isBusy && showNumberedPin && (
           <Box
             sx={{
               position: 'absolute',
@@ -1370,6 +1375,8 @@ export default function CaptureWorkflowPage() {
   const [isCaptureMode, setIsCaptureMode]           = useState(false);
   // Recapture: a session that only adds NEW photos at the floor's existing capture points (nothing is replaced or removed).
   const [recaptureMode, setRecaptureMode]            = useState(false);
+  // Recapture: points photographed in this session, in the order they were taken (their pin number 1, 2, 3...).
+  const [recapturedIds, setRecapturedIds]            = useState<string[]>([]);
 
   // Desktop upload state
   const [dragging, setDragging]       = useState(false);
@@ -1394,6 +1401,21 @@ export default function CaptureWorkflowPage() {
      - pinPosRef:        synchronous mirror of pinPos — consuming it atomically
                          guarantees one placement can never create two pins.   */
   const [pinStatus, setPinStatus] = useState<Record<string, PinUploadStatus>>({});
+  // Remember each point the moment a photo starts going up in recapture mode; leaving recapture clears the list.
+  useEffect(() => {
+    if (!recaptureMode) {
+      setRecapturedIds(prev => (prev.length ? [] : prev));
+      return;
+    }
+    const busyNow = Object.entries(pinStatus)
+      .filter(([, s]) => s === 'queued' || s === 'uploading' || s === 'processing')
+      .map(([id]) => id);
+    if (busyNow.length === 0) return;
+    setRecapturedIds(prev => {
+      const fresh = busyNow.filter(id => !prev.includes(id));
+      return fresh.length ? [...prev, ...fresh] : prev;
+    });
+  }, [recaptureMode, pinStatus]);
   const uploadingPinsRef = useRef<Set<string>>(new Set());
   const failedFilesRef   = useRef<Map<string, File[]>>(new Map());
   const pinPosRef        = useRef<{ x: number; y: number } | null>(null);
@@ -1537,11 +1559,16 @@ export default function CaptureWorkflowPage() {
           });
         const uploadSeqById = new Map(numbered.map((p, i) => [p.id, i + 1]));
 
-        return mapped.map(({ captureIds: ids, ...p }) => ({
-          ...p,
-          visitCount: ids.length,
-          uploadSequence: uploadSeqById.get(p.id),
-        }));
+        return mapped.map(({ captureIds: ids, ...p }) => {
+          // Recapture: number only this session's photos 1, 2, 3... (floor-wide numbers would mean nothing here).
+          const sessionIndex = recaptureMode ? recapturedIds.indexOf(p.id) : -1;
+          return {
+            ...p,
+            visitCount: ids.length,
+            recapturedNow: sessionIndex >= 0,
+            uploadSequence: sessionIndex >= 0 ? sessionIndex + 1 : uploadSeqById.get(p.id),
+          };
+        });
       })()
     : [];
   const pinsVisible = floorPlan?.pinsVisible !== false;
