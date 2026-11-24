@@ -1633,6 +1633,22 @@ export async function discardFileUpload(pinId: string): Promise<void> {
   );
 }
 
+/**
+ * Throw away a photo that failed for good (e.g. a black or damaged frame): its queued upload, its file on this device
+ * and the dead capture it left on the point. The point itself stays on the plan, so it can be captured again.
+ * Same steps the capture screen already takes when a photo is replaced.
+ */
+export async function discardFailedPhoto(pinId: string): Promise<void> {
+  await load();
+  const jobId = fileUploadStitchJobIdForPin(pinId);
+  await discardFileUpload(pinId);
+  if (jobId) {
+    useWorkflowStore.getState().discardStitchFailedCapture(pinId, jobId);
+  }
+  // Tell any open panel the queue changed so the list refreshes straight away.
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(FILE_QUEUE_CHANGED_EVENT));
+}
+
 export function pendingFileUploadCount(): number {
   return queue.length;
 }

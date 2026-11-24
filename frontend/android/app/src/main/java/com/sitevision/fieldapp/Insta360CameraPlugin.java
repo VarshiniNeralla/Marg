@@ -91,6 +91,42 @@ public class Insta360CameraPlugin extends Plugin {
     public void load() {
         connectivityManager = (ConnectivityManager) getContext()
                 .getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+        // Off the main thread: a tablet that has never been cleaned can hold thousands of old files.
+        new Thread(this::sweepOldCapturedFiles, "insta360-cache-sweep").start();
+    }
+
+    /** How long a downloaded camera photo is kept in the cache after the shot. */
+    private static final long CAPTURE_CACHE_MAX_AGE_MS = 7L * 24 * 60 * 60 * 1000;
+
+    /**
+     * Every camera photo is downloaded into the app cache and the web layer copies it into its own upload queue
+     * straight away, so the cache original is only a spare. Nothing ever deleted those spares: one tablet had 2,033
+     * of them (about 30 GB) and grew by about 17 MB per shot. Remove spares older than a week. Only files this
+     * plugin created (IMG_*.insp) are touched.
+     */
+    private void sweepOldCapturedFiles() {
+        try {
+            File[] files = getContext().getCacheDir().listFiles();
+            if (files == null) return;
+            final long cutoff = System.currentTimeMillis() - CAPTURE_CACHE_MAX_AGE_MS;
+            int removed = 0;
+            long freed = 0;
+            for (File f : files) {
+                String name = f.getName();
+                if (!f.isFile() || !name.startsWith("IMG_") || !name.endsWith(".insp")) continue;
+                if (f.lastModified() >= cutoff) continue;
+                long size = f.length();
+                if (f.delete()) {
+                    removed++;
+                    freed += size;
+                }
+            }
+            if (removed > 0) {
+                Log.i(TAG, "removed " + removed + " old camera photo(s) from the cache, freed " + (freed / (1024 * 1024)) + " MB");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "could not clean old camera photos: " + e.getMessage());
+        }
     }
 
     /** NEARBY_WIFI_DEVICES only exists on API 33+; below that, WifiNetworkSpecifier
@@ -379,6 +415,7 @@ public class Insta360CameraPlugin extends Plugin {
                 downloadToFile(absoluteUrl, outFile);
                 lastCaptureFinishedAtMs = System.currentTimeMillis();
                 final long tDone = lastCaptureFinishedAtMs;
+                sweepOldCapturedFiles();
                 // Where the time goes, per step (ms): pacing wait, mode check, raw-output check, shutter+camera
                 // processing (until the file is ready), file download.
                 Log.i(TAG, "capture timing ms: pace=" + (tPaced - tStart) + " mode=" + (tMode - tPaced)
