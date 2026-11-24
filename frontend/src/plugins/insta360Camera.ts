@@ -1,4 +1,4 @@
-import { registerPlugin } from '@capacitor/core';
+import { registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 
 export interface Insta360SsidPattern {
   pattern: string;
@@ -42,6 +42,21 @@ export interface Insta360Plugin {
 
   /** Reads the camera's current capture mode and OSC state (for troubleshooting over USB debugging). */
   diagnose(): Promise<{ captureMode: string; state: string }>;
+
+  /**
+   * Fired when the camera connection drops without being asked to (the camera slept or powered off, went out of range,
+   * or Android released the network). The next `connect()` starts from a clean reconnect.
+   */
+  addListener(
+    eventName: 'connectionLost',
+    listener: (event: { reason: string; connectedForMs: number }) => void,
+  ): Promise<PluginListenerHandle>;
 }
+
+/**
+ * Code on a rejected `capturePhoto()` when the camera was not reachable BEFORE the shutter, so nothing was taken and
+ * it is safe to reconnect and try again.
+ */
+export const INSTA360_NOT_CONNECTED = 'NOT_CONNECTED';
 
 export const Insta360Camera = registerPlugin<Insta360Plugin>('Insta360Camera');

@@ -28,6 +28,7 @@
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Preferences } from '@capacitor/preferences';
 import { Network } from '@capacitor/network';
+import { friendlyUploadMessage } from '@/utils/friendlyErrors';
 import { useAuthStore } from './authStore';
 import { useWorkflowStore } from './workflowStore';
 import { uploadCaptureFiles, getCaptureStitchJob, retryCaptureStitchJob, reconcileFingerprints, type UploadedFileResponse } from '@/services/uploadService';
@@ -420,8 +421,9 @@ function emitUploadSucceeded(pinId: string): void {
 
 function emitError(message: string, context?: string): void {
   if (typeof window === 'undefined') return;
+  // What people see is always one plain sentence. The original text stays on the stored record for support.
   window.dispatchEvent(
-    new CustomEvent(SYNC_ERROR_EVENT, { detail: { message, status: 0, context } }),
+    new CustomEvent(SYNC_ERROR_EVENT, { detail: { message: friendlyUploadMessage(message), status: 0, context } }),
   );
 }
 
@@ -1591,7 +1593,7 @@ export function retryFileUpload(pinId: string): void {
 /** User-facing failure copy for a pin stuck in 'failed', if any. */
 export function fileUploadErrorForPin(pinId: string): string | undefined {
   const entry = queue.find(e => e.pinId === pinId && e.status === 'failed');
-  return entry?.errorMessage;
+  return entry ? friendlyUploadMessage(entry.errorMessage, entry.failKind) : undefined;
 }
 
 /** 'corrupt' → Capture Again; 'upload' → Retry Upload; 'stitch' → Retry Stitch. */

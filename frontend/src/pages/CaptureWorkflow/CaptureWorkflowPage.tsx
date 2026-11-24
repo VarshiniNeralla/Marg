@@ -34,6 +34,7 @@ import { resolveMediaUrl } from '@/config/env';
 import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { captureAwaitingPanorama } from '@/utils/captureMedia';
 import { formatPinLocationLabel, formatCaptureDateTime } from '@/utils/pinLabels';
+import { friendlyUploadMessage } from '@/utils/friendlyErrors';
 import {
   canGrowPoints, canShrinkPoints, loadPointScale, pointScaleLabel, savePointScale, stepPointScale,
 } from '@/utils/pointScale';
@@ -1439,6 +1440,19 @@ export default function CaptureWorkflowPage() {
     return () => { void Insta360Camera.disconnect(); };
   }, []);
 
+  // The camera can drop without anyone touching the tablet (it sleeps, powers off, or goes out of range). Say so
+  // plainly instead of letting the next shot fail; the next capture reconnects by itself.
+  useEffect(() => {
+    if (cameraSource !== 'insta360') return;
+    let handle: { remove: () => Promise<void> } | null = null;
+    let cancelled = false;
+    Insta360Camera.addListener('connectionLost', (event) => {
+      console.warn('[insta360] connection lost:', event?.reason, `after ${Math.round((event?.connectedForMs ?? 0) / 1000)} s`);
+      setErrorToast('The camera disconnected. Turn it on if it has gone to sleep. It reconnects when you take the next photo.');
+    }).then(h => { if (cancelled) void h.remove(); else handle = h; }).catch(() => { /* not running on the tablet */ });
+    return () => { cancelled = true; void handle?.remove(); };
+  }, [cameraSource]);
+
   const [toast, setToast] = useState('');
 
   const assignedIds = new Set(user?.assignedProjectIds ?? []);
@@ -2144,11 +2158,7 @@ export default function CaptureWorkflowPage() {
             const failMessage =
               selStatus === 'failed'
                 ? (fileUploadErrorForPin(selectedPinObj.id)
-                  || (failKind === 'stitch'
-                    ? 'Stitching failed — retry stitch or upload a Studio JPEG'
-                    : failKind === 'corrupt'
-                      ? 'This capture is corrupted or unsupported — please capture again.'
-                      : 'Upload failed — retry or capture again'))
+                  || friendlyUploadMessage(undefined, failKind))
                 : undefined;
             // The point's most recent capture (if any) drives View Capture / View History / Delete below.
             const latestCaptureId = selectedPinMineIds[selectedPinMineIds.length - 1];

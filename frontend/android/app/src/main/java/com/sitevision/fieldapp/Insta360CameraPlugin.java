@@ -26,6 +26,10 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Bridges any Insta360 camera's OSC (X3, X4, X5, X6 and later; the model is read from /osc/info, never assumed) (Open Spherical Camera) HTTP API into a
@@ -70,6 +74,18 @@ public class Insta360CameraPlugin extends Plugin {
     private ConnectivityManager.NetworkCallback networkCallback;
     private volatile Network cameraNetwork;
     private volatile String cameraModel = "";
+
+    // Connection health. The camera is its own WiFi; nothing else tells us it went away (it sleeps, powers off or
+    // walks out of range with no signal). While connected we ask it a cheap question every KEEP_ALIVE_INTERVAL_S and
+    // give up on the connection after KEEP_ALIVE_MAX_FAILURES misses in a row, so the next shot starts from a clean
+    // reconnect instead of failing on a dead one.
+    private static final long KEEP_ALIVE_INTERVAL_S = 20;
+    private static final int KEEP_ALIVE_MAX_FAILURES = 2;
+    private ScheduledExecutorService keepAliveExecutor;
+    private ScheduledFuture<?> keepAliveTask;
+    private volatile int keepAliveFailures = 0;
+    private volatile boolean capturing = false;
+    private volatile long connectedAtMs = 0;
 
     @Override
     public void load() {
@@ -143,10 +159,25 @@ public class Insta360CameraPlugin extends Plugin {
         String password = call.getString("password");
 
         if (cameraNetwork != null) {
-            checkOscInfo(call);
+            // We think we are connected, but the camera may have gone to sleep without Android saying so. Prove it
+            // before trusting it. A dead connection used to be kept and failed every retry until the engineer left
+            // the page; now it is dropped and a fresh connection is requested straight away.
+            new Thread(() -> {
+                if (probeCamera()) {
+                    checkOscInfo(call);
+                } else {
+                    releaseConnection("stale connection found before connecting", false);
+                    new Handler(Looper.getMainLooper()).post(() -> connectFresh(call));
+                }
+            }).start();
             return;
         }
+        connectFresh(call);
+    }
 
+    /** Requests the camera's WiFi from scratch (system picker included when Android needs the user's approval). */
+    private void connectFresh(PluginCall call) {
+        String password = call.getString("password");
         java.util.List<SsidTier> tiers = readSsidTiers(call);
         final Handler mainHandler = new Handler(Looper.getMainLooper());
         final boolean[] settled = { false };
@@ -169,6 +200,17 @@ public class Insta360CameraPlugin extends Plugin {
     private void requestCameraNetwork(PluginCall call, java.util.List<SsidTier> tiers, int index, String password,
                                       Handler mainHandler, boolean[] settled) {
         SsidTier tier = tiers.get(index);
+        // Never leave an earlier request registered: each reconnect used to overwrite this handle without cancelling
+        // the old request, so requests piled up and could no longer be released.
+        ConnectivityManager.NetworkCallback previous = networkCallback;
+        if (previous != null) {
+            networkCallback = null;
+            try {
+                connectivityManager.unregisterNetworkCallback(previous);
+            } catch (IllegalArgumentException ignored) {
+                // already unregistered
+            }
+        }
         WifiNetworkSpecifier.Builder specifierBuilder = new WifiNetworkSpecifier.Builder()
                 .setSsidPattern(new android.os.PatternMatcher(tier.pattern, tier.type));
         if (password != null && !password.isEmpty()) {
@@ -185,6 +227,8 @@ public class Insta360CameraPlugin extends Plugin {
             @Override
             public void onAvailable(Network network) {
                 cameraNetwork = network;
+                connectedAtMs = System.currentTimeMillis();
+                Log.i(TAG, "camera WiFi available");
                 if (settled[0]) return;
                 settled[0] = true;
                 checkOscInfo(call);
@@ -211,9 +255,14 @@ public class Insta360CameraPlugin extends Plugin {
             }
 
             @Override
+            public void onLosing(Network network, int maxMsToLive) {
+                Log.w(TAG, "Android says the camera WiFi will be lost in " + maxMsToLive + " ms");
+            }
+
+            @Override
             public void onLost(Network network) {
                 if (network.equals(cameraNetwork)) {
-                    cameraNetwork = null;
+                    releaseConnection("camera WiFi lost", true);
                 }
             }
         };
@@ -239,6 +288,7 @@ public class Insta360CameraPlugin extends Plugin {
                 } catch (Exception parseError) {
                     Log.w(TAG, "could not parse /osc/info: " + parseError.getMessage());
                 }
+                startKeepAlive();
                 call.resolve(result);
             } catch (Exception e) {
                 call.reject("Connected to camera WiFi but /osc/info did not respond: " + e.getMessage(), e);
@@ -249,12 +299,20 @@ public class Insta360CameraPlugin extends Plugin {
     @PluginMethod
     public void capturePhoto(PluginCall call) {
         if (cameraNetwork == null) {
-            call.reject("Not connected to the camera. Call connect() first.");
+            call.reject("Not connected to the camera. Call connect() first.", "NOT_CONNECTED");
             return;
         }
 
         new Thread(() -> {
+            capturing = true;
             try {
+                // Make sure the camera still answers BEFORE the shutter. If it does not, nothing was taken, so the
+                // web layer can safely reconnect and try again without risking a double shot.
+                if (!probeCamera()) {
+                    releaseConnection("camera did not answer before the shot", true);
+                    call.reject("Not connected to the camera. Call connect() first.", "NOT_CONNECTED");
+                    return;
+                }
                 final long tStart = System.currentTimeMillis();
                 // Pace the shots, then make sure the camera is in photo mode BEFORE triggering.
                 long sinceLast = System.currentTimeMillis() - lastCaptureFinishedAtMs;
@@ -334,23 +392,113 @@ public class Insta360CameraPlugin extends Plugin {
                 result.put("model", cameraModel);
                 call.resolve(result);
             } catch (Exception e) {
+                // The camera may have dropped mid-shot or mid-transfer. Note it, so the next connect starts clean.
+                if (!probeCamera()) {
+                    releaseConnection("camera stopped answering during the shot: " + e.getMessage(), true);
+                }
                 call.reject("Capture failed: " + e.getMessage(), e);
+            } finally {
+                capturing = false;
             }
         }).start();
     }
 
     @PluginMethod
     public void disconnect(PluginCall call) {
-        if (networkCallback != null) {
-            try {
-                connectivityManager.unregisterNetworkCallback(networkCallback);
-            } catch (IllegalArgumentException ignored) {
-                // Already unregistered — nothing to do.
+        releaseConnection("disconnect requested", false);
+        call.resolve();
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        releaseConnection("app closed", false);
+        synchronized (this) {
+            if (keepAliveExecutor != null) {
+                keepAliveExecutor.shutdownNow();
+                keepAliveExecutor = null;
             }
-            networkCallback = null;
+        }
+        super.handleOnDestroy();
+    }
+
+    // ── Connection health ──
+
+    /** One cheap question to the camera. True when it answered. */
+    private boolean probeCamera() {
+        try {
+            httpGet("/osc/info");
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "camera did not answer: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private synchronized void startKeepAlive() {
+        stopKeepAlive();
+        keepAliveFailures = 0;
+        if (keepAliveExecutor == null || keepAliveExecutor.isShutdown()) {
+            keepAliveExecutor = Executors.newSingleThreadScheduledExecutor();
+        }
+        keepAliveTask = keepAliveExecutor.scheduleWithFixedDelay(
+                this::keepAliveTick, KEEP_ALIVE_INTERVAL_S, KEEP_ALIVE_INTERVAL_S, TimeUnit.SECONDS);
+    }
+
+    private synchronized void stopKeepAlive() {
+        if (keepAliveTask != null) {
+            keepAliveTask.cancel(false);
+            keepAliveTask = null;
+        }
+    }
+
+    private void keepAliveTick() {
+        try {
+            if (cameraNetwork == null || capturing) {
+                return; // not connected, or a shot is in progress and is already talking to the camera
+            }
+            if (probeCamera()) {
+                if (keepAliveFailures > 0) {
+                    Log.i(TAG, "camera answering again after " + keepAliveFailures + " missed check(s)");
+                }
+                keepAliveFailures = 0;
+                return;
+            }
+            keepAliveFailures++;
+            Log.w(TAG, "camera missed keep-alive check " + keepAliveFailures + "/" + KEEP_ALIVE_MAX_FAILURES);
+            if (keepAliveFailures >= KEEP_ALIVE_MAX_FAILURES) {
+                releaseConnection("camera stopped answering", true);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "keep-alive check failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Drops the camera connection completely: stops the keep-alive, cancels the network request and forgets the
+     * network, so the next connect() starts clean. `notify` tells the web layer when the drop was not asked for.
+     */
+    private synchronized void releaseConnection(String reason, boolean notify) {
+        long connectedFor = connectedAtMs > 0 ? System.currentTimeMillis() - connectedAtMs : 0;
+        boolean wasConnected = cameraNetwork != null;
+        Log.w(TAG, "camera connection released: " + reason + " (connected for " + (connectedFor / 1000) + " s)");
+        stopKeepAlive();
+        ConnectivityManager.NetworkCallback callback = networkCallback;
+        networkCallback = null;
+        if (callback != null) {
+            try {
+                connectivityManager.unregisterNetworkCallback(callback);
+            } catch (IllegalArgumentException ignored) {
+                // already unregistered
+            }
         }
         cameraNetwork = null;
-        call.resolve();
+        connectedAtMs = 0;
+        if (notify && wasConnected) {
+            JSObject data = new JSObject();
+            data.put("reason", reason);
+            data.put("connectedForMs", connectedFor);
+            notifyListeners("connectionLost", data);
+        }
     }
 
     /** Reads the camera's current capture mode and options (for field troubleshooting over USB debugging). */
@@ -571,15 +719,31 @@ public class Insta360CameraPlugin extends Plugin {
         conn.setConnectTimeout(HTTP_TIMEOUT_MS);
         conn.setReadTimeout(20000);
         conn.setRequestMethod("GET");
+        boolean complete = false;
         try (InputStream in = conn.getInputStream();
              FileOutputStream out = new FileOutputStream(outFile)) {
+            final long expected = conn.getContentLengthLong();
             byte[] buffer = new byte[8192];
             int read;
+            long written = 0;
             while ((read = in.read(buffer)) != -1) {
                 out.write(buffer, 0, read);
+                written += read;
             }
+            // A connection that drops mid-transfer can end the stream early WITHOUT an error. The short file then
+            // looks fine until the server cannot stitch it ("probably corrupt or incomplete"). Check it all arrived.
+            if (written == 0) {
+                throw new IOException("TRANSFER_INCOMPLETE: the camera sent an empty file");
+            }
+            if (expected > 0 && written != expected) {
+                throw new IOException("TRANSFER_INCOMPLETE: received " + written + " of " + expected + " bytes");
+            }
+            complete = true;
         } finally {
             conn.disconnect();
+            if (!complete) {
+                outFile.delete(); // never leave a half-copied photo behind
+            }
         }
     }
 

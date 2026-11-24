@@ -10,6 +10,7 @@
  */
 import { Network } from '@capacitor/network';
 import { API_BASE_URL } from '@/config/env';
+import { friendlyUploadMessage } from '@/utils/friendlyErrors';
 import { restoreSessionFromCookie } from '@/services/sessionRefresh';
 import { useAuthStore } from './authStore';
 import { flushWriteQueue, heldWriteCount, scopedPendingWriteCount } from './writeQueue';
@@ -153,7 +154,7 @@ export async function readUploadNowStatus(): Promise<UploadNowStatus> {
     writesPending: heldWriteCount(),
     stitching: infos.filter(p => p.status === 'processing' || !!p.stitchJobId).length,
     unconfirmed: await unconfirmedPhotoCount(),
-    failed: failedInfos.map(p => ({ pinId: p.pinId, message: p.errorMessage || 'Upload failed. Retry or capture again.', failKind: p.failKind })),
+    failed: failedInfos.map(p => ({ pinId: p.pinId, message: friendlyUploadMessage(p.errorMessage, p.failKind), failKind: p.failKind })),
   };
 }
 
