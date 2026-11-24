@@ -5,7 +5,8 @@ import {
   ReplayRounded, CheckRounded, ErrorOutlineRounded, WifiTetheringRounded,
 } from '@mui/icons-material';
 import { Capacitor } from '@capacitor/core';
-import { Insta360Camera } from '@/plugins/insta360Camera';
+import { Insta360Camera, INSTA360_NOT_CONNECTED } from '@/plugins/insta360Camera';
+import { friendlyCameraMessage } from '@/utils/friendlyErrors';
 import { INSTA360_SSID_PATTERNS, getInsta360Password, saveInsta360Password } from './insta360Config';
 
 /** Downscaled copy of a (possibly huge) photo for on-screen preview; falls back to the original if it cannot. */
@@ -95,7 +96,7 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
 
   const [wifiPassword, setWifiPassword] = useState(() => getInsta360Password());
 
-  const captureFromInsta360 = useCallback(async (password?: string) => {
+  const captureFromInsta360 = useCallback(async (password?: string, alreadyRetried = false) => {
     const pw = (password ?? getInsta360Password()).trim();
     if (!pw) {
       // No camera password known yet: ask once. It is remembered on this device after a successful connection.
@@ -120,7 +121,16 @@ export default function CameraCaptureDialog({ open, pinLabel, onCapture, onClose
       console.info(`[insta360] preview ready in ${Math.round(performance.now() - t0)} ms (${Math.round(blob.size / 1048576)} MB frame)`);
       setPhase('captured');
     } catch (e) {
-      setError((e as { message?: string })?.message || 'Could not capture from the Insta360 camera.');
+      // The camera had dropped before the shutter (it slept, or the connection went stale). Nothing was taken, so
+      // reconnect and try once more by itself instead of making the engineer start over.
+      if ((e as { code?: string })?.code === INSTA360_NOT_CONNECTED && !alreadyRetried) {
+        console.info('[insta360] camera was not reachable before the shot; reconnecting once');
+        void captureFromInsta360(pw, true);
+        return;
+      }
+      // Plain wording for the person holding the tablet; the technical text goes to the console for support.
+      console.warn('[insta360] capture failed:', (e as { message?: string })?.message);
+      setError(friendlyCameraMessage((e as { message?: string })?.message));
       setPhase('error');
     }
   }, []);
