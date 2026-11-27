@@ -24,6 +24,11 @@ import type { ProjectFloorRow } from '@/services/constructionProgressService';
 
 const FLOORS_PAGE_SIZE = 10;
 
+/** A small whole-project figure must not read as "0%" while floors show 20%: keep a decimal below 10. */
+function formatWhole(pct: number): string {
+  return `${pct < 10 ? (Math.round(pct * 10) / 10).toFixed(1) : Math.round(pct)}%`;
+}
+
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827' };
 
 function errorText(err: unknown, fallback: string): string {
@@ -177,6 +182,12 @@ export default function ProjectAnalysisPage() {
   };
 
   const totals = data?.totals;
+  // The same figures as the Progress column: floors that have been analysed (completed, in progress, not started).
+  const analysedMean = useMemo(() => {
+    const done = (data?.floors ?? []).filter(r => !['no_photos', 'not_analysed'].includes(r.status) && typeof r.progressPct === 'number');
+    return done.length ? done.reduce((s, r) => s + (r.progressPct as number), 0) / done.length : null;
+  }, [data]);
+  const headlinePct = analysedMean ?? totals?.progressPct ?? 0;
 
   return (
     <Box sx={{ maxWidth: 1200, mx: 'auto' }}>
@@ -244,18 +255,23 @@ export default function ProjectAnalysisPage() {
             <>
               <Box sx={{ p: 2.5, mb: 2.5, borderRadius: '14px', border: `1.5px solid ${P.border}`, backgroundColor: '#fff' }} data-testid="headline">
                 <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: P.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                  Total progress
+                  {analysedMean !== null ? 'Progress of analysed floors' : 'Total progress'}
                 </Typography>
                 <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5, flexWrap: 'wrap' }}>
-                  <Typography sx={{ fontSize: '2.5rem', fontWeight: 800, color: pctColor(totals.progressPct), lineHeight: 1.1 }}>
-                    {Math.round(totals.progressPct)}%
+                  <Typography data-testid="headline-pct" sx={{ fontSize: '2.5rem', fontWeight: 800, color: pctColor(headlinePct), lineHeight: 1.1 }}>
+                    {Math.round(headlinePct)}%
                   </Typography>
                   <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
-                    {totals.analysed} of {totals.floors} floors analysed. Floors without results count as 0.
+                    {analysedMean !== null
+                      ? `Average of the ${totals.analysed} floor${totals.analysed === 1 ? '' : 's'} analysed so far (the Progress column below).`
+                      : `No floor has been analysed yet.`}
                     {totals.notAnalysed ? ` ${totals.notAnalysed} have photos but are not analysed yet.` : ''}
                   </Typography>
                 </Box>
-                <Box sx={{ mt: 1.5 }}><Bar pct={totals.progressPct} label="Total progress" /></Box>
+                <Box sx={{ mt: 1.5 }}><Bar pct={headlinePct} label="Progress of analysed floors" /></Box>
+                <Typography data-testid="whole-project" sx={{ fontSize: '0.8125rem', color: P.muted, mt: 1 }}>
+                  Whole project: {formatWhole(totals.progressPct)}, counting all {totals.floors} floors. Floors with no results yet count as 0.
+                </Typography>
                 {typeof totals.coveragePct === 'number' && (
                   <Typography sx={{ fontSize: '0.8125rem', color: P.muted, mt: 1 }}>
                     Coverage {Math.round(totals.coveragePct)}%
