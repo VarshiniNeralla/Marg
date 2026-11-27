@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Box, Button, Chip, CircularProgress, LinearProgress, MenuItem, Select, Table, TableBody, TableCell,
+  Alert, Box, Button, Chip, CircularProgress, LinearProgress, MenuItem, Pagination, Select, Table, TableBody, TableCell,
   TableContainer, TableHead, TableRow, TableSortLabel, Typography,
 } from '@mui/material';
 import { DownloadRounded, PlayArrowRounded } from '@mui/icons-material';
@@ -10,6 +10,7 @@ import { colors, shadows } from '@theme/tokens';
 import { useAuthStore, isManagerOrAdmin } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
 import { formatDate } from '@/utils/dateFormat';
+import { pageSlice } from '@/utils/evidenceImages';
 import { downloadCsv } from '@/utils/downloadCsv';
 import {
   FILTER_CHIPS, buildFloorCsv, filterCounts, floorStatusLabel, isRunActive, matchesFilter, runLabel, runPct,
@@ -20,6 +21,8 @@ import {
   ActivityChart, Bar, ChartCard, CoverageScatter, StatusSplit, STATUS_COLOR, TowerChart, pctColor,
 } from '@/components/ConstructionProgress/ProjectCharts';
 import type { ProjectFloorRow } from '@/services/constructionProgressService';
+
+const FLOORS_PAGE_SIZE = 10;
 
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827' };
 
@@ -124,6 +127,7 @@ export default function ProjectAnalysisPage() {
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [sortKey, setSortKey] = useState<SortKey>('tower');
   const [dir, setDir] = useState<SortDir>('asc');
+  const [page, setPage] = useState(1);
 
   // Pick the first project when none is chosen yet.
   useEffect(() => {
@@ -143,6 +147,10 @@ export default function ProjectAnalysisPage() {
     return sortFloors(all.filter(r => matchesFilter(r, filter)), sortKey, dir);
   }, [data, filter, sortKey, dir]);
   const counts = useMemo(() => filterCounts(data?.floors ?? []), [data]);
+  const paged = useMemo(() => pageSlice(rows, page, FLOORS_PAGE_SIZE), [rows, page]);
+
+  // A different filter, sort or project starts again from the first page.
+  useEffect(() => { setPage(1); }, [filter, sortKey, dir, projectId]);
 
   const onSort = (k: SortKey) => {
     if (k === sortKey) setDir(d => (d === 'asc' ? 'desc' : 'asc'));
@@ -284,7 +292,20 @@ export default function ProjectAnalysisPage() {
               </Box>
 
               {rows.length ? (
-                <FloorTable rows={rows} sortKey={sortKey} dir={dir} onSort={onSort} />
+                <>
+                  <FloorTable rows={paged.rows} sortKey={sortKey} dir={dir} onSort={onSort} />
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mt: 1.5 }}>
+                    <Typography data-testid="floors-range" sx={{ fontSize: '0.8125rem', color: P.muted }}>
+                      Showing {(paged.page - 1) * FLOORS_PAGE_SIZE + 1}-{(paged.page - 1) * FLOORS_PAGE_SIZE + paged.rows.length} of {rows.length} floors
+                    </Typography>
+                    {paged.pages > 1 && (
+                      <Pagination
+                        count={paged.pages} page={paged.page} onChange={(_e, p) => setPage(p)}
+                        color="primary" shape="rounded" size="small" siblingCount={1} boundaryCount={1}
+                      />
+                    )}
+                  </Box>
+                </>
               ) : (
                 <Typography sx={{ color: P.muted, py: 4, textAlign: 'center' }}>No floors match this filter.</Typography>
               )}
