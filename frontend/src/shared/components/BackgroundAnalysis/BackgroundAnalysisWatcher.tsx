@@ -6,6 +6,7 @@ import { useWorkflowStore } from '@store/workflowStore';
 import { useBackgroundAnalysisStore } from '@store/backgroundAnalysis';
 import { notificationService } from '@/services/notificationService';
 import { isActiveStatus } from '@/utils/analysisProgress';
+import { isRecentNotification } from '@/utils/notificationRecency';
 import type { MockNotification, NotifType } from '@/data/mockData';
 
 const IDLE_POLL_MS = 30_000;   // nothing running: a slow check is enough
@@ -59,7 +60,9 @@ export default function BackgroundAnalysisWatcher() {
       const page = await notificationService.listNotifications({ limit: 20, read: false });
       const items = (page?.items ?? []) as unknown as ServerNotification[];
       const fresh = useWorkflowStore.getState().mergeServerNotifications(items.map(toMock));
-      const analysis = fresh.find(n => ANALYSIS_TYPES.includes(n.type));
+      // Only a run that finished just now gets a pop-up. Older unread ones (this list is rebuilt on every page
+      // load) stay in the bell; showing them here made a report from days ago pop up again on every refresh.
+      const analysis = fresh.find(n => ANALYSIS_TYPES.includes(n.type) && isRecentNotification(n.createdAt));
       if (analysis) setAlertNotif(analysis);
     } catch {
       /* offline or a transient error: the next poll will try again */
@@ -129,23 +132,29 @@ export default function BackgroundAnalysisWatcher() {
 
   if (!allowed) return null;
 
+  // Once the alert has been shown (and closed, timed out or acted on) it counts as read.
+  const dismiss = () => {
+    if (alertNotif) useWorkflowStore.getState().markNotificationRead(alertNotif.id);
+    setAlertNotif(null);
+  };
+
   const failed = alertNotif?.type === 'progress_analysis_failed';
   return (
     <Snackbar
       open={!!alertNotif}
       autoHideDuration={12_000}
-      onClose={(_e, reason) => { if (reason !== 'clickaway') setAlertNotif(null); }}
+      onClose={(_e, reason) => { if (reason !== 'clickaway') dismiss(); }}
       anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
     >
       <Alert
         severity={failed ? 'error' : 'success'}
         variant="filled"
-        onClose={() => setAlertNotif(null)}
+        onClose={dismiss}
         action={alertNotif?.link ? (
           <Button
             color="inherit"
             size="small"
-            onClick={() => { const link = alertNotif.link; setAlertNotif(null); navigate(link); }}
+            onClick={() => { const link = alertNotif.link; dismiss(); navigate(link); }}
             sx={{ fontWeight: 700, textTransform: 'none' }}
           >
             {failed ? 'Open floor' : 'Review'}
