@@ -54,7 +54,10 @@ Resources:
       DBClusterIdentifier: sitevision-prod
       EngineVersion: 8.0.0
       MasterUsername: svadmin
-      ManageMasterUserPassword: true
+      # A fixed password in our own secret (sitevision/prod/docdb-master, JSON keys username and password) that does
+      # not rotate. The old DocumentDB-managed password rotated every 7 days and the host only reads it at start,
+      # which locked the site out. Create the secret before updating this stack.
+      MasterUserPassword: '{{resolve:secretsmanager:sitevision/prod/docdb-master:SecretString:password}}'
       DBSubnetGroupName: !Ref DocDbSubnetGroup
       VpcSecurityGroupIds:
         - !Ref DocDbSecurityGroup
