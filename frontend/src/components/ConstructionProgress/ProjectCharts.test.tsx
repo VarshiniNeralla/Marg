@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
-import { ActivityChart, CoverageScatter, ProgressCoverageChart, StatusSplit, TowerChart, TowerProgressChart } from './ProjectCharts';
+import { ActivityChart, CoverageScatter, FloorProgressChart, StatusSplit, TowerChart, TowerProgressChart } from './ProjectCharts';
 
 describe('ProjectCharts', () => {
   it('tower chart shows each tower with a rounded percent', () => {
@@ -30,19 +30,18 @@ describe('ProjectCharts', () => {
     for (const t of ['Completed', 'In progress', 'Not started', 'No photos']) expect(html).toContain(t);
   });
 
-  it('progress and coverage chart labels both bars of each analysed floor and skips unanalysed ones', () => {
+  it('floor progress chart shows only progress, one bar per analysed floor, and skips unanalysed ones', () => {
     const floor = (floorId: string, floorName: string, status: 'in_progress' | 'no_photos', progressPct: number, coveragePct: number) =>
       ({ floorId, floorName, towerId: 't', towerName: 'T1', status, progressPct, coveragePct });
     const html = renderToString(
-      <ProgressCoverageChart floors={[floor('1', 'Floor 2', 'in_progress', 21.6, 30.2), floor('2', 'Floor 9', 'no_photos', 0, 0)]} />,
+      <FloorProgressChart floors={[floor('1', 'Ground Floor', 'in_progress', 21.6, 30.2), floor('2', 'Floor 9', 'no_photos', 0, 0)]} />,
     );
-    expect(html).toContain('Progress (work done)');
-    expect(html).toContain('Coverage (rooms photographed)');
-    expect(html).toContain('Floor 2');
-    expect(html).toContain('>22<');
-    expect(html).toContain('>30<');
+    expect(html).toContain('Ground Floor');
+    expect(html).toContain('22%');
+    expect(html).not.toContain('30%');
+    expect(html).not.toContain('Coverage');
     expect(html).not.toContain('Floor 9');
-    expect(renderToString(<ProgressCoverageChart floors={[]} />)).toContain('No analysed floors yet');
+    expect(renderToString(<FloorProgressChart floors={[]} />)).toContain('No analysed floors yet');
   });
 
   it('tower progress chart gives every tower a row with its percent and how many floors are analysed', () => {

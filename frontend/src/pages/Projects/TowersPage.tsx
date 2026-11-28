@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Box, Typography, Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button, Tooltip, IconButton, Pagination } from '@mui/material';
+import { Box, Typography, Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button, Tooltip, IconButton, Pagination, FormControlLabel, Switch } from '@mui/material';
+import { layoutFloors, layoutSummary, normalizeLayout, MAX_ABOVE, MAX_BASEMENTS } from '@/utils/floorNaming';
 import { ArrowBackRounded, AddRounded, DomainRounded, DeleteRounded, EditRounded } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
 import { useWorkflowStore } from '@store/workflowStore';
@@ -30,7 +31,11 @@ export default function TowersPage() {
 
   // ── Add dialog state ──────────────────────────────────────────────────────
   const [addOpen, setAddOpen] = useState(false);
-  const [addForm, setAddForm] = useState({ name: '', floors: '14' });
+  const [addForm, setAddForm] = useState({ name: '', basements: '0', ground: true, above: '14' });
+  const addLayout = normalizeLayout({
+    basements: Number(addForm.basements), ground: addForm.ground, above: Number(addForm.above),
+  });
+  const addFloorList = layoutFloors(addLayout);
 
   // ── Edit dialog state ─────────────────────────────────────────────────────
   const [editTarget, setEditTarget] = useState<string | null>(null);
@@ -51,14 +56,13 @@ export default function TowersPage() {
   if (!project) return <Box sx={{ p: 4, color: colors.textMuted }}>Project not found.</Box>;
 
   function handleAdd() {
-    if (!addForm.name.trim()) return;
-    const floorCount = Math.max(0, Number(addForm.floors) || 0);
+    if (!addForm.name.trim() || addFloorList.length === 0) return;
     // Pass 0 so createTower doesn't pre-set the count — createFloor increments it per floor
     const towerId = createTower(project!.id, addForm.name.trim(), 0);
-    for (let i = 1; i <= floorCount; i++) {
-      createFloor(towerId, i);
+    for (const f of addFloorList) {
+      createFloor(towerId, f.number, f.label);
     }
-    setAddForm({ name: '', floors: '14' });
+    setAddForm({ name: '', basements: '0', ground: true, above: '14' });
     setAddOpen(false);
   }
 
@@ -76,9 +80,10 @@ export default function TowersPage() {
     const oldCount = existing.length;
 
     if (newCount > oldCount) {
-      // add missing floors
-      for (let i = oldCount + 1; i <= newCount; i++) {
-        createFloor(editTarget, i);
+      // add missing floors above the current top one (Ground Floor and basements are never renumbered)
+      const top = existing.length ? existing[existing.length - 1].number : 0;
+      for (let i = 1; i <= newCount - oldCount; i++) {
+        createFloor(editTarget, top + i);
       }
     } else if (newCount < oldCount) {
       // remove floors from the top down
@@ -211,20 +216,46 @@ export default function TowersPage() {
         <DialogTitle sx={{ fontSize: '1rem', fontWeight: 700, color: colors.textStrong }}>Add Tower</DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: '8px !important' }}>
           <TextField label="Tower Name" value={addForm.name} onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))} fullWidth placeholder="e.g. Tower D" sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }} />
-          <TextField
-            label="Number of Floors"
-            type="number"
-            value={addForm.floors}
-            onChange={e => setAddForm(f => ({ ...f, floors: e.target.value }))}
-            fullWidth
-            helperText="Floors will be created automatically"
-            slotProps={{ htmlInput: { min: 1 } }}
-            sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }}
+          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
+            <TextField
+              label="Basements"
+              type="number"
+              value={addForm.basements}
+              onChange={e => setAddForm(f => ({ ...f, basements: e.target.value }))}
+              helperText="Levels below ground"
+              slotProps={{ htmlInput: { min: 0, max: MAX_BASEMENTS } }}
+              sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }}
+            />
+            <TextField
+              label="Floors above ground"
+              type="number"
+              value={addForm.above}
+              onChange={e => setAddForm(f => ({ ...f, above: e.target.value }))}
+              helperText="Floor 1 up to this"
+              slotProps={{ htmlInput: { min: 0, max: MAX_ABOVE } }}
+              sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }}
+            />
+          </Box>
+          <FormControlLabel
+            control={<Switch checked={addForm.ground} onChange={e => setAddForm(f => ({ ...f, ground: e.target.checked }))} />}
+            label="Has a ground floor"
           />
+          <Box sx={{ px: 1.5, py: 1.25, borderRadius: '10px', backgroundColor: colors.primarySoft }} data-testid="tower-layout-preview">
+            <Typography sx={{ fontSize: '0.8125rem', fontWeight: 700, color: colors.textStrong }}>
+              {addFloorList.length === 0
+                ? 'Add at least one floor'
+                : `${layoutSummary(addLayout)} · ${addFloorList.length} floor${addFloorList.length === 1 ? '' : 's'}`}
+            </Typography>
+            {addFloorList.length > 0 && (
+              <Typography sx={{ fontSize: '0.75rem', color: colors.textMuted }}>
+                {addFloorList[0].label}{addFloorList.length > 1 ? ` to ${addFloorList[addFloorList.length - 1].label}` : ''}
+              </Typography>
+            )}
+          </Box>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 3, gap: 1 }}>
           <Button onClick={() => setAddOpen(false)} sx={{ borderRadius: '8px', textTransform: 'none', color: colors.textMuted }}>Cancel</Button>
-          <Button onClick={handleAdd} variant="contained" sx={{ borderRadius: '8px', textTransform: 'none', background: colors.primaryGradient, boxShadow: 'none' }}>Add Tower</Button>
+          <Button onClick={handleAdd} disabled={!addForm.name.trim() || addFloorList.length === 0} variant="contained" sx={{ borderRadius: '8px', textTransform: 'none', background: colors.primaryGradient, boxShadow: 'none' }}>Add Tower</Button>
         </DialogActions>
       </Dialog>
 

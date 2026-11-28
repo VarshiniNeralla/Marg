@@ -140,22 +140,21 @@ export function StatusSplit({ totals }: { totals: ProjectOverviewTotals }) {
 }
 
 const PROGRESS_BAR = colors.primary;
-const COVERAGE_BAR = '#94a3b8';
 
 /**
- * For every analysed floor, two side-by-side bars: how much of the work is done (Progress) and how much of the
- * floor has been photographed (Coverage). Value labels sit on the bars, so nothing has to be read off a grid.
+ * One bar per analysed floor: how much of the work is done. The value sits on the bar, so nothing has to be read
+ * off a grid. Floors are in building order (basements, Ground Floor, Floor 1, 2...).
  */
-export function ProgressCoverageChart({ floors }: { floors: ProjectFloorRow[] }) {
+export function FloorProgressChart({ floors }: { floors: ProjectFloorRow[] }) {
   const rows = floors.filter(f => f.status !== 'no_photos' && f.status !== 'not_analysed'
-    && typeof f.progressPct === 'number' && typeof f.coveragePct === 'number');
+    && typeof f.progressPct === 'number');
   if (!rows.length) return <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>No analysed floors yet.</Typography>;
 
   // Few floors: spread the bars across the whole card (the drawing scales to its width). Many floors: keep each
-  // group readable and let the chart scroll sideways.
+  // bar readable and let the chart scroll sideways.
   const L = 36, T = 20, B = 44, H = 230;
-  const GROUP = Math.max(60, Math.min(112, Math.floor((780 - L) / rows.length)));
-  const BAR = Math.max(16, Math.min(30, Math.floor(GROUP * 0.3)));
+  const GROUP = Math.max(48, Math.min(104, Math.floor((780 - L) / rows.length)));
+  const BAR = Math.max(24, Math.min(56, Math.floor(GROUP * 0.6)));
   const plotH = H - T - B;
   const W = L + rows.length * GROUP + 8;
   const scrolls = rows.length > 12;
@@ -163,18 +162,10 @@ export function ProgressCoverageChart({ floors }: { floors: ProjectFloorRow[] })
   const showTower = new Set(rows.map(r => r.towerName)).size > 1;
 
   return (
-    <Box data-testid="progress-coverage-chart">
-      <Box sx={{ display: 'flex', gap: 2.5, mb: 1, flexWrap: 'wrap' }}>
-        {[['Progress (work done)', PROGRESS_BAR], ['Coverage (rooms photographed)', COVERAGE_BAR]].map(([label, c]) => (
-          <Box key={label} sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-            <Box sx={{ width: 12, height: 12, borderRadius: '3px', backgroundColor: c }} />
-            <Typography sx={{ fontSize: '0.8125rem', color: P.strong }}>{label}</Typography>
-          </Box>
-        ))}
-      </Box>
+    <Box data-testid="floor-progress-chart">
       <Box sx={{ overflowX: 'auto' }}>
         <svg viewBox={`0 0 ${W} ${H}`} role="img"
-          aria-label="Progress and coverage for each analysed floor"
+          aria-label="Progress of each analysed floor"
           style={{ display: 'block', width: '100%', minWidth: scrolls ? W : undefined, height: 'auto' }}>
           {[0, 25, 50, 75, 100].map(g => (
             <g key={g}>
@@ -183,18 +174,15 @@ export function ProgressCoverageChart({ floors }: { floors: ProjectFloorRow[] })
             </g>
           ))}
           {rows.map((f, i) => {
-            const gx = L + i * GROUP + (GROUP - 2 * BAR - 4) / 2;
+            const cx = L + i * GROUP + GROUP / 2;
             const prog = f.progressPct as number;
-            const cov = f.coveragePct as number;
             return (
               <g key={f.floorId}>
-                <title>{`${f.towerName} ${f.floorName}: progress ${Math.round(prog)}%, coverage ${Math.round(cov)}%`}</title>
-                <rect x={gx} y={y(prog)} width={BAR} height={Math.max(0, T + plotH - y(prog))} rx={3} fill={PROGRESS_BAR} />
-                <rect x={gx + BAR + 4} y={y(cov)} width={BAR} height={Math.max(0, T + plotH - y(cov))} rx={3} fill={COVERAGE_BAR} />
-                <text x={gx + BAR / 2} y={y(prog) - 4} fontSize="10" fontWeight="700" textAnchor="middle" fill={P.strong}>{Math.round(prog)}</text>
-                <text x={gx + BAR + 4 + BAR / 2} y={y(cov) - 4} fontSize="10" textAnchor="middle" fill={P.muted}>{Math.round(cov)}</text>
-                <text x={gx + BAR + 2} y={T + plotH + 14} fontSize="11" fontWeight="600" textAnchor="middle" fill={P.strong}>{f.floorName}</text>
-                {showTower && <text x={gx + BAR + 2} y={T + plotH + 28} fontSize="10" textAnchor="middle" fill={P.muted}>{f.towerName}</text>}
+                <title>{`${f.towerName} ${f.floorName}: progress ${Math.round(prog)}%`}</title>
+                <rect x={cx - BAR / 2} y={y(prog)} width={BAR} height={Math.max(0, T + plotH - y(prog))} rx={3} fill={PROGRESS_BAR} />
+                <text x={cx} y={y(prog) - 4} fontSize="11" fontWeight="700" textAnchor="middle" fill={P.strong}>{`${Math.round(prog)}%`}</text>
+                <text x={cx} y={T + plotH + 14} fontSize="11" fontWeight="600" textAnchor="middle" fill={P.strong}>{f.floorName}</text>
+                {showTower && <text x={cx} y={T + plotH + 28} fontSize="10" textAnchor="middle" fill={P.muted}>{f.towerName}</text>}
               </g>
             );
           })}

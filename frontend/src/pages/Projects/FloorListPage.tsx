@@ -204,7 +204,7 @@ export default function FloorListPage() {
           <Box component="input"
             value={newFloorLabel}
             onChange={e => setNewFloorLabel(e.target.value)}
-            placeholder="Floor number (e.g. 61) — leave blank to auto-number"
+            placeholder="Floor number (0 = Ground, -1 = Basement 1) — blank to auto-number"
             onKeyDown={e => { if (e.key === 'Enter') handleAddFloor(); }}
             style={{
               width: '100%', padding: '10px 14px', borderRadius: 10, border: `1px solid ${colors.borderLight}`,

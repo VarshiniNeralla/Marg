@@ -13,6 +13,7 @@ import {
 } from '@store/uploadHold';
 import { useAuthStore } from '@store/authStore';
 import { formatTowerLabel } from '@/utils/pinLabels';
+import { floorLabel } from '@/utils/floorNaming';
 import {
   gatherPreChecks, getLastUploadNowResult, pauseUploadNow, readUploadNowStatus, resumeUploadNow, startUploadNow,
   type UploadNowStatus,
@@ -43,7 +44,7 @@ function floorOfPin(pinId: string): PinFloor | undefined {
   if (!pin) return undefined;
   const floor = st.floors.find(f => f.id === pin.floorId);
   const tower = st.towers.find(t => t.id === pin.towerId);
-  const floorName = floor?.label || (floor ? `Floor ${floor.number}` : 'Unknown floor');
+  const floorName = floor?.label || (floor ? floorLabel(floor.number) : 'Unknown floor');
   return { floorId: pin.floorId, floorName, towerId: pin.towerId, towerName: tower?.name || 'Tower' };
 }
 
