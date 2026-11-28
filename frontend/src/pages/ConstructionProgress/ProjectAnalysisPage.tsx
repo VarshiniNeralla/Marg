@@ -13,12 +13,12 @@ import { formatDate } from '@/utils/dateFormat';
 import { pageSlice } from '@/utils/evidenceImages';
 import { downloadCsv } from '@/utils/downloadCsv';
 import {
-  FILTER_CHIPS, buildFloorCsv, filterCounts, floorStatusLabel, isRunActive, matchesFilter, runLabel, runPct,
-  sortFloors, type SortDir, type SortKey, type StatusFilter,
+  FILTER_CHIPS, buildFloorCsv, filterCounts, floorStatusLabel, isRunActive, matchesFilter, projectHeadline,
+  projectIdsWithCaptures, runLabel, runPct, sortFloors, type SortDir, type SortKey, type StatusFilter,
 } from '@/utils/projectAnalysis';
 import { useAnalyzeProject, useProjectAnalyzeStatus, useProjectOverview } from '@/hooks/useProjectAnalysis';
 import {
-  Bar, ChartCard, CoverageScatter, STATUS_COLOR, TowerChart, pctColor,
+  Bar, ChartCard, ProgressCoverageChart, STATUS_COLOR, TowerChart, pctColor,
 } from '@/components/ConstructionProgress/ProjectCharts';
 import type { ProjectFloorRow } from '@/services/constructionProgressService';
 
@@ -34,24 +34,6 @@ const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827' };
 function errorText(err: unknown, fallback: string): string {
   const e = err as { response?: { data?: { message?: string; error?: string; detail?: string } }; message?: string };
   return e?.response?.data?.message || e?.response?.data?.detail || e?.response?.data?.error || e?.message || fallback;
-}
-
-function Tile({ label, value, color, active, onClick }: {
-  label: string; value: number; color: string; active: boolean; onClick: () => void;
-}) {
-  return (
-    <Box
-      component="button" type="button" onClick={onClick} aria-pressed={active}
-      sx={{
-        textAlign: 'left', cursor: 'pointer', font: 'inherit', p: 1.75, borderRadius: '14px', backgroundColor: '#fff',
-        border: `1.5px solid ${active ? color : P.border}`, borderLeft: `5px solid ${color}`,
-        '&:focus-visible': { outline: `3px solid ${colors.primaryRing}`, outlineOffset: 2 },
-      }}
-    >
-      <Typography sx={{ fontSize: '1.625rem', fontWeight: 800, color: P.strong, lineHeight: 1.1 }}>{value}</Typography>
-      <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>{label}</Typography>
-    </Box>
-  );
 }
 
 const COLUMNS: { key: SortKey; label: string; align?: 'right'; hideXs?: boolean }[] = [
@@ -126,7 +108,15 @@ function FloorTable({ rows, sortKey, dir, onSort }: {
 
 export default function ProjectAnalysisPage() {
   const [params, setParams] = useSearchParams();
-  const projects = useWorkflowStore(s => s.projects);
+  const allProjects = useWorkflowStore(s => s.projects);
+  const captures = useWorkflowStore(s => s.captures);
+  // Only projects that have captures: an empty project has nothing to analyse. Until captures have loaded,
+  // show every project rather than an empty list.
+  const projects = useMemo(() => {
+    if (!captures.length) return allProjects;
+    const withCaptures = projectIdsWithCaptures(captures);
+    return allProjects.filter(p => withCaptures.has(p.id));
+  }, [allProjects, captures]);
   const canRun = useAuthStore(s => isManagerOrAdmin(s.user));
   const projectId = params.get('project') ?? '';
   const [filter, setFilter] = useState<StatusFilter>('all');
@@ -134,9 +124,9 @@ export default function ProjectAnalysisPage() {
   const [dir, setDir] = useState<SortDir>('asc');
   const [page, setPage] = useState(1);
 
-  // Pick the first project when none is chosen yet.
+  // Pick the first listed project when none is chosen, or when the chosen one is not in the list (no captures).
   useEffect(() => {
-    if (!projectId && projects.length) setParams({ project: projects[0].id }, { replace: true });
+    if (projects.length && !projects.some(p => p.id === projectId)) setParams({ project: projects[0].id }, { replace: true });
   }, [projectId, projects, setParams]);
 
   const overview = useProjectOverview(projectId || undefined);
@@ -182,12 +172,7 @@ export default function ProjectAnalysisPage() {
   };
 
   const totals = data?.totals;
-  // The same figures as the Progress column: floors that have been analysed (completed, in progress, not started).
-  const analysedMean = useMemo(() => {
-    const done = (data?.floors ?? []).filter(r => !['no_photos', 'not_analysed'].includes(r.status) && typeof r.progressPct === 'number');
-    return done.length ? done.reduce((s, r) => s + (r.progressPct as number), 0) / done.length : null;
-  }, [data]);
-  const headlinePct = analysedMean ?? totals?.progressPct ?? 0;
+  const headline = useMemo(() => projectHeadline(data?.floors ?? [], data?.towers ?? []), [data]);
 
   return (
     <Box sx={{ maxWidth: 1200, mx: 'auto' }}>
@@ -255,22 +240,24 @@ export default function ProjectAnalysisPage() {
             <>
               <Box sx={{ p: 2.5, mb: 2.5, borderRadius: '14px', border: `1.5px solid ${P.border}`, backgroundColor: '#fff' }} data-testid="headline">
                 <Typography sx={{ fontSize: '0.75rem', fontWeight: 700, color: P.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                  {analysedMean !== null ? 'Progress of analysed floors' : 'Total progress'}
+                  Project progress
                 </Typography>
                 <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5, flexWrap: 'wrap' }}>
-                  <Typography data-testid="headline-pct" sx={{ fontSize: '2.5rem', fontWeight: 800, color: pctColor(headlinePct), lineHeight: 1.1 }}>
-                    {Math.round(headlinePct)}%
+                  <Typography data-testid="headline-pct" sx={{ fontSize: '2.5rem', fontWeight: 800, color: pctColor(headline.flatsCompletedPct), lineHeight: 1.1 }}>
+                    {formatWhole(headline.flatsCompletedPct)}
                   </Typography>
-                  <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
-                    {analysedMean !== null
-                      ? `Average of the ${totals.analysed} floor${totals.analysed === 1 ? '' : 's'} analysed so far (the Progress column below).`
-                      : `No floor has been analysed yet.`}
-                    {totals.notAnalysed ? ` ${totals.notAnalysed} have photos but are not analysed yet.` : ''}
+                  <Typography data-testid="headline-counts" sx={{ fontSize: '0.9375rem', fontWeight: 600, color: P.strong }}>
+                    {headline.flatsCompleted} of {headline.flatsTotal} flats completed
+                    {' · '}
+                    {headline.towersCompleted} of {headline.towersTotal} tower{headline.towersTotal === 1 ? '' : 's'} completed
                   </Typography>
                 </Box>
-                <Box sx={{ mt: 1.5 }}><Bar pct={headlinePct} label="Progress of analysed floors" /></Box>
-                <Typography data-testid="whole-project" sx={{ fontSize: '0.8125rem', color: P.muted, mt: 1 }}>
-                  Whole project: {formatWhole(totals.progressPct)}, counting all {totals.floors} floors. Floors with no results yet count as 0.
+                <Box sx={{ mt: 1.5 }}><Bar pct={headline.flatsCompletedPct} label="Flats completed" /></Box>
+                <Typography data-testid="headline-note" sx={{ fontSize: '0.8125rem', color: P.muted, mt: 1 }}>
+                  {headline.flatsTotal
+                    ? `Counted over the ${headline.floorsCounted} floor${headline.floorsCounted === 1 ? '' : 's'} analysed so far, where the flats are known. Work done across those flats averages ${Math.round(headline.avgFlatProgressPct ?? 0)}%.`
+                    : 'No floor has been analysed yet, so no flats are counted.'}
+                  {totals.notAnalysed ? ` ${totals.notAnalysed} floors have photos but are not analysed yet.` : ''}
                 </Typography>
                 {typeof totals.coveragePct === 'number' && (
                   <Typography sx={{ fontSize: '0.8125rem', color: P.muted, mt: 1 }}>
@@ -281,16 +268,9 @@ export default function ProjectAnalysisPage() {
                 )}
               </Box>
 
-              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(4, minmax(0, 1fr))' }, gap: 1.5, mb: 3 }}>
-                <Tile label="Completed" value={totals.completed} color={STATUS_COLOR.completed} active={filter === 'completed'} onClick={() => setFilter(f => (f === 'completed' ? 'all' : 'completed'))} />
-                <Tile label="In progress" value={totals.inProgress} color={STATUS_COLOR.in_progress} active={filter === 'in_progress'} onClick={() => setFilter(f => (f === 'in_progress' ? 'all' : 'in_progress'))} />
-                <Tile label="Not started" value={totals.notStarted} color={STATUS_COLOR.not_started} active={filter === 'not_started'} onClick={() => setFilter(f => (f === 'not_started' ? 'all' : 'not_started'))} />
-                <Tile label="No photos" value={totals.noPhotos} color={STATUS_COLOR.no_photos} active={filter === 'no_photos'} onClick={() => setFilter(f => (f === 'no_photos' ? 'all' : 'no_photos'))} />
-              </Box>
-
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 1.5 }}>
                 <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', flex: 1 }} role="group" aria-label="Filter floors by status">
-                  {FILTER_CHIPS.map(c => (
+                  {FILTER_CHIPS.filter(c => c.id !== 'no_photos').map(c => (
                     <Chip
                       key={c.id} clickable onClick={() => setFilter(c.id)}
                       label={`${c.label} (${counts[c.id]})`}
@@ -329,7 +309,7 @@ export default function ProjectAnalysisPage() {
               <Typography component="h2" sx={{ fontSize: '1.0625rem', fontWeight: 800, color: P.strong, mt: 4, mb: 1.5 }}>Analytics</Typography>
               <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'repeat(2, minmax(0, 1fr))' }, gap: 2, mb: 4 }}>
                 <ChartCard title="Progress by tower" testId="chart-towers"><TowerChart towers={data.towers} /></ChartCard>
-                <ChartCard title="Coverage and progress" testId="chart-scatter"><CoverageScatter floors={data.floors} /></ChartCard>
+                <ChartCard title="Progress and coverage by floor" testId="chart-progress-coverage"><ProgressCoverageChart floors={data.floors} /></ChartCard>
               </Box>
             </>
           )}
