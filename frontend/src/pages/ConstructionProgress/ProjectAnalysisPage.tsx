@@ -18,7 +18,7 @@ import {
 } from '@/utils/projectAnalysis';
 import { useAnalyzeProject, useProjectAnalyzeStatus, useProjectOverview } from '@/hooks/useProjectAnalysis';
 import {
-  Bar, ChartCard, ProgressCoverageChart, STATUS_COLOR, TowerProgressChart, pctColor,
+  Bar, ChartCard, FloorProgressChart, STATUS_COLOR, TowerProgressChart, pctColor,
 } from '@/components/ConstructionProgress/ProjectCharts';
 import type { ProjectFloorRow } from '@/services/constructionProgressService';
 
@@ -306,7 +306,7 @@ export default function ProjectAnalysisPage() {
               <Typography component="h2" sx={{ fontSize: '1.0625rem', fontWeight: 800, color: P.strong, mt: 4, mb: 1.5 }}>Analytics</Typography>
               <Box sx={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 2, mb: 4 }}>
                 <ChartCard title="Progress by tower" testId="chart-towers"><TowerProgressChart towers={towerRows} /></ChartCard>
-                <ChartCard title="Progress and coverage by floor" testId="chart-progress-coverage"><ProgressCoverageChart floors={data.floors} /></ChartCard>
+                <ChartCard title="Progress by floor" testId="chart-floor-progress"><FloorProgressChart floors={data.floors} /></ChartCard>
               </Box>
             </>
           )}

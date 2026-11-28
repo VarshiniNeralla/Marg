@@ -21,6 +21,7 @@ import { enqueueWrite, isCreatePending, cancelWritesForEntityIds, cancelPendingD
 import { isLiveUploadedTour } from './tourFilters';
 import { formatPinLocationLabel } from '@/utils/pinLabels';
 import { resolveCapturedAt } from './safeFileCopy';
+import { floorLabel } from '@/utils/floorNaming';
 
 /** Real signed-in name for capture / floor-plan attribution (never the placeholder "You"). */
 function currentUploaderName(): string {
@@ -385,7 +386,8 @@ interface WorkflowState {
   deleteTower: (id: string) => void;
 
   // ── Floors ──
-  createFloor: (towerId: string, number: number) => string;
+  /** `number`: below 0 is a basement, 0 the ground floor, above 0 a numbered floor. The label defaults from it. */
+  createFloor: (towerId: string, number: number, label?: string) => string;
   updateFloor: (id: string, patch: Partial<WfFloor>) => void;
   deleteFloor: (id: string) => void;
 
@@ -1435,9 +1437,9 @@ export const useWorkflowStore = create<WorkflowState>()(
   },
 
   // ── Floors ────────────────────────────────────────────────────────────────
-  createFloor(towerId, number) {
+  createFloor(towerId, number, label) {
     const id = get().nextId('f');
-    const floor: WfFloor = { id: `${towerId}-f${number}-${id}`, towerId, number, label: `Floor ${number}` };
+    const floor: WfFloor = { id: `${towerId}-f${number}-${id}`, towerId, number, label: label?.trim() || floorLabel(number) };
     const tower = get().towers.find(t => t.id === towerId);
     set(s => ({
       floors: [...s.floors, floor],

@@ -5,6 +5,7 @@
  * the saved copy is found whatever token the app happens to hold. A changed plan has a new address, so it is
  * automatically treated as "needs download" and the old copy is cleaned up.
  */
+import { floorLabel } from '@/utils/floorNaming';
 
 /** Query parameters that only carry access/validity and never decide which file is meant. */
 const VOLATILE_PARAMS = ['access_token', 'exp', 'sig'];
@@ -222,7 +223,7 @@ export function buildFloorRows(
       if (status === 'no-plan' || status === 'unsupported' || !plan) continue;
       const isSaved = status === 'available';
       const isNew = !isSaved && known.size > 0 && planMediaKeys(plan).some(k => !known.has(k));
-      rows.push({ floorId: f.id, towerId: t.id, towerName: t.name, label: f.label || `Floor ${f.number ?? ''}`.trim(), number: f.number ?? 0, saved: isSaved, isNew });
+      rows.push({ floorId: f.id, towerId: t.id, towerName: t.name, label: f.label || (typeof f.number === 'number' ? floorLabel(f.number) : 'Floor'), number: f.number ?? 0, saved: isSaved, isNew });
     }
   }
   return rows.sort((a, b) => a.towerName.localeCompare(b.towerName, undefined, { numeric: true }) || a.number - b.number);

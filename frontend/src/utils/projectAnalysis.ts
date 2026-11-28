@@ -1,6 +1,7 @@
 import type {
   ProjectFloorRow, ProjectFloorStatus, ProjectRunState, ProjectRunStatus, ProjectTowerRow,
 } from '@/services/constructionProgressService';
+import { floorRank } from './floorNaming';
 
 export interface ProjectHeadline {
   towersTotal: number;
@@ -144,8 +145,13 @@ function cmpNullable(a: number | null, b: number | null, dir: SortDir): number {
 
 const natural = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
+/** Basement 1 < Ground Floor < Floor 1 < Floor 2, falling back to the name for anything else. */
+function byFloor(a: ProjectFloorRow, b: ProjectFloorRow): number {
+  return floorRank(a.floorName) - floorRank(b.floorName) || natural.compare(a.floorName ?? '', b.floorName ?? '');
+}
+
 function byTowerThenFloor(a: ProjectFloorRow, b: ProjectFloorRow): number {
-  return natural.compare(a.towerName ?? '', b.towerName ?? '') || natural.compare(a.floorName ?? '', b.floorName ?? '');
+  return natural.compare(a.towerName ?? '', b.towerName ?? '') || byFloor(a, b);
 }
 
 export function sortFloors(rows: ProjectFloorRow[], key: SortKey, dir: SortDir): ProjectFloorRow[] {
@@ -153,7 +159,7 @@ export function sortFloors(rows: ProjectFloorRow[], key: SortKey, dir: SortDir):
   return [...rows].sort((a, b) => {
     switch (key) {
       case 'floor':
-        return sign * natural.compare(a.floorName ?? '', b.floorName ?? '') || byTowerThenFloor(a, b);
+        return sign * byFloor(a, b) || byTowerThenFloor(a, b);
       case 'tower':
         return sign * byTowerThenFloor(a, b);
       case 'status':

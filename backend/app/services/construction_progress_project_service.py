@@ -46,6 +46,17 @@ def _natural_key(text: str) -> list[Any]:
     return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", text or "")]
 
 
+def _floor_position(floor: dict[str, Any]) -> int:
+    """Where a floor sits in its tower: basements below 0, Ground Floor 0, then Floor 1, 2, ... Unknown goes last."""
+    for key in ("number", "floor_number"):
+        value = floor.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, float) and value == int(value):
+            return int(value)
+    return 10**9
+
+
 def _round1(value: float) -> float:
     return round(float(value), 1)
 
@@ -129,9 +140,12 @@ class ConstructionProgressProjectService:
                 "floorName": str(f.get("label") or ""),
                 "towerId": str(f.get("towerId") or ""),
                 "towerName": str(tower.get("name") or ""),
+                "_pos": _floor_position(f),
             })
         tower_order = {tid: i for i, tid in enumerate(tower_by_id)}
-        rows.sort(key=lambda r: (tower_order.get(r["towerId"], 0), _natural_key(r["floorName"])))
+        rows.sort(key=lambda r: (tower_order.get(r["towerId"], 0), r["_pos"], _natural_key(r["floorName"])))
+        for r in rows:
+            r.pop("_pos", None)
         return rows
 
     async def capture_counts(self, org_id: str, floor_ids: list[str]) -> dict[str, int]:

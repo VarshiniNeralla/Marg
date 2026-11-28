@@ -99,6 +99,25 @@ async def _snapshots(db):
 # ── overview ─────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
+async def test_floors_are_in_building_order_basements_then_ground_then_numbered(db):
+    await db["projects"].insert_one({"_id": "pb", "orgId": ORG, "name": "Tall"})
+    await db["towers"].insert_one({"_id": "tb", "orgId": ORG, "projectId": "pb", "name": "Tower 1"})
+    await db["floors"].insert_many([
+        {"_id": "a", "orgId": ORG, "towerId": "tb", "number": 10, "label": "Floor 10"},
+        {"_id": "b", "orgId": ORG, "towerId": "tb", "number": 0, "label": "Ground Floor"},
+        {"_id": "c", "orgId": ORG, "towerId": "tb", "number": 2, "label": "Floor 2"},
+        {"_id": "d", "orgId": ORG, "towerId": "tb", "number": -1, "label": "Basement 1"},
+        {"_id": "e", "orgId": ORG, "towerId": "tb", "number": -2, "label": "Basement 2"},
+        {"_id": "f", "orgId": ORG, "towerId": "tb", "number": 1, "label": "Floor 1"},
+    ])
+    rows = await ConstructionProgressProjectService(db).list_project_floors(ORG, "pb")
+    assert [r["floorName"] for r in rows] == [
+        "Basement 2", "Basement 1", "Ground Floor", "Floor 1", "Floor 2", "Floor 10",
+    ]
+    assert all("_pos" not in r for r in rows)
+
+
+@pytest.mark.asyncio
 async def test_overview_unknown_other_org_and_archived_projects_are_none(db):
     await _world(db)
     svc = ConstructionProgressProjectService(db)
