@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -105,10 +106,29 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error(f"Progress analysis recovery failed at startup (continuing): {exc}")
 
+    # Recycle bin: permanently delete whatever has sat in the bin for more than RETENTION_DAYS. Runs shortly after
+    # start and then every few hours; a failure only logs, and the next round tries again.
+    async def _purge_loop() -> None:
+        from app.services import recycle_bin
+
+        async def _purge(db):
+            await recycle_bin.purge_expired(db)
+
+        await asyncio.sleep(60)
+        while True:
+            try:
+                await _for_each_database(_purge, "Recycle bin purge")
+            except Exception as exc:
+                logger.error(f"Recycle bin purge failed (will retry): {exc}")
+            await asyncio.sleep(6 * 3600)
+
+    purge_task = asyncio.create_task(_purge_loop())
+
     logger.info("Application startup complete.")
     yield
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
+    purge_task.cancel()
     await close_db()
     logger.info("Application shutdown complete.")
 

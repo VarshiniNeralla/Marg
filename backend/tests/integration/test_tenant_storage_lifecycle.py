@@ -165,10 +165,14 @@ async def test_delete_removes_only_the_callers_own_files_never_another_tenants(e
                                           "mediaAssets": [{"public_id": my_asset["public_id"], "storage": "local"}]})
     assert (await er.call("delete", "/api/v1/captures/cap-evil", ko_tok)).status_code in (200, 204)
     assert [f for f in _files(er.upload_root) if f.startswith(f"{MY}/")] == my_files          # My Home's files untouched
-    # a Kohinoor capture record naming its OWN file: deleting it removes the file and its thumbnail
+    # a Kohinoor capture record naming its OWN file
     await er.dbs[KO].captures.insert_one({"_id": "cap-own", "id": "cap-own", "orgId": str(er.org[KO]),
                                           "mediaAssets": [{"public_id": ko_asset["public_id"], "storage": "local"}]})
     assert (await er.call("delete", "/api/v1/captures/cap-own", ko_tok)).status_code in (200, 204)
+    # A deleted capture sits in the recycle bin (restorable), so its file is still there...
+    assert [f for f in _files(er.upload_root) if f.startswith(f"{KO}/")] != []
+    # ...until the bin is emptied: then the file and its thumbnail go, and never another tenant's file.
+    assert (await er.call("delete", "/api/v1/recycle-bin", ko_tok)).status_code == 200
     assert [f for f in _files(er.upload_root) if f.startswith(f"{KO}/")] == []
     assert [f for f in _files(er.upload_root) if f.startswith(f"{MY}/")] == my_files
 

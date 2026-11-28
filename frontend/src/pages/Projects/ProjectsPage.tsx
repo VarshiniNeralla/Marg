@@ -279,7 +279,7 @@ export default function ProjectsPage() {
         <DialogContent>
           <Typography sx={{ fontSize: '0.9rem', color: colors.textMuted }}>
             Are you sure you want to delete <strong style={{ color: colors.textStrong }}>{projectToDelete?.name}</strong>?
-            This action cannot be undone.
+            It will move to the Recycle Bin, where you can restore it for 30 days. After that it is deleted permanently.
           </Typography>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 3, gap: 1 }}>

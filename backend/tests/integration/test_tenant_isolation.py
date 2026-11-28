@@ -60,7 +60,11 @@ async def test_each_tenant_reads_lists_and_manages_only_its_own_projects(env, da
     assert await env.dbs[slug].projects.count_documents({"_id": new}) == 1
     assert await env.dbs[OTHER[slug]].projects.count_documents({"_id": new}) == 0       # never in the other database
     r = await _req(env, HOST[slug], "delete", f"/api/v1/projects/{new}", tok)
-    assert r.status_code in (200, 204) and await env.dbs[slug].projects.count_documents({"_id": new}) == 0
+    # Deleting a project moves it to the recycle bin (archived, restorable for 30 days), in THIS tenant's database only.
+    assert r.status_code in (200, 204)
+    moved = await env.dbs[slug].projects.find_one({"_id": new})
+    assert moved is not None and moved["archived"] is True and moved["deletedAt"] is not None
+    assert await env.dbs[OTHER[slug]].projects.count_documents({"_id": new}) == 0
 
 
 @pytest.mark.asyncio
@@ -245,10 +249,14 @@ async def test_deleting_a_capture_with_an_injected_foreign_asset_destroys_nothin
     foreign = "SiteVision/captures/6a3a28dd0915399ba5cb6922/e1/stolen"
     await env.dbs["kohinoor"].captures.insert_one({"_id": "cap-1", "id": "cap-1", "orgId": org,
                                                    "mediaAssets": [{"public_id": foreign, "resource_type": "image"}]})
-    r = await _req(env, KO_HOST, "delete", "/api/v1/captures/cap-1", await _token(env, "kohinoor"))
+    tok = await _token(env, "kohinoor")
+    r = await _req(env, KO_HOST, "delete", "/api/v1/captures/cap-1", tok)
     assert r.status_code in (200, 204)
     assert await env.dbs["kohinoor"].captures.count_documents({"_id": "cap-1"}) == 0
     assert destroyed == []                                              # the My Home file was NOT destroyed
+    # ...and not when the recycle bin is emptied either: the file is not this tenant's, so it is refused.
+    assert (await _req(env, KO_HOST, "delete", "/api/v1/recycle-bin", tok)).status_code == 200
+    assert destroyed == []
 
 
 @pytest.mark.parametrize("tenant,path,ok", [
@@ -340,8 +348,12 @@ async def test_positive_control_capture_delete_does_destroy_the_tenants_own_asse
     own = f"kohinoor/sites/captures/{org}/e1/own"
     await env.dbs["kohinoor"].captures.insert_one({"_id": "cap-2", "id": "cap-2", "orgId": org,
                                                    "mediaAssets": [{"public_id": own, "resource_type": "image"}]})
-    r = await _req(env, KO_HOST, "delete", "/api/v1/captures/cap-2", await _token(env, "kohinoor"))
-    assert r.status_code in (200, 204) and destroyed == [own]
+    tok = await _token(env, "kohinoor")
+    r = await _req(env, KO_HOST, "delete", "/api/v1/captures/cap-2", tok)
+    assert r.status_code in (200, 204)
+    assert destroyed == []                       # kept in the recycle bin, so it can be restored
+    r = await _req(env, KO_HOST, "delete", "/api/v1/recycle-bin", tok)   # emptying the bin destroys it for good
+    assert r.status_code == 200 and destroyed == [own]
 
 
 # ── Session lifecycle inside a tenant: refresh, logout, revocation ────────────

@@ -72,7 +72,11 @@ function recordCreatedAtMs(record: unknown): number | null {
     (r?.capturedAt as string | undefined) ??
     (r?.captured_at as string | undefined);
   const ms = typeof raw === 'string' ? Date.parse(raw) : NaN;
-  return Number.isFinite(ms) ? ms : null;
+  if (!Number.isFinite(ms)) return null;
+  // A record brought back from the Recycle Bin counts as new from the moment it was restored. Without this, a
+  // device that deleted it earlier would see "same record, older than my delete" and delete it AGAIN.
+  const restored = typeof r?.restoredAt === 'string' ? Date.parse(r.restoredAt) : NaN;
+  return Number.isFinite(restored) ? Math.max(ms, restored) : ms;
 }
 
 function isSameRecordAsTombstoned(

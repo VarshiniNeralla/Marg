@@ -11,7 +11,7 @@ import {
   LogoutRounded, PersonRounded, MenuRounded,
   CloudUploadRounded, StorageRounded, RateReviewRounded,
   PhotoCameraRounded, ChevronLeftRounded, ChevronRightRounded, HistoryRounded,
-  AutoAwesomeRounded, InsightsRounded, ChatBubbleOutlineRounded, AssessmentRounded,
+  AutoAwesomeRounded, InsightsRounded, ChatBubbleOutlineRounded, AssessmentRounded, DeleteOutlineRounded,
 } from '@mui/icons-material';
 import { useTheme } from '@mui/material/styles';
 import { colors, motion, zIndex } from '@theme/tokens';
@@ -65,6 +65,7 @@ const ADMIN_NAV: NavSection[] = [
       { label: 'Users',         path: '/users',          icon: <PeopleRounded /> },
       { label: 'Media',         path: '/admin/media',    icon: <StorageRounded /> },
       { label: 'Audit',         path: '/admin/audit',    icon: <HistoryRounded /> },
+      { label: 'Recycle Bin',   path: '/recycle-bin',    icon: <DeleteOutlineRounded /> },
       { label: 'Settings',      path: '/settings',       icon: <TuneRounded /> },
     ],
   },
@@ -100,6 +101,7 @@ const MANAGER_NAV: NavSection[] = [
     heading: 'Team',
     items: [
       { label: 'Field Engineers', path: '/users', icon: <PeopleRounded /> },
+      { label: 'Recycle Bin',     path: '/recycle-bin', icon: <DeleteOutlineRounded /> },
     ],
   },
 ];
@@ -124,6 +126,12 @@ const ENGINEER_NAV: NavSection[] = [
     items: [
       { label: 'Floor Plans',   path: '/floor-plans', icon: <MapRounded /> },
       { label: 'Virtual Tours', path: '/tours',       icon: <ViewInArRounded /> },
+    ],
+  },
+  {
+    heading: 'Manage',
+    items: [
+      { label: 'Recycle Bin', path: '/recycle-bin', icon: <DeleteOutlineRounded /> },
     ],
   },
 ];

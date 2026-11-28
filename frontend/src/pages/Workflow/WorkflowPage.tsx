@@ -10,6 +10,7 @@ import {
   HomeWorkRounded,
 } from '@mui/icons-material';
 import { colors, motion } from '@theme/tokens';
+import ConfirmDialog from '@shared/components/ConfirmDialog/ConfirmDialog';
 import { useWorkflowStore, type FlatType, type WfFlat, type WfFloor, type WfRoom } from '@store/workflowStore';
 import { statusConfig, mockUsers, type MockCapture, type MockTour } from '@/data/mockData';
 
@@ -403,7 +404,19 @@ export default function WorkflowPage() {
                 onSave={v => store.updateProject(p.id, { name: v.name, city: v.city, location: `${v.city}, ${p.state}` })} onClose={() => setModal(null)} />
             )} />
             <Action label="Open Project" icon={<OpenInNewRounded />} to={`/projects/${p.id}`} />
-            <Action label={p.archived ? 'Unarchive' : 'Archive Project'} icon={<ArchiveRounded />} tone="danger" onClick={() => store.archiveProject(p.id)} />
+            <Action label={p.archived ? 'Unarchive' : 'Delete Project'} icon={<ArchiveRounded />} tone="danger" onClick={() => {
+              if (p.archived) { store.archiveProject(p.id); return; }
+              // Same confirmation as the Projects page: it goes to the Recycle Bin, not away for good.
+              setModal(
+                <ConfirmDialog
+                  open destructive title="Delete this project?"
+                  description={`"${p.name}" will move to the Recycle Bin. You can restore it for 30 days, after that it is deleted permanently.`}
+                  confirmLabel="Delete project" cancelLabel="Cancel"
+                  onConfirm={() => { store.archiveProject(p.id); setModal(null); }}
+                  onCancel={() => setModal(null)}
+                />,
+              );
+            }} />
           </Box>
         </PanelSection>
         <PanelSection title="Towers">
