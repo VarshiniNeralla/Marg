@@ -3,6 +3,7 @@ import {
   constructionProgressService,
   type BackgroundAnalysisJob,
 } from '@/services/constructionProgressService';
+import { projectRunToJob } from '@/utils/projectRunJob';
 import { useAuthStore } from './authStore';
 
 /**
@@ -55,9 +56,17 @@ export const useBackgroundAnalysisStore = create<BackgroundAnalysisState>((set, 
     const userId = useAuthStore.getState().user?.id ?? '';
     if (!userId) return get().jobs;
     try {
-      const jobs = await constructionProgressService.listBackgroundAnalyses();
+      // Floor runs and whole-project runs share one list. If the project list fails, keep the floor runs.
+      const [floorJobs, projectRuns] = await Promise.all([
+        constructionProgressService.listBackgroundAnalyses(),
+        Promise.resolve().then(() => constructionProgressService.listBackgroundProjectAnalyses()).catch(() => []),
+      ]);
+      const jobs = [
+        ...(Array.isArray(projectRuns) ? projectRuns.map(projectRunToJob) : []),
+        ...(Array.isArray(floorJobs) ? floorJobs : []),
+      ];
       set(s => ({
-        jobs: Array.isArray(jobs) ? jobs : [],
+        jobs,
         // Load this user's dismissals the first time (or after a user switch).
         ...(s.dismissedFor !== userId ? { dismissed: readDismissed(userId), dismissedFor: userId } : {}),
       }));

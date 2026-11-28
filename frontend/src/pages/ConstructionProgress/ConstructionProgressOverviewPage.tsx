@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Box, Typography, CircularProgress, Select, MenuItem, IconButton, Modal, Button } from '@mui/material';
+import { Box, Typography, CircularProgress, Select, MenuItem, IconButton, Modal, Button, Pagination } from '@mui/material';
 import { InsightsRounded, ChevronRightRounded, HourglassEmptyRounded, FolderOpenRounded, BusinessRounded, LayersRounded, DeleteOutlineRounded } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import { colors, motion } from '@theme/tokens';
 import { formatDate } from '@/utils/dateFormat';
+import { pageSlice } from '@/utils/evidenceImages';
 import { toast } from 'react-toastify';
 import { useAuthStore, isAdmin } from '@store/authStore';
 import { useWorkflowStore } from '@store/workflowStore';
@@ -12,6 +13,8 @@ import {
   constructionProgressService,
   type FloorSummary,
 } from '@/services/constructionProgressService';
+
+const REPORTS_PAGE_SIZE = 6;
 
 const P = {
   border: '#e4e7ec',
@@ -225,6 +228,7 @@ export default function ConstructionProgressOverviewPage() {
   const [selectedFloor, setSelectedFloor] = useState('');
   const [pendingDelete, setPendingDelete] = useState<FloorSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [reportsPageNo, setReportsPageNo] = useState(1);
 
   const allProjects = useWorkflowStore(s => s.projects);
   const allTowers = useWorkflowStore(s => s.towers);
@@ -271,6 +275,7 @@ export default function ConstructionProgressOverviewPage() {
     () => floors.filter(f => f.analyzed).sort((a, b) => (b.lastInspection ?? '').localeCompare(a.lastInspection ?? '')),
     [floors],
   );
+  const reportsPage = useMemo(() => pageSlice(previousReports, reportsPageNo, REPORTS_PAGE_SIZE), [previousReports, reportsPageNo]);
 
   const handleConfirmDelete = async () => {
     if (!pendingDelete) return;
@@ -374,9 +379,20 @@ export default function ConstructionProgressOverviewPage() {
                     Previous Reports
                   </Typography>
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                    {previousReports.map(f => (
+                    {reportsPage.rows.map(f => (
                       <FloorCard key={f.floorId} floor={f} onDelete={canDeleteReports ? setPendingDelete : undefined} />
                     ))}
+                  </Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mt: 2 }}>
+                    <Typography data-testid="reports-range" sx={{ fontSize: '0.8125rem', color: P.muted }}>
+                      Showing {(reportsPage.page - 1) * REPORTS_PAGE_SIZE + 1}-{(reportsPage.page - 1) * REPORTS_PAGE_SIZE + reportsPage.rows.length} of {previousReports.length} reports
+                    </Typography>
+                    {reportsPage.pages > 1 && (
+                      <Pagination
+                        count={reportsPage.pages} page={reportsPage.page} onChange={(_e, p) => setReportsPageNo(p)}
+                        color="primary" shape="rounded" size="small" siblingCount={1} boundaryCount={1}
+                      />
+                    )}
                   </Box>
                 </Box>
               )}

@@ -5,7 +5,7 @@ import type {
   ProjectActivityRow, ProjectFloorRow, ProjectOverviewTotals, ProjectTowerRow,
 } from '@/services/constructionProgressService';
 import { activityDisplayName } from '@/utils/activityNames';
-import type { TowerProgress } from '@/utils/projectAnalysis';
+import { formatProgressPct, type TowerProgress } from '@/utils/projectAnalysis';
 
 // Plain CSS and SVG charts. The repo has no chart library, so none is added.
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', track: '#eef1f5' };
@@ -68,23 +68,39 @@ export function TowerChart({ towers }: { towers: ProjectTowerRow[] }) {
   return <>{towers.map(t => <BarRow key={t.towerId} label={t.towerName} pct={t.progressPct} sub={`(${t.floors} floors)`} />)}</>;
 }
 
-/** One bar per tower: the average progress of its analysed floors, with how many floors that is. */
+/**
+ * One row per tower: name, a bar over the whole tower, the percentage, and how many of its floors have a result.
+ * Every row uses the same columns, so names, bars and numbers line up down the card.
+ */
 export function TowerProgressChart({ towers }: { towers: TowerProgress[] }) {
   if (!towers.length) return <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>No towers yet.</Typography>;
   return (
-    <>
-      {towers.map(t => t.progressPct == null ? (
-        <Box key={t.towerId} sx={{ display: 'flex', justifyContent: 'space-between', gap: 1, mb: 1 }}>
-          <Typography sx={{ fontSize: '0.8125rem', color: P.strong }}>{t.towerName}</Typography>
-          <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>No floors analysed yet</Typography>
+    <Box data-testid="tower-progress-chart" role="list" aria-label="Progress of each tower">
+      {towers.map(t => (
+        <Box
+          key={t.towerId} role="listitem"
+          sx={{
+            display: 'grid', alignItems: 'center', columnGap: 2, rowGap: 0.25, py: 1,
+            gridTemplateColumns: { xs: '44px minmax(0, 1fr) 52px', sm: '56px minmax(0, 1fr) 56px 190px' },
+            borderTop: `1px solid ${P.track}`, '&:first-of-type': { borderTop: 'none' },
+          }}
+        >
+          <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong }} noWrap title={t.towerName}>{t.towerName}</Typography>
+          <Bar pct={t.progressPct} color={PROGRESS_BAR} label={`${t.towerName} progress`} />
+          <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: P.strong, textAlign: 'right' }}>
+            {formatProgressPct(t.progressPct)}
+          </Typography>
+          <Typography
+            sx={{
+              fontSize: '0.75rem', color: P.muted, textAlign: { xs: 'left', sm: 'right' },
+              gridColumn: { xs: '2 / -1', sm: 'auto' },
+            }}
+          >
+            {`${t.floorsAnalysed} of ${t.floors} floors analysed`}
+          </Typography>
         </Box>
-      ) : (
-        <BarRow
-          key={t.towerId} label={t.towerName} pct={t.progressPct}
-          sub={`(${t.floorsAnalysed} of ${t.floors} floors)`}
-        />
       ))}
-    </>
+    </Box>
   );
 }
 
@@ -135,9 +151,14 @@ export function ProgressCoverageChart({ floors }: { floors: ProjectFloorRow[] })
     && typeof f.progressPct === 'number' && typeof f.coveragePct === 'number');
   if (!rows.length) return <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>No analysed floors yet.</Typography>;
 
-  const GROUP = 64, BAR = 20, L = 34, T = 18, B = 40, H = 240;
+  // Few floors: spread the bars across the whole card (the drawing scales to its width). Many floors: keep each
+  // group readable and let the chart scroll sideways.
+  const L = 36, T = 20, B = 44, H = 230;
+  const GROUP = Math.max(60, Math.min(112, Math.floor((780 - L) / rows.length)));
+  const BAR = Math.max(16, Math.min(30, Math.floor(GROUP * 0.3)));
   const plotH = H - T - B;
   const W = L + rows.length * GROUP + 8;
+  const scrolls = rows.length > 12;
   const y = (v: number) => T + plotH - (clamp(v) / 100) * plotH;
   const showTower = new Set(rows.map(r => r.towerName)).size > 1;
 
@@ -152,8 +173,9 @@ export function ProgressCoverageChart({ floors }: { floors: ProjectFloorRow[] })
         ))}
       </Box>
       <Box sx={{ overflowX: 'auto' }}>
-        <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} role="img"
-          aria-label="Progress and coverage for each analysed floor" style={{ display: 'block', minWidth: '100%' }}>
+        <svg viewBox={`0 0 ${W} ${H}`} role="img"
+          aria-label="Progress and coverage for each analysed floor"
+          style={{ display: 'block', width: '100%', minWidth: scrolls ? W : undefined, height: 'auto' }}>
           {[0, 25, 50, 75, 100].map(g => (
             <g key={g}>
               <line x1={L} x2={W - 4} y1={y(g)} y2={y(g)} stroke={P.border} />

@@ -302,6 +302,22 @@ async def analyze_project(
 
 
 @router.get(
+    "/analyze/background/projects",
+    summary="Whole-project analyses that are running or recently finished (for the app-wide indicator)",
+)
+async def list_background_project_analyses(ctx: CallerContext, db: DB, _manager_or_admin: ManagerOrAdminUser):
+    """Same boundary as the floor list: admins see the whole organisation, scoped managers only their projects."""
+    from app.services.construction_progress_project_job_service import ConstructionProgressProjectJobService
+
+    jobs = await ConstructionProgressProjectJobService(db).list_background_jobs(org_id=ctx.org_id)
+    accessible = await RBACService(db).get_accessible_project_ids(ctx.user_id, ctx.org_id, ctx.role)
+    if accessible is not None:
+        allowed = set(accessible)
+        jobs = [j for j in jobs if j.get("projectId") in allowed]
+    return success_response(data=jobs)
+
+
+@router.get(
     "/projects/{project_id}/analyze/status",
     summary="Status of the running (else latest) whole-project analysis",
 )

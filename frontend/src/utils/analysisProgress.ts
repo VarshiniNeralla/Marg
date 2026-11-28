@@ -14,6 +14,8 @@ export interface TimedJob {
   status: AnalysisJobStatus;
   startedAt?: string | null;
   createdAt?: string | null;
+  /** A real percentage when the server reports one (whole-project runs); otherwise progress is estimated. */
+  progressPct?: number | null;
 }
 
 /** Soft stage labels: elapsed time picks which hint to show. */
@@ -49,6 +51,7 @@ export function jobElapsedSec(job: Pick<TimedJob, 'startedAt' | 'createdAt'>, no
 /** Estimated progress for any job: 100 when completed, the soft estimate while running. */
 export function jobProgressPct(job: TimedJob, nowMs: number): number {
   if (job.status === 'completed') return 100;
+  if (typeof job.progressPct === 'number') return Math.max(0, Math.min(99, Math.round(job.progressPct)));
   return softProgressPct(jobElapsedSec(job, nowMs));
 }
 
