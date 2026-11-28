@@ -5,34 +5,66 @@ import type {
 export interface ProjectHeadline {
   towersTotal: number;
   towersCompleted: number;
-  flatsTotal: number;
-  flatsCompleted: number;
-  /** Flats completed as a share of all flats counted, 0-100. */
-  flatsCompletedPct: number;
-  /** Average progress of the flats counted (each floor's progress weighted by its number of flats), 0-100. */
-  avgFlatProgressPct: number | null;
-  floorsCounted: number;
+  floorsTotal: number;
+  floorsCompleted: number;
+  floorsInProgress: number;
+  /** Floors with a result (completed, in progress or not started). */
+  floorsAnalysed: number;
+  /** Average progress of the analysed floors, 0-100, or null when none has been analysed. */
+  analysedAvgPct: number | null;
+  /** Average progress of the floors that are in progress, or null when there are none. */
+  inProgressAvgPct: number | null;
 }
 
+const isAnalysed = (f: ProjectFloorRow) =>
+  f.status !== 'no_photos' && f.status !== 'not_analysed' && typeof f.progressPct === 'number';
+const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+
 /**
- * Project headline from towers and flats. Flats are only known for floors that have been analysed (a flat is
- * defined by the floor's analysis), so the flat totals cover those floors. A tower is complete when every one
- * of its floors is complete.
+ * Project headline in towers and floors. The average counts only floors that have a result, so floors nobody has
+ * photographed yet do not drag a running project down to 0%. A tower is complete when every one of its floors is.
  */
 export function projectHeadline(floors: ProjectFloorRow[], towers: ProjectTowerRow[]): ProjectHeadline {
-  const counted = floors.filter(f => (f.flatsTotal ?? 0) > 0);
-  const flatsTotal = counted.reduce((s, f) => s + (f.flatsTotal ?? 0), 0);
-  const flatsCompleted = counted.reduce((s, f) => s + Math.min(f.flatsCompleted ?? 0, f.flatsTotal ?? 0), 0);
-  const weighted = counted.reduce((s, f) => s + (f.progressPct ?? 0) * (f.flatsTotal ?? 0), 0);
+  const analysed = floors.filter(isAnalysed);
+  const inProgress = floors.filter(f => f.status === 'in_progress' && typeof f.progressPct === 'number');
   return {
     towersTotal: towers.length,
     towersCompleted: towers.filter(t => t.floors > 0 && t.completed >= t.floors).length,
-    flatsTotal,
-    flatsCompleted,
-    flatsCompletedPct: flatsTotal ? (flatsCompleted / flatsTotal) * 100 : 0,
-    avgFlatProgressPct: flatsTotal ? weighted / flatsTotal : null,
-    floorsCounted: counted.length,
+    floorsTotal: floors.length,
+    floorsCompleted: floors.filter(f => f.status === 'completed').length,
+    floorsInProgress: floors.filter(f => f.status === 'in_progress').length,
+    floorsAnalysed: analysed.length,
+    analysedAvgPct: mean(analysed.map(f => f.progressPct as number)),
+    inProgressAvgPct: mean(inProgress.map(f => f.progressPct as number)),
   };
+}
+
+export interface TowerProgress {
+  towerId: string;
+  towerName: string;
+  floors: number;
+  floorsAnalysed: number;
+  floorsCompleted: number;
+  floorsInProgress: number;
+  /** Average progress of this tower's analysed floors, or null when none has been analysed. */
+  progressPct: number | null;
+}
+
+/** Progress of each tower, from its analysed floors, in the order the towers were given. */
+export function towerProgress(floors: ProjectFloorRow[], towers: ProjectTowerRow[]): TowerProgress[] {
+  return towers.map(t => {
+    const mine = floors.filter(f => f.towerId === t.towerId);
+    const analysed = mine.filter(isAnalysed);
+    return {
+      towerId: t.towerId,
+      towerName: t.towerName,
+      floors: mine.length || t.floors,
+      floorsAnalysed: analysed.length,
+      floorsCompleted: mine.filter(f => f.status === 'completed').length,
+      floorsInProgress: mine.filter(f => f.status === 'in_progress').length,
+      progressPct: mean(analysed.map(f => f.progressPct as number)),
+    };
+  });
 }
 
 /** Project ids that have at least one capture, so empty projects can be left out of pickers. */

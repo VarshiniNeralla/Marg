@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ProjectFloorRow } from '@/services/constructionProgressService';
 import {
-  buildFloorCsv, filterCounts, floorStatusLabel, isRunActive, matchesFilter, projectHeadline, projectIdsWithCaptures, runLabel, runPct, sortFloors,
+  buildFloorCsv, filterCounts, floorStatusLabel, isRunActive, matchesFilter, projectHeadline, projectIdsWithCaptures, runLabel, runPct, sortFloors, towerProgress,
 } from './projectAnalysis';
 
 const row = (over: Partial<ProjectFloorRow>): ProjectFloorRow => ({
@@ -104,24 +104,46 @@ describe('projectHeadline', () => {
     { towerId: 'b', towerName: 'T2', floors: 3, progressPct: 0, completed: 1, inProgress: 1, notStarted: 0, noPhotos: 1 },
   ];
   const floors = [
-    row({ floorId: '1', flatsTotal: 4, flatsCompleted: 4, progressPct: 100 }),
-    row({ floorId: '2', flatsTotal: 6, flatsCompleted: 0, progressPct: 20 }),
-    row({ floorId: '3', status: 'no_photos', progressPct: 0, flatsTotal: 0, flatsCompleted: 0 }),
+    row({ floorId: '1', towerId: 'a', status: 'completed', progressPct: 100 }),
+    row({ floorId: '2', towerId: 'b', status: 'in_progress', progressPct: 20 }),
+    row({ floorId: '3', towerId: 'b', status: 'in_progress', progressPct: 30 }),
+    row({ floorId: '4', towerId: 'b', status: 'no_photos', progressPct: 0 }),
+    row({ floorId: '5', towerId: 'b', status: 'not_analysed', progressPct: 0 }),
   ];
-  it('counts flats completed against all flats, and towers that are fully complete', () => {
+  it('counts floors by state and towers that are fully complete', () => {
+    expect(projectHeadline(floors, towers)).toMatchObject({
+      towersTotal: 2, towersCompleted: 1, floorsTotal: 5, floorsCompleted: 1, floorsInProgress: 2, floorsAnalysed: 3,
+    });
+  });
+  it('averages only the floors that have a result, so unphotographed floors do not drag it to zero', () => {
     const h = projectHeadline(floors, towers);
-    expect(h).toMatchObject({ towersTotal: 2, towersCompleted: 1, flatsTotal: 10, flatsCompleted: 4, floorsCounted: 2 });
-    expect(h.flatsCompletedPct).toBe(40);
+    expect(h.analysedAvgPct).toBe(50); // (100 + 20 + 30) / 3
+    expect(h.inProgressAvgPct).toBe(25); // (20 + 30) / 2
   });
-  it('weights each floor progress by its number of flats', () => {
-    // (100*4 + 20*6) / 10 = 52
-    expect(projectHeadline(floors, towers).avgFlatProgressPct).toBe(52);
+  it('has no average, not a fake 0, when nothing has been analysed', () => {
+    const h = projectHeadline([row({ status: 'no_photos', progressPct: 0 })], towers);
+    expect(h.analysedAvgPct).toBeNull();
+    expect(h.inProgressAvgPct).toBeNull();
   });
-  it('is zero, not an error, when nothing has been analysed', () => {
-    const h = projectHeadline([row({ status: 'no_photos', progressPct: 0, flatsTotal: 0 })], towers);
-    expect(h.flatsTotal).toBe(0);
-    expect(h.flatsCompletedPct).toBe(0);
-    expect(h.avgFlatProgressPct).toBeNull();
+});
+
+describe('towerProgress', () => {
+  const towers = [
+    { towerId: 'a', towerName: 'T1', floors: 3, progressPct: 0, completed: 0, inProgress: 0, notStarted: 0, noPhotos: 0 },
+    { towerId: 'b', towerName: 'T2', floors: 2, progressPct: 0, completed: 0, inProgress: 0, notStarted: 0, noPhotos: 0 },
+  ];
+  const floors = [
+    row({ floorId: '1', towerId: 'a', status: 'in_progress', progressPct: 20 }),
+    row({ floorId: '2', towerId: 'a', status: 'in_progress', progressPct: 40 }),
+    row({ floorId: '3', towerId: 'a', status: 'no_photos', progressPct: 0 }),
+    row({ floorId: '4', towerId: 'b', status: 'no_photos', progressPct: 0 }),
+    row({ floorId: '5', towerId: 'b', status: 'no_photos', progressPct: 0 }),
+  ];
+  it('averages each tower over its analysed floors', () => {
+    const [t1, t2] = towerProgress(floors, towers);
+    expect(t1).toMatchObject({ floors: 3, floorsAnalysed: 2, floorsInProgress: 2, progressPct: 30 });
+    expect(t2.progressPct).toBeNull();
+    expect(t2.floorsAnalysed).toBe(0);
   });
 });
 
