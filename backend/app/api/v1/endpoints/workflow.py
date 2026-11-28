@@ -903,8 +903,15 @@ async def _release_capture_assets(
 
     Callers must delete the capture document(s) BEFORE calling this, so the
     reference check below doesn't count the row being removed.
+
+    RECYCLE BIN: a deleted capture now sits in the recycle bin for RECYCLE_BIN_DAYS and can be restored, so its image
+    files must stay until then. Every caller archives the capture first; the files are destroyed when the bin entry is
+    purged (app/services/recycle_bin.py, which runs the same reference checks). Only when the bin is switched off is the
+    file removed here, as before.
     """
     if not assets:
+        return
+    if recycle_bin.RETENTION_DAYS > 0:
         return
 
     keep: set[str] = set()
@@ -1355,13 +1362,37 @@ async def get_project(project_id: str, ctx: CallerContext, db: DB):
 
 @router.put("/projects/{project_id}", summary="Update project")
 async def update_project(project_id: str, payload: dict[str, Any], ctx: CallerContext, db: DB, _=Depends(require_permission("projects", "edit"))):
+    # Archiving a project IS deleting it (the app hides archived projects everywhere). Stamp who and when, so it
+    # shows in the recycle bin for RETENTION_DAYS; un-archiving clears the stamp. Always decided here, never by the client.
+    if "archived" in payload:
+        payload = {k: v for k, v in payload.items() if k not in ("deletedAt", "deletedBy", "deletedByName")}
+        if payload["archived"] is True:
+            existing = await db["projects"].find_one({"_id": _id_filter(project_id), "orgId": ctx.org_id}, {"deletedAt": 1})
+            if existing is not None and not existing.get("deletedAt"):
+                payload["deletedAt"] = datetime.now(timezone.utc)
+                payload["deletedBy"] = str(ctx.user_id)
+                payload["deletedByName"] = await _resolve_user_display_name(db, ctx.user_id)
+            elif existing is not None:
+                pass  # already in the bin: keep the original deletion time
+        else:
+            payload.update({"deletedAt": None, "deletedBy": None, "deletedByName": None})
     return success_response(data=await _patch(db, "projects", project_id, payload, ctx), message="Project updated")
 
 
 @router.delete("/projects/{project_id}", summary="Delete project")
 async def delete_project(project_id: str, ctx: CallerContext, db: DB, _=Depends(require_permission("projects", "delete"))):
-    await _delete(db, "projects", project_id, ctx)
-    return success_response(message="Project deleted")
+    """Moves the project to the recycle bin (archived, restorable for RETENTION_DAYS) instead of erasing it."""
+    existing = await db["projects"].find_one({"_id": _id_filter(project_id), "orgId": ctx.org_id}, {"deletedAt": 1})
+    if existing is None:
+        raise NotFoundException("project", project_id)
+    update: dict[str, Any] = {"archived": True, "status": "draft", "updatedAt": _now()}
+    if not existing.get("deletedAt"):
+        update.update({
+            "deletedAt": datetime.now(timezone.utc), "deletedBy": str(ctx.user_id),
+            "deletedByName": await _resolve_user_display_name(db, ctx.user_id),
+        })
+    await db["projects"].update_one({"_id": {"$in": [project_id, ObjectId(project_id)]} if ObjectId.is_valid(project_id) else project_id, "orgId": ctx.org_id}, {"$set": update})
+    return success_response(message="Project moved to the recycle bin")
 
 
 @router.get("/projects/{project_id}/towers", summary="List project towers")
@@ -1986,9 +2017,13 @@ async def delete_floor_plan(floor_plan_id: str, ctx: CallerContext, db: DB, _=De
     plan = await db["floor_plans"].find_one({"_id": _id_filter(floor_plan_id), "orgId": ctx.org_id})
     if not plan:
         return success_response(message="Floor plan already deleted")
+    # Recycle bin: keep a full copy BEFORE deleting. The plan image stays until the bin entry is purged, so the plan
+    # can be restored with its picture. If the copy cannot be stored, the delete does not happen.
+    await recycle_bin.archive(
+        db, kind=recycle_bin.KIND_FLOOR_PLAN, doc=plan, org_id=ctx.org_id, actor_id=ctx.user_id,
+        actor_name=await _resolve_user_display_name(db, ctx.user_id),
+    )
     await _delete(db, "floor_plans", floor_plan_id, ctx)
-    assets = plan.get("mediaAssets") or plan.get("media_assets") or []
-    await delete_media_assets(assets, org_id=ctx.org_id)
     return success_response(message="Floor plan deleted")
 
 
@@ -2378,6 +2413,11 @@ async def delete_capture_pin(pin_id: str, ctx: CallerContext, db: DB, _=Depends(
             except Exception:
                 logger.exception("Failed to purge progress snapshots for room-cascade capture {}", cap["_id"])
         await db["rooms"].delete_one({"_id": _id_filter(str(room_id)), "orgId": ctx.org_id})
+    # Recycle bin: keep the capture point itself, so restoring its floor plan brings the point back too.
+    await recycle_bin.archive(
+        db, kind=recycle_bin.KIND_PIN, doc=pin, org_id=ctx.org_id, actor_id=ctx.user_id,
+        actor_name=await _resolve_user_display_name(db, ctx.user_id),
+    )
     await _delete(db, "capture_pins", pin_id, ctx)
     await _resequence_pins_on_plan(db, ctx, floor_plan_id)
     return success_response(message="Capture pin deleted")

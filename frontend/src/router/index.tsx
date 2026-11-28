@@ -74,6 +74,7 @@ const ConstructionProgressOverviewPage = lazy(() => import('@/pages/Construction
 const ConstructionProgressDashboardPage = lazy(() => import('@/pages/ConstructionProgress/ConstructionProgressDashboardPage'));
 const FlatFinishingWorksPage = lazy(() => import('@/pages/ConstructionProgress/FlatFinishingWorksPage'));
 const ProjectAnalysisPage = lazy(() => import('@/pages/ConstructionProgress/ProjectAnalysisPage'));
+const RecycleBinPage = lazy(() => import('@/pages/RecycleBin/RecycleBinPage'));
 const EvidenceImagesPage = lazy(() => import('@/pages/ConstructionProgress/EvidenceImagesPage'));
 const DrishtiProjectSelectionPage = lazy(() => import('@/pages/Drishti/DrishtiProjectSelectionPage'));
 const DrishtiChatPage = lazy(() => import('@/pages/Drishti/DrishtiChatPage'));
@@ -147,6 +148,8 @@ const router = createBrowserRouter([
 
       // ── Shared authenticated routes ───────────────────────────────────────
       { path: '/profile', element: <PageSuspense><UserProfilePage /></PageSuspense> },
+      // Recycle Bin: admins, managers and field engineers each see (and can restore) what they are allowed to.
+      { path: '/recycle-bin', element: <PageSuspense><RecycleBinPage /></PageSuspense> },
 
       // ── Routes accessible by all authenticated roles ─────────────────────
       // Capture detail is viewable by all roles — engineers open their own captures from pins/history.
