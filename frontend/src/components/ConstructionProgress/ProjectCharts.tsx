@@ -102,6 +102,65 @@ export function StatusSplit({ totals }: { totals: ProjectOverviewTotals }) {
   );
 }
 
+const PROGRESS_BAR = colors.primary;
+const COVERAGE_BAR = '#94a3b8';
+
+/**
+ * For every analysed floor, two side-by-side bars: how much of the work is done (Progress) and how much of the
+ * floor has been photographed (Coverage). Value labels sit on the bars, so nothing has to be read off a grid.
+ */
+export function ProgressCoverageChart({ floors }: { floors: ProjectFloorRow[] }) {
+  const rows = floors.filter(f => f.status !== 'no_photos' && f.status !== 'not_analysed'
+    && typeof f.progressPct === 'number' && typeof f.coveragePct === 'number');
+  if (!rows.length) return <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>No analysed floors yet.</Typography>;
+
+  const GROUP = 64, BAR = 20, L = 34, T = 18, B = 40, H = 240;
+  const plotH = H - T - B;
+  const W = L + rows.length * GROUP + 8;
+  const y = (v: number) => T + plotH - (clamp(v) / 100) * plotH;
+  const showTower = new Set(rows.map(r => r.towerName)).size > 1;
+
+  return (
+    <Box data-testid="progress-coverage-chart">
+      <Box sx={{ display: 'flex', gap: 2.5, mb: 1, flexWrap: 'wrap' }}>
+        {[['Progress (work done)', PROGRESS_BAR], ['Coverage (rooms photographed)', COVERAGE_BAR]].map(([label, c]) => (
+          <Box key={label} sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+            <Box sx={{ width: 12, height: 12, borderRadius: '3px', backgroundColor: c }} />
+            <Typography sx={{ fontSize: '0.8125rem', color: P.strong }}>{label}</Typography>
+          </Box>
+        ))}
+      </Box>
+      <Box sx={{ overflowX: 'auto' }}>
+        <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} role="img"
+          aria-label="Progress and coverage for each analysed floor" style={{ display: 'block', minWidth: '100%' }}>
+          {[0, 25, 50, 75, 100].map(g => (
+            <g key={g}>
+              <line x1={L} x2={W - 4} y1={y(g)} y2={y(g)} stroke={P.border} />
+              <text x={L - 6} y={y(g) + 3} fontSize="10" textAnchor="end" fill={P.muted}>{g}%</text>
+            </g>
+          ))}
+          {rows.map((f, i) => {
+            const gx = L + i * GROUP + (GROUP - 2 * BAR - 4) / 2;
+            const prog = f.progressPct as number;
+            const cov = f.coveragePct as number;
+            return (
+              <g key={f.floorId}>
+                <title>{`${f.towerName} ${f.floorName}: progress ${Math.round(prog)}%, coverage ${Math.round(cov)}%`}</title>
+                <rect x={gx} y={y(prog)} width={BAR} height={Math.max(0, T + plotH - y(prog))} rx={3} fill={PROGRESS_BAR} />
+                <rect x={gx + BAR + 4} y={y(cov)} width={BAR} height={Math.max(0, T + plotH - y(cov))} rx={3} fill={COVERAGE_BAR} />
+                <text x={gx + BAR / 2} y={y(prog) - 4} fontSize="10" fontWeight="700" textAnchor="middle" fill={P.strong}>{Math.round(prog)}</text>
+                <text x={gx + BAR + 4 + BAR / 2} y={y(cov) - 4} fontSize="10" textAnchor="middle" fill={P.muted}>{Math.round(cov)}</text>
+                <text x={gx + BAR + 2} y={T + plotH + 14} fontSize="11" fontWeight="600" textAnchor="middle" fill={P.strong}>{f.floorName}</text>
+                {showTower && <text x={gx + BAR + 2} y={T + plotH + 28} fontSize="10" textAnchor="middle" fill={P.muted}>{f.towerName}</text>}
+              </g>
+            );
+          })}
+        </svg>
+      </Box>
+    </Box>
+  );
+}
+
 /** Each floor is a dot: how much was photographed (across) against how much is done (up). */
 export function CoverageScatter({ floors }: { floors: ProjectFloorRow[] }) {
   const pts = floors.filter(f => f.status !== 'no_photos' && f.status !== 'not_analysed' && typeof f.coveragePct === 'number' && typeof f.progressPct === 'number');

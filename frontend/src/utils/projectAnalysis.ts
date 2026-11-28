@@ -1,6 +1,46 @@
 import type {
-  ProjectFloorRow, ProjectFloorStatus, ProjectRunState, ProjectRunStatus,
+  ProjectFloorRow, ProjectFloorStatus, ProjectRunState, ProjectRunStatus, ProjectTowerRow,
 } from '@/services/constructionProgressService';
+
+export interface ProjectHeadline {
+  towersTotal: number;
+  towersCompleted: number;
+  flatsTotal: number;
+  flatsCompleted: number;
+  /** Flats completed as a share of all flats counted, 0-100. */
+  flatsCompletedPct: number;
+  /** Average progress of the flats counted (each floor's progress weighted by its number of flats), 0-100. */
+  avgFlatProgressPct: number | null;
+  floorsCounted: number;
+}
+
+/**
+ * Project headline from towers and flats. Flats are only known for floors that have been analysed (a flat is
+ * defined by the floor's analysis), so the flat totals cover those floors. A tower is complete when every one
+ * of its floors is complete.
+ */
+export function projectHeadline(floors: ProjectFloorRow[], towers: ProjectTowerRow[]): ProjectHeadline {
+  const counted = floors.filter(f => (f.flatsTotal ?? 0) > 0);
+  const flatsTotal = counted.reduce((s, f) => s + (f.flatsTotal ?? 0), 0);
+  const flatsCompleted = counted.reduce((s, f) => s + Math.min(f.flatsCompleted ?? 0, f.flatsTotal ?? 0), 0);
+  const weighted = counted.reduce((s, f) => s + (f.progressPct ?? 0) * (f.flatsTotal ?? 0), 0);
+  return {
+    towersTotal: towers.length,
+    towersCompleted: towers.filter(t => t.floors > 0 && t.completed >= t.floors).length,
+    flatsTotal,
+    flatsCompleted,
+    flatsCompletedPct: flatsTotal ? (flatsCompleted / flatsTotal) * 100 : 0,
+    avgFlatProgressPct: flatsTotal ? weighted / flatsTotal : null,
+    floorsCounted: counted.length,
+  };
+}
+
+/** Project ids that have at least one capture, so empty projects can be left out of pickers. */
+export function projectIdsWithCaptures(captures: { projectId?: string }[]): Set<string> {
+  const out = new Set<string>();
+  for (const c of captures) if (c.projectId) out.add(c.projectId);
+  return out;
+}
 
 export const FLOOR_STATUS_LABEL: Record<ProjectFloorStatus, string> = {
   completed: 'Completed',

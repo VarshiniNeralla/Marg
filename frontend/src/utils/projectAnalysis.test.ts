@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ProjectFloorRow } from '@/services/constructionProgressService';
 import {
-  buildFloorCsv, filterCounts, floorStatusLabel, isRunActive, matchesFilter, runLabel, runPct, sortFloors,
+  buildFloorCsv, filterCounts, floorStatusLabel, isRunActive, matchesFilter, projectHeadline, projectIdsWithCaptures, runLabel, runPct, sortFloors,
 } from './projectAnalysis';
 
 const row = (over: Partial<ProjectFloorRow>): ProjectFloorRow => ({
@@ -95,5 +95,38 @@ describe('run helpers', () => {
       .toBe('Tower A: All 2 floors analysed');
     // A whole-project run has no tower and reads as before.
     expect(runLabel({ state: 'completed', floorsTotal: 3, floorsDone: 3, floorsFailed: 0, towerName: '' })).toBe('All 3 floors analysed');
+  });
+});
+
+describe('projectHeadline', () => {
+  const towers = [
+    { towerId: 'a', towerName: 'T1', floors: 2, progressPct: 0, completed: 2, inProgress: 0, notStarted: 0, noPhotos: 0 },
+    { towerId: 'b', towerName: 'T2', floors: 3, progressPct: 0, completed: 1, inProgress: 1, notStarted: 0, noPhotos: 1 },
+  ];
+  const floors = [
+    row({ floorId: '1', flatsTotal: 4, flatsCompleted: 4, progressPct: 100 }),
+    row({ floorId: '2', flatsTotal: 6, flatsCompleted: 0, progressPct: 20 }),
+    row({ floorId: '3', status: 'no_photos', progressPct: 0, flatsTotal: 0, flatsCompleted: 0 }),
+  ];
+  it('counts flats completed against all flats, and towers that are fully complete', () => {
+    const h = projectHeadline(floors, towers);
+    expect(h).toMatchObject({ towersTotal: 2, towersCompleted: 1, flatsTotal: 10, flatsCompleted: 4, floorsCounted: 2 });
+    expect(h.flatsCompletedPct).toBe(40);
+  });
+  it('weights each floor progress by its number of flats', () => {
+    // (100*4 + 20*6) / 10 = 52
+    expect(projectHeadline(floors, towers).avgFlatProgressPct).toBe(52);
+  });
+  it('is zero, not an error, when nothing has been analysed', () => {
+    const h = projectHeadline([row({ status: 'no_photos', progressPct: 0, flatsTotal: 0 })], towers);
+    expect(h.flatsTotal).toBe(0);
+    expect(h.flatsCompletedPct).toBe(0);
+    expect(h.avgFlatProgressPct).toBeNull();
+  });
+});
+
+describe('projectIdsWithCaptures', () => {
+  it('lists each project that has a capture once', () => {
+    expect([...projectIdsWithCaptures([{ projectId: 'a' }, { projectId: 'a' }, { projectId: 'b' }, {}])].sort()).toEqual(['a', 'b']);
   });
 });
