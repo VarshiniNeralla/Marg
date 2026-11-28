@@ -347,6 +347,15 @@ export interface AnalyzeJob {
 /** A background analysis as listed for the app-wide status indicator. */
 export interface BackgroundAnalysisJob extends AnalyzeJob {
   startedByName?: string | null;
+  /** Set for a whole-project (or whole-tower) run; floor runs leave it unset. */
+  kind?: 'project';
+  projectId?: string;
+  /** Real progress when the server knows it (project runs): floors finished of floors queued. */
+  progressPct?: number | null;
+  floorsDone?: number;
+  floorsQueued?: number;
+  /** The floor a project run is on right now. */
+  currentFloorName?: string | null;
 }
 
 // ── Activity scope (which core activities the AI assesses on a floor) ────────
@@ -395,6 +404,14 @@ export interface ProjectRunStatus {
   floorsFailed: number;
   current?: { floorId: string; floorName: string } | null;
   errors?: { floorId: string; message: string }[];
+}
+
+/** A project run as listed for the app-wide indicator. */
+export interface BackgroundProjectRun extends ProjectRunStatus {
+  jobId: string;
+  projectId: string;
+  projectName?: string;
+  createdAt?: string | null;
 }
 
 export interface ProjectAnalyzeStart {
@@ -510,6 +527,11 @@ export const constructionProgressService = {
   /** Background analyses that are running or finished recently (admins: whole org; managers: their projects). */
   listBackgroundAnalyses(): Promise<BackgroundAnalysisJob[]> {
     return unwrap(apiClient.get('/construction-progress/analyze/background'));
+  },
+
+  /** Whole-project runs that are running or finished recently (they always run on the server). */
+  listBackgroundProjectAnalyses(): Promise<BackgroundProjectRun[]> {
+    return unwrap(apiClient.get('/construction-progress/analyze/background/projects'));
   },
 
   /** Turn a running (foreground) analysis into a background one: notify me when it is done. */

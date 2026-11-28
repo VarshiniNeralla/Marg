@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
-import { ActivityChart, CoverageScatter, ProgressCoverageChart, StatusSplit, TowerChart } from './ProjectCharts';
+import { ActivityChart, CoverageScatter, ProgressCoverageChart, StatusSplit, TowerChart, TowerProgressChart } from './ProjectCharts';
 
 describe('ProjectCharts', () => {
   it('tower chart shows each tower with a rounded percent', () => {
@@ -43,6 +43,21 @@ describe('ProjectCharts', () => {
     expect(html).toContain('>30<');
     expect(html).not.toContain('Floor 9');
     expect(renderToString(<ProgressCoverageChart floors={[]} />)).toContain('No analysed floors yet');
+  });
+
+  it('tower progress chart gives every tower a row with its percent and how many floors are analysed', () => {
+    const html = renderToString(
+      <TowerProgressChart towers={[
+        { towerId: 'a', towerName: 'T1', floors: 51, floorsAnalysed: 7, floorsCompleted: 0, floorsInProgress: 7, progressPct: 3.04 },
+        { towerId: 'b', towerName: 'T2', floors: 51, floorsAnalysed: 0, floorsCompleted: 0, floorsInProgress: 0, progressPct: 0 },
+      ]} />,
+    );
+    expect(html).toContain('T1');
+    expect(html).toContain('3.0%');
+    expect(html).toContain('7 of 51 floors analysed');
+    expect(html).toContain('T2');
+    expect(html).toContain('0 of 51 floors analysed');
+    expect(renderToString(<TowerProgressChart towers={[]} />)).toContain('No towers yet');
   });
 
   it('empty states render a message, not a broken chart', () => {

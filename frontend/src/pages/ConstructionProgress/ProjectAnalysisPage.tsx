@@ -13,7 +13,7 @@ import { formatDate } from '@/utils/dateFormat';
 import { pageSlice } from '@/utils/evidenceImages';
 import { downloadCsv } from '@/utils/downloadCsv';
 import {
-  FILTER_CHIPS, buildFloorCsv, filterCounts, floorStatusLabel, isRunActive, matchesFilter, projectHeadline,
+  FILTER_CHIPS, buildFloorCsv, filterCounts, floorStatusLabel, formatProgressPct, isRunActive, matchesFilter, projectHeadline,
   projectIdsWithCaptures, runLabel, runPct, sortFloors, towerProgress, type SortDir, type SortKey, type StatusFilter,
 } from '@/utils/projectAnalysis';
 import { useAnalyzeProject, useProjectAnalyzeStatus, useProjectOverview } from '@/hooks/useProjectAnalysis';
@@ -150,7 +150,10 @@ export default function ProjectAnalysisPage() {
   const handleAnalyse = async () => {
     try {
       const res = await start.mutateAsync();
-      toast.success(`Started. ${res.floorsQueued} floors queued, ${res.floorsSkippedNoPhotos} skipped (no photos).`);
+      toast.success(
+        `Started in the background: ${res.floorsQueued} floors queued, ${res.floorsSkippedNoPhotos} skipped (no photos). `
+        + 'You can leave this page; you will be notified when it is done.',
+      );
     } catch (err) {
       toast.error(errorText(err, 'Could not start the analysis.'));
       void statusQ.refetch(); // a 409 means one is already running; pick it up
@@ -239,16 +242,15 @@ export default function ProjectAnalysisPage() {
                   Project progress
                 </Typography>
                 <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5, flexWrap: 'wrap' }}>
-                  <Typography data-testid="headline-pct" sx={{ fontSize: '2.5rem', fontWeight: 800, color: pctColor(headline.analysedAvgPct), lineHeight: 1.1 }}>
-                    {headline.analysedAvgPct === null ? '-' : `${Math.round(headline.analysedAvgPct)}%`}
+                  <Typography data-testid="headline-pct" sx={{ fontSize: '2.5rem', fontWeight: 800, color: P.strong, lineHeight: 1.1 }}>
+                    {formatProgressPct(headline.projectPct)}
                   </Typography>
-                  <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
-                    {headline.analysedAvgPct === null
-                      ? 'No floor has been analysed yet.'
-                      : `Average progress of the ${headline.floorsAnalysed} floor${headline.floorsAnalysed === 1 ? '' : 's'} analysed so far.`}
+                  <Typography data-testid="headline-basis" sx={{ fontSize: '0.8125rem', color: P.muted }}>
+                    Across all {headline.floorsTotal} floors in {headline.towersTotal} tower{headline.towersTotal === 1 ? '' : 's'}.
+                    {' '}{headline.floorsAnalysed} analysed so far; floors not analysed yet count as 0.
                   </Typography>
                 </Box>
-                <Box sx={{ mt: 1.5 }}><Bar pct={headline.analysedAvgPct ?? 0} label="Average progress of analysed floors" /></Box>
+                <Box sx={{ mt: 1.5 }}><Bar pct={headline.projectPct} color={colors.primary} label="Project progress" /></Box>
                 <Box data-testid="headline-counts" sx={{ display: 'flex', flexWrap: 'wrap', gap: { xs: 1, sm: 3 }, mt: 1.5 }}>
                   <Typography sx={{ fontSize: '0.875rem', color: P.strong }}>
                     <strong>In progress:</strong> {headline.floorsInProgress} floor{headline.floorsInProgress === 1 ? '' : 's'}
@@ -261,13 +263,6 @@ export default function ProjectAnalysisPage() {
                     <strong>Towers completed:</strong> {headline.towersCompleted} of {headline.towersTotal}
                   </Typography>
                 </Box>
-                {typeof totals.coveragePct === 'number' && (
-                  <Typography sx={{ fontSize: '0.8125rem', color: P.muted, mt: 1 }}>
-                    Coverage {Math.round(totals.coveragePct)}%
-                    {typeof totals.roomsPhotographed === 'number' && typeof totals.roomsTotal === 'number'
-                      ? ` (${totals.roomsPhotographed} of ${totals.roomsTotal} rooms photographed)` : ''}
-                  </Typography>
-                )}
               </Box>
 
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 1.5 }}>
@@ -309,7 +304,7 @@ export default function ProjectAnalysisPage() {
               )}
 
               <Typography component="h2" sx={{ fontSize: '1.0625rem', fontWeight: 800, color: P.strong, mt: 4, mb: 1.5 }}>Analytics</Typography>
-              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'repeat(2, minmax(0, 1fr))' }, gap: 2, mb: 4 }}>
+              <Box sx={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 2, mb: 4 }}>
                 <ChartCard title="Progress by tower" testId="chart-towers"><TowerProgressChart towers={towerRows} /></ChartCard>
                 <ChartCard title="Progress and coverage by floor" testId="chart-progress-coverage"><ProgressCoverageChart floors={data.floors} /></ChartCard>
               </Box>

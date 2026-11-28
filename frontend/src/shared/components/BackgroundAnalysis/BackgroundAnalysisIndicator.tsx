@@ -14,12 +14,22 @@ import {
   analysisStageLabel, formatElapsed, jobElapsedSec, jobProgressPct, splitBackgroundJobs,
 } from '@/utils/analysisProgress';
 import { formatNotificationTime } from '@/utils/notificationTime';
+import { projectRunPath } from '@/utils/projectRunJob';
 
 const NAV_OFFSET = 56;
 const FAILED = '#dc2626';
 
 function jobTitle(job: BackgroundAnalysisJob): string {
-  return job.floorLabel || 'Floor analysis';
+  return job.floorLabel || (job.kind === 'project' ? 'Project analysis' : 'Floor analysis');
+}
+
+/** "Floor 3 of 12 · Floor 5" for a project run (real counts), the time-based hint for a floor run. */
+function runDetail(job: BackgroundAnalysisJob, elapsedSec: number): string {
+  if (job.kind !== 'project') return analysisStageLabel(elapsedSec);
+  const queued = job.floorsQueued ?? 0;
+  const done = job.floorsDone ?? 0;
+  const base = queued ? `${done} of ${queued} floors done` : 'Starting…';
+  return job.currentFloorName ? `${base} · now ${job.currentFloorName}` : base;
 }
 
 /**
@@ -66,7 +76,7 @@ export default function BackgroundAnalysisIndicator() {
   const openJob = (job: BackgroundAnalysisJob) => {
     dismiss(job.jobId);
     setPanelAnchor(null);
-    navigate(`/construction-progress/${job.floorId}`);
+    navigate(job.kind === 'project' ? projectRunPath(job.projectId ?? '') : `/construction-progress/${job.floorId}`);
   };
 
   const avgPct = hasActive
@@ -124,7 +134,9 @@ export default function BackgroundAnalysisIndicator() {
           </Typography>
           <Typography noWrap sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>
             {hasActive
-              ? `est. ${avgPct}% · ${formatElapsed(jobElapsedSec(active[0], now))} elapsed · you can keep working`
+              ? (active[0].kind === 'project'
+                ? `${runDetail(active[0], 0)} · you can keep working`
+                : `est. ${avgPct}% · ${formatElapsed(jobElapsedSec(active[0], now))} elapsed · you can keep working`)
               : formatNotificationTime(lead.completedAt ?? '') || 'Just now'}
           </Typography>
         </Box>
@@ -140,7 +152,7 @@ export default function BackgroundAnalysisIndicator() {
               '&:hover': { opacity: 0.92 },
             }}
           >
-            {leadFailed ? 'Open floor' : 'Open'}
+            {leadFailed && lead.kind !== 'project' ? 'Open floor' : 'Open'}
           </Button>
         )}
         <Button
@@ -175,7 +187,7 @@ export default function BackgroundAnalysisIndicator() {
             Background analyses
           </Typography>
           <Typography sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>
-            Progress is an estimate · most floors take 2–5 minutes
+            Floor runs show an estimate (2–5 minutes each) · project runs show floors finished
           </Typography>
         </Box>
 
@@ -220,10 +232,10 @@ export default function BackgroundAnalysisIndicator() {
                     />
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5, gap: 1 }}>
                       <Typography noWrap sx={{ fontSize: '0.6875rem', color: colors.textMuted }}>
-                        {analysisStageLabel(elapsed)}
+                        {runDetail(job, elapsed)}
                       </Typography>
                       <Typography sx={{ fontSize: '0.6875rem', fontWeight: 600, color: colors.textMuted, flexShrink: 0 }}>
-                        est. {pct}% · {formatElapsed(elapsed)}
+                        {job.kind === 'project' ? '' : 'est. '}{pct}% · {formatElapsed(elapsed)}
                       </Typography>
                     </Box>
                   </>
@@ -239,7 +251,7 @@ export default function BackgroundAnalysisIndicator() {
                       onClick={() => openJob(job)}
                       sx={{ textTransform: 'none', fontWeight: 700, fontSize: '0.75rem', borderRadius: '8px', color: failedJob ? FAILED : colors.primary }}
                     >
-                      {failedJob ? 'Open floor' : 'Open'}
+                      {failedJob && job.kind !== 'project' ? 'Open floor' : 'Open'}
                     </Button>
                     <IconButton size="small" aria-label="Dismiss" onClick={() => dismiss(job.jobId)} sx={{ p: 0.5, color: colors.textMuted }}>
                       <CloseRounded sx={{ fontSize: 16 }} />

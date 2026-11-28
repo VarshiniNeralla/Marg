@@ -20,9 +20,12 @@ vi.mock('./authStore', () => ({
   useAuthStore: { getState: () => ({ user: auth.userId ? { id: auth.userId } : null }) },
 }));
 
-const api = vi.hoisted(() => ({ list: vi.fn() }));
+const api = vi.hoisted(() => ({ list: vi.fn(), listProjects: vi.fn() }));
 vi.mock('@/services/constructionProgressService', () => ({
-  constructionProgressService: { listBackgroundAnalyses: api.list },
+  constructionProgressService: {
+    listBackgroundAnalyses: api.list,
+    listBackgroundProjectAnalyses: api.listProjects,
+  },
 }));
 
 import { useBackgroundAnalysisStore } from './backgroundAnalysis';
@@ -34,7 +37,27 @@ describe('background analysis store', () => {
     storage.clear();
     auth.userId = 'u1';
     api.list.mockReset();
+    api.listProjects.mockReset();
+    api.listProjects.mockResolvedValue([]);
     useBackgroundAnalysisStore.getState().clear();
+  });
+
+  it('lists whole-project runs together with floor runs', async () => {
+    api.list.mockResolvedValue([J('a')]);
+    api.listProjects.mockResolvedValue([{
+      jobId: 'p1', projectId: 'proj', projectName: 'My Home Vipina', state: 'running',
+      floorsTotal: 408, floorsQueued: 8, floorsDone: 2, floorsFailed: 0,
+    }]);
+    const jobs = await useBackgroundAnalysisStore.getState().refresh();
+    expect(jobs.map(j => j.jobId)).toEqual(['project:p1', 'a']);
+    expect(jobs[0]).toMatchObject({ kind: 'project', status: 'processing', progressPct: 25 });
+  });
+
+  it('still shows floor runs when the project list cannot be loaded', async () => {
+    api.list.mockResolvedValue([J('a')]);
+    api.listProjects.mockRejectedValue(new Error('older server'));
+    const jobs = await useBackgroundAnalysisStore.getState().refresh();
+    expect(jobs.map(j => j.jobId)).toEqual(['a']);
   });
 
   it('refresh stores what the server lists', async () => {

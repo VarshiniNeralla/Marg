@@ -404,3 +404,25 @@ async def test_a_stalled_job_is_failed_and_frees_the_project(db, jobs, monkeypat
     assert status["state"] == STATE_FAILED and "timed out" in status["errors"][0]["message"]
     again = await jobs.start(org_id=ORG, project_id="p1", analyzed_by=REQUESTER)  # not a 409
     assert again["state"] == STATE_QUEUED
+
+
+@pytest.mark.asyncio
+async def test_background_list_has_running_and_recent_runs_only_for_this_org(db, jobs, monkeypatch):
+    await _world(db)
+    _fake_analysis(monkeypatch)
+    running = await jobs.start(org_id=ORG, project_id="p1", analyzed_by=REQUESTER)
+    now = datetime.now(timezone.utc)
+    await db[COLLECTION_PROJECT_JOBS].insert_many([
+        {"_id": "old", "orgId": ORG, "projectId": "p2", "projectName": "Project Two", "state": STATE_COMPLETED,
+         "createdAt": now - timedelta(hours=9), "finishedAt": now - timedelta(hours=8)},
+        {"_id": "recent", "orgId": ORG, "projectId": "p2", "projectName": "Project Two", "state": STATE_COMPLETED,
+         "createdAt": now - timedelta(minutes=30), "finishedAt": now - timedelta(minutes=5)},
+        {"_id": "other-org", "orgId": "someone-else", "projectId": "px", "state": STATE_RUNNING,
+         "createdAt": now, "heartbeatAt": now},
+    ])
+    listed = await jobs.list_background_jobs(org_id=ORG)
+    ids = [j["jobId"] for j in listed]
+    assert running["jobId"] in ids and "recent" in ids
+    assert "old" not in ids and "other-org" not in ids
+    one = next(j for j in listed if j["jobId"] == "recent")
+    assert one["projectName"] == "Project Two" and one["state"] == STATE_COMPLETED

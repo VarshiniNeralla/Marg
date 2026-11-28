@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ProjectFloorRow } from '@/services/constructionProgressService';
 import {
-  buildFloorCsv, filterCounts, floorStatusLabel, isRunActive, matchesFilter, projectHeadline, projectIdsWithCaptures, runLabel, runPct, sortFloors, towerProgress,
+  buildFloorCsv, filterCounts, floorStatusLabel, isRunActive, matchesFilter, formatProgressPct, projectHeadline, projectIdsWithCaptures, runLabel, runPct, sortFloors, towerProgress,
 } from './projectAnalysis';
 
 const row = (over: Partial<ProjectFloorRow>): ProjectFloorRow => ({
@@ -115,14 +115,21 @@ describe('projectHeadline', () => {
       towersTotal: 2, towersCompleted: 1, floorsTotal: 5, floorsCompleted: 1, floorsInProgress: 2, floorsAnalysed: 3,
     });
   });
-  it('averages only the floors that have a result, so unphotographed floors do not drag it to zero', () => {
+  it('counts every floor, so floors nobody has analysed pull the project figure down (7 of 408 is not 22%)', () => {
     const h = projectHeadline(floors, towers);
-    expect(h.analysedAvgPct).toBe(50); // (100 + 20 + 30) / 3
+    expect(h.projectPct).toBe(30); // (100 + 20 + 30 + 0 + 0) / 5
     expect(h.inProgressAvgPct).toBe(25); // (20 + 30) / 2
+    const many = [
+      ...Array.from({ length: 7 }, (_, i) => row({ floorId: `a${i}`, status: 'in_progress', progressPct: 22 })),
+      ...Array.from({ length: 401 }, (_, i) => row({ floorId: `n${i}`, status: 'no_photos', progressPct: 0 })),
+    ];
+    const big = projectHeadline(many, towers);
+    expect(big.projectPct).toBeCloseTo(0.377, 2);
+    expect(formatProgressPct(big.projectPct)).toBe('0.4%');
   });
-  it('has no average, not a fake 0, when nothing has been analysed', () => {
+  it('is 0, and has no in-progress average, when nothing has been analysed', () => {
     const h = projectHeadline([row({ status: 'no_photos', progressPct: 0 })], towers);
-    expect(h.analysedAvgPct).toBeNull();
+    expect(h.projectPct).toBe(0);
     expect(h.inProgressAvgPct).toBeNull();
   });
 });
@@ -139,10 +146,11 @@ describe('towerProgress', () => {
     row({ floorId: '4', towerId: 'b', status: 'no_photos', progressPct: 0 }),
     row({ floorId: '5', towerId: 'b', status: 'no_photos', progressPct: 0 }),
   ];
-  it('averages each tower over its analysed floors', () => {
+  it('averages each tower over ALL its floors, unanalysed ones as 0', () => {
     const [t1, t2] = towerProgress(floors, towers);
-    expect(t1).toMatchObject({ floors: 3, floorsAnalysed: 2, floorsInProgress: 2, progressPct: 30 });
-    expect(t2.progressPct).toBeNull();
+    expect(t1).toMatchObject({ floors: 3, floorsAnalysed: 2, floorsInProgress: 2 });
+    expect(t1.progressPct).toBe(20); // (20 + 40 + 0) / 3
+    expect(t2.progressPct).toBe(0);
     expect(t2.floorsAnalysed).toBe(0);
   });
 });
@@ -150,5 +158,15 @@ describe('towerProgress', () => {
 describe('projectIdsWithCaptures', () => {
   it('lists each project that has a capture once', () => {
     expect([...projectIdsWithCaptures([{ projectId: 'a' }, { projectId: 'a' }, { projectId: 'b' }, {}])].sort()).toEqual(['a', 'b']);
+  });
+});
+
+describe('formatProgressPct', () => {
+  it('keeps a decimal below 10 so a small figure is not shown as 0', () => {
+    expect(formatProgressPct(0)).toBe('0%');
+    expect(formatProgressPct(0.38)).toBe('0.4%');
+    expect(formatProgressPct(3.04)).toBe('3.0%');
+    expect(formatProgressPct(21.6)).toBe('22%');
+    expect(formatProgressPct(100)).toBe('100%');
   });
 });

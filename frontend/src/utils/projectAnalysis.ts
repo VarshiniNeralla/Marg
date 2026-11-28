@@ -10,22 +10,33 @@ export interface ProjectHeadline {
   floorsInProgress: number;
   /** Floors with a result (completed, in progress or not started). */
   floorsAnalysed: number;
-  /** Average progress of the analysed floors, 0-100, or null when none has been analysed. */
-  analysedAvgPct: number | null;
+  /** Progress of the whole project, 0-100: the average over EVERY floor, floors without a result counting as 0. */
+  projectPct: number;
   /** Average progress of the floors that are in progress, or null when there are none. */
   inProgressAvgPct: number | null;
 }
 
 const isAnalysed = (f: ProjectFloorRow) =>
   f.status !== 'no_photos' && f.status !== 'not_analysed' && typeof f.progressPct === 'number';
+const floorPct = (f: ProjectFloorRow) => (isAnalysed(f) ? (f.progressPct as number) : 0);
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
 /**
- * Project headline in towers and floors. The average counts only floors that have a result, so floors nobody has
- * photographed yet do not drag a running project down to 0%. A tower is complete when every one of its floors is.
+ * One progress figure for people to read. Small values keep a decimal so a project that is 0.4% done does not
+ * read as 0%, and 22% stays 22%.
+ */
+export function formatProgressPct(pct: number): string {
+  if (pct <= 0) return '0%';
+  if (pct < 10) return `${(Math.round(pct * 10) / 10).toFixed(1)}%`;
+  return `${Math.round(pct)}%`;
+}
+
+/**
+ * Project headline in towers and floors. Progress is over every floor of the project: a floor nobody has
+ * photographed or analysed yet is 0, not left out, so 7 floors at 22% out of 408 is 0.4%, not 22%.
+ * A tower is complete when every one of its floors is.
  */
 export function projectHeadline(floors: ProjectFloorRow[], towers: ProjectTowerRow[]): ProjectHeadline {
-  const analysed = floors.filter(isAnalysed);
   const inProgress = floors.filter(f => f.status === 'in_progress' && typeof f.progressPct === 'number');
   return {
     towersTotal: towers.length,
@@ -33,8 +44,8 @@ export function projectHeadline(floors: ProjectFloorRow[], towers: ProjectTowerR
     floorsTotal: floors.length,
     floorsCompleted: floors.filter(f => f.status === 'completed').length,
     floorsInProgress: floors.filter(f => f.status === 'in_progress').length,
-    floorsAnalysed: analysed.length,
-    analysedAvgPct: mean(analysed.map(f => f.progressPct as number)),
+    floorsAnalysed: floors.filter(isAnalysed).length,
+    projectPct: mean(floors.map(floorPct)) ?? 0,
     inProgressAvgPct: mean(inProgress.map(f => f.progressPct as number)),
   };
 }
@@ -46,23 +57,22 @@ export interface TowerProgress {
   floorsAnalysed: number;
   floorsCompleted: number;
   floorsInProgress: number;
-  /** Average progress of this tower's analysed floors, or null when none has been analysed. */
-  progressPct: number | null;
+  /** Progress of the whole tower, 0-100: every floor of the tower counts, floors without a result as 0. */
+  progressPct: number;
 }
 
-/** Progress of each tower, from its analysed floors, in the order the towers were given. */
+/** Progress of each tower over all its floors, in the order the towers were given. */
 export function towerProgress(floors: ProjectFloorRow[], towers: ProjectTowerRow[]): TowerProgress[] {
   return towers.map(t => {
     const mine = floors.filter(f => f.towerId === t.towerId);
-    const analysed = mine.filter(isAnalysed);
     return {
       towerId: t.towerId,
       towerName: t.towerName,
       floors: mine.length || t.floors,
-      floorsAnalysed: analysed.length,
+      floorsAnalysed: mine.filter(isAnalysed).length,
       floorsCompleted: mine.filter(f => f.status === 'completed').length,
       floorsInProgress: mine.filter(f => f.status === 'in_progress').length,
-      progressPct: mean(analysed.map(f => f.progressPct as number)),
+      progressPct: mean(mine.map(floorPct)) ?? 0,
     };
   });
 }

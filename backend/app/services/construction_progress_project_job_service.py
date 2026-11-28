@@ -168,6 +168,36 @@ class ConstructionProgressProjectJobService:
             doc = await self._active_doc(org_id, project_id) or await self._latest_doc(org_id, project_id)
         return serialize_project_job(doc) if doc else None
 
+    async def list_background_jobs(
+        self, *, org_id: str, finished_within: timedelta = timedelta(hours=2), limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Project runs for the app-wide indicator: everything still running plus whatever finished recently,
+        newest first. A run is always a background run: it lives on the server whether or not the page is open."""
+        active = await self._db[COLLECTION_PROJECT_JOBS].find(
+            {"orgId": org_id, "state": {"$in": list(_ACTIVE_STATES)}}, {"projectId": 1},
+        ).to_list(length=100)
+        for project_id in {d.get("projectId") for d in active if d.get("projectId")}:
+            await self._fail_stale_jobs(org_id, project_id)
+
+        cutoff = _utcnow() - finished_within
+        docs = await self._db[COLLECTION_PROJECT_JOBS].find(
+            {
+                "orgId": org_id,
+                "$or": [
+                    {"state": {"$in": list(_ACTIVE_STATES)}},
+                    {"finishedAt": {"$gte": cutoff}},
+                ],
+            }
+        ).sort("createdAt", -1).to_list(length=limit)
+
+        out = []
+        for d in docs:
+            item = serialize_project_job(d)
+            item["projectName"] = str(d.get("projectName") or "")
+            item["analyzedBy"] = str(d.get("analyzedBy") or "")
+            out.append(item)
+        return out
+
     async def _active_doc(self, org_id: str, project_id: str) -> Optional[dict[str, Any]]:
         return await self._db[COLLECTION_PROJECT_JOBS].find_one(
             {"orgId": org_id, "projectId": project_id, "state": {"$in": list(_ACTIVE_STATES)}},
