@@ -5,6 +5,7 @@ import type {
   ProjectActivityRow, ProjectFloorRow, ProjectOverviewTotals, ProjectTowerRow,
 } from '@/services/constructionProgressService';
 import { activityDisplayName } from '@/utils/activityNames';
+import type { TowerProgress } from '@/utils/projectAnalysis';
 
 // Plain CSS and SVG charts. The repo has no chart library, so none is added.
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827', track: '#eef1f5' };
@@ -65,6 +66,26 @@ function BarRow({ label, pct, sub }: { label: string; pct: number; sub?: string 
 export function TowerChart({ towers }: { towers: ProjectTowerRow[] }) {
   if (!towers.length) return <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>No towers yet.</Typography>;
   return <>{towers.map(t => <BarRow key={t.towerId} label={t.towerName} pct={t.progressPct} sub={`(${t.floors} floors)`} />)}</>;
+}
+
+/** One bar per tower: the average progress of its analysed floors, with how many floors that is. */
+export function TowerProgressChart({ towers }: { towers: TowerProgress[] }) {
+  if (!towers.length) return <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>No towers yet.</Typography>;
+  return (
+    <>
+      {towers.map(t => t.progressPct == null ? (
+        <Box key={t.towerId} sx={{ display: 'flex', justifyContent: 'space-between', gap: 1, mb: 1 }}>
+          <Typography sx={{ fontSize: '0.8125rem', color: P.strong }}>{t.towerName}</Typography>
+          <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>No floors analysed yet</Typography>
+        </Box>
+      ) : (
+        <BarRow
+          key={t.towerId} label={t.towerName} pct={t.progressPct}
+          sub={`(${t.floorsAnalysed} of ${t.floors} floors)`}
+        />
+      ))}
+    </>
+  );
 }
 
 export function ActivityChart({ activities }: { activities: ProjectActivityRow[] }) {

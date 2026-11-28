@@ -14,20 +14,15 @@ import { pageSlice } from '@/utils/evidenceImages';
 import { downloadCsv } from '@/utils/downloadCsv';
 import {
   FILTER_CHIPS, buildFloorCsv, filterCounts, floorStatusLabel, isRunActive, matchesFilter, projectHeadline,
-  projectIdsWithCaptures, runLabel, runPct, sortFloors, type SortDir, type SortKey, type StatusFilter,
+  projectIdsWithCaptures, runLabel, runPct, sortFloors, towerProgress, type SortDir, type SortKey, type StatusFilter,
 } from '@/utils/projectAnalysis';
 import { useAnalyzeProject, useProjectAnalyzeStatus, useProjectOverview } from '@/hooks/useProjectAnalysis';
 import {
-  Bar, ChartCard, ProgressCoverageChart, STATUS_COLOR, TowerChart, pctColor,
+  Bar, ChartCard, ProgressCoverageChart, STATUS_COLOR, TowerProgressChart, pctColor,
 } from '@/components/ConstructionProgress/ProjectCharts';
 import type { ProjectFloorRow } from '@/services/constructionProgressService';
 
 const FLOORS_PAGE_SIZE = 10;
-
-/** A small whole-project figure must not read as "0%" while floors show 20%: keep a decimal below 10. */
-function formatWhole(pct: number): string {
-  return `${pct < 10 ? (Math.round(pct * 10) / 10).toFixed(1) : Math.round(pct)}%`;
-}
 
 const P = { border: '#e4e7ec', muted: '#6b7280', strong: '#111827' };
 
@@ -173,6 +168,7 @@ export default function ProjectAnalysisPage() {
 
   const totals = data?.totals;
   const headline = useMemo(() => projectHeadline(data?.floors ?? [], data?.towers ?? []), [data]);
+  const towerRows = useMemo(() => towerProgress(data?.floors ?? [], data?.towers ?? []), [data]);
 
   return (
     <Box sx={{ maxWidth: 1200, mx: 'auto' }}>
@@ -243,22 +239,28 @@ export default function ProjectAnalysisPage() {
                   Project progress
                 </Typography>
                 <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5, flexWrap: 'wrap' }}>
-                  <Typography data-testid="headline-pct" sx={{ fontSize: '2.5rem', fontWeight: 800, color: pctColor(headline.flatsCompletedPct), lineHeight: 1.1 }}>
-                    {formatWhole(headline.flatsCompletedPct)}
+                  <Typography data-testid="headline-pct" sx={{ fontSize: '2.5rem', fontWeight: 800, color: pctColor(headline.analysedAvgPct), lineHeight: 1.1 }}>
+                    {headline.analysedAvgPct === null ? '-' : `${Math.round(headline.analysedAvgPct)}%`}
                   </Typography>
-                  <Typography data-testid="headline-counts" sx={{ fontSize: '0.9375rem', fontWeight: 600, color: P.strong }}>
-                    {headline.flatsCompleted} of {headline.flatsTotal} flats completed
-                    {' · '}
-                    {headline.towersCompleted} of {headline.towersTotal} tower{headline.towersTotal === 1 ? '' : 's'} completed
+                  <Typography sx={{ fontSize: '0.8125rem', color: P.muted }}>
+                    {headline.analysedAvgPct === null
+                      ? 'No floor has been analysed yet.'
+                      : `Average progress of the ${headline.floorsAnalysed} floor${headline.floorsAnalysed === 1 ? '' : 's'} analysed so far.`}
                   </Typography>
                 </Box>
-                <Box sx={{ mt: 1.5 }}><Bar pct={headline.flatsCompletedPct} label="Flats completed" /></Box>
-                <Typography data-testid="headline-note" sx={{ fontSize: '0.8125rem', color: P.muted, mt: 1 }}>
-                  {headline.flatsTotal
-                    ? `Counted over the ${headline.floorsCounted} floor${headline.floorsCounted === 1 ? '' : 's'} analysed so far, where the flats are known. Work done across those flats averages ${Math.round(headline.avgFlatProgressPct ?? 0)}%.`
-                    : 'No floor has been analysed yet, so no flats are counted.'}
-                  {totals.notAnalysed ? ` ${totals.notAnalysed} floors have photos but are not analysed yet.` : ''}
-                </Typography>
+                <Box sx={{ mt: 1.5 }}><Bar pct={headline.analysedAvgPct ?? 0} label="Average progress of analysed floors" /></Box>
+                <Box data-testid="headline-counts" sx={{ display: 'flex', flexWrap: 'wrap', gap: { xs: 1, sm: 3 }, mt: 1.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem', color: P.strong }}>
+                    <strong>In progress:</strong> {headline.floorsInProgress} floor{headline.floorsInProgress === 1 ? '' : 's'}
+                    {headline.inProgressAvgPct !== null ? `, average ${Math.round(headline.inProgressAvgPct)}%` : ''}
+                  </Typography>
+                  <Typography sx={{ fontSize: '0.875rem', color: P.strong }}>
+                    <strong>Completed:</strong> {headline.floorsCompleted} of {headline.floorsTotal} floors
+                  </Typography>
+                  <Typography sx={{ fontSize: '0.875rem', color: P.strong }}>
+                    <strong>Towers completed:</strong> {headline.towersCompleted} of {headline.towersTotal}
+                  </Typography>
+                </Box>
                 {typeof totals.coveragePct === 'number' && (
                   <Typography sx={{ fontSize: '0.8125rem', color: P.muted, mt: 1 }}>
                     Coverage {Math.round(totals.coveragePct)}%
@@ -308,7 +310,7 @@ export default function ProjectAnalysisPage() {
 
               <Typography component="h2" sx={{ fontSize: '1.0625rem', fontWeight: 800, color: P.strong, mt: 4, mb: 1.5 }}>Analytics</Typography>
               <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'repeat(2, minmax(0, 1fr))' }, gap: 2, mb: 4 }}>
-                <ChartCard title="Progress by tower" testId="chart-towers"><TowerChart towers={data.towers} /></ChartCard>
+                <ChartCard title="Progress by tower" testId="chart-towers"><TowerProgressChart towers={towerRows} /></ChartCard>
                 <ChartCard title="Progress and coverage by floor" testId="chart-progress-coverage"><ProgressCoverageChart floors={data.floors} /></ChartCard>
               </Box>
             </>
